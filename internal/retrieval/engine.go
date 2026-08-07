@@ -147,6 +147,15 @@ type SymbolRef struct {
 	// matches no declaration is ignored so the ambiguity is reported again
 	// rather than silently resolving to the wrong symbol.
 	Line int `json:"line,omitempty"`
+	// AvoidGoLoad keeps resolution from building the whole-repository go/types
+	// snapshot: a declaration that turns out to live in Go is resolved only
+	// when the snapshot is already cached or the repository is small enough to
+	// type-check eagerly, and fails with GoAnalysisSkippedError otherwise. The
+	// load behind that backend can take minutes on a large checkout, so
+	// opportunistic callers — the search-upgrade optimizer resolving a bare
+	// identifier — must not trigger it; an explicit find_references call never
+	// sets this.
+	AvoidGoLoad bool `json:"-"`
 }
 
 // ReferenceResult is a flat, declaration-centered view of a symbol. References

@@ -501,3 +501,99 @@ func TestToolResultLimiterKeepsLiteralCountTrueOnMixedSearchResult(t *testing.T)
 		t.Fatalf("omitted_literal_results = %v, want %d", payload["omitted_literal_results"], len(literals)-len(kept))
 	}
 }
+
+// Provider tool-call IDs are only unique within one response — the XML
+// fallback synthesizes xml_tool_call_1 afresh each round — so releasing by ID
+// must only reach the current round's reservations.
+func TestReleaseToolCallScopedToCurrentRound(t *testing.T) {
+	state := freshToolRoundState()
+	state.beginToolRound()
+	if !state.reserveToolCall("xml_tool_call_1", "key-round-1") {
+		t.Fatal("first reservation failed")
+	}
+	state.beginToolRound()
+	state.markToolCallSeen("xml_tool_call_1", "key-round-2")
+	state.releaseToolCall("xml_tool_call_1")
+
+	state.mu.Lock()
+	_, round1 := state.seenToolCalls["key-round-1"]
+	_, round2 := state.seenToolCalls["key-round-2"]
+	state.mu.Unlock()
+	if !round1 {
+		t.Fatal("release freed an earlier round's reservation via a colliding ID")
+	}
+	if round2 {
+		t.Fatal("release missed the current round's reservation")
+	}
+}
+
+// Error payloads are the smallest useful answer and load-bearing exactly when
+// the context is full: trimming an already_requested error silences the
+// duplicate-call breaker, so the batch limiter leaves them untouched.
+func TestToolResultBatchExemptsErrorPayloads(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 40_000)}}
+	errorPayload := toolError("pkg", "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	filler := fmt.Sprintf(`{"path":"a.go","content":%q}`, strings.Repeat("line\n", 2000))
+	batch := limitToolResultBatch(&toolContextMeter{}, messages, nil, nil, []llm.Message{
+		{Role: "tool", Content: filler},
+		{Role: "tool", Content: filler},
+		{Role: "tool", Content: filler},
+		{Role: "tool", Content: filler},
+		{Role: "tool", Content: errorPayload},
+	}, 1000, 10)
+	if got := batch[len(batch)-1].Content; got != errorPayload {
+		t.Fatalf("error payload was limited: %s", got)
+	}
+}
+
+// The search upgrade drops a literal match when a structural context covers
+// it; if batch limiting later prunes that covering context, the match exists
+// nowhere in what the model sees, so the call's keys are handed back and the
+// advised rerun executes instead of answering already_requested.
+func TestReleasePrunedSearchResultsFreesReservedKeys(t *testing.T) {
+	raw := `{"target":{},"functions":[],"outside_functions":[],"literal_results":[]}`
+	for _, tc := range []struct {
+		name     string
+		toolName string
+		limited  string
+		released bool
+	}{
+		{
+			name:     "context prune releases",
+			toolName: "search",
+			limited:  `{"target":{},"functions":[],"outside_functions":[],"omitted_contexts":3,"literal_results":[],"truncated":true}`,
+			released: true,
+		},
+		{
+			name:     "literal-only prune keeps reservation",
+			toolName: "search",
+			limited:  `{"target":{},"functions":[],"outside_functions":[],"omitted_literal_results":2,"literal_results":[],"truncated":true}`,
+			released: false,
+		},
+		{
+			name:     "other tools are untouched",
+			toolName: "find_references",
+			limited:  `{"target":{},"functions":[],"outside_functions":[],"omitted_contexts":3,"literal_results":[],"truncated":true}`,
+			released: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := freshToolRoundState()
+			state.beginToolRound()
+			key := referenceDedupKey("", "Shared", 0)
+			state.markToolCallSeen("c1", key)
+			releasePrunedSearchResults(
+				[]llm.ToolCall{{ID: "c1", Name: tc.toolName}},
+				[]llm.Message{{Role: "tool", Content: raw}},
+				[]llm.Message{{Role: "tool", Content: tc.limited}},
+				state,
+			)
+			state.mu.Lock()
+			_, reserved := state.seenToolCalls[key]
+			state.mu.Unlock()
+			if reserved == tc.released {
+				t.Fatalf("reserved = %t, want released = %t", reserved, tc.released)
+			}
+		})
+	}
+}

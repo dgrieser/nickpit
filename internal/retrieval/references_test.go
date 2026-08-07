@@ -469,7 +469,10 @@ func TestCollectGoReferencesReportsUnreadableSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A cache rooted elsewhere stands in for files the checkout moved away.
-	result := collectGoReferences(repoRoot, pkgs, selected, complete, newReferenceLineCache(t.TempDir()))
+	result, err := collectGoReferences(context.Background(), repoRoot, pkgs, selected, complete, newReferenceLineCache(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.ExactReferenceCount == 0 {
 		t.Fatalf("unreadable sources dropped every reference: %#v", result)
 	}
@@ -862,10 +865,30 @@ func TestFindReferencesResolvesSymbolImportedElsewhere(t *testing.T) {
 
 // A file that only imports the symbol still has to answer a lookup scoped to
 // it: the import is the only thing there to point at.
+// An import is a usage of a symbol declared somewhere else, so a lookup scoped
+// to a file that merely imports it answers with the source declaration's
+// analysis — every importing file would otherwise produce its own
+// near-duplicate analysis anchored at its import line.
 func TestFindReferencesResolvesImportWhenScopedToImportingFile(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n")
 	writeRetrievalFile(t, repoRoot, "other.py", "from mod import LIMIT\n\ndef use():\n    return LIMIT\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT", Path: "other.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.FilePath != "mod.py" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// A file whose import cannot be followed to a repository-local declaration
+// still answers a lookup scoped to it with the import binding: there is
+// nothing better to point at.
+func TestFindReferencesKeepsUnresolvableImportWhenScopedToImportingFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "other.py", "from vendored.mod import LIMIT\n\ndef use():\n    return LIMIT\n")
 
 	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT", Path: "other.py"})
 	if err != nil {
@@ -1175,6 +1198,205 @@ func TestFindReferencesKeepsDecoratorUseAboveTypeScriptMethod(t *testing.T) {
 					t.Fatalf("the declaration on line 4 is reported as a reference to itself: %#v", occurrence)
 				}
 			}
+		}
+	}
+}
+
+// `\b` cannot bound an identifier edge regexp's `\w` does not cover, so a
+// $-prefixed JavaScript identifier was unresolvable by every declaration
+// pattern while occurrence collection deliberately counts `$` as part of one.
+func TestFindReferencesResolvesDollarPrefixedIdentifier(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "store.js", "const $state = 42\nconsole.log($state)\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "$state", Path: "store.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.LineRange.Start != 1 {
+		t.Fatalf("target = %#v", result.Target)
+	}
+	if result.ExactReferenceCount != 1 {
+		t.Fatalf("exact references = %d, want the console.log use: %#v", result.ExactReferenceCount, result)
+	}
+}
+
+// A Python keyword argument in a wrapped call is spelled like a module-level
+// assignment but sits inside an open bracket; it is not a declaration, and
+// treating it as one made the real declaration resolve as ambiguous.
+func TestFindReferencesIgnoresWrappedKeywordArgumentAsDeclaration(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "a.py", "count = 0\n")
+	writeRetrievalFile(t, repoRoot, "b.py", "g(\n    count=5,\n)\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "count"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Definition.FilePath != "a.py" || result.Target.Kind != "variable" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// A top-level JavaScript reassignment matches the class-field pattern's `=`
+// form but sits outside any brace body; it is a write to the declaration, not
+// a rival declaration that re-ambiguates the symbol.
+func TestFindReferencesTreatsTopLevelReassignmentAsWrite(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "counter.js", "let count = 0\ncount = 5;\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "count", Path: "counter.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.LineRange.Start != 1 {
+		t.Fatalf("target = %#v", result.Target)
+	}
+	roles := map[int]string{}
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				roles[occurrence.CodeLocation.LineRange.Start] = occurrence.Role
+			}
+		}
+	}
+	if roles[2] != "write" {
+		t.Fatalf("line 2 role = %q, want write: %#v", roles[2], roles)
+	}
+}
+
+// Rust raw strings have no escapes and close only on a quote followed by their
+// own number of hashes; without that state the masker re-entered code mid-string
+// and reported phantom references inside SQL text.
+func TestFindReferencesMasksRustRawStrings(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "lib.rs", "pub fn count() {}\nfn q() -> String {\n    let s = r#\"select \"count\" from t\"#;\n    s.into()\n}\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "count", Path: "lib.rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExactReferenceCount != 0 || result.PossibleReferenceCount != 0 {
+		t.Fatalf("raw-string contents reported as references: %#v", result)
+	}
+}
+
+// A `/*` inside a JavaScript regex literal is pattern text; treating it as a
+// block comment silently masked every following line of real code.
+func TestFindReferencesSurvivesRegexLiteralWithCommentOpener(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "re.js", "let value = 1\nconst re = /^\\/*x/;\nvalue = value + 1\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "value", Path: "re.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := map[int]bool{}
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				lines[occurrence.CodeLocation.LineRange.Start] = true
+			}
+		}
+	}
+	if !lines[3] {
+		t.Fatalf("the reassignment after the regex literal vanished: %#v", result)
+	}
+}
+
+// The regex declaration pass cannot express an interface method — there is no
+// `func` keyword on its line — so a repo-wide lookup must go on to ask
+// go/types instead of returning not-found while a scoped lookup succeeds.
+func TestFindReferencesResolvesInterfaceMethodRepoWide(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/iface\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "thing.go", "package iface\n\ntype Thing interface {\n\tReadThing() error\n}\n\nfunc use(t Thing) error { return t.ReadThing() }\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "ReadThing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Name != "ReadThing" || result.Target.Definition.FilePath != "thing.go" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+	if result.ExactReferenceCount != 1 {
+		t.Fatalf("exact references = %d, want the use in use(): %#v", result.ExactReferenceCount, result)
+	}
+}
+
+// A cancelled batch must not go on scanning the repository once per remaining
+// symbol; every entry reports the cancellation instead.
+func TestFindReferencesBatchHonorsCancellation(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "a.py", "VALUE = 1\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i, batchResult := range NewLocalEngine().FindReferencesBatch(ctx, repoRoot, []SymbolRef{{Name: "VALUE"}, {Name: "VALUE"}}) {
+		if batchResult.Err == nil {
+			t.Fatalf("symbol %d ran to completion after cancellation", i)
+		}
+	}
+	for i, targetResult := range NewLocalEngine().ResolveReferenceTargets(ctx, repoRoot, []SymbolRef{{Name: "VALUE"}, {Name: "VALUE"}}) {
+		if targetResult.Err == nil {
+			t.Fatalf("target %d resolved after cancellation", i)
+		}
+	}
+}
+
+// `export {a as b} from "./m"` forwards a's export under the name b without
+// binding b in the re-exporting module: an unrelated local b there must not be
+// reported as references to a, while a consumer importing b still binds it.
+func TestFindReferencesTreatsReExportAsForwardingNotBinding(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "a.js", "export const foo = 1\n")
+	writeRetrievalFile(t, repoRoot, "b.js", "export {foo as bar} from \"./a\"\nlet bar = 0\nbar = bar + 1\n")
+	writeRetrievalFile(t, repoRoot, "c.js", "import {bar} from \"./b\"\nconsole.log(bar)\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "foo", Path: "a.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawConsumer := false
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				location := occurrence.CodeLocation
+				if location.FilePath == "b.js" && location.LineRange.Start > 1 {
+					t.Fatalf("unrelated local bar reported as a reference to foo: %#v", occurrence)
+				}
+				if location.FilePath == "c.js" && location.LineRange.Start == 2 && occurrence.Confidence == "exact" {
+					sawConsumer = true
+				}
+			}
+		}
+	}
+	if !sawConsumer {
+		t.Fatalf("re-export chain lost the consumer's exact reference: %#v", result)
+	}
+}
+
+// Every importing file used to count as its own "declaration", multiplying one
+// symbol into rival candidates; imports redirect to the source declaration, so
+// the lookup stays unambiguous.
+func TestResolveReferenceTargetsRedirectsImportsToOneDeclaration(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "lib.py", "MAX_SIZE = 10\n")
+	for _, name := range []string{"u1.py", "u2.py", "u3.py"} {
+		writeRetrievalFile(t, repoRoot, name, "from lib import MAX_SIZE\n\nprint(MAX_SIZE)\n")
+	}
+
+	symbols := []SymbolRef{
+		{Name: "MAX_SIZE", Path: "u1.py"},
+		{Name: "MAX_SIZE", Path: "u2.py"},
+		{Name: "MAX_SIZE", Path: "u3.py"},
+	}
+	for i, targetResult := range NewLocalEngine().ResolveReferenceTargets(context.Background(), repoRoot, symbols) {
+		if targetResult.Err != nil {
+			t.Fatalf("symbol %d: %v", i, targetResult.Err)
+		}
+		if targetResult.Target.Definition.FilePath != "lib.py" || targetResult.Target.Kind != "variable" {
+			t.Fatalf("symbol %d resolved to %#v, want the lib.py declaration", i, targetResult.Target)
 		}
 	}
 }

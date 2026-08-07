@@ -216,7 +216,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 			// Identifier spelling is case-sensitive even when the fallback cannot
 			// provide structural binding identity.
-			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, toollimits.DefaultSearchContextLines, 0, true)
+			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, toollimits.DefaultSearchContextLines, toollimits.MaxFallbackSearchResults, true)
 			if searchErr != nil {
 				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
 			}
@@ -587,7 +587,7 @@ func (e *Engine) searchToolResult(ctx context.Context, repoRoot string, toolCall
 	}
 
 	if e.searchToolOptimization {
-		if optimized, ok := e.optimizeSearchResults(ctx, repoRoot, toolCall.ID, args.Query, args.CaseSensitive, results.Results, results.TruncatedFiles, state); ok {
+		if optimized, ok := e.optimizeSearchResults(ctx, repoRoot, toolCall.ID, normalizedPath, args.Query, args.MaxResults, args.CaseSensitive, results.Results, results.TruncatedFiles, state); ok {
 			state.markToolCallSeen(toolCall.ID, key)
 			return optimized
 		}
@@ -627,22 +627,31 @@ type classifiedSearchSymbol struct {
 // for the spelling found in its returned snippet. Matches are grouped by their
 // declaration and enriched with callers or references independently; unsupported
 // or unresolved matches remain literal.
-func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID, query string, caseSensitive bool, results []retrieval.SearchResult, truncatedFiles []string, state *toolRoundState) (searchToolResult, bool) {
+//
+// A bare identifier — no trailing parens — never engages the Go type-check
+// backend: that is a whole-repository packages.Load costing minutes on a large
+// checkout, and any common word the model greps for would trigger it. A
+// function-shaped query keeps the full resolution the model implicitly asked
+// for.
+func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID, normalizedPath, query string, maxResults int, caseSensitive bool, results []retrieval.SearchResult, truncatedFiles []string, state *toolRoundState) (searchToolResult, bool) {
 	matches := searchIdentifierQueryPattern.FindStringSubmatch(query)
 	if len(matches) != 2 || len(results) == 0 {
 		return searchToolResult{}, false
 	}
 	queryName := matches[1]
+	avoidGoLoad := !strings.ContainsRune(query, '(')
 	type lookup struct{ name, path string }
 	lookups := make([]lookup, 0, len(results))
 	seenLookups := make(map[lookup]struct{}, len(results))
 	names := map[string]struct{}{queryName: {}}
+	lookupsCapped := false
 	for _, result := range results {
 		path := normalizeSearchPath(result.CodeLocation.FilePath)
+		// A file whose matched content never spells the identifier was hit by a
+		// substring ("Runner" for the query "Run"): there is nothing to resolve
+		// in it, and charging it a lookup let noise matches starve — previously
+		// even abort — the upgrade of the genuine declaration.
 		spellings := matchingIdentifierSpellings(result.CodeLocation.Content, queryName, caseSensitive)
-		if len(spellings) == 0 {
-			spellings = []string{queryName}
-		}
 		for _, name := range spellings {
 			names[name] = struct{}{}
 			candidate := lookup{name: name, path: path}
@@ -650,17 +659,31 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 				continue
 			}
 			seenLookups[candidate] = struct{}{}
-			lookups = append(lookups, candidate)
-			if len(lookups) > toollimits.MaxSearchStructuralLookups {
-				e.logf(ctx, "Keeping broad identifier search literal: query=%q structural_candidates>%d", query, toollimits.MaxSearchStructuralLookups)
-				return searchToolResult{}, false
+			if len(lookups) >= toollimits.MaxSearchStructuralLookups {
+				lookupsCapped = true
+				continue
 			}
+			lookups = append(lookups, candidate)
 		}
+	}
+	if lookupsCapped {
+		e.logf(ctx, "Capping structural lookups: query=%q structural_candidates>%d", query, toollimits.MaxSearchStructuralLookups)
 	}
 
 	resolved := make(map[string]*classifiedSearchSymbol)
+	// goSkipped records that at least one lookup declined the Go type-check:
+	// a rival Go declaration may then exist that resolution never saw, which
+	// the pathless dedup reservations below must not claim to cover.
+	goSkipped := false
 	recordResolution := func(target *retrieval.ReferenceTarget, references *retrieval.ReferenceResult, err error) {
-		if err != nil || target == nil {
+		if err != nil {
+			var skipped *retrieval.GoAnalysisSkippedError
+			if errors.As(err, &skipped) {
+				goSkipped = true
+			}
+			return
+		}
+		if target == nil {
 			return
 		}
 		key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", target.Definition.FilePath, target.Definition.LineRange.Start, target.Definition.LineRange.End, target.Name)
@@ -687,7 +710,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		}
 		symbols := make([]retrieval.SymbolRef, len(candidates))
 		for i, candidate := range candidates {
-			symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
+			symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path, AvoidGoLoad: avoidGoLoad}
 		}
 		if resolver, ok := e.retrieval.(retrieval.ReferenceTargetResolver); ok {
 			for _, targetResult := range resolver.ResolveReferenceTargets(ctx, repoRoot, symbols) {
@@ -738,9 +761,15 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	e.collectDeferredReferences(ctx, repoRoot, keys, resolved)
+	e.collectDeferredReferences(ctx, repoRoot, keys, resolved, avoidGoLoad)
 	// A name the search resolved to several declarations cannot be looked up
-	// without a path, which decides how far the dedup reservation reaches.
+	// without a path, which decides how far the dedup reservation reaches. That
+	// count is only trustworthy when this search saw the whole repository: a
+	// path scope, a hit result cap, files clipped at the read cap, capped
+	// lookups, or Go files excluded from resolution all mean a rival
+	// declaration may exist that no lookup here examined.
+	repoWideComplete := normalizedPath == "" && len(truncatedFiles) == 0 &&
+		(maxResults <= 0 || len(results) < maxResults) && !lookupsCapped && !goSkipped
 	declarationsPerName := map[string]int{}
 	for _, key := range keys {
 		declarationsPerName[resolved[key].name]++
@@ -772,6 +801,16 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			if hierarchy == nil {
 				continue
 			}
+			// executeCallHierarchy reserved the declaration-path spelling; the
+			// pathless one — the key an unprompted find_callers computes — names
+			// the same hierarchy whenever this declaration is the name's only
+			// one, exactly as reserveSearchReferenceResult does for references.
+			if repoWideComplete && declarationsPerName[selected.name] == 1 {
+				pathlessKey := callHierarchyDedupKey("find_callers", "", selected.name, toollimits.DefaultCallHierarchyDepth)
+				unlock := state.toolLocks.lock(pathlessKey)
+				state.reserveToolCall(toolCallID, pathlessKey)
+				unlock()
+			}
 			callHierarchies = append(callHierarchies, hierarchy)
 			for resultIndex, result := range results {
 				if callHierarchyCoversLocation(hierarchy.Root, result.CodeLocation) {
@@ -782,7 +821,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			// Reserve only once the analysis exists: reserving before it could
 			// fail would leave the key taken and block the model from ever
 			// calling find_references for this symbol.
-			if selected.references == nil || !e.reserveSearchReferenceResult(toolCallID, selected, declarationsPerName[selected.name] == 1, state) {
+			if selected.references == nil || !e.reserveSearchReferenceResult(toolCallID, selected, repoWideComplete && declarationsPerName[selected.name] == 1, state) {
 				continue
 			}
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
@@ -934,7 +973,7 @@ func codeLocationsOverlap(left, right retrieval.CodeLocation) bool {
 // collectDeferredReferences fills in the reference analysis for declarations
 // resolution deliberately stopped short of. One batch shares a single
 // repository snapshot; a lookup per symbol would rebuild it every time.
-func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string, keys []string, resolved map[string]*classifiedSearchSymbol) {
+func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string, keys []string, resolved map[string]*classifiedSearchSymbol, avoidGoLoad bool) {
 	var pending []*classifiedSearchSymbol
 	for _, key := range keys {
 		selected := resolved[key]
@@ -948,7 +987,10 @@ func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string,
 	}
 	symbols := make([]retrieval.SymbolRef, len(pending))
 	for i, selected := range pending {
-		symbols[i] = retrieval.SymbolRef{Name: selected.name, Path: selected.path, Line: selected.declarationLine}
+		// A declaration that resolved through Go proves the snapshot is loaded,
+		// so carrying the caller's AvoidGoLoad here can only forbid loads the
+		// resolution pass already declined.
+		symbols[i] = retrieval.SymbolRef{Name: selected.name, Path: selected.path, Line: selected.declarationLine, AvoidGoLoad: avoidGoLoad}
 	}
 	if batchEngine, ok := e.retrieval.(retrieval.ReferenceBatchEngine); ok {
 		for i, batchResult := range batchEngine.FindReferencesBatch(ctx, repoRoot, symbols) {
@@ -976,8 +1018,10 @@ func (e *Engine) reserveSearchReferenceResult(toolCallID string, selected *class
 	// find_references makes — free to re-run the whole repository-wide analysis.
 	//
 	// The pathless key is only this declaration's when the search resolved a
-	// single one for the name; otherwise that call is ambiguous and answers
-	// something this result does not.
+	// single one for the name after seeing the whole repository; a scoped or
+	// clipped search proves nothing about rival declarations elsewhere, and a
+	// pathless call may then be ambiguous and answer something this result
+	// does not.
 	path := normalizeSearchPath(selected.path)
 	keys := []string{referenceDedupKey(path, selected.name, 0)}
 	if selected.declarationLine > 0 {
@@ -1177,7 +1221,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, tool
 	}
 	searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 	e.logf(ctx, "Falling back to literal search for unsupported call hierarchy: mode=%s path=%s symbol=%q search_scope=%q", mode, normalizedPath, symbol, searchScope)
-	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, toollimits.DefaultSearchContextLines, 0, false)
+	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, toollimits.DefaultSearchContextLines, toollimits.MaxFallbackSearchResults, false)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}

@@ -740,6 +740,10 @@ func TestExecuteSearchOptimizesReturnedCappedMatch(t *testing.T) {
 	}
 }
 
+// A broad identifier hits more files than the lookup budget allows. The
+// upgrade proceeds with the budget's worth of lookups — the wider the spread,
+// the more the structural grouping is worth — instead of abandoning the whole
+// optimization, and the lookups stay bounded.
 func TestExecuteSearchBoundsStructuralLookupsForBroadIdentifiers(t *testing.T) {
 	results := make([]retrieval.SearchResult, toollimits.MaxSearchStructuralLookups+1)
 	for i := range results {
@@ -755,12 +759,47 @@ func TestExecuteSearchBoundsStructuralLookupsForBroadIdentifiers(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, toolResults[0].Content)
-	if got := intFromJSON(payload["result_count"]); got != len(results) {
-		t.Fatalf("broad search result_count = %d, want %d", got, len(results))
+	if got := intFromJSON(payload["structural_result_count"]); got != toollimits.MaxSearchStructuralLookups {
+		t.Fatalf("structural_result_count = %d, want %d: %#v", got, toollimits.MaxSearchStructuralLookups, payload)
 	}
+	lookups := 0
 	for _, call := range counting.paths {
 		if strings.HasPrefix(call, "references:") {
-			t.Fatalf("broad search performed structural lookup: %v", counting.paths)
+			lookups++
+		}
+	}
+	if lookups > toollimits.MaxSearchStructuralLookups {
+		t.Fatalf("structural lookups = %d, want at most %d: %v", lookups, toollimits.MaxSearchStructuralLookups, counting.paths)
+	}
+}
+
+// A file whose matched content only contains the query as a substring of a
+// longer identifier ("Runner" for "Run") has nothing to resolve; it must not
+// charge the lookup budget that the genuine declaration needs.
+func TestExecuteSearchIgnoresSubstringOnlyMatchesForLookups(t *testing.T) {
+	results := make([]retrieval.SearchResult, 0, toollimits.MaxSearchStructuralLookups+2)
+	for i := range toollimits.MaxSearchStructuralLookups + 1 {
+		results = append(results, retrieval.SearchResult{CodeLocation: retrieval.CodeLocation{
+			FilePath: fmt.Sprintf("pkg/noise-%02d.go", i),
+			Content:  "var SharedRunner = 1",
+		}})
+	}
+	results = append(results, retrieval.SearchResult{
+		CodeLocation: testCallNodeLocation("pkg/decl.go", 3, 3, "var Shared = 1"),
+	})
+	counting := &countingRetrieval{literalResults: results, hasCustomResults: true}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
+	toolResults := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, toolResults[0].Content)
+	if target, _ := payload["target"].(map[string]any); target["name"] != "Shared" {
+		t.Fatalf("noise matches suppressed the genuine declaration's upgrade: %#v", payload)
+	}
+	for _, call := range counting.paths {
+		if strings.HasPrefix(call, "references:") && strings.Contains(call, "noise") {
+			t.Fatalf("substring-only match charged a lookup: %v", counting.paths)
 		}
 	}
 }
@@ -1896,5 +1935,115 @@ func TestDecodeCallHierarchyResultRejectsSearchFallback(t *testing.T) {
 	hierarchy := decodeCallHierarchyResult(real)
 	if hierarchy == nil || hierarchy.Root.Name != "Run" || hierarchy.Symbol != "Run" || hierarchy.Depth != 2 {
 		t.Fatalf("hierarchy payload = %#v", hierarchy)
+	}
+}
+
+// The search upgraded a function query to a caller hierarchy, so the pathless
+// follow-up — the call an unprompted find_callers makes — names the same
+// hierarchy and must answer already_requested rather than recomputing it.
+// (This restores the guarantee of the retired
+// TestCallHierarchyDedupKeyAlignsWithSearchRewrite for the resolving upgrade.)
+func TestSearchHierarchyReservationCoversPathlessFollowup(t *testing.T) {
+	backend := &countingRetrieval{hasCustomResults: true, literalResults: []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/run.go", 3, 3, "func Run() {}")},
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Run"}`},
+	}, state)
+
+	followup := engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "c2", Name: "find_callers", Arguments: `{"symbol":"Run"}`,
+	}, state)
+	if got := nestedString(decodeToolPayload(t, followup), "error", "code"); got != "already_requested" {
+		t.Fatalf("pathless find_callers after rewrite = %q, want already_requested", got)
+	}
+}
+
+// A path-scoped search proves nothing about rival declarations outside its
+// scope, so it must not reserve the pathless find_references key.
+func TestScopedSearchLeavesPathlessReferenceKeyOpen(t *testing.T) {
+	backend := &countingRetrieval{hasCustomResults: true, literalResults: []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/decl.go", 3, 3, "var Shared = 1")},
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared","path":"pkg"}`},
+	}, state)
+
+	followup := engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "c2", Name: "find_references", Arguments: `{"symbol":"Shared"}`,
+	}, state)
+	if payload := decodeToolPayload(t, followup); payload["status"] == "error" {
+		t.Fatalf("path-scoped search reserved the pathless key: %#v", payload)
+	}
+}
+
+// goSkippingRetrieval declines the Go type-check for .go lookups, the shape of
+// an opportunistic resolution on a repository too large to load eagerly.
+type goSkippingRetrieval struct {
+	*countingRetrieval
+}
+
+func (r *goSkippingRetrieval) FindReferences(ctx context.Context, repoRoot string, symbol retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	if strings.HasSuffix(symbol.Path, ".go") {
+		return nil, &retrieval.GoAnalysisSkippedError{Name: symbol.Name}
+	}
+	return r.countingRetrieval.FindReferences(ctx, repoRoot, symbol)
+}
+
+// When resolution skipped the Go backend, a rival Go declaration may exist
+// that no lookup saw, so the search must not claim the pathless key.
+func TestSearchReservationLeavesPathlessOpenWhenGoAnalysisSkipped(t *testing.T) {
+	backend := &goSkippingRetrieval{countingRetrieval: &countingRetrieval{hasCustomResults: true, literalResults: []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/decl.py", 3, 3, "Shared = 1")},
+		{CodeLocation: testCallNodeLocation("pkg/other.go", 5, 5, "var Shared = 1")},
+	}}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, state)
+
+	followup := engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "c2", Name: "find_references", Arguments: `{"symbol":"Shared"}`,
+	}, state)
+	if payload := decodeToolPayload(t, followup); payload["status"] == "error" {
+		t.Fatalf("skipped Go analysis did not keep the pathless key open: %#v", payload)
+	}
+}
+
+// fallbackCapRetrieval fails every reference lookup and records the result cap
+// of the literal searches the engine then runs on its own behalf.
+type fallbackCapRetrieval struct {
+	*countingRetrieval
+	searchMaxResults []int
+}
+
+func (r *fallbackCapRetrieval) FindReferences(context.Context, string, retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	return nil, &retrieval.SymbolNotFoundError{Name: "Missing"}
+}
+
+func (r *fallbackCapRetrieval) Search(ctx context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
+	r.mu.Lock()
+	r.searchMaxResults = append(r.searchMaxResults, maxResults)
+	r.mu.Unlock()
+	return r.countingRetrieval.Search(ctx, repoRoot, path, query, contextLines, maxResults, caseSensitive)
+}
+
+// The not-found fallback search is engine-synthesized, so it must bound its
+// own result count: a common identifier would otherwise stream every match in
+// the repository into one tool result.
+func TestFindReferencesFallbackSearchIsBounded(t *testing.T) {
+	backend := &fallbackCapRetrieval{countingRetrieval: &countingRetrieval{}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "r1", Name: "find_references", Arguments: `{"symbol":"Missing"}`,
+	}, freshToolRoundState())
+
+	if len(backend.searchMaxResults) == 0 || backend.searchMaxResults[0] != toollimits.MaxFallbackSearchResults {
+		t.Fatalf("fallback search max_results = %v, want %d", backend.searchMaxResults, toollimits.MaxFallbackSearchResults)
 	}
 }

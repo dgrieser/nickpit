@@ -44,17 +44,24 @@ func limitToolResultBatch(meter *toolContextMeter, messages []llm.Message, tools
 	appended := len(messages)
 	floorBudget := maxToolResultFloorTokens
 	for i := range limited {
-		used := tokenestimate.EstimateLen(contextBytes)
-		remaining := max(maxContextTokens-used, 0)
-		allowance := remaining * percent / 100
-		if grant := min(max(minToolResultTokens-allowance, 0), floorBudget); grant > 0 {
-			allowance += grant
-			floorBudget -= grant
+		// Error payloads are exempt: they are already the smallest useful
+		// answer, and they are load-bearing exactly when the context is full —
+		// trimming an already_requested error away silences the duplicate-call
+		// breaker, and an ambiguous_symbol error carries its candidate list
+		// nowhere but its message.
+		if !toolResultIsError(limited[i].Content) {
+			used := tokenestimate.EstimateLen(contextBytes)
+			remaining := max(maxContextTokens-used, 0)
+			allowance := remaining * percent / 100
+			if grant := min(max(minToolResultTokens-allowance, 0), floorBudget); grant > 0 {
+				allowance += grant
+				floorBudget -= grant
+			}
+			// A zero allowance means "no token cap" to limitToolResultJSON, so a
+			// batch that has spent its floor budget asks for the smallest capped
+			// result instead — the self-describing truncation marker.
+			limited[i].Content = limitToolResultJSON(limited[i].Content, max(allowance, 1))
 		}
-		// A zero allowance means "no token cap" to limitToolResultJSON, so a
-		// batch that has spent its floor budget asks for the smallest capped
-		// result instead — the self-describing truncation marker.
-		limited[i].Content = limitToolResultJSON(limited[i].Content, max(allowance, 1))
 		if appended > 0 {
 			contextBytes++ // the "," between array elements
 		}
@@ -81,6 +88,58 @@ func releaseEmptiedToolResults(toolCalls []llm.ToolCall, raw, limited []llm.Mess
 			state.releaseToolCall(toolCall.ID)
 		}
 	}
+}
+
+// releasePrunedSearchResults hands back the dedup keys of a search whose batch
+// limiting dropped structural contexts or hierarchy nodes. The search upgrade
+// removes a literal match from its payload when a structural context covers it
+// (classification sees the item-limited analysis), but the batch token limiter
+// runs later and can prune exactly that covering context — the match then
+// exists nowhere in what the model receives. Releasing the call's keys keeps
+// the data reachable: the truncation note tells the model to rerun with
+// narrower arguments, and those reruns must not answer already_requested.
+func releasePrunedSearchResults(toolCalls []llm.ToolCall, raw, limited []llm.Message, state *toolRoundState) {
+	for i, toolCall := range toolCalls {
+		if toolCall.Name != "search" || i >= len(raw) || i >= len(limited) || raw[i].Content == limited[i].Content {
+			continue
+		}
+		if countOmittedStructuralItems(limited[i].Content) > countOmittedStructuralItems(raw[i].Content) {
+			state.releaseToolCall(toolCall.ID)
+		}
+	}
+}
+
+// countOmittedStructuralItems sums the omission counters the reducers leave
+// behind when they drop reference contexts or hierarchy nodes, over every
+// nesting level a grouped search result can carry them at. Comparing the raw
+// and limited payloads' sums isolates batch-limiter drops from the item limits
+// already applied when the raw payload was built.
+func countOmittedStructuralItems(content string) int {
+	var payload any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return 0
+	}
+	total := 0
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for _, key := range []string{"omitted_contexts", "omitted_nodes"} {
+				if count, ok := intField(typed, key); ok {
+					total += count
+				}
+			}
+			for _, child := range typed {
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(payload)
+	return total
 }
 
 // toolResultLostPayload reports whether limiting left nothing but the marker

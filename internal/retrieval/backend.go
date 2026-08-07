@@ -51,6 +51,20 @@ func (e *UnsupportedLanguageError) Error() string {
 	return fmt.Sprintf("no structural retrieval backend supports %q", e.Path)
 }
 
+// GoAnalysisSkippedError reports that the declaration lives in Go but the
+// lookup set AvoidGoLoad and the go/types snapshot was neither cached nor
+// cheap to build. It is distinct from SymbolNotFoundError: the symbol may well
+// be declared, resolution simply declined to pay a whole-repository type-check
+// to prove it, so callers should keep the result literal rather than telling
+// the model the symbol is absent.
+type GoAnalysisSkippedError struct {
+	Name string
+}
+
+func (e *GoAnalysisSkippedError) Error() string {
+	return fmt.Sprintf("resolving %q needs the Go type-check snapshot, which this lookup avoids building", e.Name)
+}
+
 // SymbolNotFoundError reports that structural analysis ran over the scope and
 // found no declaration of the symbol. It is distinct from
 // UnsupportedLanguageError: the analysis was possible and simply came up empty,

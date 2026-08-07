@@ -322,6 +322,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 		e.logf(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
+		// Provider tool-call IDs are only unique within one response, so each
+		// batch opens a fresh reservation scope before executing.
+		state.toolState.beginToolRound()
 		rawBatch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
 		maxContextTokens := e.config.MaxContextTokens
 		if maxContextTokens <= 0 {
@@ -330,6 +333,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		batch := limitToolResultBatch(contextMeter, messages, llmReq.Tools, llmReq.Schema, rawBatch, maxContextTokens, e.config.MaxToolResultPercent)
 		reconcileLimitedInspectFileCoverage(resp.ToolCalls, rawBatch, batch, state.toolState)
 		releaseEmptiedToolResults(resp.ToolCalls, rawBatch, batch, state.toolState)
+		releasePrunedSearchResults(resp.ToolCalls, rawBatch, batch, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)

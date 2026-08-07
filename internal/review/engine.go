@@ -56,9 +56,12 @@ type Engine struct {
 	disabledStyleGuides map[string]struct{}
 }
 
+// Both patterns count `$` as an identifier character, matching retrieval's
+// isIdentifierByte: extracting `store` out of a matched `$store` requested
+// references for a symbol the line never contains.
 var (
-	searchIdentifierQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)(?:\((?:\))?)?$`)
-	searchIdentifierPattern      = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+	searchIdentifierQueryPattern = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\((?:\))?)?$`)
+	searchIdentifierPattern      = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
 )
 
 // ErrEmptyDiff is returned when the resolved review context has no changed files
@@ -97,9 +100,31 @@ type toolRoundState struct {
 	// it a symbol whose analysis was reduced to a bare truncation marker stayed
 	// reserved, and every re-request the marker invites answered
 	// already_requested.
+	//
+	// Keys are owned per (round, tool call ID), not per ID alone: provider IDs
+	// are only unique within one response — the XML fallback synthesizes
+	// xml_tool_call_1, xml_tool_call_2, … afresh each round — and releasing by
+	// bare ID handed back keys an earlier round's identically-named call took.
 	reservedToolCalls map[string][]string
-	fileLocks         keyedLocker
-	toolLocks         keyedLocker
+	// round distinguishes reservation owners across tool rounds. beginToolRound
+	// advances it before each batch; the calls inside one batch run
+	// concurrently but never change it.
+	round     int
+	fileLocks keyedLocker
+	toolLocks keyedLocker
+}
+
+// beginToolRound opens a new reservation scope for the next tool batch.
+func (s *toolRoundState) beginToolRound() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.round++
+}
+
+// reservationOwnerLocked names the owner of a reservation: the tool call ID
+// qualified by the round it ran in. Callers hold s.mu.
+func (s *toolRoundState) reservationOwnerLocked(toolCallID string) string {
+	return fmt.Sprintf("%d\x00%s", s.round, toolCallID)
 }
 
 // reserveToolCall records key as answered by toolCallID, reporting false when
@@ -116,7 +141,8 @@ func (s *toolRoundState) reserveToolCall(toolCallID, key string) bool {
 		if s.reservedToolCalls == nil {
 			s.reservedToolCalls = map[string][]string{}
 		}
-		s.reservedToolCalls[toolCallID] = append(s.reservedToolCalls[toolCallID], key)
+		owner := s.reservationOwnerLocked(toolCallID)
+		s.reservedToolCalls[owner] = append(s.reservedToolCalls[owner], key)
 	}
 	return true
 }
@@ -127,15 +153,18 @@ func (s *toolRoundState) markToolCallSeen(toolCallID, key string) {
 	_ = s.reserveToolCall(toolCallID, key)
 }
 
-// releaseToolCall drops the dedup keys a tool call took, making the same
-// request answerable again.
+// releaseToolCall drops the dedup keys a tool call of the current round took,
+// making the same request answerable again. Earlier rounds' reservations are
+// out of reach by construction: a later call whose provider ID happens to
+// collide must not hand back keys it never took.
 func (s *toolRoundState) releaseToolCall(toolCallID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, key := range s.reservedToolCalls[toolCallID] {
+	owner := s.reservationOwnerLocked(toolCallID)
+	for _, key := range s.reservedToolCalls[owner] {
 		delete(s.seenToolCalls, key)
 	}
-	delete(s.reservedToolCalls, toolCallID)
+	delete(s.reservedToolCalls, owner)
 }
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {

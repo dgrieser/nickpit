@@ -268,6 +268,10 @@ func (w *jsWalker) local(s *js_ast.SLocal) {
 	}
 }
 
+// reExportStmt records `export {a as b} from "./m"`. A re-export forwards the
+// source module's symbol under a new exported name without creating any
+// module-scope binding, so it is recorded with its own kind: consumers that
+// treat "symbol" imports as local aliases must not see one here.
 func (w *jsWalker) reExportStmt(s *js_ast.SExportFrom) {
 	if int(s.ImportRecordIndex) >= len(w.tree.ImportRecords) {
 		return
@@ -275,9 +279,8 @@ func (w *jsWalker) reExportStmt(s *js_ast.SExportFrom) {
 	spec := w.tree.ImportRecords[s.ImportRecordIndex].Path.Text
 	for _, item := range s.Items {
 		w.ir.Imports = append(w.ir.Imports, Import{
-			Alias: item.Alias, SymbolName: item.OriginalName, ModuleSpec: spec, Kind: "symbol",
+			Alias: item.Alias, SymbolName: item.OriginalName, ModuleSpec: spec, Kind: "reexport",
 		})
-		w.ir.Exports = append(w.ir.Exports, Export{ExportedName: item.Alias, LocalName: item.Alias})
 	}
 }
 

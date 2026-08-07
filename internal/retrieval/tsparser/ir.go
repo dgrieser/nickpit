@@ -48,7 +48,9 @@ type Import struct {
 	// "pkg.helpers", "..mod"); resolving it to a repository path is the
 	// backend's job.
 	ModuleSpec string
-	// Kind is "module" or "symbol".
+	// Kind is "module", "symbol", or "reexport". A "reexport" forwards the
+	// source module's symbol under Alias without creating a local binding
+	// (`export {a as b} from "./m"`), so it must never be treated as one.
 	Kind string
 }
 

@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -77,6 +78,13 @@ func (e *LocalEngine) FindReferencesBatch(ctx context.Context, repoRoot string, 
 	loader := &referenceLoader{}
 	results := make([]ReferenceBatchResult, len(symbols))
 	for i, symbol := range symbols {
+		// Once the snapshots are loaded nothing below consults the context per
+		// symbol, so a cancelled batch would otherwise still pay for a whole-
+		// repository occurrence scan per remaining entry.
+		if err := ctx.Err(); err != nil {
+			results[i].Err = err
+			continue
+		}
 		results[i].Result, results[i].Err = findReferencesWithLoader(ctx, repoRoot, symbol, loader)
 	}
 	return results
@@ -89,6 +97,10 @@ func (e *LocalEngine) ResolveReferenceTargets(ctx context.Context, repoRoot stri
 	loader := &referenceLoader{}
 	results := make([]ReferenceTargetResult, len(symbols))
 	for i, symbol := range symbols {
+		if err := ctx.Err(); err != nil {
+			results[i].Err = err
+			continue
+		}
 		resolved, err := resolveReferenceWithLoader(ctx, repoRoot, symbol, loader)
 		if err != nil {
 			results[i].Err = err
@@ -107,8 +119,13 @@ type referenceLoader struct {
 	goLoaded     bool
 	goPackages   []*packages.Package
 	goErr        error
-	lineRoot     string
-	lines        *referenceLineCache
+	// goAffordable memoizes goSnapshotAffordable for the batch: the check
+	// walks the repository for its Go file set, and one batch can carry a
+	// lookup per matched file.
+	goAffordableChecked bool
+	goAffordable        bool
+	lineRoot            string
+	lines               *referenceLineCache
 }
 
 // lineCache returns the display-source cache the whole batch shares, so a file
@@ -136,6 +153,29 @@ func (l *referenceLoader) loadGo(ctx context.Context, repoRoot string) ([]*packa
 	return l.goPackages, l.goErr
 }
 
+// goLoadAffordable reports whether resolving through go/types is cheap enough
+// for a lookup that set AvoidGoLoad: the snapshot is already loaded for this
+// batch, cached and current process-wide, or the repository is small enough to
+// type-check eagerly.
+func (l *referenceLoader) goLoadAffordable(ctx context.Context, repoRoot string) bool {
+	if l.goLoaded {
+		return l.goErr == nil
+	}
+	if !l.goAffordableChecked {
+		l.goAffordable = goSnapshotAffordable(ctx, repoRoot)
+		l.goAffordableChecked = true
+	}
+	return l.goAffordable
+}
+
+func goSnapshotAffordable(ctx context.Context, repoRoot string) bool {
+	if cachedGoReferencePackagesCurrent(ctx, repoRoot) {
+		return true
+	}
+	files, err := collectFilesByExt(repoRoot, lookupScope{}, map[string]struct{}{".go": {}})
+	return err == nil && len(files) <= toollimits.MaxOpportunisticGoLoadFiles
+}
+
 // resolvedReference is one declaration plus everything needed to go on and
 // collect its references, so resolution and collection share one routing path.
 type resolvedReference struct {
@@ -157,9 +197,9 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 		return nil, err
 	}
 	if resolved.isGo() {
-		return collectGoReferences(repoRoot, resolved.goPackages, resolved.goSelected, resolved.goComplete, resolved.goLines), nil
+		return collectGoReferences(ctx, repoRoot, resolved.goPackages, resolved.goSelected, resolved.goComplete, resolved.goLines)
 	}
-	return buildParsedReferenceResult(resolved.parsedAll, resolved.parsed, loader.lineCache(repoRoot)), nil
+	return buildParsedReferenceResult(ctx, resolved.parsedAll, resolved.parsed, loader.lineCache(repoRoot))
 }
 
 // resolveReferenceWithLoader picks the declaration symbol names and reports
@@ -174,6 +214,9 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 		return nil, fmt.Errorf("finding references for %q in %q: %w", symbol.Name, symbol.Path, err)
 	}
 	resolveGo := func(symbol SymbolRef, scope lookupScope) (*resolvedReference, error) {
+		if symbol.AvoidGoLoad && !loader.goLoadAffordable(ctx, repoRoot) {
+			return nil, &GoAnalysisSkippedError{Name: symbol.Name}
+		}
 		pkgs, loadErr := loader.loadGo(ctx, repoRoot)
 		if loadErr != nil {
 			return nil, loadErr
@@ -207,6 +250,7 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
+		selected = redirectImportCandidate(selected, parsed, loader.lineCache(repoRoot))
 		return &resolvedReference{target: selected.target, parsedAll: parsed, parsed: selected}, nil
 	}
 
@@ -219,15 +263,84 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 	}
 	selected, err := resolveParsedDefinition(symbol, scope, parsed, loader.lineCache(repoRoot))
 	if err != nil {
+		// The regex pass cannot express every Go declaration — an interface
+		// method or a struct field has no `func`/`var` keyword to anchor on —
+		// so its not-found is not final while go/types can still be asked.
+		// resolveGo itself enforces AvoidGoLoad.
+		var notFound *SymbolNotFoundError
+		if errors.As(err, &notFound) && scopeContainsGo(parsed, scope) {
+			resolved, goErr := resolveGo(symbol, scope)
+			if goErr == nil {
+				return resolved, nil
+			}
+			var goAmbiguous *AmbiguousSymbolError
+			if errors.As(goErr, &goAmbiguous) {
+				return nil, goErr
+			}
+		}
 		return nil, err
 	}
 	if strings.EqualFold(filepath.Ext(selected.file.path), ".go") {
 		return resolveGo(
-			SymbolRef{Name: symbol.Name, Path: selected.file.path, Line: symbol.Line},
+			SymbolRef{Name: symbol.Name, Path: selected.file.path, Line: symbol.Line, AvoidGoLoad: symbol.AvoidGoLoad},
 			lookupScope{Path: selected.file.path, IsFile: true},
 		)
 	}
+	selected = redirectImportCandidate(selected, parsed, loader.lineCache(repoRoot))
 	return &resolvedReference{target: selected.target, parsedAll: parsed, parsed: selected}, nil
+}
+
+// redirectImportCandidate follows a symbol-import binding to the declaration it
+// re-binds. An import is a usage of a symbol declared somewhere else, so a
+// lookup that lands on one — a file-scoped call against an importing file, or
+// the search upgrade resolving each matched file — answers with the source
+// declaration's analysis instead of a near-duplicate anchored at the import
+// line. Every importing file would otherwise count as its own declaration,
+// multiplying identical repository-wide analyses by the number of importers.
+// A binding that cannot be followed keeps the import candidate: for a file
+// that only imports the symbol there is nothing better to point at.
+func redirectImportCandidate(selected definitionCandidate, parsed []*parsedReferenceFile, source *referenceLineCache) definitionCandidate {
+	name := selected.target.Name
+	visited := map[string]struct{}{}
+	for selected.target.Kind == "import" {
+		key := selected.file.path + "\x00" + name
+		if _, seen := visited[key]; seen {
+			break
+		}
+		visited[key] = struct{}{}
+		var binding *tsparser.Import
+		for i := range selected.file.imports {
+			candidate := &selected.file.imports[i]
+			if (candidate.Kind == "symbol" || candidate.Kind == "reexport") && candidate.Alias == name {
+				binding = candidate
+				break
+			}
+		}
+		if binding == nil {
+			break
+		}
+		resolved := selected.file.resolvedImports[binding.ModuleSpec]
+		if resolved == "" {
+			break
+		}
+		next, err := resolveParsedDefinition(SymbolRef{Name: binding.SymbolName}, lookupScope{Path: resolved, IsFile: true}, parsed, source)
+		if err != nil {
+			break
+		}
+		selected, name = next, binding.SymbolName
+	}
+	return selected
+}
+
+// scopeContainsGo reports whether any Go source is inside the lookup scope, so
+// a not-found in a repository without Go never pays for a go/types load.
+func scopeContainsGo(parsed []*parsedReferenceFile, scope lookupScope) bool {
+	for _, file := range parsed {
+		if file.language == "go" && pathInLookupScope(file.path, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 var referenceExtensions = map[string]struct{}{
@@ -434,7 +547,7 @@ func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(int) Line
 // backends resolved. Go never reaches here — both callers route a Go
 // declaration to go/types first — so the result is always the conservative,
 // incomplete kind.
-func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definitionCandidate, source *referenceLineCache) *ReferenceResult {
+func buildParsedReferenceResult(ctx context.Context, parsed []*parsedReferenceFile, selected definitionCandidate, source *referenceLineCache) (*ReferenceResult, error) {
 	aliases := referenceAliases(parsed, selected)
 	result := &ReferenceResult{
 		Target:           selected.target,
@@ -442,9 +555,11 @@ func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definiti
 		OutsideFunctions: []ReferenceContext{},
 		Notes:            []string{"dynamic-language references include conservative same-name candidates when binding identity cannot be proven"},
 	}
-	collectParsedOccurrences(result, parsed, selected, aliases, source)
+	if err := collectParsedOccurrences(ctx, result, parsed, selected, aliases, source); err != nil {
+		return nil, err
+	}
 	sortReferenceResult(result)
-	return result
+	return result, nil
 }
 
 func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedReferenceFile, error) {
@@ -560,7 +675,7 @@ func parseReferenceFile(repoRoot, path, source string) *parsedReferenceFile {
 		}
 	}
 	for _, binding := range file.imports {
-		if binding.Kind != "symbol" {
+		if binding.Kind != "symbol" && binding.Kind != "reexport" {
 			continue
 		}
 		if _, done := file.resolvedImports[binding.ModuleSpec]; done {
@@ -594,11 +709,36 @@ type declarationPatterns struct {
 }
 
 func compileDeclarationPatterns(language, name string) declarationPatterns {
-	quoted := regexp.QuoteMeta(name)
 	return declarationPatterns{
-		byKind:    definitionPatterns(language, quoted),
-		goGrouped: regexp.MustCompile(`^\s*` + quoted + `\b`),
+		byKind:    definitionPatterns(language, name),
+		goGrouped: regexp.MustCompile(`^\s*` + identifierWordPattern(name)),
 	}
+}
+
+// identifierWordPattern wraps the quoted symbol in word boundaries. `\b` is a
+// transition between `\w` and non-`\w`, so it can never match next to an edge
+// character like `$` — which isIdentifierByte deliberately counts as part of an
+// identifier — and wrapping `$state` in `\b` made it unmatchable by every
+// declaration pattern. For those edges the boundary is dropped and the
+// identifier check in findDefinitionCandidates keeps the match honest.
+func identifierWordPattern(name string) string {
+	quoted := regexp.QuoteMeta(name)
+	if name == "" {
+		return quoted
+	}
+	lead, trail := `\b`, `\b`
+	if !isWordPatternByte(name[0]) {
+		lead = ``
+	}
+	if !isWordPatternByte(name[len(name)-1]) {
+		trail = ``
+	}
+	return lead + quoted + trail
+}
+
+// isWordPatternByte mirrors regexp's `\w`, which is what `\b` transitions on.
+func isWordPatternByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled declarationPatterns, source *referenceLineCache) []definitionCandidate {
@@ -621,8 +761,14 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 		})
 	}
 	goGroupKind, goGroupDepth, goBraceDepth := "", 0, 0
+	bracketDepth := 0
 	for i, line := range file.masked {
 		lineNo := i + 1
+		// The depth a line starts at tells a statement-level declaration apart
+		// from a lookalike inside a wrapped argument list or literal: the lines
+		// are masked, so every bracket left open is a real one.
+		startDepth := bracketDepth
+		bracketDepth = max(0, bracketDepth+bracketDelta(line))
 		if file.language == "go" {
 			trimmed := strings.TrimSpace(line)
 			switch {
@@ -663,6 +809,23 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 			if !pattern.MatchString(line) {
 				continue
 			}
+			// The patterns drop `\b` next to identifier edges regexp's `\w`
+			// cannot bound (a leading `$`), so the strict identifier scan is
+			// what proves the line really spells the symbol.
+			if len(identifierColumns(line, name)) == 0 {
+				break
+			}
+			// A Python assignment inside an open bracket is a keyword argument
+			// or a dict entry, not a statement-level binding of the symbol.
+			if kind == "variable" && file.language == "python" && startDepth > 0 {
+				continue
+			}
+			// A class field only exists inside a class body: brace-less lines
+			// are module-level statements (often a plain reassignment), and a
+			// line inside a function is one of its statements.
+			if kind == "field" && file.language == "nodejs" && (startDepth == 0 || enclosingParsedFunction(file.functions, lineNo) != nil) {
+				continue
+			}
 			// The parser already reported this declaration; its span is the
 			// wider one, so do not add the declaration line as a rival.
 			if kind == "function" && lineWithinParsedFunctions(declared, lineNo) {
@@ -694,7 +857,8 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 }
 
 func definitionPatterns(language, name string) map[string]*regexp.Regexp {
-	word := `\b` + name + `\b`
+	quoted := regexp.QuoteMeta(name)
+	word := identifierWordPattern(name)
 	compile := func(pattern string) *regexp.Regexp { return regexp.MustCompile(pattern) }
 	switch language {
 	case "python":
@@ -703,7 +867,7 @@ func definitionPatterns(language, name string) map[string]*regexp.Regexp {
 			"type":      compile(`^\s*class\s+` + word),
 			"import":    compile(`^\s*(?:from\s+\S+\s+)?import\b.*(?:\bas\s+)?` + word),
 			"parameter": compile(`^\s*(?:async\s+)?def\b[^:]*\([^)]*` + word + `(?:\s*[:=,)]|$)`),
-			"field":     compile(`\b(?:self|cls)\.` + name + `\s*(?::[^=]+)?=`),
+			"field":     compile(`\b(?:self|cls)\.` + quoted + `\s*(?::[^=]+)?=`),
 			"variable":  compile(`^\s*` + word + `\s*(?::[^=]+)?(?:=|:)`),
 		}
 	case "nodejs":
@@ -719,7 +883,11 @@ func definitionPatterns(language, name string) map[string]*regexp.Regexp {
 				`|\([^()]*` + word + `[^()]*\)\s*(?::[^=]*)?=>` +
 				`|^\s*(?:(?:public|private|protected|readonly|static|async|get|set)\s+)*[A-Za-z_$][\w$]*\s*\([^(){}]*` + word + `\s*\??\s*:`),
 			"variable": compile(`\b(?:const|let|var)\s+` + word),
-			"field":    compile(`^\s*(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+)*` + word + `\s*(?:[?:=!]|$)`),
+			// A bare identifier ending a line is far more often an expression
+			// statement or the last shorthand property of an object literal than
+			// an untyped, uninitialized class field, so the field form requires
+			// the annotation, assignment, or modifier that only a field has.
+			"field": compile(`^\s*(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+)*` + word + `\s*[?:=!]`),
 		}
 	case "rust":
 		return map[string]*regexp.Regexp{
@@ -806,18 +974,36 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 		changed = false
 		for _, file := range candidates {
 			for _, binding := range file.imports {
-				if binding.Kind != "symbol" {
+				if binding.Kind != "symbol" && binding.Kind != "reexport" {
 					continue
 				}
 				resolved := file.resolvedImports[binding.ModuleSpec]
-				if resolved == "" || exported[resolved][binding.SymbolName] == "" {
+				if resolved == "" {
+					continue
+				}
+				confidence := exported[resolved][binding.SymbolName]
+				if confidence == "" {
+					continue
+				}
+				// A re-export forwards the name to this module's consumers but
+				// binds nothing locally: `export {a as b} from "./m"` leaves no
+				// `b` in scope, and recording one made an unrelated local `b`
+				// read as exact references to `a`.
+				if binding.Kind == "reexport" {
+					if exported[file.path] == nil {
+						exported[file.path] = map[string]string{}
+					}
+					if exported[file.path][binding.Alias] == "" {
+						exported[file.path][binding.Alias] = confidence
+						changed = true
+					}
 					continue
 				}
 				if locals[file.path] == nil {
 					locals[file.path] = map[string]string{}
 				}
 				if locals[file.path][binding.Alias] == "" {
-					locals[file.path][binding.Alias] = "exact"
+					locals[file.path][binding.Alias] = confidence
 					changed = true
 				}
 			}
@@ -882,7 +1068,7 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 
 func fileImportsSymbols(file *parsedReferenceFile) bool {
 	for _, binding := range file.imports {
-		if binding.Kind == "symbol" {
+		if binding.Kind == "symbol" || binding.Kind == "reexport" {
 			return true
 		}
 	}
@@ -900,7 +1086,7 @@ func resolveReferenceImport(repoRoot string, file *parsedReferenceFile, spec str
 	}
 }
 
-func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string, source *referenceLineCache) {
+func collectParsedOccurrences(ctx context.Context, result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string, source *referenceLineCache) error {
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
 	declarationLine := declarationNameLine(selected)
@@ -922,6 +1108,11 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 		return spans
 	}
 	for _, file := range files {
+		// A whole-repository occurrence scan keeps a cancelled caller waiting
+		// on dead work, so honor cancellation between files.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// A same-named identifier in another language is a different symbol —
 		// no import can bind a Python name to a Rust one — so scanning across
 		// parser families only manufactures false positives.
@@ -999,6 +1190,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 	for _, ctx := range outsideContexts {
 		result.OutsideFunctions = append(result.OutsideFunctions, *ctx)
 	}
+	return nil
 }
 
 // sourceLines returns the file's current text for building locations, or nil
@@ -1167,6 +1359,21 @@ func withinOpenBracket(prefix string) bool {
 	return depth > 0
 }
 
+// bracketDelta is the net bracket depth a masked line adds: openers minus
+// closers of every bracket family, mirroring withinOpenBracket across lines.
+func bracketDelta(line string) int {
+	delta := 0
+	for i := range len(line) {
+		switch line[i] {
+		case '(', '[', '{':
+			delta++
+		case ')', ']', '}':
+			delta--
+		}
+	}
+	return delta
+}
+
 var compoundAssignmentPattern = regexp.MustCompile(`^(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=)`)
 
 func isImportReferenceLine(language, line string) bool {
@@ -1210,14 +1417,29 @@ func maskReferenceSource(lines []string, language string) []string {
 	out := make([]string, len(lines))
 	// Backtick literals — Go raw strings and JavaScript template literals — span
 	// lines, so their state has to survive the per-line reset that single- and
-	// double-quoted strings rely on.
+	// double-quoted strings rely on. Rust raw strings (`r#"..."#`) span lines
+	// too and close only on a quote followed by their own number of hashes.
 	inBlockComment, inBacktick, backtickEscaped, inTriple := false, false, false, byte(0)
+	inRawString, rawHashes := false, 0
 	for i, line := range lines {
 		buf := []byte(line)
 		masked := append([]byte(nil), buf...)
 		quote := byte(0)
 		escaped := false
 		for j := 0; j < len(buf); j++ {
+			if inRawString {
+				if buf[j] != '\t' {
+					masked[j] = ' '
+				}
+				if buf[j] == '"' && countLeadingHashes(buf[j+1:]) >= rawHashes {
+					for k := j + 1; k <= j+rawHashes; k++ {
+						masked[k] = ' '
+					}
+					j += rawHashes
+					inRawString = false
+				}
+				continue
+			}
 			if inBacktick {
 				if buf[j] != '\t' {
 					masked[j] = ' '
@@ -1285,6 +1507,32 @@ func maskReferenceSource(lines []string, language string) []string {
 				inBlockComment = true
 				continue
 			}
+			// A regex literal's body is pattern text, not code — and a `/*`
+			// inside one would otherwise open a phantom block comment that masks
+			// every following line. Only a `/` in expression position with a
+			// closing `/` on the same line is taken as one; anything else stays
+			// division.
+			if language == "nodejs" && buf[j] == '/' && jsRegexPosition(masked, j) {
+				if end := jsRegexLiteralEnd(buf, j); end > 0 {
+					for k := j; k <= end; k++ {
+						if buf[k] != '\t' {
+							masked[k] = ' '
+						}
+					}
+					j = end
+					continue
+				}
+			}
+			if language == "rust" && (buf[j] == 'r' || buf[j] == 'b') && (j == 0 || !isIdentifierByte(buf[j-1])) {
+				if quoteAt, hashes, ok := rustRawStringStart(buf, j); ok {
+					for k := j; k <= quoteAt; k++ {
+						masked[k] = ' '
+					}
+					j = quoteAt
+					inRawString, rawHashes = true, hashes
+					continue
+				}
+			}
 			if buf[j] == '\'' && language == "rust" && rustCharLiteralEnd(buf, j) < 0 {
 				continue
 			}
@@ -1340,6 +1588,91 @@ func rustCharLiteralEnd(line []byte, start int) int {
 	}
 	if i < len(line) && line[i] == '\'' {
 		return i
+	}
+	return -1
+}
+
+// rustRawStringStart recognizes the head of a raw (byte) string literal at
+// start: `r` or `br`, then any number of hashes, then the opening quote. It
+// returns the quote's index and the hash count the terminator must repeat.
+func rustRawStringStart(line []byte, start int) (int, int, bool) {
+	i := start
+	if line[i] == 'b' {
+		i++
+		if i >= len(line) || line[i] != 'r' {
+			return 0, 0, false
+		}
+	}
+	if line[i] != 'r' {
+		return 0, 0, false
+	}
+	i++
+	hashes := countLeadingHashes(line[i:])
+	i += hashes
+	if i >= len(line) || line[i] != '"' {
+		return 0, 0, false
+	}
+	return i, hashes, true
+}
+
+func countLeadingHashes(line []byte) int {
+	count := 0
+	for count < len(line) && line[count] == '#' {
+		count++
+	}
+	return count
+}
+
+// jsRegexPosition reports whether a `/` at index j sits where an expression is
+// expected, which is the only position a regex literal can start. The masked
+// prefix is inspected so string contents cannot masquerade as operators.
+func jsRegexPosition(masked []byte, j int) bool {
+	i := j - 1
+	for i >= 0 && (masked[i] == ' ' || masked[i] == '\t') {
+		i--
+	}
+	if i < 0 {
+		return true
+	}
+	if strings.ContainsRune(`=([{,;:!&|?+-*%^~<>`, rune(masked[i])) {
+		return true
+	}
+	if !isIdentifierByte(masked[i]) {
+		return false
+	}
+	end := i + 1
+	for i >= 0 && isIdentifierByte(masked[i]) {
+		i--
+	}
+	switch string(masked[i+1 : end]) {
+	case "return", "case", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "do", "else", "yield", "await":
+		return true
+	}
+	return false
+}
+
+// jsRegexLiteralEnd returns the index of the unescaped `/` that closes a regex
+// literal starting at j, extended over its trailing flags, or -1 when the line
+// has none — a lone `/` is division, and regex literals cannot span lines.
+func jsRegexLiteralEnd(line []byte, j int) int {
+	escaped, inClass := false, false
+	for k := j + 1; k < len(line); k++ {
+		switch {
+		case escaped:
+			escaped = false
+		case line[k] == '\\':
+			escaped = true
+		case line[k] == '[':
+			inClass = true
+		case line[k] == ']':
+			inClass = false
+		case line[k] == '/' && !inClass:
+			end := k
+			for end+1 < len(line) && isIdentifierByte(line[end+1]) {
+				end++
+			}
+			return end
+		}
 	}
 	return -1
 }
@@ -1598,8 +1931,10 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 	return candidates[0], complete, nil
 }
 
-// collectGoReferences gathers every use of an already-resolved declaration.
-func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goReferenceCandidate, complete bool, linesCache *referenceLineCache) *ReferenceResult {
+// collectGoReferences gathers every use of an already-resolved declaration. It
+// honors cancellation between packages: the scan visits every identifier use
+// in the repository, which is dead work once the caller has gone away.
+func collectGoReferences(ctx context.Context, repoRoot string, pkgs []*packages.Package, selected goReferenceCandidate, complete bool, linesCache *referenceLineCache) (*ReferenceResult, error) {
 	result := &ReferenceResult{Target: goCandidateTarget(&selected, linesCache), Functions: []ReferenceContext{}, OutsideFunctions: []ReferenceContext{}, Complete: complete}
 	if !complete {
 		result.Notes = []string{"Go package loading reported errors; returned references may be incomplete"}
@@ -1609,6 +1944,9 @@ func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goR
 	seenOccurrences := map[string]struct{}{}
 	unreadable := false
 	for _, pkg := range pkgs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
 			continue
 		}
@@ -1682,7 +2020,7 @@ func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goR
 		result.Notes = append(result.Notes, "source for at least one referencing file could not be read; those references are reported without content")
 	}
 	sortReferenceResult(result)
-	return result
+	return result, nil
 }
 
 func loadGoReferencePackages(ctx context.Context, repoRoot string) ([]*packages.Package, error) {
@@ -1712,6 +2050,25 @@ func loadGoReferencePackages(ctx context.Context, repoRoot string) ([]*packages.
 	entry.initialized = true
 	entry.pkgs = pkgs
 	return pkgs, nil
+}
+
+// cachedGoReferencePackagesCurrent reports whether the memoized Go snapshot
+// for repoRoot exists and still matches the checkout, without building one.
+// The fingerprint costs one stat per Go file — the same price every cache hit
+// in loadGoReferencePackages pays.
+func cachedGoReferencePackagesCurrent(ctx context.Context, repoRoot string) bool {
+	key, err := filepath.Abs(repoRoot)
+	if err != nil {
+		key = repoRoot
+	}
+	entry := goReferenceCache.entry(key)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if !entry.initialized || ctx.Err() != nil {
+		return false
+	}
+	fingerprint, err := goReferenceSourceFingerprint(ctx, repoRoot)
+	return err == nil && entry.fingerprint == fingerprint
 }
 
 func goReferenceSourceFingerprint(ctx context.Context, repoRoot string) ([sha256.Size]byte, error) {

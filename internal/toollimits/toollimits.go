@@ -14,9 +14,19 @@
 package toollimits
 
 const (
-	DefaultListFilesDepth        = 1
-	DefaultSearchContextLines    = 5
-	MaxSearchStructuralLookups   = 20
+	DefaultListFilesDepth      = 1
+	DefaultSearchContextLines  = 5
+	MaxSearchStructuralLookups = 20
+	// MaxFallbackSearchResults bounds the literal searches the engine runs on
+	// its own behalf when a structural lookup degrades — a common identifier
+	// would otherwise stream every match in the repository into the result.
+	MaxFallbackSearchResults = 100
+	// MaxOpportunisticGoLoadFiles is the largest Go file count an opportunistic
+	// lookup (one that set AvoidGoLoad) may trigger a whole-repository
+	// type-check for. Above it the snapshot is used only when already cached:
+	// packages.Load over a monorepo takes minutes, which an explicit
+	// find_references may spend but a rewritten literal search must not.
+	MaxOpportunisticGoLoadFiles  = 500
 	MaxFindLinesMatches          = 100
 	DefaultCallHierarchyDepth    = 10
 	MaxCallHierarchyDepth        = 50
