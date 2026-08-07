@@ -13,6 +13,14 @@ review_concurrency: 2
 # How long running reviews may finish after SIGTERM before being terminated.
 shutdown_grace: "10m"
 
+# Directory journaling accepted-but-unfinished review jobs (one small JSON file
+# per MR), so a restart — crash, upgrade — resumes them and every acknowledged
+# command comment still gets its outcome reaction. Empty ("") disables the
+# journal; queued jobs then have their ack reaction revoked at shutdown and are
+# lost. Put it on durable storage (a mounted volume) to survive pod replacement.
+# state_dir: "/var/lib/nickpit/state"
+state_dir: ""
+
 # GitLab instance the webhooks come from and the reviews are posted to.
 gitlab_base_url: "https://gitlab.example.com"
 

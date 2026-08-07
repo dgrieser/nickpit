@@ -108,6 +108,13 @@ spec:
               readOnly: true
             - name: work
               mountPath: /work
+            {{- if .Values.persistence.enabled }}
+            # Mounted over the emptyDir path so the review-job journal
+            # (serve.stateDir) survives pod replacement, not just container
+            # restarts.
+            - name: state
+              mountPath: {{ .Values.serve.stateDir | quote }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: home
@@ -150,6 +157,11 @@ spec:
             {{- with .Values.volumes.work.sizeLimit }}
             sizeLimit: {{ . | quote }}
             {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "nickpit-serve.fullname" . }}-state
+        {{- end }}
         - name: tmp
           emptyDir:
             {{- with .Values.volumes.tmp.sizeLimit }}

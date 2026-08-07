@@ -1,0 +1,24 @@
+{{- if .Values.persistence.enabled }}
+{{- if not .Values.serve.stateDir }}
+{{- fail "persistence.enabled needs serve.stateDir set: the PVC is mounted at that path" }}
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nickpit-serve.fullname" . }}-state
+  labels:
+    {{- include "nickpit-serve.labels" . | nindent 4 }}
+  {{- with .Values.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+{{- end }}

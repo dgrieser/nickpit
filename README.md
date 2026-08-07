@@ -519,15 +519,19 @@ services:
       - ./nickpit.yaml:/work/.nickpit.yaml:ro
       - ./server.yaml:/work/server.yaml:ro
       - nickpit-logs:/work/logs
+      - nickpit-state:/work/state    # with state_dir: "/work/state" queued reviews survive restarts
     environment:
       OPENROUTER_API_KEY: "..."
       NICKPIT_GL_TOKEN_PLATFORM: "..."
       NICKPIT_GL_SECRET_PLATFORM: "..."
 volumes:
   nickpit-logs:
+  nickpit-state:
 ```
 
-Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command).
+Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints.
+
+The queue lives in memory, with an optional on-disk journal: set `state_dir` (or `--state-dir`) and every accepted-but-unfinished review job is persisted as a small JSON file (no tokens — groups are re-resolved from the config) and resumed at the next start, so a restart or upgrade neither loses queued reviews nor strands the in-progress reaction on acknowledged command comments. The journal survives exactly as long as its directory does — put it on durable storage (a volume, a PVC) to cover pod replacement. Without a `state_dir`, queued jobs release their ack reactions at shutdown and are lost; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command) again.
 
 ## Tuning a Review
 

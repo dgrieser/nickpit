@@ -103,6 +103,22 @@ volumes:
   home:
     sizeLimit: 256Mi
 
+# Persistent storage for the review-job state journal (serve.stateDir): the
+# daemon journals accepted-but-unfinished reviews there and resumes them at the
+# next start. With enabled: false the journal lands on the `work` emptyDir —
+# it then survives container restarts (crash, OOM, liveness kill) but NOT pod
+# replacement: every image upgrade or reschedule loses queued reviews and their
+# command comments keep no answer. Enable a small PVC to keep them across
+# upgrades. (Set serve.stateDir: "" to disable journaling entirely.)
+persistence:
+  enabled: false
+  size: 1Gi
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+
 # Cap on auto-saved chat sessions, passed to every review child as
 # --max-sessions. Sessions land in $HOME/.cache/nickpit/sessions on the `home`
 # volume and each one holds a full review context, so the CLI default (0 =
@@ -196,6 +212,10 @@ secrets:
 serve:
   listen: ":8080"
   logDir: "/work/logs"
+  # Journal for accepted-but-unfinished review jobs, resumed after a restart.
+  # Lives on the `work` emptyDir unless persistence.enabled mounts a PVC there
+  # (see persistence above). "" disables journaling.
+  stateDir: "/work/state"
   reviewConcurrency: 2
   shutdownGrace: "10m"
   # GitLab instance the webhooks come from and reviews are posted to. REQUIRED

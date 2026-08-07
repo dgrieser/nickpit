@@ -981,6 +981,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 	var listen string
 	var reviewConcurrency int
 	var logDir string
+	var stateDir string
 	var shutdownGrace time.Duration
 	serveCmd := &cobra.Command{
 		Use:   "serve",
@@ -1003,6 +1004,9 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("serve-log-dir") {
 				cfg.LogDir = logDir
+			}
+			if cmd.Flags().Changed("state-dir") {
+				cfg.StateDir = stateDir
 			}
 			if cmd.Flags().Changed("shutdown-grace") {
 				cfg.ShutdownGrace = shutdownGrace.String()
@@ -1030,6 +1034,9 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			// A daemon outlives the terminal that started it: record which build is
 			// serving so its log alone answers "what version is running?".
 			log.Info("nickpit serve starting", "version", displayVersion())
+			for _, notice := range cfg.Notices {
+				log.Warn(notice)
+			}
 
 			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (int, error) {
 				user, err := client.CurrentUser(ctx)
@@ -1094,7 +1101,17 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				sessionArgs = append(sessionArgs, "--max-sessions", strconv.Itoa(a.maxSessions))
 			}
 			childArgs := append(append([]string(nil), cfg.Review.ExtraArgs...), sessionArgs...)
-			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
+			// The journal persists accepted-but-unfinished review jobs so a
+			// restart resumes them; state_dir empty disables it (queued jobs
+			// then release their ack reactions at shutdown instead).
+			journal, err := serve.NewJournal(cfg.StateDir, log)
+			if err != nil {
+				return fmt.Errorf("serve config: %w", err)
+			}
+			if journal != nil {
+				log.Info("review job journal enabled", "dir", cfg.StateDir)
+			}
+			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, journal, serve.WorkerConfig{
 				Topic:      cfg.Topic,
 				StartEmoji: cfg.StartEmojiName(),
 				AckEmoji:   cfg.AckEmojiName(),
@@ -1105,6 +1122,9 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:  childArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
+			if resumed := dispatcher.Restore(groups); resumed > 0 {
+				log.Info("resumed journaled review jobs", "count", resumed, "dir", cfg.StateDir)
+			}
 			// Threaded replies in nickpit discussions are answered by spawning a
 			// `nickpit chat` child (the same command runnable from the terminal),
 			// so the daemon itself stays free of LLM logic. The child reads the
@@ -1134,7 +1154,6 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
-				AckEmoji:       cfg.AckEmojiName(),
 				AbortEmoji:     cfg.AbortEmojiName(),
 			}, chatRunner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
@@ -1145,9 +1164,11 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 	serveCmd.Flags().StringVar(&listen, "listen", config.DefaultServeListen, "HTTP listen address")
 	serveCmd.Flags().IntVar(&reviewConcurrency, "review-concurrency", config.DefaultServeReviewConcurrency, "Maximum parallel review child processes")
 	serveCmd.Flags().StringVar(&logDir, "serve-log-dir", config.DefaultServeLogDir, "Directory for per-review child process logs")
+	serveCmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory journaling accepted review jobs so a restart resumes them (empty disables; put it on durable storage to survive pod replacement)")
 	serveCmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Minute, "How long running reviews may finish after SIGTERM before being terminated (an interrupted publish heals on the next run via comment fingerprints)")
 	_ = serveCmd.MarkFlagFilename("serve-config", "yaml", "yml")
 	_ = serveCmd.MarkFlagDirname("serve-log-dir")
+	_ = serveCmd.MarkFlagDirname("state-dir")
 	return serveCmd
 }
 

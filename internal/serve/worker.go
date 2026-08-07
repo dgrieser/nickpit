@@ -3,13 +3,15 @@ package serve
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
-// settleTimeout bounds the reaction update that ends a review. It is short and
-// on a context of its own: the job context is already cancelled when a review
-// was aborted or terminated by shutdown, and the flip must still happen without
-// holding the shutdown grace open.
+// settleTimeout bounds EACH reaction flip that ends a review (the flips run
+// concurrently, so it is a per-request budget, not a shared one). It is short
+// and on a context of its own: the job context is already cancelled when a
+// review was aborted or terminated by shutdown, and the flip must still happen
+// without holding the shutdown grace open.
 const settleTimeout = 15 * time.Second
 
 // reviewOutcome is how a review ended, which decides the reaction it leaves
@@ -59,8 +61,7 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 	if event.Kind == TriggerAuto {
 		optedIn, err := d.topics.HasTopic(ctx, event.Group, event.ProjectID, d.cfg.Topic)
 		if err != nil {
-			log.Error("topic check failed", "error", err)
-			return outcomeFailed
+			return d.preRunFailure(ctx, log, "topic check", err)
 		}
 		if !optedIn {
 			log.Info("skipping review", "reason", "not opted in", "topic", d.cfg.Topic)
@@ -70,8 +71,7 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 
 	status, err := event.Group.Client.FetchMRStatus(ctx, event.ProjectID, event.IID)
 	if err != nil {
-		log.Error("mr status check failed", "error", err)
-		return outcomeFailed
+		return d.preRunFailure(ctx, log, "mr status check", err)
 	}
 	if status.State != "opened" {
 		log.Info("skipping review", "reason", "state "+status.State)
@@ -91,7 +91,8 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 	if d.cfg.StartEmoji != "" {
 		// Revoke a previous run's outcome in the same call: without it an MR
 		// re-reviewed after a failure would carry both the old outcome and the
-		// new one.
+		// new one. Settle removes stale outcomes too, so a transient failure
+		// here heals when the review ends.
 		err := event.Group.Client.ReplaceMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID,
 			d.cfg.StartEmoji, d.cfg.DoneEmoji, d.cfg.FailEmoji)
 		if err != nil {
@@ -141,6 +142,19 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 	}
 }
 
+// preRunFailure classifies an error from a step before the child process ran.
+// A per-job cancel while the pool is alive is the user's abort landing mid-step,
+// not a failure — the fail reaction would tell the asker something went wrong
+// when nothing did. Everything else is the step failing.
+func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step string, err error) reviewOutcome {
+	if ctx.Err() != nil && d.jobCtx.Err() == nil {
+		log.Info("review aborted", "during", step)
+		return outcomeAborted
+	}
+	log.Error(step+" failed", "error", err)
+	return outcomeFailed
+}
+
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
 func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) {
@@ -160,20 +174,50 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		add = d.cfg.FailEmoji
 	}
 	// A cancelled job context (abort, shutdown) must not skip the flip; the
-	// in-progress reaction would then be stuck forever.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
-	defer cancel()
+	// in-progress reaction would then be stuck forever. The flips are
+	// independent and run concurrently, each on its own deadline: one slow
+	// request must not eat the budget of the remaining notes (a coalesced
+	// review settles up to maxAckNotes of them).
+	base := context.WithoutCancel(ctx)
 	client := event.Group.Client
+	var wg sync.WaitGroup
 	if placed.mr {
-		err := client.ReplaceMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, d.cfg.StartEmoji)
-		if err != nil {
-			log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
-		}
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(base, settleTimeout)
+			defer cancel()
+			remove := replacedEmoji(d.cfg.StartEmoji, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
+			err := client.ReplaceMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, remove...)
+			if err != nil {
+				log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
+			}
+		})
 	}
 	for _, noteID := range notes {
-		err := client.ReplaceNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add, d.cfg.AckEmoji)
-		if err != nil {
-			log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
-		}
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(base, settleTimeout)
+			defer cancel()
+			remove := replacedEmoji(d.cfg.AckEmoji, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
+			err := client.ReplaceNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add, remove...)
+			if err != nil {
+				log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
+			}
+		})
 	}
+	wg.Wait()
+}
+
+// replacedEmoji lists the reactions an outcome flip revokes: the in-progress
+// marker plus any stale outcome a previous run left behind (review start only
+// cleans those up when its own replace succeeds, and a redelivered command note
+// is never cleaned at start at all) — except the outcome being awarded, so a
+// failed re-award cannot lose the reaction entirely.
+func replacedEmoji(inProgress, add, done, fail string) []string {
+	names := []string{inProgress}
+	if done != add {
+		names = append(names, done)
+	}
+	if fail != add {
+		names = append(names, fail)
+	}
+	return names
 }

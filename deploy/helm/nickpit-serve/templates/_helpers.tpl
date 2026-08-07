@@ -79,6 +79,7 @@ exactly one per group.
 {{- end -}}
 listen: {{ .Values.serve.listen | quote }}
 log_dir: {{ .Values.serve.logDir | quote }}
+state_dir: {{ .Values.serve.stateDir | quote }}
 review_concurrency: {{ .Values.serve.reviewConcurrency }}
 shutdown_grace: {{ .Values.serve.shutdownGrace | quote }}
 gitlab_base_url: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}

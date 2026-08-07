@@ -44,6 +44,58 @@ groups:
 	if cfg.ShutdownGraceDuration() != 10*time.Minute {
 		t.Fatalf("shutdown grace = %v", cfg.ShutdownGraceDuration())
 	}
+	if cfg.StateDir != "" {
+		t.Fatalf("state_dir = %q, want journaling disabled by default", cfg.StateDir)
+	}
+	if len(cfg.Notices) != 0 {
+		t.Fatalf("notices = %v, want none for the plain defaults", cfg.Notices)
+	}
+}
+
+// A config written before done_emoji/fail_emoji existed may use their default
+// names for the older reactions (e.g. ack_emoji: "white_check_mark"). That must
+// not fail validation on upgrade: the DEFAULTED outcome emoji is disabled with
+// a notice instead. Explicitly configured collisions still fail (covered in
+// TestLoadServeValidation).
+func TestLoadServeDefaultedOutcomeCollisionIsDisabled(t *testing.T) {
+	path := writeServeConfig(t, `
+ack_emoji: "white_check_mark"
+fail_emoji: "x"
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DoneEmojiName() != "" {
+		t.Fatalf("done emoji = %q, want the colliding default disabled", cfg.DoneEmojiName())
+	}
+	if cfg.FailEmojiName() != "x" {
+		t.Fatalf("fail emoji = %q, want the explicit value kept", cfg.FailEmojiName())
+	}
+	if len(cfg.Notices) != 1 || !strings.Contains(cfg.Notices[0], "done_emoji") {
+		t.Fatalf("notices = %v, want one about done_emoji", cfg.Notices)
+	}
+}
+
+func TestLoadServeStateDir(t *testing.T) {
+	path := writeServeConfig(t, `
+state_dir: "/var/lib/nickpit/state"
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StateDir != "/var/lib/nickpit/state" {
+		t.Fatalf("state_dir = %q", cfg.StateDir)
+	}
 }
 
 // Chat defaults to enabled with no config (preserving behavior), but an

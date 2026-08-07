@@ -103,11 +103,21 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
 | `maxSessions` | `50` | `--max-sessions` for every review child. Sessions live on the `home` emptyDir; `0` (the CLI default) grows one full review context per MR until the pod is evicted. |
 | `serve.loki.url` | `""` | Set to stream review logs live to Grafana Loki (durable, queryable). Empty = disabled. Auth/tenant come from Secret keys via `serve.loki.{tenantIdEnv,basicAuthUserEnv,basicAuthPassEnv}`. |
+| `serve.stateDir` | `/work/state` | Journal of accepted-but-unfinished review jobs, resumed after a restart. `""` disables. |
+| `persistence.enabled` | `false` | Mount a small PVC (`persistence.size`, default `1Gi`) at `serve.stateDir` so the journal survives pod replacement (upgrades, reschedules), not just container restarts. |
 | `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats
 
-- **Do not scale past 1 replica.** State (review queue, dedup LRU) is in-memory.
+- **Do not scale past 1 replica.** State (review queue, dedup LRU) is in-memory;
+  the state journal only bridges restarts of the one daemon, it is no shared
+  queue.
+- **Queued reviews across upgrades need `persistence.enabled: true`.** The
+  journal (`serve.stateDir`) defaults to the `/work` emptyDir: it survives a
+  container restart in place, but a pod replacement — every image upgrade with
+  the `Recreate` strategy — starts with an empty directory and the queue is
+  lost. The PVC is small (`1Gi`) and `ReadWriteOnce` suffices for the
+  singleton.
 - **Grace vs. termination.** `terminationGracePeriodSeconds` must stay `>` the
   seconds in `serve.shutdownGrace`, else Kubernetes SIGKILLs mid-review. An
   interrupted publish heals on the next run via comment fingerprints.

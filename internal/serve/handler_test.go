@@ -15,6 +15,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
+	gitlab "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
@@ -71,17 +72,22 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
+	// The bot user id resolves to fakeBotUserID so ack revokes pass the
+	// own-award filter (revoking by name alone is refused by the client).
 	set, _ := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t1", WebhookSecret: "hook-secret"},
 		{Path: "platform/legacy", Token: "t2", WebhookSecret: "legacy-secret"},
-	}, server.URL, nil)
+	}, server.URL, func(ctx context.Context, client *gitlab.Client) (int, error) {
+		return fakeBotUserID, nil
+	})
 	lookup := &countingTopicLookup{}
-	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	// The handler reads the review ack emoji from the dispatcher's config —
+	// the same name its workers revoke at settle time.
+	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), nil, WorkerConfig{Topic: "nickpit", AckEmoji: "white_check_mark"}, discardLogger())
 	chat := newFakeChatRunner()
 	handler := NewHandler(set, dispatcher, HandlerConfig{
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
-		AckEmoji:       "white_check_mark",
 		AbortEmoji:     "stop_button",
 	}, chat, ChatConfig{ConfigPath: "cfg.yaml", BaseURL: "https://gl.example"}, discardLogger())
 	return &handlerEnv{
@@ -746,10 +752,11 @@ func TestHandlerShutdownReturns503(t *testing.T) {
 	}
 }
 
-// A review command whose enqueue is rejected must not be acknowledged with the
-// ack emoji (the emoji would claim the request was taken), and the webhook
-// must be answered with 503 so GitLab redelivers the note event.
-func TestHandlerCommandReviewQueueFullSkipsAck(t *testing.T) {
+// A review command whose enqueue is rejected must not keep the ack emoji (it
+// would claim the request was taken): the ack awarded before the enqueue is
+// revoked again, and the webhook is answered with 503 so GitLab redelivers the
+// note event (whose retry re-awards the ack).
+func TestHandlerCommandReviewQueueFullRevokesAck(t *testing.T) {
 	env := newHandlerEnv(t)
 	fillDispatcherQueue(env.dispatcher)
 	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
@@ -759,9 +766,9 @@ func TestHandlerCommandReviewQueueFullSkipsAck(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"rejected"`) {
 		t.Fatalf("body = %s, want a truthful rejected status", recorder.Body.String())
 	}
-	time.Sleep(50 * time.Millisecond)
-	if posts := env.gitlab.posted(); len(posts) != 0 {
-		t.Fatalf("posts = %v, want no ack emoji for a rejected review command", posts)
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.awardedOn(11, 301)) == 0 })
+	if revoked := env.gitlab.revokedNames(); len(revoked) != 1 || revoked[0] != "white_check_mark" {
+		t.Fatalf("revoked = %v, want the ack taken back", revoked)
 	}
 }
 

@@ -93,7 +93,11 @@ type Dispatcher struct {
 	runner ReviewRunner
 	topics *topicCache
 	cfg    WorkerConfig
-	log    *slog.Logger
+	// journal persists accepted-but-unfinished jobs across restarts; nil
+	// disables journaling (queued jobs then release their ack reactions at
+	// shutdown instead of resuming).
+	journal *Journal
+	log     *slog.Logger
 
 	workers sync.WaitGroup
 	// jobCtx outlives the intake context so in-flight reviews survive
@@ -102,7 +106,7 @@ type Dispatcher struct {
 	jobCancel context.CancelFunc
 }
 
-func NewDispatcher(runner ReviewRunner, lookup TopicLookup, cfg WorkerConfig, log *slog.Logger) *Dispatcher {
+func NewDispatcher(runner ReviewRunner, lookup TopicLookup, journal *Journal, cfg WorkerConfig, log *slog.Logger) *Dispatcher {
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	return &Dispatcher{
 		states:    make(map[jobKey]*jobState),
@@ -111,10 +115,55 @@ func NewDispatcher(runner ReviewRunner, lookup TopicLookup, cfg WorkerConfig, lo
 		runner:    runner,
 		topics:    newTopicCache(lookup),
 		cfg:       cfg,
+		journal:   journal,
 		log:       log,
 		jobCtx:    jobCtx,
 		jobCancel: jobCancel,
 	}
+}
+
+// AckEmoji is the reaction the handler awards on an accepted review command
+// note; the workers revoke it at settle time. Exposed so both sides read the
+// one configured name — two independently plumbed copies could drift, and a
+// settle revoking a name that was never awarded silently strands the ack.
+func (d *Dispatcher) AckEmoji() string {
+	return d.cfg.AckEmoji
+}
+
+// Restore re-enqueues the jobs a previous daemon process journaled but never
+// finished, so a restart (crash, upgrade) neither loses accepted reviews nor
+// strands their acknowledged command notes. Groups are re-resolved from the
+// current config; jobs whose group vanished are dropped with a warning. Call
+// before Start.
+func (d *Dispatcher) Restore(groups *GroupSet) int {
+	if d.journal == nil {
+		return 0
+	}
+	resumed := 0
+	for _, entry := range d.journal.load() {
+		group := groups.Match(entry.ProjectPath)
+		if group == nil {
+			d.log.Warn("journal: dropping job, no configured group matches", "project", entry.ProjectPath, "iid", entry.IID)
+			d.journal.remove(entry.ProjectID, entry.IID)
+			continue
+		}
+		event := Event{
+			Kind:        parseTriggerKind(entry.Kind),
+			ProjectID:   entry.ProjectID,
+			ProjectPath: entry.ProjectPath,
+			IID:         entry.IID,
+			HeadSHA:     entry.HeadSHA,
+			Group:       group,
+			AckNoteIDs:  entry.AckNoteIDs,
+		}
+		if !d.Enqueue(event) {
+			// Queue full — the file stays, so the next restart retries.
+			d.log.Error("journal: could not re-enqueue job", "project", entry.ProjectPath, "iid", entry.IID)
+			continue
+		}
+		resumed++
+	}
+	return resumed
 }
 
 // Enqueue accepts an event from the webhook handler. Never blocks, keeping the
@@ -139,21 +188,38 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 		return true
 	}
 	if state, ok := d.states[key]; ok {
+		var dropped []int
 		switch state.status {
 		case stateRunning:
 			pending := event
 			if state.pending != nil {
-				pending = mergeEvents(*state.pending, event)
+				pending, dropped = mergeEvents(*state.pending, event)
 			}
 			state.pending = &pending
+			// The journal holds the job's would-be re-run after a crash: the
+			// running review never settled, so its notes AND the pending ones
+			// still need their flip. Notes this merge drops over the cap are
+			// NOT released — they settle normally in this process, the cap
+			// only trims what a resume would flip.
+			resume, _ := mergeEvents(state.latest, pending)
+			d.journal.persist(resume)
 		default:
-			state.latest = mergeEvents(state.latest, event)
+			state.latest, dropped = mergeEvents(state.latest, event)
+			d.journal.persist(state.latest)
+		}
+		if len(dropped) > 0 {
+			// Already acknowledged, but over the per-job cap: no settle will
+			// ever flip them, so take the ack back now instead of leaving the
+			// notes reading as in progress forever.
+			d.log.Warn("ack note cap exceeded, releasing dropped notes", "project", event.ProjectPath, "iid", event.IID, "notes", dropped)
+			go d.releaseAcks(event, dropped)
 		}
 		return true
 	}
 	select {
 	case d.queue <- key:
 		d.states[key] = &jobState{status: stateQueued, latest: event}
+		d.journal.persist(event)
 		return true
 	default:
 		d.dropped++
@@ -167,32 +233,38 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 // downgraded: an explicit user request must not lose its topic/draft/LRU
 // bypasses to a later auto event. Acknowledged command notes accumulate instead
 // of being replaced: each one wears the in-progress reaction and must be flipped
-// to the outcome when the coalesced review ends.
-func mergeEvents(existing, incoming Event) Event {
+// to the outcome when the coalesced review ends. Notes dropped over the per-job
+// cap are returned so the caller can release their ack reaction.
+func mergeEvents(existing, incoming Event) (Event, []int) {
 	if existing.Kind == TriggerManual {
 		incoming.Kind = TriggerManual
 	}
-	incoming.AckNoteIDs = mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
-	return incoming
+	merged, dropped := mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
+	incoming.AckNoteIDs = merged
+	return incoming, dropped
 }
 
 // maxAckNotes bounds how many command notes one coalesced review carries, so a
 // flood of "/<keyword> review" comments on a single MR cannot grow the event or
 // the number of settle requests without limit. The oldest notes are kept: they
-// have worn the in-progress reaction the longest.
+// have worn the in-progress reaction the longest. Dropped notes are reported so
+// their ack reaction can be released — every asker gets an answer, or at least
+// no comment reads as in progress forever.
 const maxAckNotes = 32
 
-func mergeAckNotes(existing, incoming []int) []int {
-	merged := slices.Clone(existing)
+func mergeAckNotes(existing, incoming []int) (merged, dropped []int) {
+	merged = slices.Clone(existing)
 	for _, noteID := range incoming {
+		if slices.Contains(merged, noteID) {
+			continue
+		}
 		if len(merged) >= maxAckNotes {
-			break
+			dropped = append(dropped, noteID)
+			continue
 		}
-		if !slices.Contains(merged, noteID) {
-			merged = append(merged, noteID)
-		}
+		merged = append(merged, noteID)
 	}
-	return merged
+	return merged, dropped
 }
 
 // Start launches the worker pool. Workers stop picking up new jobs once ctx
@@ -261,6 +333,51 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	}
 	d.jobCancel()
 	<-done
+	d.releaseUnfinished()
+}
+
+// releaseUnfinished handles the jobs shutdown leaves behind: queued jobs that
+// never ran and pending re-runs parked behind a review (the workers are done,
+// so nothing here will ever settle in this process). With a journal they stay
+// on disk and resume after restart; without one, their ack reactions are
+// revoked so no command note reads as in progress forever.
+func (d *Dispatcher) releaseUnfinished() {
+	d.mu.Lock()
+	remaining := make([]Event, 0, len(d.states))
+	for _, state := range d.states {
+		event := state.latest
+		if state.pending != nil {
+			event, _ = mergeEvents(event, *state.pending)
+		}
+		remaining = append(remaining, event)
+	}
+	d.mu.Unlock()
+	if len(remaining) == 0 {
+		return
+	}
+	if d.journal != nil {
+		d.log.Info("shutdown: unfinished review jobs journaled for resume", "count", len(remaining), "dir", d.journal.Dir())
+		return
+	}
+	var wg sync.WaitGroup
+	for _, event := range remaining {
+		if len(event.AckNoteIDs) == 0 {
+			continue
+		}
+		wg.Go(func() { d.releaseAcks(event, event.AckNoteIDs) })
+	}
+	wg.Wait()
+}
+
+// releaseAcks revokes the ack reaction from command notes whose review will
+// never settle them (aborted while queued, dropped over the ack-note cap, or
+// discarded at shutdown without a journal).
+func (d *Dispatcher) releaseAcks(event Event, notes []int) {
+	if len(notes) == 0 {
+		return
+	}
+	log := d.log.With("project", event.ProjectPath, "iid", event.IID)
+	d.settle(context.Background(), event, reactions{notes: notes}, outcomeAborted, log)
 }
 
 // AbortOutcome reports what Abort found and did.
@@ -322,8 +439,9 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 // at the back of the queue — behind other waiting MRs, so a busy MR cannot
 // monopolize a worker. The re-run was already acknowledged with a 2xx at
 // enqueue time, so a full queue must not drop it: it parks in the overflow
-// and take moves it into the next freed slot. Only shutdown loses it — the
-// event cannot run then, and that loss is logged.
+// and take moves it into the next freed slot. During shutdown it cannot run
+// in this process; it stays journaled for the restart, or — without a journal
+// — releaseUnfinished revokes its ack reactions on the way out.
 func (d *Dispatcher) finish(key jobKey) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -339,17 +457,20 @@ func (d *Dispatcher) finish(key jobKey) {
 	state.startedAt = time.Time{}
 	if state.pending == nil {
 		delete(d.states, key)
-		return
-	}
-	if d.closed {
-		d.dropped++
-		d.log.Warn("shutdown: dropping pending re-run", "project", state.pending.ProjectPath, "iid", state.pending.IID)
-		delete(d.states, key)
+		d.journal.remove(key.ProjectID, key.IID)
 		return
 	}
 	state.latest = *state.pending
 	state.pending = nil
 	state.status = stateQueued
+	d.journal.persist(state.latest)
+	if d.closed {
+		if d.journal == nil {
+			d.dropped++
+			d.log.Warn("shutdown: dropping pending re-run (no state_dir configured)", "project", state.latest.ProjectPath, "iid", state.latest.IID)
+		}
+		return
+	}
 	select {
 	case d.queue <- key:
 	default:
@@ -375,6 +496,10 @@ func (d *Dispatcher) drainOverflowLocked() {
 // process receives SIGTERM), and any pending re-run is cleared. An abort that
 // races a finishing review may find nothing — the reply then says no review
 // was running even though one just completed, which is accurate enough.
+//
+// Ack reactions that no settle will ever flip — on the notes of a queued job,
+// or of a cleared pending re-run — are released here: only a running review
+// settles its own notes when its cancelled process winds down.
 func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 	key := jobKey{ProjectID: projectID, IID: iid}
 	d.mu.Lock()
@@ -383,14 +508,22 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 	if !ok {
 		return AbortOutcome{}
 	}
-	state.pending = nil
+	// Nothing of this job should resume after a restart either.
+	d.journal.remove(projectID, iid)
+	if state.pending != nil {
+		pending := *state.pending
+		state.pending = nil
+		go d.releaseAcks(pending, pending.AckNoteIDs)
+	}
 	if state.status == stateRunning {
 		if state.cancel != nil {
 			state.cancel()
 		}
 		return AbortOutcome{Found: true, Running: true, Since: time.Since(state.startedAt)}
 	}
+	latest := state.latest
 	delete(d.states, key)
+	go d.releaseAcks(latest, latest.AckNoteIDs)
 	return AbortOutcome{Found: true}
 }
 

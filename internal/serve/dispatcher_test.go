@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,10 +18,14 @@ import (
 	"time"
 )
 
-// fakeBotUserID is the user the fake attributes every award to. The test groups
-// resolve no bot id (nil lookup), so the daemon matches awards by name alone —
-// the gitlab package tests cover the user-filtered path.
+// fakeBotUserID is the user the fake attributes every award to; the test groups
+// resolve the same id as their bot user (newTestGroupSetWithURL), so revokes
+// pass the own-award filter — revoking by name alone is refused by the client.
 const fakeBotUserID = 77
+
+// mrStatusPath matches the MR-status GET (and nothing below it, like award or
+// note subresources), so tests can park that one request on the status gate.
+var mrStatusPath = regexp.MustCompile(`/merge_requests/\d+$`)
 
 // fakeGitLab serves the minimal API surface the daemon touches: MR status,
 // project topics, award emoji, notes, and discussion replies.
@@ -46,6 +51,12 @@ type fakeGitLab struct {
 	// gate's read attempts.
 	failDiscussionGET bool
 	discussionGETs    int
+	// statusGate, when set (before the server starts), blocks every MR-status
+	// GET until the channel is closed — without holding the fake's mutex, so
+	// other requests proceed. statusArrived counts requests reaching the gate,
+	// letting a test cancel a job while FetchMRStatus is provably in flight.
+	statusGate    chan struct{}
+	statusArrived atomic.Int32
 }
 
 func (f *fakeGitLab) gateReads() int {
@@ -71,6 +82,10 @@ type recordedAward struct {
 
 func (f *fakeGitLab) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.statusGate != nil && r.Method == http.MethodGet && mrStatusPath.MatchString(r.URL.Path) {
+			f.statusArrived.Add(1)
+			<-f.statusGate
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		switch {
@@ -177,6 +192,21 @@ func (f *fakeGitLab) preAward(iid, noteID int, name string) {
 	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name})
 }
 
+// awardPosted returns the name of every award POST ever made, including awards
+// revoked again later — awarded() is the live view and reads empty after an
+// award-then-revoke sequence that a "must not decorate" test still has to fail.
+func (f *fakeGitLab) awardPosted() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var names []string
+	for _, post := range f.posts {
+		if strings.HasSuffix(post.Path, "/award_emoji") && post.Body["name"] != "" {
+			names = append(names, post.Body["name"])
+		}
+	}
+	return names
+}
+
 // revokedNames returns the names of the reactions the daemon revoked.
 func (f *fakeGitLab) revokedNames() []string {
 	f.mu.Lock()
@@ -256,7 +286,7 @@ func newDispatcherEnv(t *testing.T, workers int, gate bool) *dispatcherEnv {
 	cfg.BaseURL = server.URL
 	cfg.ConfigPath = ".nickpit.yaml"
 	cfg.LogDir = t.TempDir()
-	dispatcher := NewDispatcher(runner, topics, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dispatcher := NewDispatcher(runner, topics, nil, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dispatcher.Start(ctx, workers)
@@ -293,11 +323,12 @@ func TestDispatcherRunsReview(t *testing.T) {
 		t.Fatalf("spec = %+v", spec)
 	}
 	// The start emoji marked the MR while the review ran and was replaced by the
-	// done emoji once it landed.
-	awards := env.gitlab.awarded()
-	if len(awards) != 1 || awards[0] != "white_check_mark" {
-		t.Fatalf("awards = %v, want the done emoji only", awards)
-	}
+	// done emoji once it landed. Settle runs on the worker goroutine after the
+	// runner returns, so wait for the flip instead of asserting right away.
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awarded()
+		return len(awards) == 1 && awards[0] == "white_check_mark"
+	})
 	if revoked := env.gitlab.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
 		t.Fatalf("revoked = %v, want the start emoji", revoked)
 	}
@@ -415,15 +446,40 @@ func TestEnqueueCoalesceAccumulatesAckNotes(t *testing.T) {
 	}
 }
 
-// A flood of review comments on one MR must not grow the event without bound.
+// A flood of review comments on one MR must not grow the event without bound;
+// notes over the cap are reported back so their ack reaction can be released.
 func TestMergeAckNotesCapped(t *testing.T) {
 	existing := make([]int, maxAckNotes)
 	for i := range existing {
 		existing[i] = i + 1
 	}
-	merged := mergeAckNotes(existing, []int{9001})
+	merged, dropped := mergeAckNotes(existing, []int{existing[0], 9001})
 	if len(merged) != maxAckNotes || slices.Contains(merged, 9001) {
 		t.Fatalf("merged %d notes, want the first %d kept", len(merged), maxAckNotes)
+	}
+	if fmt.Sprint(dropped) != "[9001]" {
+		t.Fatalf("dropped = %v, want the overflowing note (never an already-tracked one)", dropped)
+	}
+}
+
+// A note dropped over the cap was already acknowledged by the handler; its ack
+// reaction is released so the comment does not read as in progress forever.
+func TestEnqueueCapOverflowReleasesDroppedAck(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	first := commandEvent(7, "sha-1", group, 0)
+	first.AckNoteIDs = make([]int, maxAckNotes)
+	for i := range first.AckNoteIDs {
+		first.AckNoteIDs[i] = i + 1
+	}
+	dispatcher.Enqueue(first)
+	fake.preAward(7, 9001, "eyes")
+	dispatcher.Enqueue(commandEvent(7, "sha-2", group, 9001))
+
+	waitFor(t, 3*time.Second, func() bool { return len(fake.awardedOn(7, 9001)) == 0 })
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the dropped note's ack", revoked)
 	}
 }
 
@@ -560,6 +616,65 @@ func TestDispatcherAbortThenReenqueue(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got := len(runner.ran()); got != 1 {
 		t.Fatalf("runs = %d, want exactly 1", got)
+	}
+}
+
+// Aborting a QUEUED review must release its acknowledged notes: process/settle
+// never run for it, so nothing else would ever take the ack reaction back.
+func TestDispatcherAbortQueuedReleasesAckNotes(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	dispatcher.Enqueue(commandEvent(7, "sha-1", group, 301))
+
+	if outcome := dispatcher.Abort(42, 7); !outcome.Found || outcome.Running {
+		t.Fatalf("outcome = %+v, want found queued job", outcome)
+	}
+	waitFor(t, 3*time.Second, func() bool { return len(fake.awardedOn(7, 301)) == 0 })
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want none after an abort", awards)
+	}
+}
+
+// Aborting a RUNNING review also clears its pending re-run, whose notes were
+// acknowledged too; the running job settles only its own notes, so the pending
+// ones are released by the abort itself.
+func TestDispatcherAbortRunningReleasesPendingAckNotes(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true) // gate never closed: only ctx cancel frees the runner
+	env.gitlab.preAward(7, 301, "eyes")
+	env.dispatcher.Enqueue(commandEvent(7, "sha-1", env.group, 301))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+	env.gitlab.preAward(7, 302, "eyes")
+	env.dispatcher.Enqueue(commandEvent(7, "sha-2", env.group, 302))
+
+	if outcome := env.dispatcher.Abort(42, 7); !outcome.Running {
+		t.Fatalf("outcome = %+v, want running abort", outcome)
+	}
+	// The pending note's ack is released by the abort, the running job's by its
+	// own (cancelled) settle, and the MR start emoji goes with it. Nothing gets
+	// an outcome: nothing went wrong.
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.awarded()) == 0 })
+	if posted := env.gitlab.awardPosted(); slices.Contains(posted, "x") || slices.Contains(posted, "white_check_mark") {
+		t.Fatalf("award posts = %v, want no outcome after an abort", posted)
+	}
+}
+
+// Without a journal, shutdown must not strand queued jobs' acknowledged notes:
+// take refuses queued jobs once closed, so their ack reaction is revoked on the
+// way out instead of reading as in progress forever.
+func TestDispatcherShutdownReleasesQueuedAckNotes(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	dispatcher.Enqueue(commandEvent(7, "sha-1", group, 301))
+
+	dispatcher.Shutdown(0) // no workers started: queued job can never run
+
+	if awards := fake.awardedOn(7, 301); len(awards) != 0 {
+		t.Fatalf("note awards = %v, want the ack released at shutdown", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the ack emoji", revoked)
 	}
 }
 

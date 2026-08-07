@@ -26,7 +26,7 @@ func newSigningHandler(t *testing.T) *Handler {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %v", warnings)
 	}
-	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), nil, WorkerConfig{Topic: "nickpit"}, discardLogger())
 	return NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
 }
 
@@ -72,7 +72,7 @@ func TestHandlerUnparseableSigningTokenFailsClosed(t *testing.T) {
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want the unparseable-token warning", warnings)
 	}
-	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), nil, WorkerConfig{Topic: "nickpit"}, discardLogger())
 	handler := NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
 
 	body := testutil.LoadFixture(t, filepath.Join("testdata", "mr_open.json"))

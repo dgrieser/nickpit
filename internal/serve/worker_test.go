@@ -24,7 +24,7 @@ func newWorkerEnv(t *testing.T, fake *fakeGitLab, cfg WorkerConfig) (*Dispatcher
 	if cfg.LogDir == "" {
 		cfg.LogDir = t.TempDir()
 	}
-	dispatcher := NewDispatcher(runner, topics, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dispatcher := NewDispatcher(runner, topics, nil, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return dispatcher, runner, group
 }
 
@@ -45,8 +45,11 @@ func TestWorkerTopicMissNoRun(t *testing.T) {
 	if len(runner.ran()) != 0 {
 		t.Fatal("review must not run without opt-in topic")
 	}
-	if len(fake.awarded()) != 0 {
-		t.Fatal("no emoji must be awarded without opt-in topic")
+	// awardPosted, not awarded: an award revoked again at settle time would
+	// leave the live view empty, yet the daemon must not have decorated (and
+	// notified every watcher of) an MR it skipped, even transiently.
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none without opt-in topic", posted)
 	}
 }
 
@@ -105,8 +108,10 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	if len(runner.ran()) != 1 {
 		t.Fatal("review must run")
 	}
-	if len(fake.awarded()) != 0 {
-		t.Fatalf("awards = %v, want none when start_emoji disabled", fake.awarded())
+	// awardPosted, not awarded: even an award revoked again at settle time
+	// would have decorated the MR transiently and must fail this test.
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none when start_emoji disabled", posted)
 	}
 }
 
@@ -222,6 +227,65 @@ func TestWorkerRerunClearsPreviousOutcome(t *testing.T) {
 	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
 	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
 		t.Fatalf("MR awards after retry = %v, want the done emoji only", awards)
+	}
+}
+
+// An abort landing while the pre-run MR status check is in flight is still the
+// user's abort, not a failure: the note loses its ack and gets no outcome.
+func TestWorkerAbortDuringStatusCheckIsNotAFailure(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", statusGate: make(chan struct{})}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+
+	ctx, cancel := context.WithCancel(dispatcher.jobCtx)
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(ctx, commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return fake.statusArrived.Load() == 1 })
+	cancel()
+	<-done
+	close(fake.statusGate) // release the parked fake handler
+
+	if len(runner.ran()) != 0 {
+		t.Fatal("aborted job must not run")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none: an abort is not a failure", posted)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the note ack released", revoked)
+	}
+}
+
+// Settle removes a stale outcome a previous run left behind: the review-start
+// replace only cleans it up when its own call succeeds, and a redelivered
+// command note never gets a start-time cleanup at all — without this, the MR
+// or note would wear the old and the new outcome side by side.
+func TestWorkerSettleClearsStaleOutcome(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.gate = make(chan struct{})
+	fake.preAward(7, 301, "eyes")
+
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	// Leftovers the start-time cleanup missed, appearing mid-run.
+	fake.preAward(7, 0, "x")
+	fake.preAward(7, 301, "x")
+	close(runner.gate)
+	<-done
+
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("MR awards = %v, want the stale outcome replaced by the done emoji", awards)
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("note awards = %v, want the stale outcome replaced by the done emoji", awards)
 	}
 }
 
