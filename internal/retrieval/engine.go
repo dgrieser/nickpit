@@ -118,9 +118,14 @@ type SearchResults struct {
 // SearchResult locates one match: CodeLocation spans exactly the matched
 // line(s) so it can be cited as-is, while the surrounding context requested
 // via context_lines is carried separately and never widens the location.
+//
+// The fields are declared in source order — leading context, match, trailing
+// context — because encoding/json emits keys in declaration order, and a
+// reader of the encoded result should be able to read the window top to
+// bottom instead of reassembling it.
 type SearchResult struct {
-	CodeLocation  CodeLocation   `json:"code_location"`
 	ContextBefore *SearchContext `json:"context_before,omitempty"`
+	CodeLocation  CodeLocation   `json:"code_location"`
 	ContextAfter  *SearchContext `json:"context_after,omitempty"`
 }
 
