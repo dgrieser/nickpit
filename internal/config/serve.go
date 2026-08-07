@@ -31,6 +31,8 @@ const (
 	DefaultServeCommandKeyword    = "nickpit"
 	DefaultServeAckEmoji          = "eyes"
 	DefaultServeAbortEmoji        = "stop_button"
+	DefaultServeDoneEmoji         = "white_check_mark"
+	DefaultServeFailEmoji         = "x"
 )
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
@@ -46,6 +48,8 @@ type ServeConfig struct {
 	CommandKeyword    string  `yaml:"command_keyword"`
 	AckEmoji          *string `yaml:"ack_emoji"`
 	AbortEmoji        *string `yaml:"abort_emoji"`
+	DoneEmoji         *string `yaml:"done_emoji"`
+	FailEmoji         *string `yaml:"fail_emoji"`
 	// GroupsFile optionally names a second YAML file whose top-level `groups:`
 	// list is appended to Groups. It lets the group inventory live apart from
 	// the main serve config — e.g. in a Kubernetes Secret mounted next to a
@@ -256,6 +260,14 @@ func LoadServe(path string) (*ServeConfig, error) {
 		abortEmoji := DefaultServeAbortEmoji
 		cfg.AbortEmoji = &abortEmoji
 	}
+	if cfg.DoneEmoji == nil {
+		doneEmoji := DefaultServeDoneEmoji
+		cfg.DoneEmoji = &doneEmoji
+	}
+	if cfg.FailEmoji == nil {
+		failEmoji := DefaultServeFailEmoji
+		cfg.FailEmoji = &failEmoji
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
 	}
@@ -314,6 +326,26 @@ func (c *ServeConfig) AbortEmojiName() string {
 		return DefaultServeAbortEmoji
 	}
 	return *c.AbortEmoji
+}
+
+// DoneEmojiName returns the emoji that replaces the start/ack emoji once a
+// review has landed; empty means disabled (the in-progress emoji is then only
+// revoked).
+func (c *ServeConfig) DoneEmojiName() string {
+	if c.DoneEmoji == nil {
+		return DefaultServeDoneEmoji
+	}
+	return *c.DoneEmoji
+}
+
+// FailEmojiName returns the emoji that replaces the start/ack emoji when a
+// review could not be delivered; empty means disabled (the in-progress emoji is
+// then only revoked).
+func (c *ServeConfig) FailEmojiName() string {
+	if c.FailEmoji == nil {
+		return DefaultServeFailEmoji
+	}
+	return *c.FailEmoji
 }
 
 // ShutdownGraceDuration parses the configured shutdown grace period. Validate
@@ -386,11 +418,37 @@ func (c *ServeConfig) Validate() error {
 	if c.LogDir == "" {
 		errs = append(errs, errors.New("log_dir must not be empty"))
 	}
-	// The daemon awards start_emoji on every review it launches; if that were
-	// also the trigger emoji, each award would fire an emoji webhook that
-	// requests the next review.
-	if c.StartEmojiName() != "" && c.StartEmojiName() == c.TriggerEmoji {
-		errs = append(errs, fmt.Errorf("start_emoji must differ from trigger_emoji (%q): the daemon's own award would trigger another review", c.TriggerEmoji))
+	// The daemon awards these on the merge request itself (start when a review
+	// launches, done/fail when it ends); if one were also the trigger emoji, the
+	// daemon's own award would fire an emoji webhook requesting the next review.
+	for _, mrEmoji := range []struct{ key, name string }{
+		{"start_emoji", c.StartEmojiName()},
+		{"done_emoji", c.DoneEmojiName()},
+		{"fail_emoji", c.FailEmojiName()},
+	} {
+		if mrEmoji.name != "" && mrEmoji.name == c.TriggerEmoji {
+			errs = append(errs, fmt.Errorf("%s must differ from trigger_emoji (%q): the daemon's own award would trigger another review", mrEmoji.key, c.TriggerEmoji))
+		}
+	}
+	// The outcome emoji REPLACES the in-progress one, so an outcome equal to the
+	// emoji it replaces would revoke and re-award the same reaction — the review
+	// would look like it never finished.
+	if c.DoneEmojiName() != "" && c.DoneEmojiName() == c.FailEmojiName() {
+		errs = append(errs, fmt.Errorf("done_emoji and fail_emoji must differ (both %q): a landed and a failed review would look alike", c.DoneEmojiName()))
+	}
+	for _, outcome := range []struct{ key, name string }{
+		{"done_emoji", c.DoneEmojiName()},
+		{"fail_emoji", c.FailEmojiName()},
+	} {
+		if outcome.name == "" {
+			continue
+		}
+		if outcome.name == c.StartEmojiName() {
+			errs = append(errs, fmt.Errorf("%s must differ from start_emoji (%q): it replaces it when the review ends", outcome.key, c.StartEmojiName()))
+		}
+		if outcome.name == c.AckEmojiName() {
+			errs = append(errs, fmt.Errorf("%s must differ from ack_emoji (%q): it replaces it when the review ends", outcome.key, c.AckEmojiName()))
+		}
 	}
 	errs = append(errs, c.Loki.validate()...)
 	return errors.Join(errs...)

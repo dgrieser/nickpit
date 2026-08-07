@@ -29,7 +29,13 @@ func newWorkerEnv(t *testing.T, fake *fakeGitLab, cfg WorkerConfig) (*Dispatcher
 }
 
 func workerCfg() WorkerConfig {
-	return WorkerConfig{Topic: "nickpit", StartEmoji: "eyes"}
+	return WorkerConfig{
+		Topic:      "nickpit",
+		StartEmoji: "eyes",
+		AckEmoji:   "eyes",
+		DoneEmoji:  "white_check_mark",
+		FailEmoji:  "x",
+	}
 }
 
 func TestWorkerTopicMissNoRun(t *testing.T) {
@@ -88,6 +94,8 @@ func TestWorkerDraftRecheckSkipsAutoNotManual(t *testing.T) {
 	}
 }
 
+// The outcome emoji REPLACES the start emoji, so disabling the start emoji
+// leaves the MR undecorated end to end — no outcome reaction either.
 func TestWorkerStartEmojiDisabled(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	cfg := workerCfg()
@@ -99,6 +107,141 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	}
 	if len(fake.awarded()) != 0 {
 		t.Fatalf("awards = %v, want none when start_emoji disabled", fake.awarded())
+	}
+}
+
+// commandEvent is a manual event that came from a "/<keyword> review" comment,
+// whose note already wears the ack emoji.
+func commandEvent(iid int, sha string, group *Group, noteID int) Event {
+	event := autoEvent(iid, sha, group)
+	event.Kind = TriggerManual
+	event.AckNoteIDs = []int{noteID}
+	return event
+}
+
+func TestWorkerFailedRunAwardsFailEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.exit = 1
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("MR awards = %v, want the fail emoji", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the start emoji", revoked)
+	}
+}
+
+// An abort is the user withdrawing the request, not a failure: the in-progress
+// reaction goes away and nothing takes its place.
+func TestWorkerAbortedRunOnlyRevokesStartEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.gate = make(chan struct{}) // never released; only ctx cancel frees it
+
+	ctx, cancel := context.WithCancel(dispatcher.jobCtx)
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(ctx, commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	fake.preAward(7, 301, "eyes")
+	cancel()
+	<-done
+
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want none after an abort", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 2 {
+		t.Fatalf("revoked = %v, want the MR and the note marker", revoked)
+	}
+}
+
+// The comment that asked for the review shows how it ended, on the note itself.
+func TestWorkerCommandNoteReactionFollowsOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit int
+		want string
+	}{
+		{"landed", 0, "white_check_mark"},
+		{"failed", 1, "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+			dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+			runner.exit = tc.exit
+			fake.preAward(7, 301, "eyes")
+
+			dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+			if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != tc.want {
+				t.Fatalf("note awards = %v, want %q", awards, tc.want)
+			}
+			if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != tc.want {
+				t.Fatalf("MR awards = %v, want %q", awards, tc.want)
+			}
+		})
+	}
+}
+
+// A review command the worker then rules out (the MR closed meanwhile) must not
+// leave the comment reading as "in progress" forever.
+func TestWorkerSkippedCommandGetsFailEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "merged", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+
+	dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+	if len(runner.ran()) != 0 {
+		t.Fatal("merged MR must not run")
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("note awards = %v, want the fail emoji", awards)
+	}
+	// The MR was never marked in progress, so it is left untouched.
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, want none", awards)
+	}
+}
+
+// A re-review must not stack outcomes: awarding the start emoji clears whatever
+// the previous run left behind.
+func TestWorkerRerunClearsPreviousOutcome(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+
+	runner.exit = 1
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("MR awards after failure = %v, want the fail emoji", awards)
+	}
+
+	runner.exit = 0
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("MR awards after retry = %v, want the done emoji only", awards)
+	}
+}
+
+// Every emoji off: the daemon must then touch no reactions at all, and in
+// particular must not list or revoke reactions it never placed.
+func TestWorkerOutcomeEmojiDisabled(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	cfg := workerCfg()
+	cfg.DoneEmoji = ""
+	cfg.FailEmoji = ""
+	dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	// The start emoji is still revoked when the review ends: it means
+	// "in progress", and the review is not.
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want none", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the start emoji", revoked)
 	}
 }
 

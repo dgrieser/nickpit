@@ -112,7 +112,9 @@ volumes:
 maxSessions: 50
 
 # MUST exceed serve.shutdownGrace (600s for "10m") so Kubernetes lets in-flight
-# reviews finish before SIGKILL. 660 = 10m grace + 60s buffer.
+# reviews finish before SIGKILL. 660 = 10m grace + 60s buffer; the buffer also
+# covers the terminated reviews flipping their reaction to failEmoji (15s each,
+# in parallel).
 terminationGracePeriodSeconds: 660
 
 # Extra daemon flags. --verbose and --output json toggle the daemon's own slog output.
@@ -209,6 +211,12 @@ serve:
   ackEmoji: "eyes"
   # Reaction awarded on a /nickpit abort command note. "stop_button"; "" disables.
   abortEmoji: "stop_button"
+  # Reactions that REPLACE startEmoji/ackEmoji when the review ends: doneEmoji
+  # when it landed, failEmoji when it did not. "" only revokes the in-progress
+  # reaction. Both must differ from triggerEmoji, from each other, and from the
+  # reactions they replace.
+  doneEmoji: "white_check_mark"
+  failEmoji: "x"
   # Where the GitLab group inventory comes from. Default: the Secret key named
   # here is mounted at /etc/nickpit/groups.yaml and referenced from server.yaml
   # via groups_file, so groups (paths + tokens) live entirely in the Secret and

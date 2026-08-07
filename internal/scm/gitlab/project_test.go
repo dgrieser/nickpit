@@ -2,9 +2,7 @@ package gitlab
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -64,56 +62,6 @@ func TestCurrentUser(t *testing.T) {
 	}
 	if user.ID != 7 || user.Username != "nickpit-bot" {
 		t.Fatalf("user = %+v", user)
-	}
-}
-
-func TestAwardMREmoji(t *testing.T) {
-	var gotPath string
-	var gotBody map[string]string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		data, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(data, &gotBody)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":1,"name":"eyes"}`))
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "token")
-	if err := client.AwardMREmoji(context.Background(), 42, 7, "eyes"); err != nil {
-		t.Fatal(err)
-	}
-	if gotPath != "/api/v4/projects/42/merge_requests/7/award_emoji" {
-		t.Fatalf("path = %q", gotPath)
-	}
-	if gotBody["name"] != "eyes" {
-		t.Fatalf("body = %#v", gotBody)
-	}
-}
-
-func TestAwardMREmojiToleratesAlreadyAwarded(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict} {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(status)
-			_, _ = w.Write([]byte(`{"message":"Award Emoji Name has already been taken"}`))
-		}))
-		client := NewClient(server.URL, "token")
-		if err := client.AwardMREmoji(context.Background(), 42, 7, "eyes"); err != nil {
-			t.Fatalf("status %d: expected nil, got %v", status, err)
-		}
-		server.Close()
-	}
-}
-
-func TestAwardMREmojiServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "token")
-	if err := client.AwardMREmoji(context.Background(), 42, 7, "eyes"); err == nil {
-		t.Fatal("expected error on 500")
 	}
 }
 

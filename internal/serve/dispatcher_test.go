@@ -8,12 +8,19 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// fakeBotUserID is the user the fake attributes every award to. The test groups
+// resolve no bot id (nil lookup), so the daemon matches awards by name alone —
+// the gitlab package tests cover the user-filtered path.
+const fakeBotUserID = 77
 
 // fakeGitLab serves the minimal API surface the daemon touches: MR status,
 // project topics, award emoji, notes, and discussion replies.
@@ -23,7 +30,9 @@ type fakeGitLab struct {
 	state    string
 	draft    bool
 	headSHA  string
-	awards   []string
+	awards   []recordedAward
+	revoked  []recordedAward
+	nextID   int
 	posts    []recordedPost
 	topicGET int
 	// failDiscussions makes discussion-reply POSTs 404 to exercise the
@@ -51,6 +60,15 @@ type recordedPost struct {
 	Body map[string]string
 }
 
+// recordedAward is one live emoji reaction on the fake's awardable (an MR or a
+// note, told apart by Path), so tests can assert what the daemon awarded and
+// what it revoked again.
+type recordedAward struct {
+	ID   int
+	Path string
+	Name string
+}
+
 func (f *fakeGitLab) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -67,10 +85,34 @@ func (f *fakeGitLab) handler() http.Handler {
 			}
 			f.posts = append(f.posts, recordedPost{Path: r.URL.Path, Body: body})
 			if name := body["name"]; name != "" {
-				f.awards = append(f.awards, name)
+				f.nextID++
+				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name})
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/award_emoji/"):
+			base, rawID, _ := strings.Cut(r.URL.Path, "/award_emoji/")
+			id, _ := strconv.Atoi(rawID)
+			index := slices.IndexFunc(f.awards, func(award recordedAward) bool {
+				return award.ID == id && award.Path == base+"/award_emoji"
+			})
+			if index < 0 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"404 Not found"}`))
+				return
+			}
+			f.revoked = append(f.revoked, f.awards[index])
+			f.awards = slices.Delete(f.awards, index, index+1)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji"):
+			live := make([]map[string]any, 0, len(f.awards))
+			for _, award := range f.awards {
+				if award.Path != r.URL.Path {
+					continue
+				}
+				live = append(live, map[string]any{"id": award.ID, "name": award.Name, "user": map[string]any{"id": fakeBotUserID}})
+			}
+			_ = json.NewEncoder(w).Encode(live)
 		case r.URL.Path == "/api/v4/projects/42":
 			f.topicGET++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "topics": f.topics})
@@ -92,10 +134,58 @@ func (f *fakeGitLab) handler() http.Handler {
 	})
 }
 
+// awarded returns the names of the reactions currently live on the fake, in the
+// order they were awarded; revoked ones are gone.
 func (f *fakeGitLab) awarded() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.awards...)
+	names := make([]string, 0, len(f.awards))
+	for _, award := range f.awards {
+		names = append(names, award.Name)
+	}
+	return names
+}
+
+// awardedOn is awarded() restricted to one awardable: the merge request itself
+// for noteID 0, otherwise that note.
+func (f *fakeGitLab) awardedOn(iid, noteID int) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	suffix := fmt.Sprintf("/merge_requests/%d/award_emoji", iid)
+	if noteID != 0 {
+		suffix = fmt.Sprintf("/merge_requests/%d/notes/%d/award_emoji", iid, noteID)
+	}
+	names := make([]string, 0, len(f.awards))
+	for _, award := range f.awards {
+		if strings.HasSuffix(award.Path, suffix) {
+			names = append(names, award.Name)
+		}
+	}
+	return names
+}
+
+// preAward seeds a live reaction, standing in for the ack emoji the handler
+// awarded on a command note before a worker picked the job up.
+func (f *fakeGitLab) preAward(iid, noteID int, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	path := fmt.Sprintf("/api/v4/projects/42/merge_requests/%d/award_emoji", iid)
+	if noteID != 0 {
+		path = fmt.Sprintf("/api/v4/projects/42/merge_requests/%d/notes/%d/award_emoji", iid, noteID)
+	}
+	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name})
+}
+
+// revokedNames returns the names of the reactions the daemon revoked.
+func (f *fakeGitLab) revokedNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(f.revoked))
+	for _, award := range f.revoked {
+		names = append(names, award.Name)
+	}
+	return names
 }
 
 func (f *fakeGitLab) posted() []recordedPost {
@@ -162,13 +252,11 @@ func newDispatcherEnv(t *testing.T, workers int, gate bool) *dispatcherEnv {
 	groupSet := newTestGroupSetWithURL(t, server.URL)
 	group := groupSet.Match("platform/api")
 	topics := TopicLookup(GitLabTopicLookup)
-	dispatcher := NewDispatcher(runner, topics, WorkerConfig{
-		Topic:      "nickpit",
-		StartEmoji: "eyes",
-		BaseURL:    server.URL,
-		ConfigPath: ".nickpit.yaml",
-		LogDir:     t.TempDir(),
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cfg := workerCfg()
+	cfg.BaseURL = server.URL
+	cfg.ConfigPath = ".nickpit.yaml"
+	cfg.LogDir = t.TempDir()
+	dispatcher := NewDispatcher(runner, topics, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dispatcher.Start(ctx, workers)
@@ -204,9 +292,14 @@ func TestDispatcherRunsReview(t *testing.T) {
 	if spec.ProjectPath != "platform/api" || spec.IID != 7 || spec.Token != "t" {
 		t.Fatalf("spec = %+v", spec)
 	}
+	// The start emoji marked the MR while the review ran and was replaced by the
+	// done emoji once it landed.
 	awards := env.gitlab.awarded()
-	if len(awards) != 1 || awards[0] != "eyes" {
-		t.Fatalf("awards = %v", awards)
+	if len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("awards = %v, want the done emoji only", awards)
+	}
+	if revoked := env.gitlab.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the start emoji", revoked)
 	}
 }
 
@@ -301,6 +394,36 @@ func TestEnqueueCoalescePreservesManualKind(t *testing.T) {
 	}
 	if latest.HeadSHA != "sha-2" {
 		t.Fatalf("sha = %q, newest payload must win", latest.HeadSHA)
+	}
+}
+
+// Coalescing keeps every acknowledged command note: each one wears the
+// in-progress reaction and has to be flipped when the coalesced review ends.
+func TestEnqueueCoalesceAccumulatesAckNotes(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	dispatcher.Enqueue(commandEvent(7, "sha-1", group, 301))
+	dispatcher.Enqueue(commandEvent(7, "sha-2", group, 302))
+	dispatcher.Enqueue(commandEvent(7, "sha-3", group, 301)) // redelivery of the first
+
+	dispatcher.mu.Lock()
+	latest := dispatcher.states[jobKey{ProjectID: 42, IID: 7}].latest
+	dispatcher.mu.Unlock()
+	if fmt.Sprint(latest.AckNoteIDs) != "[301 302]" {
+		t.Fatalf("ack notes = %v, want both notes once each", latest.AckNoteIDs)
+	}
+}
+
+// A flood of review comments on one MR must not grow the event without bound.
+func TestMergeAckNotesCapped(t *testing.T) {
+	existing := make([]int, maxAckNotes)
+	for i := range existing {
+		existing[i] = i + 1
+	}
+	merged := mergeAckNotes(existing, []int{9001})
+	if len(merged) != maxAckNotes || slices.Contains(merged, 9001) {
+		t.Fatalf("merged %d notes, want the first %d kept", len(merged), maxAckNotes)
 	}
 }
 

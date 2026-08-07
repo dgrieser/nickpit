@@ -406,6 +406,15 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	projectID := event.Project.ID
 	switch decision.Command {
 	case CommandReview:
+		// The note is handed to the dispatcher as an acknowledged one so the
+		// worker can replace the ack emoji with the review's outcome. The award
+		// below runs in a goroutine to keep the webhook response fast, so a
+		// review that finished within that round trip could re-add the ack after
+		// the flip — one stale reaction, never a wrong one.
+		var ackNotes []int
+		if decision.NoteID != 0 {
+			ackNotes = []int{decision.NoteID}
+		}
 		accepted := h.dispatcher.Enqueue(Event{
 			Kind:        decision.Kind,
 			ProjectID:   projectID,
@@ -413,6 +422,7 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			IID:         decision.IID,
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
+			AckNoteIDs:  ackNotes,
 		})
 		if !accepted {
 			// Do not ack a review that was never queued: the emoji would tell

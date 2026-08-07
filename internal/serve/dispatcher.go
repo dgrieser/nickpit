@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -25,6 +26,11 @@ type Event struct {
 	// authoritative SHA before running.
 	HeadSHA string
 	Group   *Group
+	// AckNoteIDs are the command notes the handler acknowledged for this review
+	// (with the ack emoji). The worker replaces that reaction with the review
+	// outcome, so the comment that asked for the review shows how it ended.
+	// Coalesced events contribute their notes too — every asker gets an answer.
+	AckNoteIDs []int
 }
 
 type jobKey struct {
@@ -52,8 +58,16 @@ type jobState struct {
 
 // WorkerConfig is the static per-review configuration shared by all workers.
 type WorkerConfig struct {
-	Topic      string
+	Topic string
+	// StartEmoji marks the merge request while a review runs; AckEmoji is the
+	// same marker on the command note (awarded by the handler). Both are
+	// replaced when the review ends: DoneEmoji when it landed, FailEmoji when it
+	// did not. Any of them may be "" — the emoji is then never placed, and
+	// nothing replaces it either.
 	StartEmoji string
+	AckEmoji   string
+	DoneEmoji  string
+	FailEmoji  string
 	BaseURL    string
 	ConfigPath string
 	ExtraArgs  []string
@@ -151,12 +165,34 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 // mergeEvents coalesces a newer event onto a not-yet-executed one. The newer
 // event wins (freshest head SHA), but a pending manual trigger is never
 // downgraded: an explicit user request must not lose its topic/draft/LRU
-// bypasses to a later auto event.
+// bypasses to a later auto event. Acknowledged command notes accumulate instead
+// of being replaced: each one wears the in-progress reaction and must be flipped
+// to the outcome when the coalesced review ends.
 func mergeEvents(existing, incoming Event) Event {
 	if existing.Kind == TriggerManual {
 		incoming.Kind = TriggerManual
 	}
+	incoming.AckNoteIDs = mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
 	return incoming
+}
+
+// maxAckNotes bounds how many command notes one coalesced review carries, so a
+// flood of "/<keyword> review" comments on a single MR cannot grow the event or
+// the number of settle requests without limit. The oldest notes are kept: they
+// have worn the in-progress reaction the longest.
+const maxAckNotes = 32
+
+func mergeAckNotes(existing, incoming []int) []int {
+	merged := slices.Clone(existing)
+	for _, noteID := range incoming {
+		if len(merged) >= maxAckNotes {
+			break
+		}
+		if !slices.Contains(merged, noteID) {
+			merged = append(merged, noteID)
+		}
+	}
+	return merged
 }
 
 // Start launches the worker pool. Workers stop picking up new jobs once ctx

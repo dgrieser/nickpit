@@ -195,6 +195,11 @@ func TestHandlerCommandReview(t *testing.T) {
 	if state == nil || state.latest.Kind != TriggerManual {
 		t.Fatalf("state = %+v, want queued manual job", state)
 	}
+	// The note is handed over as acknowledged so the worker can replace the ack
+	// emoji with the review's outcome.
+	if got := state.latest.AckNoteIDs; len(got) != 1 || got[0] != 301 {
+		t.Fatalf("ack notes = %v, want the command note", got)
+	}
 	// The command note gets the acknowledgement emoji, no reply.
 	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
 	post := env.gitlab.posted()[0]

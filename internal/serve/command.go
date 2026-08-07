@@ -51,15 +51,18 @@ func (k CommandKind) String() string {
 	}
 }
 
-// ParseCommand parses the first line of a note body for
+// ParseCommand parses the first non-blank line of a note body for
 // "/<keyword> <command>". Keyword and command match case-insensitively; extra
 // fields after the command are ignored so future arguments stay
-// backward-compatible. A bare "/<keyword>" asks for help. Notes that do not
-// address the keyword return CommandNone. arg carries the unrecognized
-// subcommand for CommandUnknown error replies.
+// backward-compatible ("/nickpit review me" is a review request). A bare
+// "/<keyword>" asks for help. Notes that do not address the keyword return
+// CommandNone. arg carries the unrecognized subcommand for CommandUnknown error
+// replies.
+//
+// Only that one line is examined: a command quoted further down a comment (a
+// reply citing an earlier request, the help text) must not execute.
 func ParseCommand(body, keyword string) (kind CommandKind, arg string) {
-	firstLine, _, _ := strings.Cut(body, "\n")
-	fields := strings.Fields(firstLine)
+	fields := commandFields(body)
 	if len(fields) == 0 || !strings.EqualFold(fields[0], "/"+keyword) {
 		return CommandNone, ""
 	}
@@ -78,6 +81,18 @@ func ParseCommand(body, keyword string) (kind CommandKind, arg string) {
 	default:
 		return CommandUnknown, fields[1]
 	}
+}
+
+// commandFields returns the whitespace-separated fields of the body's first
+// non-blank line. Leading blank lines are skipped: an editor (or a paste) that
+// starts the comment with a newline must not hide the command.
+func commandFields(body string) []string {
+	for line := range strings.SplitSeq(body, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			return fields
+		}
+	}
+	return nil
 }
 
 // The reply builders start with plain text, never with "/<keyword>", so the

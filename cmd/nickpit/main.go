@@ -1097,6 +1097,9 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
 				Topic:      cfg.Topic,
 				StartEmoji: cfg.StartEmojiName(),
+				AckEmoji:   cfg.AckEmojiName(),
+				DoneEmoji:  cfg.DoneEmojiName(),
+				FailEmoji:  cfg.FailEmojiName(),
 				BaseURL:    baseURL,
 				ConfigPath: a.configPath,
 				ExtraArgs:  childArgs,

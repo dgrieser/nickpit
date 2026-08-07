@@ -35,6 +35,9 @@ groups:
 	if cfg.Topic != "nickpit" || cfg.TriggerEmoji != "nickpit" || cfg.StartEmojiName() != "eyes" {
 		t.Fatalf("emoji/topic defaults = %+v", cfg)
 	}
+	if cfg.DoneEmojiName() != "white_check_mark" || cfg.FailEmojiName() != "x" {
+		t.Fatalf("outcome emoji = %q / %q", cfg.DoneEmojiName(), cfg.FailEmojiName())
+	}
 	if cfg.CommandKeyword != "nickpit" || cfg.AckEmojiName() != "eyes" || cfg.AbortEmojiName() != "stop_button" {
 		t.Fatalf("command defaults = %+v", cfg)
 	}
@@ -183,6 +186,26 @@ groups:
 	}
 	if cfg.AckEmojiName() != "" {
 		t.Fatalf("ack emoji = %q, want disabled", cfg.AckEmojiName())
+	}
+}
+
+// Both outcome emoji off leaves the in-progress reaction to be revoked with
+// nothing put in its place.
+func TestLoadServeOutcomeEmojiDisabled(t *testing.T) {
+	path := writeServeConfig(t, `
+done_emoji: ""
+fail_emoji: ""
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DoneEmojiName() != "" || cfg.FailEmojiName() != "" {
+		t.Fatalf("done = %q, fail = %q, want both disabled", cfg.DoneEmojiName(), cfg.FailEmojiName())
 	}
 }
 
@@ -420,6 +443,11 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty topic", "topic: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "topic must not be empty"},
 		{"empty log dir", "log_dir: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "log_dir must not be empty"},
 		{"start equals trigger emoji", "start_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "start_emoji must differ from trigger_emoji"},
+		{"done equals trigger emoji", "done_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "done_emoji must differ from trigger_emoji"},
+		{"fail equals trigger emoji", "fail_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "fail_emoji must differ from trigger_emoji"},
+		{"done equals fail emoji", "done_emoji: boom\nfail_emoji: boom\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "done_emoji and fail_emoji must differ"},
+		{"done equals start emoji", "done_emoji: eyes\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "done_emoji must differ from start_emoji"},
+		{"fail equals ack emoji", "ack_emoji: boom\nfail_emoji: boom\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "fail_emoji must differ from ack_emoji"},
 		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
 		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
 		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
