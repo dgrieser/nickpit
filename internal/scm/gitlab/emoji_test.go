@@ -49,6 +49,22 @@ func TestAwardMREmojiToleratesAlreadyAwarded(t *testing.T) {
 	}
 }
 
+// 401/403/429 mean the award never happened for a reason worth logging (lost
+// token access, rate limit) — unlike a double-award, they must surface, or a
+// replace could revoke successfully and drop the new reaction in silence.
+func TestAwardMREmojiSurfacesAuthAndRateLimit(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		client := NewClient(server.URL, "token")
+		if err := client.AwardMREmoji(context.Background(), 42, 7, "eyes"); err == nil {
+			t.Fatalf("status %d: expected an error", status)
+		}
+		server.Close()
+	}
+}
+
 func TestAwardMREmojiServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -124,20 +140,22 @@ func TestReplaceMREmojiRevokesOwnAwardsOnly(t *testing.T) {
 	}
 }
 
-// Without a resolved bot user id the name is the only filter left; GitLab
-// refuses to revoke another user's award, so the extra DELETE is harmless.
-func TestReplaceMREmojiWithoutUserIDMatchesByName(t *testing.T) {
+// Without a resolved bot user id the name would be the only filter left, and an
+// administrator/owner token CAN delete another user's award — so the revoke is
+// refused (and reported), while the add half still goes through.
+func TestReplaceMREmojiWithoutUserIDRefusesRevoke(t *testing.T) {
 	fake := &emojiServer{awards: []AwardEmoji{award(1, "eyes", 5), award(2, "rocket", 5)}}
 	client := fake.start(t)
 
-	if err := client.ReplaceMREmoji(context.Background(), 42, 7, 0, "", "eyes"); err != nil {
-		t.Fatal(err)
+	err := client.ReplaceMREmoji(context.Background(), 42, 7, 0, "white_check_mark", "eyes")
+	if err == nil {
+		t.Fatal("expected the refused revoke to be reported")
 	}
-	if fmt.Sprint(fake.deleted) != "[1]" {
-		t.Fatalf("deleted = %v", fake.deleted)
+	if len(fake.deleted) != 0 {
+		t.Fatalf("deleted = %v, want no revoke without a resolved user id", fake.deleted)
 	}
-	if len(fake.posted) != 0 {
-		t.Fatalf("posted = %v, want nothing for an empty add", fake.posted)
+	if fmt.Sprint(fake.posted) != "[white_check_mark]" {
+		t.Fatalf("posted = %v, want the award to still happen", fake.posted)
 	}
 }
 

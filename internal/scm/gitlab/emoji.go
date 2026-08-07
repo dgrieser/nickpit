@@ -30,9 +30,10 @@ func (c *Client) AwardNoteEmoji(ctx context.Context, projectID, iid, noteID int,
 // ReplaceMREmoji awards add on a merge request and revokes every remove name the
 // client's own user awarded there, so a reaction can be flipped to a new one
 // (e.g. the in-progress marker to the review outcome). An empty add only
-// revokes; empty remove names are ignored. userID is the client's own user id;
-// 0 (unknown) falls back to matching on the emoji name alone, which is still
-// safe because GitLab refuses to revoke another user's award.
+// revokes; empty remove names are ignored. userID is the client's own user id
+// and is REQUIRED for revoking: with 0 (unknown) only the name would be left to
+// match, and an administrator/owner token CAN delete another user's award — so
+// the revoke is refused (reported as an error) and only add is awarded.
 func (c *Client) ReplaceMREmoji(ctx context.Context, projectID, iid, userID int, add string, remove ...string) error {
 	return c.replaceEmoji(ctx, mrEmojiPath(projectID, iid), userID, add, remove)
 }
@@ -50,13 +51,20 @@ func noteEmojiPath(projectID, iid, noteID int) string {
 	return fmt.Sprintf("/projects/%d/merge_requests/%d/notes/%d/award_emoji", projectID, iid, noteID)
 }
 
-// awardEmoji posts one award. Any 4xx response is treated as success: GitLab
-// rejects double-awards by the same user (and the exact status varies across
-// versions), and a missing reaction must never fail the work that triggered it.
+// awardEmoji posts one award. A 4xx response is treated as success — GitLab
+// rejects double-awards by the same user, and the exact status varies across
+// versions — EXCEPT the ones that mean the award never happened for reasons a
+// caller must get to log: 401/403 (a token that lost access) and 429 (rate
+// limited). Swallowing those would leave e.g. a replace with a successful
+// revoke but a silently dropped award: no reaction at all, and no trace.
 func (c *Client) awardEmoji(ctx context.Context, basePath, name string) error {
 	err := c.Post(ctx, basePath, map[string]string{"name": name}, nil)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
+		switch apiErr.Status {
+		case 401, 403, 429:
+			return err
+		}
 		return nil
 	}
 	return err
@@ -69,7 +77,13 @@ func (c *Client) awardEmoji(ctx context.Context, basePath, name string) error {
 func (c *Client) replaceEmoji(ctx context.Context, basePath string, userID int, add string, remove []string) error {
 	var errs []error
 	wanted := slices.DeleteFunc(slices.Clone(remove), func(name string) bool { return name == "" })
-	if len(wanted) > 0 {
+	switch {
+	case len(wanted) > 0 && userID == 0:
+		// Matching on the name alone is not safe: an administrator or owner
+		// token CAN delete another user's award, so a human's genuine reaction
+		// of the same name would be revoked.
+		errs = append(errs, errors.New("gitlab: refusing to revoke award emoji by name alone: own user id unresolved"))
+	case len(wanted) > 0:
 		var awards []AwardEmoji
 		if err := c.GetPaginated(ctx, basePath, &awards); err != nil {
 			errs = append(errs, fmt.Errorf("gitlab: listing award emoji: %w", err))
@@ -78,7 +92,7 @@ func (c *Client) replaceEmoji(ctx context.Context, basePath string, userID int, 
 			if !slices.Contains(wanted, award.Name) {
 				continue
 			}
-			if userID != 0 && award.User.ID != userID {
+			if award.User.ID != userID {
 				continue
 			}
 			if err := c.revokeEmoji(ctx, basePath, award.ID); err != nil {
