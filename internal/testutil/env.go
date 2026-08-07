@@ -21,7 +21,9 @@ func ClearAmbientEnv() {
 			continue
 		}
 		if isAmbientConfigEnv(name) {
-			os.Unsetenv(name)
+			// The name comes from os.Environ, so it is always valid and the
+			// only error Unsetenv can report cannot happen here.
+			_ = os.Unsetenv(name)
 		}
 	}
 }
