@@ -15,6 +15,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/config/example.go`: Provides the checked-in example config text.
 - `internal/config/generate.go`: Shared helpers for generator commands.
 - `internal/config/profiles.go`: Profile resolution (`ResolveProfile`) and profile merging (`mergeProfiles`); the built-in provider profiles live in `config.go` (`defaultProfiles`).
+- `internal/config/configtest/configtest.go`: Test-only helper that clears every config-influencing environment variable, shared by the config and CLI test suites.
 
 ## Review Pipeline
 
@@ -34,6 +35,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/limiter.go`: Global concurrency limiter used around agent calls.
 - `internal/review/time_budget.go`: Hierarchical time budgets, local caps, weights, speedup thresholds, and context deadlines.
 - `internal/review/tool_exec.go`: Tool-call dispatcher for retrieval tools exposed to review agents.
+- `internal/review/tool_result_limit.go`: Context-aware JSON tool-result token limits with payload-specific pruning and truncation metadata.
 - `internal/review/trimmer.go`: Prompt/context size reduction helpers.
 - `internal/review/review_file_unix.go`, `internal/review/review_file_nonunix.go`: Platform-specific file reading helpers used for review context.
 
@@ -57,6 +59,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `internal/model/types.go`: Shared domain types for requests, results, findings, verification, finalization, SCM data, toolchain data, and token usage.
 - `internal/model/format.go`: Human-readable formatting helpers for model values.
+- `internal/tokenestimate/tokenestimate.go`: Central prompt-token estimation API and current four-bytes-per-token heuristic.
 - `internal/workflow/spec.go`: Workflow YAML schema, parsing, default workflow construction, aliases, step config, and validation.
 
 ## Deduplication
@@ -71,6 +74,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/retrieval/backend_files.go`: Backend file discovery and filtering.
 - `internal/retrieval/file.go`: File, slice, and directory retrieval.
 - `internal/retrieval/findlines.go`: Exact code-to-line-number matching backing multi-line `search` queries and code-location repair.
+- `internal/retrieval/references.go`: Definition-centered symbol reference analysis, whole-function grouping, top-level writes, alias following, confidence marking, and human rendering.
 - `internal/retrieval/callgraph.go`: Call hierarchy API and orchestration.
 - `internal/retrieval/static_graph.go`: Static call graph storage and lookup.
 - `internal/retrieval/symbols.go`: Symbol references and symbol lookup helpers.
@@ -133,7 +137,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, and the full message transcript; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
 - `internal/clipboard/clipboard.go`: Cross-platform clipboard writes for `session --clipboard`: a per-GOOS chain of helper commands (`pbcopy`, `clip.exe` with UTF-16LE encoding, `wl-copy`/`xclip`/`xsel` ordered by session type, `termux-clipboard-set`) tried until one succeeds, bounded by a shared timeout.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
-- `internal/tools/catalog.go`: Tool catalog exposed to agents.
+- `internal/tools/catalog.go`: Tool catalog exposed to agents; describes each tool and its arguments to the model.
+- `internal/toollimits/toollimits.go`: The tool defaults and non-token limits themselves, in a package with no dependencies so git, config and retrieval can honor them without depending on the LLM layer.
 - `internal/textsan/textsan.go`: Text sanitization utilities.
 - `internal/testutil/testutil.go`: Shared test fixture and golden-file helpers.
 

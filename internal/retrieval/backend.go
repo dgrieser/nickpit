@@ -51,6 +51,46 @@ func (e *UnsupportedLanguageError) Error() string {
 	return fmt.Sprintf("no structural retrieval backend supports %q", e.Path)
 }
 
+// GoAnalysisSkippedError reports that the declaration lives in Go but the
+// lookup set AvoidGoLoad and the go/types snapshot was neither cached nor
+// cheap to build. It is distinct from SymbolNotFoundError: the symbol may well
+// be declared, resolution simply declined to pay a whole-repository type-check
+// to prove it, so callers should keep the result literal rather than telling
+// the model the symbol is absent.
+type GoAnalysisSkippedError struct {
+	Name string
+}
+
+func (e *GoAnalysisSkippedError) Error() string {
+	return fmt.Sprintf("resolving %q needs the Go type-check snapshot, which this lookup avoids building", e.Name)
+}
+
+// SymbolNotFoundError reports that structural analysis ran over the scope and
+// found no declaration of the symbol. It is distinct from
+// UnsupportedLanguageError: the analysis was possible and simply came up empty,
+// so callers must not tell the model the file type is unsupported. A scope can
+// still hold files of a language with no backend, so a literal-search fallback
+// remains worthwhile.
+type SymbolNotFoundError struct {
+	Name string
+	Path string
+	// Reason explains why the analysis may have missed a symbol that exists,
+	// such as a package that failed to load. It never changes how callers
+	// handle the error, only what they can tell the model.
+	Reason string
+}
+
+func (e *SymbolNotFoundError) Error() string {
+	message := fmt.Sprintf("symbol %q not found", e.Name)
+	if e.Path != "" {
+		message = fmt.Sprintf("symbol %q not found in %q", e.Name, e.Path)
+	}
+	if e.Reason != "" {
+		return message + ": " + e.Reason
+	}
+	return message
+}
+
 func languageBackends() []languageBackend {
 	return []languageBackend{
 		goBackend{},
@@ -92,22 +132,6 @@ func candidateBackends(scope lookupScope) ([]languageBackend, error) {
 		}
 	}
 	return nil, &UnsupportedLanguageError{Path: scope.Path}
-}
-
-// SupportsStructuralAnalysis reports whether a structural retrieval backend
-// (symbol resolution / call graph) exists for path within repoRoot. A concrete
-// file in an unsupported language returns false; a directory or the empty
-// (repo-wide) scope returns true, since at least one backend can attempt a
-// repo-wide lookup. It mirrors the resolution candidateBackends performs, so the
-// search-tool optimization only rewrites a function-name search into a call-graph
-// lookup when that lookup can actually resolve the target language.
-func SupportsStructuralAnalysis(repoRoot, path string) bool {
-	scope, err := resolveLookupScope(repoRoot, path)
-	if err != nil {
-		return false
-	}
-	_, err = candidateBackends(scope)
-	return err == nil
 }
 
 // FallbackSearchScope returns the repo-relative path a literal search should use

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 func TestLocalEngineListFiles(t *testing.T) {
@@ -520,12 +522,12 @@ func TestLocalEngineFindLinesLimitsMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.MatchCount != maxFindLinesMatches || len(got.Matches) != maxFindLinesMatches {
-		t.Fatalf("matches = %d/%d, want %d: %#v", got.MatchCount, len(got.Matches), maxFindLinesMatches, got)
+	if got.MatchCount != toollimits.MaxFindLinesMatches || len(got.Matches) != toollimits.MaxFindLinesMatches {
+		t.Fatalf("matches = %d/%d, want %d: %#v", got.MatchCount, len(got.Matches), toollimits.MaxFindLinesMatches, got)
 	}
 	last := got.Matches[len(got.Matches)-1]
-	if last.CodeLocation.LineRange.Start != maxFindLinesMatches || last.CodeLocation.LineRange.End != maxFindLinesMatches {
-		t.Fatalf("last match = %#v, want line %d", last, maxFindLinesMatches)
+	if last.CodeLocation.LineRange.Start != toollimits.MaxFindLinesMatches || last.CodeLocation.LineRange.End != toollimits.MaxFindLinesMatches {
+		t.Fatalf("last match = %#v, want line %d", last, toollimits.MaxFindLinesMatches)
 	}
 }
 
@@ -669,7 +671,7 @@ func TestLocalEngineSearchAndFindLinesReportTruncatedFiles(t *testing.T) {
 	// the match cannot be found, but the truncation must be surfaced.
 	var big strings.Builder
 	line := strings.Repeat("a", 1023) + "\n"
-	for big.Len() <= maxRetrievedFileBytes {
+	for big.Len() <= toollimits.MaxRetrievedFileBytes {
 		big.WriteString(line)
 	}
 	big.WriteString("needle\n")
@@ -730,7 +732,7 @@ func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
 		t.Fatalf("small file marked truncated")
 	}
 
-	big := make([]byte, maxRetrievedFileBytes+4096)
+	big := make([]byte, toollimits.MaxRetrievedFileBytes+4096)
 	for i := range big {
 		big[i] = 'a'
 	}
@@ -744,8 +746,8 @@ func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
 	if !got.Truncated {
 		t.Fatalf("large file not marked truncated")
 	}
-	if len(got.Content) > maxRetrievedFileBytes {
-		t.Fatalf("content not capped: %d bytes > %d", len(got.Content), maxRetrievedFileBytes)
+	if len(got.Content) > toollimits.MaxRetrievedFileBytes {
+		t.Fatalf("content not capped: %d bytes > %d", len(got.Content), toollimits.MaxRetrievedFileBytes)
 	}
 }
 
@@ -879,7 +881,7 @@ func TestLocalEngineGetFileSliceReachesLinesBeyondByteCap(t *testing.T) {
 	if !got.Truncated {
 		t.Fatal("byte-capped slice not marked truncated")
 	}
-	if len(got.Content) > maxRetrievedFileBytes {
+	if len(got.Content) > toollimits.MaxRetrievedFileBytes {
 		t.Fatalf("slice content exceeds cap: %d bytes", len(got.Content))
 	}
 }

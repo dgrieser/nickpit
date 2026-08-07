@@ -7,6 +7,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 type exactEstimator struct{}
@@ -20,7 +21,7 @@ func (exactEstimator) EstimateLen(length int) int {
 }
 
 func TestTrimmerDropsGeneratedFlaggedFiles(t *testing.T) {
-	trimmer := NewTrimmer(1, model.SimpleEstimator{})
+	trimmer := NewTrimmer(1, tokenestimate.SimpleEstimator{})
 	ctx, err := trimmer.Trim(&model.ReviewContext{
 		Title: strings.Repeat("x", 100),
 		ChangedFiles: []model.ChangedFile{
@@ -101,7 +102,7 @@ func TestStampGeneratedFlagsFromEmbeddedMappings(t *testing.T) {
 	}
 	stampGeneratedFlags(reviewCtx)
 
-	trimmed, err := NewTrimmer(1, model.SimpleEstimator{}).Trim(reviewCtx)
+	trimmed, err := NewTrimmer(1, tokenestimate.SimpleEstimator{}).Trim(reviewCtx)
 	if err != nil {
 		t.Fatalf("Trim: %v", err)
 	}
@@ -284,12 +285,12 @@ func TestTrimmerResultFitsBudgetWithSimpleEstimator(t *testing.T) {
 		},
 	}
 	maxTokens := 300
-	trimmer := NewTrimmer(maxTokens, model.SimpleEstimator{})
+	trimmer := NewTrimmer(maxTokens, tokenestimate.SimpleEstimator{})
 	trimmed, err := trimmer.Trim(ctx)
 	if err != nil {
 		t.Fatalf("Trim: %v", err)
 	}
-	if got := (model.SimpleEstimator{}).Estimate(renderContextText(trimmed)); got > maxTokens {
+	if got := (tokenestimate.SimpleEstimator{}).Estimate(renderContextText(trimmed)); got > maxTokens {
 		t.Fatalf("trimmed context estimates %d tokens, budget %d", got, maxTokens)
 	}
 }

@@ -4,39 +4,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
-
-func TestSupportsStructuralAnalysis(t *testing.T) {
-	repoRoot := t.TempDir()
-	writeRetrievalFile(t, repoRoot, "main.go", "package main\n\nfunc Run() {}\n")
-	writeRetrievalFile(t, repoRoot, "app.py", "def run():\n    return 1\n")
-	writeRetrievalFile(t, repoRoot, "app.ts", "export function run() { return 1 }\n")
-	writeRetrievalFile(t, repoRoot, "lib.rs", "pub fn run() {}\n")
-	writeRetrievalFile(t, repoRoot, "notes.txt", "hello\n")
-	writeRetrievalFile(t, repoRoot, "Main.java", "class Main {}\n")
-	writeRetrievalFile(t, repoRoot, "pkg/mod.rs", "fn helper() {}\n")
-
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"main.go", true},
-		{"app.py", true},
-		{"app.ts", true},
-		{"lib.rs", true}, // Rust is supported by rustBackend
-		{"notes.txt", false},
-		{"Main.java", false},         // genuinely unsupported language
-		{"", true},                   // repo-wide scope: a backend can still attempt a search
-		{"pkg", true},                // directory scope
-		{"../escape.go", false},      // path escaping the repo resolves to an error
-		{"does-not-exist.go", false}, // missing file cannot be stat'd
-	}
-	for _, tt := range tests {
-		if got := SupportsStructuralAnalysis(repoRoot, tt.path); got != tt.want {
-			t.Errorf("SupportsStructuralAnalysis(%q) = %v, want %v", tt.path, got, tt.want)
-		}
-	}
-}
 
 func TestFallbackSearchScope(t *testing.T) {
 	repoRoot := t.TempDir()
@@ -180,8 +150,8 @@ func TestStaticGraphCacheCap(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"empty falls back to default", "", defaultMaxStaticGraphCacheEntries},
-		{"garbage falls back to default", "abc", defaultMaxStaticGraphCacheEntries},
+		{"empty falls back to default", "", toollimits.DefaultStaticGraphCacheEntries},
+		{"garbage falls back to default", "abc", toollimits.DefaultStaticGraphCacheEntries},
 		{"custom value", "10", 10},
 		{"surrounding whitespace", "  32  ", 32},
 		{"zero disables the cap", "0", 0},

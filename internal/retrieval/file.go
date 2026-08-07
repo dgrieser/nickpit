@@ -17,6 +17,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 type LocalEngine struct{}
@@ -27,17 +28,12 @@ func NewLocalEngine() *LocalEngine {
 	return &LocalEngine{}
 }
 
-// maxRetrievedFileBytes bounds how much of a single file is read into memory
-// and surfaced to the model. A pathological input (e.g. a multi-MB minified
-// bundle) would otherwise be fully buffered and flood the LLM context.
-const maxRetrievedFileBytes = 5 << 20 // 5 MiB
-
 func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileContent, error) {
 	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
-	data, truncated, err := readFileCapped(repoRoot, fullPath, maxRetrievedFileBytes)
+	data, truncated, err := readFileCapped(repoRoot, fullPath, toollimits.MaxRetrievedFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
 	}
@@ -86,7 +82,7 @@ func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth 
 		return nil, fmt.Errorf("retrieval: listing %s: %w", path, err)
 	}
 	if depth <= 0 {
-		depth = 1
+		depth = toollimits.DefaultListFilesDepth
 	}
 	ignores := repofs.NewIgnoreMatcher(repoRoot)
 	files, err := listFilesRecursive(fullPath, normalizedPath, depth, ignores)
@@ -154,7 +150,7 @@ func (e *LocalEngine) GetFileSlice(_ context.Context, repoRoot, path string, sta
 
 	// Stream line by line so ranges beyond the whole-file byte cap stay
 	// reachable: only the selected lines are buffered, and the returned
-	// content itself stays capped at maxRetrievedFileBytes.
+	// content itself stays capped at toollimits.MaxRetrievedFileBytes.
 	var (
 		selected  []string
 		byteCount int
@@ -162,7 +158,7 @@ func (e *LocalEngine) GetFileSlice(_ context.Context, repoRoot, path string, sta
 		truncated bool
 	)
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64<<10), maxRetrievedFileBytes)
+	scanner.Buffer(make([]byte, 64<<10), toollimits.MaxRetrievedFileBytes)
 	scanner.Split(scanLinesAnyEnding)
 	for scanner.Scan() {
 		lineNum++
@@ -173,7 +169,7 @@ func (e *LocalEngine) GetFileSlice(_ context.Context, repoRoot, path string, sta
 			break
 		}
 		line := scanner.Text()
-		if len(selected) > 0 && byteCount+len(line)+1 > maxRetrievedFileBytes {
+		if len(selected) > 0 && byteCount+len(line)+1 > toollimits.MaxRetrievedFileBytes {
 			truncated = true
 			break
 		}
@@ -400,7 +396,7 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 		if err != nil {
 			return err
 		}
-		data, truncated, err := readFileCapped(repoRoot, fileFullPath, maxRetrievedFileBytes)
+		data, truncated, err := readFileCapped(repoRoot, fileFullPath, toollimits.MaxRetrievedFileBytes)
 		if err != nil {
 			return nil
 		}

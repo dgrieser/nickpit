@@ -7,6 +7,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 func TestBuildDiscussContextIncludesReviewAndDiff(t *testing.T) {
@@ -67,7 +68,7 @@ func TestBuildDiscussContextIncludesReviewAndDiff(t *testing.T) {
 // prompt would exceed max_context_tokens. enforceDiscussBudget must cut the
 // final item down (all diff representations together) until the context fits.
 func TestEnforceDiscussBudgetTruncatesLastDiffItem(t *testing.T) {
-	estimator := model.SimpleEstimator{}
+	estimator := tokenestimate.SimpleEstimator{}
 	big := strings.Repeat("x", 40_000)
 	ctx := &model.ReviewContext{
 		DiffFiles: []model.DiffFile{{FilePath: "a.go", Content: big}},
@@ -154,7 +155,7 @@ func TestBuildDiscussContextDropsSuggestionsWhenDisabled(t *testing.T) {
 }
 
 func TestBoundDiscussTranscript(t *testing.T) {
-	estimator := model.SimpleEstimator{}
+	estimator := tokenestimate.SimpleEstimator{}
 	turn := func(q, a string) []llm.Message {
 		return []llm.Message{{Role: "user", Content: q}, {Role: "assistant", Content: a}}
 	}

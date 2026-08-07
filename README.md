@@ -44,6 +44,7 @@ Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door
 NickPit gives the model special retrieval tools:
 - list and fetch files
 - deep search
+- language-aware symbol definitions and references, with whole containing functions
 - language-aware **callers and callees** (go, python, nodejs, rust)
 - exact line number lookups
 - language detection
@@ -171,7 +172,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **Rendered terminal, raw Markdown, and JSON output**, live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
 - **Rootless, distroless, Docker image.**
-- **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees, commit log and commit diffs) as a standalone command tree — no review required.
+- **`nickpit inspect`**: the retrieval toolbox (files, search, symbol references, callers, callees, commit log and commit diffs) as a standalone command tree — no review required.
 
 ## Installation
 
@@ -559,6 +560,8 @@ Use `--disable-json-response-format` to force the prompt-embedded schema instead
 
 NickPit lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
 
+Each JSON tool result sent to the model is capped at `10%` of the context tokens remaining when that result is appended. Parallel results share the remainder in order, so later results cannot each claim the original allowance. When the window is already full, results still get a small readable floor, bounded across the batch so a wide parallel batch cannot overshoot the window by the sum of its floors; once that budget is spent, the remaining results are returned as a self-describing truncation note. Configure this with `--max-tool-result-percent`, `max_tool_result_percent`, or `NICKPIT_MAX_TOOL_RESULT_PERCENT`; `0` disables only the context cap, while tool-specific limits such as hierarchy depth and commit/result counts remain. Capped payloads stay valid JSON and report `truncated: true` plus a `truncated_note`; narrow the request when more detail is needed. Human-facing `nickpit inspect` output is not capped by this setting.
+
 ### Finding Caps
 
 Cap how many findings each review agent may report with `--max-findings` or `max_findings` in config (also overridable per `review:` step in a workflow). The default is `0`, meaning unlimited. When a limit is set it is added to the reviewer prompt; a response exceeding the limit is retried once with guidance to keep only the strongest findings, after which the weakest findings (lowest priority, then lowest confidence) are cut and the agent run is marked partial. The limit counts the agent's whole session: initial pass plus nudge rounds; once the limit is reached, remaining nudge rounds (including standalone `nudge:` steps) are skipped.
@@ -620,6 +623,9 @@ nickpit inspect file --path internal/review/engine.go
 nickpit inspect file --path internal/review/engine.go --line-start 1 --line-end 80
 nickpit inspect list --path internal/review
 nickpit inspect search --path internal/review --query inspect_file
+nickpit inspect references --symbol DefaultListFilesDepth
+nickpit inspect references --path internal/tools/catalog.go --symbol DefaultListFilesDepth --output json
+nickpit inspect references --path internal/review/tool_result_limit.go --symbol toolResultTruncatedNote --line 15
 nickpit inspect callers --symbol Run --depth 2
 nickpit inspect callers --path internal/review --symbol Run --depth 2
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
@@ -638,7 +644,7 @@ nickpit inspect show --commit a44f11c --paths internal/serve --diff-format git-j
 
 Every patch nickpit reads carries exactly **3 lines of context**, and that is not configurable. git's own default is also 3, but `diff.context` in your global git configuration or in the reviewed repository would otherwise override it — and hunk windows are what the diff-scope gate, the finding fingerprints and the inline-comment positions are derived from, so the same review would produce different results on different machines. 3 is also what the GitHub and GitLab diff APIs serve (neither exposes a context parameter at all), which keeps a local review and a remote review of the same change comparable. For the same reason `color.ui`, `diff.external`, gitattributes `textconv` filters, `diff.noprefix` and `diff.mnemonicPrefix` are all neutralized per invocation. When a hunk is too narrow to judge, use `inspect file` with `--line-start`/`--line-end` or the `inspect_file` tool rather than widening the diff.
 
-Retrieval supports `go`, `python`, `nodejs` (including `.jsx`/`.tsx`), and `rust` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis: Go is resolved with the type checker (`go/packages`), TypeScript/JavaScript with esbuild's parser, and Python/Rust with a pure-Go tree-sitter runtime — all CGo-free, so the single static binary stays self-contained.
+Retrieval supports `go`, `python`, `nodejs` (including `.jsx`/`.tsx`), and `rust` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files. `inspect references` resolves a named variable, constant, parameter, field, import, type, function, or similar binding; it returns the definition, each whole function containing a use, and package/module/class-level reads or writes. Only `--symbol` is required. `--path` optionally identifies the declaration, but references are always collected across the whole repository. Go references use type-checked object identity; dynamic-language matches that cannot be proven are retained and marked as possible. `inspect callers` and `inspect callees` use language-aware call-hierarchy analysis: Go is resolved with the type checker (`go/packages`), TypeScript/JavaScript with esbuild's parser, and Python/Rust with a pure-Go tree-sitter runtime — all CGo-free, so the single static binary stays self-contained.
 
 ## Notes
 

@@ -8,8 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/config/configtest"
 	"github.com/dgrieser/nickpit/internal/model"
 )
+
+func TestMain(m *testing.M) {
+	configtest.ClearAmbientEnv()
+	os.Exit(m.Run())
+}
 
 func intPtr(v int) *int {
 	return &v
@@ -95,6 +101,9 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	}
 	if profile.MaxRateLimitDelaySeconds != DefaultMaxRateLimitDelaySeconds {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
+	if profile.MaxToolResultPercent != DefaultMaxToolResultPercent {
+		t.Fatalf("max tool result percent = %d", profile.MaxToolResultPercent)
 	}
 	if profile.NudgeCount != DefaultNudgeCount {
 		t.Fatalf("nudge count = %d", profile.NudgeCount)
@@ -1521,6 +1530,53 @@ profiles:
 	}
 }
 
+func TestLoadConfigRejectsInvalidMaxToolResultPercent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_tool_result_percent: -1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "max_tool_result_percent must be between 0 and 100") {
+		t.Fatalf("error = %v", err)
+	}
+
+	tooLarge := 101
+	_, _, err = Load(path, Overrides{MaxToolResultPercent: &tooLarge})
+	if err == nil || !strings.Contains(err.Error(), "max_tool_result_percent must be between 0 and 100") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadConfigPreservesExplicitZeroMaxToolResultPercent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_tool_result_percent: 0
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxToolResultPercent != 0 || !profile.MaxToolResultPercentConfigured {
+		t.Fatalf("max tool result percent = %d, configured = %t", profile.MaxToolResultPercent, profile.MaxToolResultPercentConfigured)
+	}
+}
+
 func TestLoadConfigMaxFindingsFromFileAndOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -1785,6 +1841,7 @@ func TestLoadConfigUsesBudgetEnv(t *testing.T) {
 	t.Setenv("NICKPIT_MODEL", "primary-model")
 	t.Setenv("NICKPIT_MAX_CONTEXT_TOKENS", "12345")
 	t.Setenv("NICKPIT_MAX_REQUEST_BYTES", "4096")
+	t.Setenv("NICKPIT_MAX_TOOL_RESULT_PERCENT", "12")
 	t.Setenv("NICKPIT_MAX_TOOL_CALLS", "7")
 	t.Setenv("NICKPIT_MAX_DUPLICATE_TOOL_CALLS", "2")
 	t.Setenv("NICKPIT_MAX_OUTPUT_RETRIES", "1")
@@ -1808,6 +1865,7 @@ func TestLoadConfigUsesBudgetEnv(t *testing.T) {
 	}{
 		{"max_context_tokens", profile.MaxContextTokens, 12345},
 		{"max_request_bytes", profile.MaxRequestBytes, 4096},
+		{"max_tool_result_percent", profile.MaxToolResultPercent, 12},
 		{"max_tool_calls", profile.MaxToolCalls, 7},
 		{"max_duplicate_tool_calls", profile.MaxDuplicateToolCalls, 2},
 		{"max_output_retries", profile.MaxOutputRetries, 1},

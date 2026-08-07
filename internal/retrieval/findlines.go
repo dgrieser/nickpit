@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-)
 
-const maxFindLinesMatches = 100
+	"github.com/dgrieser/nickpit/internal/toollimits"
+)
 
 // FindLines returns the line ranges whose contents match the given code (a
 // single line or a contiguous block). When path names a file only that file is
@@ -19,7 +19,7 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 	code = NormalizeFindLinesCode(code)
 	matches := make([]FindLinesMatch, 0)
 	normalizedPath, truncatedFiles, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
-		remaining := maxFindLinesMatches - len(matches)
+		remaining := toollimits.MaxFindLinesMatches - len(matches)
 		if remaining <= 0 {
 			return errSearchLimitReached
 		}
@@ -52,7 +52,7 @@ func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 		}
 	}
 	normalizedCode := NormalizeFindLinesCode(code)
-	matches := matchFindLinesLimit(content.Path, content.Content, normalizedCode, maxFindLinesMatches)
+	matches := matchFindLinesLimit(content.Path, content.Content, normalizedCode, toollimits.MaxFindLinesMatches)
 	return &FindLinesResult{
 		Path:       content.Path,
 		Code:       code,
@@ -194,7 +194,7 @@ func DefaultSearchContextLines(query string) int {
 	if FindLinesCount(query) > 1 {
 		return 0
 	}
-	return 5
+	return toollimits.DefaultSearchContextLines
 }
 
 // FindLinesCount returns the number of lines in a find_lines code argument

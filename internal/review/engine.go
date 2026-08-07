@@ -23,7 +23,9 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 	"github.com/dgrieser/nickpit/internal/toolchain"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
 	"github.com/dgrieser/nickpit/mappings"
@@ -52,17 +54,15 @@ type Engine struct {
 	// disabledStyleGuides holds built-in styleguide languages the user turned
 	// off. Same write-once-before-pipeline contract as additionalStyleGuides.
 	disabledStyleGuides map[string]struct{}
-	// structuralSupport memoizes retrieval.SupportsStructuralAnalysis per
-	// (repoRoot, path). The result is deterministic over a review's fixed
-	// checkout, so caching it avoids a redundant os.Stat on every search call
-	// (the check runs in both toolCallConcurrencyKey and executeSearch). It is a
-	// pointer so withConfig's shallow clones share one cache (and so the Engine
-	// stays copyable — a sync.Map value must not be copied). Its values are bools,
-	// so it is trivially small and intentionally left uncapped.
-	structuralSupport *sync.Map // repoRoot\x00path -> bool
 }
 
-var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
+// Both patterns count `$` as an identifier character, matching retrieval's
+// isIdentifierByte: extracting `store` out of a matched `$store` requested
+// references for a symbol the line never contains.
+var (
+	searchIdentifierQueryPattern = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\((?:\))?)?$`)
+	searchIdentifierPattern      = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
+)
 
 // ErrEmptyDiff is returned when the resolved review context has no changed files
 // and no diff content, meaning there is nothing meaningful to review.
@@ -95,8 +95,76 @@ type toolRoundState struct {
 	seenFiles      map[string]retrieval.FileContent
 	seenFileRanges map[string][]model.LineRange
 	seenToolCalls  map[string]struct{}
-	fileLocks      keyedLocker
-	toolLocks      keyedLocker
+	// reservedToolCalls records which tool call took each dedup key, so a
+	// result the context limiter later empties can hand its keys back. Without
+	// it a symbol whose analysis was reduced to a bare truncation marker stayed
+	// reserved, and every re-request the marker invites answered
+	// already_requested.
+	//
+	// Keys are owned per (round, tool call ID), not per ID alone: provider IDs
+	// are only unique within one response — the XML fallback synthesizes
+	// xml_tool_call_1, xml_tool_call_2, … afresh each round — and releasing by
+	// bare ID handed back keys an earlier round's identically-named call took.
+	reservedToolCalls map[string][]string
+	// round distinguishes reservation owners across tool rounds. beginToolRound
+	// advances it before each batch; the calls inside one batch run
+	// concurrently but never change it.
+	round     int
+	fileLocks keyedLocker
+	toolLocks keyedLocker
+}
+
+// beginToolRound opens a new reservation scope for the next tool batch.
+func (s *toolRoundState) beginToolRound() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.round++
+}
+
+// reservationOwnerLocked names the owner of a reservation: the tool call ID
+// qualified by the round it ran in. Callers hold s.mu.
+func (s *toolRoundState) reservationOwnerLocked(toolCallID string) string {
+	return fmt.Sprintf("%d\x00%s", s.round, toolCallID)
+}
+
+// reserveToolCall records key as answered by toolCallID, reporting false when
+// another call already holds it. The bookkeeping map is created here rather
+// than at construction so a state assembled without it still records.
+func (s *toolRoundState) reserveToolCall(toolCallID, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, duplicate := s.seenToolCalls[key]; duplicate {
+		return false
+	}
+	s.seenToolCalls[key] = struct{}{}
+	if toolCallID != "" {
+		if s.reservedToolCalls == nil {
+			s.reservedToolCalls = map[string][]string{}
+		}
+		owner := s.reservationOwnerLocked(toolCallID)
+		s.reservedToolCalls[owner] = append(s.reservedToolCalls[owner], key)
+	}
+	return true
+}
+
+// markToolCallSeen is reserveToolCall for the callers that already checked the
+// key and are recording the answer they produced.
+func (s *toolRoundState) markToolCallSeen(toolCallID, key string) {
+	_ = s.reserveToolCall(toolCallID, key)
+}
+
+// releaseToolCall drops the dedup keys a tool call of the current round took,
+// making the same request answerable again. Earlier rounds' reservations are
+// out of reach by construction: a later call whose provider ID happens to
+// collide must not hand back keys it never took.
+func (s *toolRoundState) releaseToolCall(toolCallID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner := s.reservationOwnerLocked(toolCallID)
+	for _, key := range s.reservedToolCalls[owner] {
+		delete(s.seenToolCalls, key)
+	}
+	delete(s.reservedToolCalls, owner)
 }
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
@@ -115,7 +183,6 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		config:                 profile,
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
-		structuralSupport:      &sync.Map{},
 	}
 }
 
@@ -282,7 +349,7 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 		if maxTokens <= 0 {
 			maxTokens = config.DefaultMaxContextToken
 		}
-		estimator := model.SimpleEstimator{}
+		estimator := tokenestimate.SimpleEstimator{}
 		headroom := promptOverheadTokens(estimator, reviewCtx, req.DiffFormat, maxTokens)
 		trimmer = NewTrimmer(maxTokens, estimator, WithHeadroomTokens(headroom))
 	}
@@ -902,14 +969,6 @@ func shouldDropFinding(v *model.FindingVerification, policy string) (bool, strin
 	}
 	return shouldDropVerdict(v.Verdict, policy)
 }
-
-// Default tool-call arguments. defaultCallHierarchyDepth in particular must be
-// used both where the find_callers/find_callees dedup key is computed and where
-// the call is executed, otherwise the key would not match the executed depth.
-const (
-	defaultCallHierarchyDepth = 10
-	defaultSearchContextLines = 5
-)
 
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 	return VerifyOptions{
@@ -3022,7 +3081,7 @@ type toolResultSummary struct {
 type toolCallHistoryEntry struct {
 	ToolCall    llm.ToolCall
 	Result      toolResultSummary
-	OptimizedTo string // non-empty when the tool call was rewritten, e.g. "search" → "find_callers"
+	OptimizedTo string // non-empty when the result was structurally replaced, e.g. "search" → "find_callers"
 }
 
 func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message) []toolCallHistoryEntry {
@@ -3039,21 +3098,37 @@ func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message
 			ToolCall: toolCall,
 			Result:   results[toolCall.ID],
 		}
-		if toolCall.Name == "search" && isCallHierarchyResult(rawContents[toolCall.ID]) {
-			entry.OptimizedTo = "find_callers"
+		if toolCall.Name == "search" {
+			entry.OptimizedTo = optimizedSearchResultTool(rawContents[toolCall.ID])
 		}
 		history = append(history, entry)
 	}
 	return history
 }
 
-func isCallHierarchyResult(content string) bool {
+func optimizedSearchResultTool(content string) string {
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		return false
+		return ""
 	}
-	_, hasRoot := payload["root"]
-	return hasRoot
+	switch classifyToolResult(payload) {
+	case shapeCallHierarchy:
+		return "find_callers"
+	case shapeReferences:
+		return "find_references"
+	case shapeGroupedSearch:
+		_, hasCallers := payload["call_hierarchies"]
+		_, hasReferences := payload["reference_results"]
+		switch {
+		case hasCallers && hasReferences:
+			return "find_callers/find_references"
+		case hasCallers:
+			return "find_callers"
+		default:
+			return "find_references"
+		}
+	}
+	return ""
 }
 
 func parseToolResultSummary(content string) toolResultSummary {
@@ -3123,11 +3198,87 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.HasResultCount = true
 		summary.ResultCount = int(resultCount)
 	}
-	if root, ok := payload["root"].(map[string]any); ok {
-		summary.Files = countCallHierarchyFiles(root)
-		summary.Lines = countCallHierarchyLines(root)
+	// One search can return several structural payloads at once, so the
+	// structural shapes are summarized over every payload the result carries —
+	// a single top-level one, or the grouped call_hierarchies/reference_results
+	// arrays — and the file sets are unioned rather than overwritten.
+	structural := structuralSummaryPayloads(payload)
+	literals, hasLiterals := payload["literal_results"].([]any)
+	if len(structural) > 0 || hasLiterals {
+		distinct := map[string]struct{}{}
+		for _, item := range structural {
+			accumulateStructuralSummary(item, &summary, distinct)
+		}
+		if hasLiterals {
+			summary.HasResultCount = true
+			summary.ResultCount += len(literals)
+			for _, item := range literals {
+				entry, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if path := nodeCodeLocationString(entry, "file_path"); path != "" {
+					distinct[path] = struct{}{}
+				}
+			}
+		}
+		summary.Files = len(distinct)
 	}
 	return summary
+}
+
+// structuralSummaryPayloads returns every call-hierarchy or reference payload a
+// tool result carries: the result itself when it is one, or each entry of the
+// grouped arrays a multi-declaration search produces.
+func structuralSummaryPayloads(payload map[string]any) []map[string]any {
+	switch classifyToolResult(payload) {
+	case shapeReferences, shapeCallHierarchy:
+		return []map[string]any{payload}
+	case shapeGroupedSearch:
+		return groupedStructuralPayloads(payload)
+	}
+	return nil
+}
+
+// accumulateStructuralSummary folds one structural payload into summary,
+// adding the files it touches to distinct.
+func accumulateStructuralSummary(payload map[string]any, summary *toolResultSummary, distinct map[string]struct{}) {
+	if root, ok := payload["root"].(map[string]any); ok {
+		walkCallHierarchy(root, func(node map[string]any) {
+			if path := nodeCodeLocationString(node, "file_path"); path != "" {
+				distinct[path] = struct{}{}
+			}
+			summary.Lines += lineCount(nodeCodeLocationString(node, "content"))
+		})
+	}
+	target, ok := payload["target"].(map[string]any)
+	if !ok {
+		return
+	}
+	if definition, ok := target["definition"].(map[string]any); ok {
+		if path, _ := definition["file_path"].(string); path != "" {
+			distinct[path] = struct{}{}
+		}
+		if content, _ := definition["content"].(string); content != "" {
+			summary.Lines += lineCount(content)
+		}
+	}
+	for _, field := range []string{"functions", "outside_functions"} {
+		contexts, _ := payload[field].([]any)
+		for _, item := range contexts {
+			context, _ := item.(map[string]any)
+			if path := nodeCodeLocationString(context, "file_path"); path != "" {
+				distinct[path] = struct{}{}
+			}
+			summary.Lines += lineCount(nodeCodeLocationString(context, "content"))
+		}
+	}
+	for _, field := range []string{"exact_reference_count", "possible_reference_count"} {
+		if count, ok := payload[field].(float64); ok {
+			summary.ResultCount += int(count)
+			summary.HasResultCount = true
+		}
+	}
 }
 
 // nodeCodeLocationString reads a string field from a node's nested
@@ -3153,24 +3304,6 @@ func countDuplicateToolCalls(toolMessages []llm.Message) int {
 	return count
 }
 
-func countCallHierarchyFiles(root map[string]any) int {
-	distinct := make(map[string]struct{})
-	walkCallHierarchy(root, func(node map[string]any) {
-		if path := nodeCodeLocationString(node, "file_path"); path != "" {
-			distinct[path] = struct{}{}
-		}
-	})
-	return len(distinct)
-}
-
-func countCallHierarchyLines(root map[string]any) int {
-	lines := 0
-	walkCallHierarchy(root, func(node map[string]any) {
-		lines += lineCount(nodeCodeLocationString(node, "content"))
-	})
-	return lines
-}
-
 func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 	visit(node)
 	children, _ := node["children"].([]any)
@@ -3184,8 +3317,8 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the agent tools (inspect_file,
-// list_files, search, find_callers, find_callees, git_log, git_show). A single
-// named type replaces the anonymous struct that was previously re-declared
+// list_files, search, find_callers, find_callees, find_references, git_log, and
+// git_show). A single named type replaces the anonymous struct previously re-declared
 // verbatim at several call sites. ContextLines is a pointer so an omitted
 // search value renders as its query-dependent default.
 type toolCallArgs struct {
@@ -3193,6 +3326,7 @@ type toolCallArgs struct {
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
 	Depth         int    `json:"depth"`
+	Line          int    `json:"line"`
 	Symbol        string `json:"symbol"`
 	Query         string `json:"query"`
 	ContextLines  *int   `json:"context_lines"`
@@ -3224,7 +3358,7 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
-			args.Depth = 1
+			args.Depth = toollimits.DefaultListFilesDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "search":
@@ -3241,9 +3375,18 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 		if args.Depth <= 0 {
-			args.Depth = defaultCallHierarchyDepth
+			args.Depth = toollimits.DefaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
+	case "find_references":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
+		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
+		if args.Line > 0 {
+			// Without the pin, a retry that disambiguated an ambiguous symbol
+			// renders identically to the call that failed, and the model cannot
+			// tell from its own history which one it already tried.
+			parts = append(parts, fmt.Sprintf("line=%d", args.Line))
+		}
 	case "git_log":
 		parts = append(parts, fmt.Sprintf("commit=%q", syntheticPathValue(args.Commit, "HEAD")))
 		parts = appendOptionalToolArgs(parts, [][2]string{
@@ -3488,9 +3631,6 @@ func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
 }
 
 func toolCallDisplay(toolCall llm.ToolCall) string {
-	if optimized, ok := optimizedSearchToolCallDisplay(toolCall); ok {
-		return optimized
-	}
 	return fmt.Sprintf("%s(%s)", toolCall.Name, syntheticToolArgumentsForCall(toolCall))
 }
 
@@ -3513,34 +3653,6 @@ func reviewTargetSummary(ctx *model.ReviewContext) string {
 	}
 	return fmt.Sprintf("%s @ %s → %s",
 		ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
-}
-
-func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
-	if toolCall.Name != "search" {
-		return "", false
-	}
-	var args struct {
-		Path          string `json:"path"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
-	}
-	if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
-		return "", false
-	}
-	normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
-	query := strings.TrimSpace(args.Query)
-	matches := searchFunctionQueryPattern.FindStringSubmatch(query)
-	if len(matches) != 2 {
-		return "", false
-	}
-	findArgs := syntheticToolArguments("find_callers", toolCallArgs{
-		Path:   normalizedPath,
-		Symbol: matches[1],
-		Depth:  defaultCallHierarchyDepth,
-	})
-	return fmt.Sprintf(`find_callers(instead_of="search", %s)`, findArgs), true
 }
 
 func lineCount(text string) int {

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 type staticNode struct {
@@ -51,7 +51,7 @@ type staticGraphCacheEntry struct {
 	graph *staticGraph
 }
 
-// defaultMaxStaticGraphCacheEntries bounds how many distinct (language, repoRoot,
+// DefaultStaticGraphCacheEntries bounds how many distinct (language, repoRoot,
 // scope) graphs staticGraphCache will memoize within a single run. Of the three
 // key dimensions, language (python/nodejs/rust — Go uses goparser.BuildGraphCached)
 // and repoRoot (one repo per CLI run) are bounded by code; only the scope is not.
@@ -59,20 +59,24 @@ type staticGraphCacheEntry struct {
 // and directory paths come solely from find_callers/find_callees tool arguments,
 // so a pathological agent could query arbitrarily many distinct directories. This
 // cap turns that one unbounded axis into a hard bound.
-const defaultMaxStaticGraphCacheEntries = 64
-
 // staticGraphCacheCap resolves the admission cap on each cache miss. Misses are
 // rare, so reading the env at point of use is cheap and mirrors modelcheck/cache.go;
 // NICKPIT_GRAPH_CACHE_MAX_ENTRIES lets large monorepos tune it, and a value <= 0
 // disables the cap entirely (unbounded — the pre-cap behavior).
 func staticGraphCacheCap() int {
-	raw := strings.TrimSpace(os.Getenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES"))
+	return cacheCapFromEnv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", toollimits.DefaultStaticGraphCacheEntries)
+}
+
+// cacheCapFromEnv reads a retrieval cache's entry cap, falling back to fallback
+// for an unset or unparsable value. A value <= 0 disables the cap entirely.
+func cacheCapFromEnv(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return defaultMaxStaticGraphCacheEntries
+		return fallback
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return defaultMaxStaticGraphCacheEntries
+		return fallback
 	}
 	return n
 }
@@ -180,8 +184,8 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > goparser.MaxCallHierarchyDepth {
-		depth = goparser.MaxCallHierarchyDepth
+	if depth > toollimits.MaxCallHierarchyDepth {
+		depth = toollimits.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

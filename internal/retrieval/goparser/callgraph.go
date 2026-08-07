@@ -14,15 +14,9 @@ import (
 	"sync"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"golang.org/x/tools/go/packages"
 )
-
-// MaxCallHierarchyDepth bounds traversal depth. Depth flows in from an
-// LLM/CLI-supplied argument and only the low side was clamped, so a runaway
-// value could request an explosively large hierarchy on a dense graph. The
-// graph is the trusted local repo, so this is a generous safety ceiling.
-// Exported so the static-graph backends and the tool schema share one source of truth.
-const MaxCallHierarchyDepth = 50
 
 type graphCacheEntry struct {
 	mu    sync.Mutex
@@ -216,8 +210,8 @@ func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, er
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > MaxCallHierarchyDepth {
-		depth = MaxCallHierarchyDepth
+	if depth > toollimits.MaxCallHierarchyDepth {
+		depth = toollimits.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

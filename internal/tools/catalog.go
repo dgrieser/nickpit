@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
-	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 type catalogEntry struct {
@@ -58,34 +58,46 @@ var catalogDefinition = []catalogEntry{
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative folder path; omit or pass an empty string to list the repo root", Example: `"<repo-relative folder>"`},
-			{Name: "depth", Type: "integer", Description: "Optional traversal depth for nested folders; defaults to 1", Example: "int", Minimum: intPtr(1)},
+			{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for nested folders; defaults to %d", toollimits.DefaultListFilesDepth), Example: "int", Minimum: intPtr(1)},
 		},
 	},
 	{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder for text or an exact line or block of code, returning each match as a `code_location` with exact line numbers",
 		ListingDescription: "with a `query` (search text, or an exact line or block of code) and an optional repo-relative `path` to search recursively; every match is returned as a `code_location` with exact line numbers, the matching code and language",
-		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions: pass the exact line or block of code as `query` and copy a returned `code_location`. Prefer `find_callers` over `search` when locating a function by name",
+		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions: pass the exact line or block of code as `query` and copy a returned `code_location`. For symbols, prefer `find_callers` for upstream call paths, `find_callees` for downstream call paths, or `find_references` for all usage kinds",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Text or code to find: a single line matches as a substring; a multi-line block of code matches exactly, ignoring indentation and surrounding whitespace", Example: `"<text, or line(s) of code>"`, Required: true},
-			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5 for a single-line query and 0 for a multi-line block", Example: "int", Minimum: intPtr(0)},
+			{Name: "context_lines", Type: "integer", Description: fmt.Sprintf("Optional number of surrounding lines to include before and after each match; defaults to %d for a single-line query and 0 for a multi-line block", toollimits.DefaultSearchContextLines), Example: "int", Minimum: intPtr(0)},
 			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: intPtr(0)},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive match mode; defaults to false", Example: "bool"},
 		},
 	},
 	{
 		Name:               "find_callers",
-		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function",
-		Note:               "Prefer this over `search` when locating a function by name; for file types without structural analysis it automatically falls back to a literal search for the symbol",
+		APIDescription:     "Return functions that directly or recursively call a target function, organized as an upstream call hierarchy with function bodies",
+		ListingDescription: "with a function `symbol`, optional declaration `path`, and optional `depth` to trace which functions invoke it",
+		Note:               "Use for upstream execution and impact tracing. Only call relationships count; imports, assignments, and passing the function as a value are excluded. File types without structural analysis fall back to literal symbol search",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
 		Name:               "find_callees",
-		APIDescription:     "Resolve function by symbol name and return its callee hierarchy including method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls",
+		APIDescription:     "Return functions directly or recursively called by a target function, organized as a downstream call hierarchy with function bodies",
+		ListingDescription: "with a function `symbol`, optional declaration `path`, and optional `depth` to trace what it invokes",
+		Note:               "Use for understanding implementation flow and downstream dependencies. File types without structural analysis fall back to literal symbol search",
 		Parameters:         callHierarchyParameters(),
+	},
+	{
+		Name:               "find_references",
+		APIDescription:     "Return a symbol definition and its repository-wide reads, writes, imports, aliases, calls, and other usages, grouped by enclosing function or top-level statement",
+		ListingDescription: "with a `symbol` and optional declaration `path` to inspect all usage kinds; referenced functions are returned with their bodies",
+		Note:               "Use for variables, constants, parameters, fields, imports, types, functions, and other named bindings. Results are flat usage contexts, not a recursive call hierarchy. Dynamic-language matches may be marked possible; large results may be truncated",
+		Parameters: []CatalogParameter{
+			{Name: "symbol", Type: "string", Description: "Symbol name to inspect", Example: `"<symbol name>"`, Required: true},
+			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; does not limit where references are collected", Example: `"<repo-relative path>"`},
+			{Name: "line", Type: "integer", Description: "Optional declaration line, used together with `path` to pick one of several same-named declarations after an ambiguous_symbol error reports them as `file:line`", Example: "int", Minimum: intPtr(1)},
+		},
 	},
 	{
 		Name:               "git_log",
@@ -101,7 +113,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "message", Type: "string", Description: "Optional text the commit message must contain", Example: `"<message text>"`},
 			{Name: "message_regex", Type: "boolean", Description: "Optional flag to treat message and author as extended regular expressions instead of literal text; defaults to false", Example: "bool"},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive matching for message and author; defaults to false", Example: "bool"},
-			{Name: "limit", Type: "integer", Description: "Optional maximum number of commits to list; defaults to 20", Example: "int", Minimum: intPtr(1), Maximum: intPtr(200)},
+			{Name: "limit", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits to list; defaults to %d", toollimits.DefaultGitLogLimit), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxGitLogLimit)},
 		},
 	},
 	{
@@ -113,7 +125,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "commit", Type: "string", Description: "Revision to show (SHA of any length, ref) or a range like \"a..b\"", Example: `"<sha|ref|a..b>"`, Required: true},
 			{Name: "to", Type: "string", Description: "Optional end revision; forms a range together with commit", Example: `"<sha|ref>"`},
 			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them, and a commit that changed none of them is still returned with an empty diff and a note", Example: `"<repo-relative paths>"`},
-			{Name: "max_commits", Type: "integer", Description: "Optional maximum number of commits of a range to return; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(50)},
+			{Name: "max_commits", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits of a range to return; defaults to %d", toollimits.DefaultGitShowCommits), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxGitShowCommits)},
 		},
 	},
 }
@@ -134,8 +146,8 @@ func intPtr(value int) *int {
 func callHierarchyParameters() []CatalogParameter {
 	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
-		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
-		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(goparser.MaxCallHierarchyDepth)},
+		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the function declaration; does not limit where calls are collected", Example: `"<repo-relative path>"`},
+		{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for the call hierarchy; defaults to %d", toollimits.DefaultCallHierarchyDepth), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxCallHierarchyDepth)},
 	}
 }
 
@@ -165,6 +177,7 @@ func InstructionsListing(names ...string) (string, error) {
 		builder.WriteString(entry.listingLine())
 		builder.WriteByte('\n')
 	}
+	builder.WriteString("Tool results may be truncated to the configured size limit; when `truncated` is true, narrow the path, range, depth, or result count and retry.\n")
 	return strings.TrimRight(builder.String(), "\n"), nil
 }
 

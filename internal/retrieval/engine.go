@@ -13,8 +13,33 @@ type Engine interface {
 	Search(ctx context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error)
 	SearchRegex(ctx context.Context, repoRoot, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*SearchResults, error)
 	GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error)
+	FindReferences(ctx context.Context, repoRoot string, symbol SymbolRef) (*ReferenceResult, error)
 	FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 	FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
+}
+
+// ReferenceBatchEngine resolves several symbols against one repository
+// snapshot. Callers can use it to avoid repeated fingerprint/index scans.
+type ReferenceBatchEngine interface {
+	FindReferencesBatch(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceBatchResult
+}
+
+type ReferenceBatchResult struct {
+	Result *ReferenceResult
+	Err    error
+}
+
+// ReferenceTargetResolver resolves declarations without collecting their
+// references. A caller that only needs a symbol's kind or location — deciding
+// whether to trace callers or list usages, say — would otherwise pay for a
+// whole-repository occurrence scan it then discards.
+type ReferenceTargetResolver interface {
+	ResolveReferenceTargets(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceTargetResult
+}
+
+type ReferenceTargetResult struct {
+	Target *ReferenceTarget
+	Err    error
 }
 
 type FileContent struct {
@@ -93,9 +118,14 @@ type SearchResults struct {
 // SearchResult locates one match: CodeLocation spans exactly the matched
 // line(s) so it can be cited as-is, while the surrounding context requested
 // via context_lines is carried separately and never widens the location.
+//
+// The fields are declared in source order — leading context, match, trailing
+// context — because encoding/json emits keys in declaration order, and a
+// reader of the encoded result should be able to read the window top to
+// bottom instead of reassembling it.
 type SearchResult struct {
-	CodeLocation  CodeLocation   `json:"code_location"`
 	ContextBefore *SearchContext `json:"context_before,omitempty"`
+	CodeLocation  CodeLocation   `json:"code_location"`
 	ContextAfter  *SearchContext `json:"context_after,omitempty"`
 }
 
@@ -117,6 +147,58 @@ type SymbolInfo struct {
 type SymbolRef struct {
 	Name string `json:"name"`
 	Path string `json:"path,omitempty"`
+	// Line pins one of several same-named declarations, using the line an
+	// AmbiguousSymbolError reported. Zero means "no preference"; a line that
+	// matches no declaration is ignored so the ambiguity is reported again
+	// rather than silently resolving to the wrong symbol.
+	Line int `json:"line,omitempty"`
+	// AvoidGoLoad keeps resolution from building the whole-repository go/types
+	// snapshot: a declaration that turns out to live in Go is resolved only
+	// when the snapshot is already cached or the repository is small enough to
+	// type-check eagerly, and fails with GoAnalysisSkippedError otherwise. The
+	// load behind that backend can take minutes on a large checkout, so
+	// opportunistic callers — the search-upgrade optimizer resolving a bare
+	// identifier — must not trigger it; an explicit find_references call never
+	// sets this.
+	AvoidGoLoad bool `json:"-"`
+}
+
+// ReferenceResult is a flat, declaration-centered view of a symbol. References
+// inside functions are grouped so source is returned once even when a function
+// mentions the symbol many times; package/module/class-level references are
+// grouped by their containing statement or declaration.
+type ReferenceResult struct {
+	Target                 ReferenceTarget    `json:"target"`
+	Functions              []ReferenceContext `json:"functions"`
+	OutsideFunctions       []ReferenceContext `json:"outside_functions"`
+	ExactReferenceCount    int                `json:"exact_reference_count"`
+	PossibleReferenceCount int                `json:"possible_reference_count"`
+	Complete               bool               `json:"complete"`
+	// OmittedContexts counts contexts a caller-side item limit withheld from
+	// Functions and OutsideFunctions. The counts above still describe the whole
+	// analysis, so a non-zero value is what tells a reader that the listed
+	// contexts are not all of them.
+	OmittedContexts int      `json:"omitted_contexts,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
+}
+
+type ReferenceTarget struct {
+	Name       string       `json:"name"`
+	Kind       string       `json:"kind"`
+	Definition CodeLocation `json:"definition"`
+}
+
+type ReferenceContext struct {
+	Name         string                `json:"name,omitempty"`
+	CodeLocation CodeLocation          `json:"code_location"`
+	References   []ReferenceOccurrence `json:"references"`
+}
+
+type ReferenceOccurrence struct {
+	Role         string       `json:"role"`
+	Confidence   string       `json:"confidence"`
+	Column       int          `json:"column,omitempty"`
+	CodeLocation CodeLocation `json:"code_location"`
 }
 
 type CallHierarchy struct {

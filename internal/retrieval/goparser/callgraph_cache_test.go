@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 func TestBuildGraphCachedReusesAndIsConcurrencySafe(t *testing.T) {
@@ -49,8 +51,8 @@ func TestFindClampsExcessiveDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Depth != MaxCallHierarchyDepth {
-		t.Fatalf("depth = %d, want clamp to %d", h.Depth, MaxCallHierarchyDepth)
+	if h.Depth != toollimits.MaxCallHierarchyDepth {
+		t.Fatalf("depth = %d, want clamp to %d", h.Depth, toollimits.MaxCallHierarchyDepth)
 	}
 }
 

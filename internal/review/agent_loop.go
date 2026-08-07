@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -123,6 +124,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state = newAgentLoopState()
 	}
 	var syntheticFollowup *llm.Message
+	// One meter for the whole loop: every round measures the same transcript
+	// prefix, so encoding it again per round would grow with the square of the
+	// conversation.
+	contextMeter := &toolContextMeter{}
 	recordTokens := func(usage model.TokenUsage) {
 		result.tokensUsed = addTokenUsage(result.tokensUsed, usage)
 	}
@@ -317,7 +322,18 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 		e.logf(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
-		batch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
+		// Provider tool-call IDs are only unique within one response, so each
+		// batch opens a fresh reservation scope before executing.
+		state.toolState.beginToolRound()
+		rawBatch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
+		maxContextTokens := e.config.MaxContextTokens
+		if maxContextTokens <= 0 {
+			maxContextTokens = config.DefaultMaxContextToken
+		}
+		batch := limitToolResultBatch(contextMeter, messages, llmReq.Tools, llmReq.Schema, rawBatch, maxContextTokens, e.config.MaxToolResultPercent)
+		reconcileLimitedInspectFileCoverage(resp.ToolCalls, rawBatch, batch, state.toolState)
+		releaseEmptiedToolResults(resp.ToolCalls, rawBatch, batch, state.toolState)
+		releasePrunedSearchResults(resp.ToolCalls, rawBatch, batch, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)
@@ -564,7 +580,7 @@ func validAgentToolCall(toolCall llm.ToolCall, knownTools map[string]struct{}) b
 		return nonEmptyStringArg(args, "path")
 	case "search":
 		return nonEmptyStringArg(args, "query")
-	case "find_callers", "find_callees":
+	case "find_callers", "find_callees", "find_references":
 		return nonEmptyStringArg(args, "symbol")
 	case "git_show":
 		return nonEmptyStringArg(args, "commit")

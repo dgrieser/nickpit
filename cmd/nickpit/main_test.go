@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,13 +20,20 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/config/configtest"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/session"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/spf13/cobra"
 )
+
+func TestMain(m *testing.M) {
+	configtest.ClearAmbientEnv()
+	os.Exit(m.Run())
+}
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
 	dir := t.TempDir()
@@ -144,6 +152,34 @@ profiles:
 	}
 	if profile.MaxRequestBytes != 2048 {
 		t.Fatalf("max request bytes = %d, want 2048", profile.MaxRequestBytes)
+	}
+}
+
+func TestLoadProfileAppliesMaxToolResultPercentOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_tool_result_percent: 10
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:                 "default",
+		configPath:              path,
+		maxToolResultPercent:    0,
+		maxToolResultPercentSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxToolResultPercent != 0 {
+		t.Fatalf("max tool result percent = %d, want explicit zero", profile.MaxToolResultPercent)
 	}
 }
 
@@ -579,6 +615,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 		"presence-penalty",
 		"max-output-tokens",
 		"max-request-bytes",
+		"max-tool-result-percent",
 		"small-max-output-tokens",
 		"small-max-tokens",
 		"small-temperature",
@@ -593,6 +630,21 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	}
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")
+	}
+	// Flags whose effective default comes from config must advertise it, or
+	// --help tells the user the opposite of what the run will do.
+	for _, tt := range []struct{ name, want string }{
+		{"max-context-tokens", strconv.Itoa(config.DefaultMaxContextToken)},
+		{"max-tool-result-percent", strconv.Itoa(config.DefaultMaxToolResultPercent)},
+		{"max-duplicate-tool-calls", strconv.Itoa(toollimits.DefaultMaxDuplicateToolCalls)},
+	} {
+		flag := cmd.PersistentFlags().Lookup(tt.name)
+		if flag == nil {
+			t.Fatalf("%s flag missing", tt.name)
+		}
+		if flag.DefValue != tt.want {
+			t.Fatalf("%s default = %q, want %q", tt.name, flag.DefValue, tt.want)
+		}
 	}
 	diffScope := cmd.PersistentFlags().Lookup("disable-diff-scope")
 	if diffScope == nil || diffScope.DefValue != "false" {
@@ -702,6 +754,74 @@ func TestInspectHistoryCommandsPresent(t *testing.T) {
 	annotations := show.Flags().Lookup("commit").Annotations[cobra.BashCompOneRequiredFlag]
 	if !slices.Contains(annotations, "true") {
 		t.Fatalf("inspect show commit flag should be required: %#v", annotations)
+	}
+}
+
+func TestInspectReferencesCommandPresent(t *testing.T) {
+	cmd := newRootCmd()
+	references, _, err := cmd.Find([]string{"inspect", "references"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if references == nil || references.Use != "references" {
+		t.Fatalf("inspect references command missing: %#v", references)
+	}
+	if references.Flags().Lookup("path") == nil || references.Flags().Lookup("symbol") == nil {
+		t.Fatalf("inspect references flags missing")
+	}
+	annotations := references.Flags().Lookup("symbol").Annotations[cobra.BashCompOneRequiredFlag]
+	if !slices.Contains(annotations, "true") {
+		t.Fatalf("inspect references symbol flag should be required: %#v", annotations)
+	}
+	if pathAnnotations := references.Flags().Lookup("path").Annotations[cobra.BashCompOneRequiredFlag]; slices.Contains(pathAnnotations, "true") {
+		t.Fatalf("inspect references path flag should be optional: %#v", pathAnnotations)
+	}
+}
+
+func TestInspectSearchUsesStructuralOptimizationAndDisableFlag(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/inspectsearch\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "sample.go"), []byte("package sample\n\nfunc Run() {}\n\nfunc Start() { Run() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "run.sh"), []byte("Run()\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repoRoot)
+
+	run := func(t *testing.T, disabled bool) map[string]any {
+		t.Helper()
+		cmd := newRootCmd()
+		args := []string{"--json"}
+		if disabled {
+			args = append(args, "--disable-search-tool-optimization")
+		}
+		args = append(args, "inspect", "search", "--query", "Run()")
+		cmd.SetArgs(args)
+		output := captureStdout(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(output), &payload); err != nil {
+			t.Fatalf("decode inspect search output: %v (%s)", err, output)
+		}
+		return payload
+	}
+
+	optimized := run(t, false)
+	if _, ok := optimized["root"]; !ok {
+		t.Fatalf("optimized inspect search = %#v, want caller hierarchy", optimized)
+	}
+	if literals, _ := optimized["literal_results"].([]any); len(literals) != 1 {
+		t.Fatalf("optimized inspect search = %#v, want preserved shell match", optimized)
+	}
+	literal := run(t, true)
+	if _, ok := literal["results"]; !ok {
+		t.Fatalf("disabled inspect search = %#v, want literal matches", literal)
 	}
 }
 

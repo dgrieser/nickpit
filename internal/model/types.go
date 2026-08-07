@@ -875,27 +875,6 @@ type CheckoutSpec struct {
 	HeadSHA  string
 }
 
-type TokenEstimator interface {
-	Estimate(text string) int
-}
-
-// LengthEstimator enables incremental token accounting: for estimators whose
-// Estimate depends only on len(text), EstimateLen(n) must equal Estimate of
-// any string of length n.
-type LengthEstimator interface {
-	EstimateLen(length int) int
-}
-
-type SimpleEstimator struct{}
-
-func (SimpleEstimator) Estimate(text string) int {
-	return len(text) / 4
-}
-
-func (SimpleEstimator) EstimateLen(length int) int {
-	return length / 4
-}
-
 func PriorityRank(priority *int) int {
 	if priority == nil {
 		return 3

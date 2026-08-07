@@ -37,6 +37,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -171,6 +172,8 @@ type app struct {
 	maxContextTokensSet     bool
 	maxRequestBytes         int
 	maxRequestBytesSet      bool
+	maxToolResultPercent    int
+	maxToolResultPercentSet bool
 	includeFullFiles        bool
 	includeComments         bool
 	includeCommits          bool
@@ -275,7 +278,8 @@ func isUserAbort(ctx context.Context, err error) bool {
 func newRootCmd() *cobra.Command {
 	cli := &app{
 		maxContextTokens:         config.DefaultMaxContextToken,
-		maxDuplicateToolCalls:    config.DefaultMaxDuplicateToolCalls,
+		maxToolResultPercent:     config.DefaultMaxToolResultPercent,
+		maxDuplicateToolCalls:    toollimits.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:         config.DefaultMaxOutputRetries,
 		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,
 		maxRateLimitDelaySeconds: config.DefaultMaxRateLimitDelaySeconds,
@@ -340,6 +344,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.smallExtraBody, "small-extra-body", "", "Additional JSON object fields for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRequestBytes, &cli.maxRequestBytesSet), "max-request-bytes", "Maximum serialized LLM request size in bytes (0 disables)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolResultPercent, &cli.maxToolResultPercentSet), "max-tool-result-percent", "Maximum percentage of remaining context tokens for each model tool result (0 disables capping)")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
@@ -375,7 +380,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableLiveProgress, "disable-live-progress", false, "Disable the live progress dashboard (quiet stderr; findings still print to stdout)")
-	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
+	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable replacing identifier search results with structural callers or references")
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
@@ -475,6 +480,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var maxRequestBytes *int
 	if a.maxRequestBytesSet {
 		maxRequestBytes = &a.maxRequestBytes
+	}
+	var maxToolResultPercent *int
+	if a.maxToolResultPercentSet {
+		maxToolResultPercent = &a.maxToolResultPercent
 	}
 	var toolCalls *int
 	if a.maxToolCallsSet {
@@ -619,6 +628,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		DiffFormat:                model.DiffFormat(a.diffFormat),
 		MaxContextTokens:          maxContextTokens,
 		MaxRequestBytes:           maxRequestBytes,
+		MaxToolResultPercent:      maxToolResultPercent,
 		ToolCalls:                 toolCalls,
 		DuplicateToolCalls:        duplicateToolCalls,
 		OutputRetries:             outputRetries,
@@ -1196,7 +1206,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
-	listFilesCmd.Flags().IntVar(&depth, "depth", 1, "Directory depth to traverse when listing files")
+	listFilesCmd.Flags().IntVar(&depth, "depth", toollimits.DefaultListFilesDepth, "Directory depth to traverse when listing files")
 	registerRepoPathCompletion(listFilesCmd, "path", a, true)
 
 	searchCmd := &cobra.Command{
@@ -1207,7 +1217,15 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			results, err := engine.Search(cmd.Context(), repoRoot, path, query, contextLines, maxResults, caseSensitive)
+			searchEngine := review.NewEngine(nil, nil, engine, config.Profile{})
+			searchEngine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+			results, err := searchEngine.ExecuteSearch(cmd.Context(), repoRoot, review.SearchOptions{
+				Path:          path,
+				Query:         query,
+				ContextLines:  contextLines,
+				MaxResults:    maxResults,
+				CaseSensitive: caseSensitive,
+			})
 			if err != nil {
 				return err
 			}
@@ -1221,6 +1239,29 @@ func (a *app) newInspectCmd() *cobra.Command {
 	searchCmd.Flags().BoolVar(&caseSensitive, "case-sensitive", false, "Use case-sensitive matching")
 	_ = searchCmd.MarkFlagRequired("query")
 	registerRepoPathCompletion(searchCmd, "path", a, false)
+
+	var referencesSymbol, referencesPath string
+	var referencesLine int
+	referencesCmd := &cobra.Command{
+		Use:   "references",
+		Short: "Retrieve a symbol definition and all references",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			result, err := engine.FindReferences(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: referencesSymbol, Path: referencesPath, Line: referencesLine})
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(result)
+		},
+	}
+	referencesCmd.Flags().StringVar(&referencesSymbol, "symbol", "", "Symbol name")
+	referencesCmd.Flags().StringVar(&referencesPath, "path", "", "Optional relative file or folder containing the declaration; references are collected repo-wide")
+	referencesCmd.Flags().IntVar(&referencesLine, "line", 0, "Optional declaration line, to pick one of several same-named declarations")
+	_ = referencesCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(referencesCmd, "path", a, false)
 
 	var callersSymbol, callersPath string
 	var callersDepth int
@@ -1241,7 +1282,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
+	callersCmd.Flags().IntVar(&callersDepth, "depth", toollimits.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(callersCmd, "path", a, false)
 
@@ -1264,7 +1305,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
+	calleesCmd.Flags().IntVar(&calleesDepth, "depth", toollimits.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(calleesCmd, "path", a, false)
 
@@ -1343,7 +1384,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = showCmd.MarkFlagRequired("commit")
 	registerRepoPathCompletion(showCmd, "paths", a, false)
 
-	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd, logCmd, showCmd)
+	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, referencesCmd, callersCmd, calleesCmd, logCmd, showCmd)
 	return cmd
 }
 
@@ -2564,39 +2605,109 @@ func (a *app) writeInspectOutput(value any) error {
 	case *retrieval.CallHierarchy:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
-	case *git.LogResult:
-		return writeCommitLog(typed)
-	case *git.ShowResult:
-		return writeCommitDiffs(typed)
-	case *retrieval.SearchResults:
-		for i, result := range typed.Results {
+	case *review.CallHierarchyResult:
+		_, err := fmt.Fprintln(os.Stdout, typed.Render())
+		return err
+	case *retrieval.ReferenceResult:
+		_, err := fmt.Fprintln(os.Stdout, typed.Render())
+		return err
+	case *review.MixedSearchResult:
+		if typed.Callers != nil {
+			if _, err := fmt.Fprintln(os.Stdout, typed.Callers.Render()); err != nil {
+				return err
+			}
+		} else if typed.References != nil {
+			if _, err := fmt.Fprintln(os.Stdout, typed.References.Render()); err != nil {
+				return err
+			}
+		}
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		if len(typed.LiteralResults) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintln(os.Stdout, "\nUnclassified literal matches:"); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.LiteralResults)
+	case *review.GroupedSearchResult:
+		for i, hierarchy := range typed.CallHierarchies {
 			if i > 0 {
 				if _, err := fmt.Fprintln(os.Stdout); err != nil {
 					return err
 				}
 			}
-			loc := result.CodeLocation
-			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
+			if _, err := fmt.Fprintln(os.Stdout, hierarchy.Render()); err != nil {
 				return err
-			}
-			if result.ContextBefore != nil {
-				if _, err := fmt.Fprintln(os.Stdout, result.ContextBefore.Content); err != nil {
-					return err
-				}
-			}
-			if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
-				return err
-			}
-			if result.ContextAfter != nil {
-				if _, err := fmt.Fprintln(os.Stdout, result.ContextAfter.Content); err != nil {
-					return err
-				}
 			}
 		}
-		return nil
+		for _, references := range typed.ReferenceResults {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(os.Stdout, references.Render()); err != nil {
+				return err
+			}
+		}
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		if len(typed.LiteralResults) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintln(os.Stdout, "\nUnclassified literal matches:"); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.LiteralResults)
+	case *git.LogResult:
+		return writeCommitLog(typed)
+	case *git.ShowResult:
+		return writeCommitDiffs(typed)
+	case *retrieval.SearchResults:
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.Results)
 	default:
 		return writeJSON(value)
 	}
+}
+
+func writeInspectTruncatedFiles(files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(os.Stdout, "Warning: search clipped files before matching completed: %s\n", strings.Join(files, ", "))
+	return err
+}
+
+func writeInspectSearchResults(results []retrieval.SearchResult) error {
+	for i, result := range results {
+		if i > 0 {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+		}
+		loc := result.CodeLocation
+		if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
+			return err
+		}
+		if result.ContextBefore != nil {
+			if _, err := fmt.Fprintln(os.Stdout, result.ContextBefore.Content); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
+			return err
+		}
+		if result.ContextAfter != nil {
+			if _, err := fmt.Fprintln(os.Stdout, result.ContextAfter.Content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // writeCommitLog renders a commit listing: one header line per commit followed
