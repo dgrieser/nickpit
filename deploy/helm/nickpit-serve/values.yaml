@@ -214,7 +214,8 @@ serve:
   logDir: "/work/logs"
   # Journal for accepted-but-unfinished review jobs, resumed after a restart.
   # Lives on the `work` emptyDir unless persistence.enabled mounts a PVC there
-  # (see persistence above). "" disables journaling.
+  # (see persistence above). Must be absolute when persistence is enabled.
+  # "" disables journaling.
   stateDir: "/work/state"
   reviewConcurrency: 2
   shutdownGrace: "10m"

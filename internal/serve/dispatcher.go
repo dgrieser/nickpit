@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	queueCapacity = 256
-	shaLRUSize    = 512
+	queueCapacity           = 256
+	shaLRUSize              = 512
+	ackCleanupQueueCapacity = 64
+	maxAckCleanupWorkers    = 4
 )
 
 // Event is one review request accepted by the handler and queued for a
@@ -29,18 +31,13 @@ type Event struct {
 	// AckNoteIDs are the command notes the handler acknowledged for this review
 	// (with the ack emoji). The worker replaces that reaction with the review
 	// outcome, so the comment that asked for the review shows how it ended.
-	// Coalesced events contribute their notes too — every asker gets an answer.
+	// Coalesced events contribute their notes too, up to maxAckNotes.
 	AckNoteIDs []int
 	// StartEmojis and AckEmojis are every configured name under which this job
 	// may have placed its managed reactions. Keeping the names on the event lets
 	// journal restore clean markers from an older configuration.
 	StartEmojis []string
 	AckEmojis   []string
-	// priorStartReaction is true only for a restored job whose previous worker
-	// may have reached the start-reaction request. take persists the current
-	// name before this worker can make that request, but must not set this flag:
-	// a live worker knows whether it actually attempted the reaction.
-	priorStartReaction bool
 }
 
 type jobKey struct {
@@ -89,8 +86,8 @@ type WorkerConfig struct {
 	LogDir     string
 }
 
-// Dispatcher owns the coalescing queue and the worker pool. All mutable state
-// sits behind one mutex; the daemon is concurrent by construction.
+// Dispatcher owns the coalescing queue and worker pools. Review state sits
+// behind mu; the independent acknowledgement cleanup pool uses cleanupMu.
 type Dispatcher struct {
 	mu     sync.Mutex
 	states map[jobKey]*jobState
@@ -115,6 +112,15 @@ type Dispatcher struct {
 	log     *slog.Logger
 
 	workers sync.WaitGroup
+	// Ack cleanup runs outside the review workers, but its queue and worker
+	// count are bounded so a flood of commands over maxAckNotes cannot create
+	// unbounded goroutines or GitLab requests. Workers are started lazily and
+	// exit when the queue drains.
+	cleanupMu      sync.Mutex
+	cleanupQueue   []ackCleanup
+	cleanupWorkers int
+	cleanupClosed  bool
+	cleanupWG      sync.WaitGroup
 	// jobCtx outlives the intake context so in-flight reviews survive
 	// shutdown until the grace period expires.
 	jobCtx    context.Context
@@ -172,9 +178,6 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 			AckNoteIDs:  entry.AckNoteIDs,
 			StartEmojis: entry.StartEmojis,
 			AckEmojis:   entry.AckEmojis,
-			// A journal records the start name before the remote request, so
-			// after a crash the reaction may exist and must be cleaned up.
-			priorStartReaction: len(entry.StartEmojis) > 0,
 		}
 		key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 		d.mu.Lock()
@@ -245,7 +248,7 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			// ever flip them, so take the ack back now instead of leaving the
 			// notes reading as in progress forever.
 			d.log.Warn("ack note cap exceeded, releasing dropped notes", "project", event.ProjectPath, "iid", event.IID, "notes", dropped)
-			go d.releaseAcks(releaseEvent, dropped)
+			d.queueAckCleanup(releaseEvent, dropped)
 		}
 		return true
 	}
@@ -279,15 +282,15 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 	incoming.AckNoteIDs = merged
 	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
 	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
-	incoming.priorStartReaction = existing.priorStartReaction || incoming.priorStartReaction
 	return incoming, dropped
 }
 
 // trackAcknowledgement stamps the name already awarded by the handler onto the
 // event before it is journaled. Reactions are disabled defensively if a caller
 // constructs a group without the resolved identity required for safe cleanup.
-// Start reaction names are recorded later by take, immediately before a worker
-// can place them; queued jobs have not placed a start marker yet.
+// Start reaction names are recorded by recordStartReactionAttempt immediately
+// before the remote request; queued and precheck-only jobs have not placed a
+// start marker yet.
 func (d *Dispatcher) trackAcknowledgement(event *Event) {
 	if event.Group == nil || event.Group.BotUserID == 0 {
 		return
@@ -327,8 +330,8 @@ func removeInts(values, removed []int) []int {
 // flood of "/<keyword> review" comments on a single MR cannot grow the event or
 // the number of settle requests without limit. The oldest notes are kept: they
 // have worn the in-progress reaction the longest. Dropped notes are reported so
-// their ack reaction can be released — every asker gets an answer, or at least
-// no comment reads as in progress forever.
+// their ack reaction can be queued for best-effort release. That cleanup queue
+// is bounded too, preserving resource limits under sustained overload.
 const maxAckNotes = 32
 
 func mergeAckNotes(existing, incoming []int) (merged, dropped []int) {
@@ -413,6 +416,7 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	d.jobCancel()
 	<-done
 	d.releaseUnfinished()
+	d.stopAckCleanup()
 }
 
 // releaseUnfinished handles the jobs shutdown leaves behind: queued jobs that
@@ -484,6 +488,67 @@ func (d *Dispatcher) releaseAcks(event Event, notes []int) {
 	d.settle(context.Background(), event, reactions{notes: notes}, outcomeAborted, log)
 }
 
+type ackCleanup struct {
+	event  Event
+	noteID int
+}
+
+// queueAckCleanup schedules best-effort acknowledgement revokes without
+// blocking webhook intake. Both queued work and live requests are bounded; if
+// the cleanup backlog is saturated, excess work is logged and discarded.
+func (d *Dispatcher) queueAckCleanup(event Event, notes []int) {
+	if len(notes) == 0 {
+		return
+	}
+	d.cleanupMu.Lock()
+	queued := 0
+	if !d.cleanupClosed {
+		for _, noteID := range notes {
+			if len(d.cleanupQueue) >= ackCleanupQueueCapacity {
+				break
+			}
+			d.cleanupQueue = append(d.cleanupQueue, ackCleanup{event: event, noteID: noteID})
+			queued++
+		}
+		for d.cleanupWorkers < maxAckCleanupWorkers && d.cleanupWorkers < len(d.cleanupQueue) {
+			d.cleanupWorkers++
+			d.cleanupWG.Go(d.runAckCleanup)
+		}
+	}
+	d.cleanupMu.Unlock()
+	if queued < len(notes) {
+		d.log.Warn("ack cleanup backlog full, dropping cleanup requests",
+			"project", event.ProjectPath, "iid", event.IID, "dropped", len(notes)-queued)
+	}
+}
+
+func (d *Dispatcher) runAckCleanup() {
+	for {
+		d.cleanupMu.Lock()
+		if len(d.cleanupQueue) == 0 {
+			d.cleanupWorkers--
+			d.cleanupMu.Unlock()
+			return
+		}
+		cleanup := d.cleanupQueue[0]
+		d.cleanupQueue[0] = ackCleanup{}
+		d.cleanupQueue = d.cleanupQueue[1:]
+		d.cleanupMu.Unlock()
+
+		d.releaseAcks(cleanup.event, []int{cleanup.noteID})
+	}
+}
+
+// stopAckCleanup prevents new cleanup work and drains the bounded queue. Server
+// shutdown calls this after HTTP handlers have drained, so no producer can race
+// the wait with a new WaitGroup task.
+func (d *Dispatcher) stopAckCleanup() {
+	d.cleanupMu.Lock()
+	d.cleanupClosed = true
+	d.cleanupMu.Unlock()
+	d.cleanupWG.Wait()
+}
+
 // AbortOutcome reports what Abort found and did.
 type AbortOutcome struct {
 	// Found is true when a queued or running job existed for the MR.
@@ -532,18 +597,32 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 		return Event{}, nil, false
 	}
 	state.status = stateRunning
-	if state.latest.Group != nil && state.latest.Group.BotUserID != 0 && d.cfg.StartEmoji != "" && !slices.Contains(state.latest.StartEmojis, d.cfg.StartEmoji) {
-		// Persist the name before the worker can place it. A crash after the
-		// remote award but before any later local update must still leave the
-		// next process enough information to clean the marker.
-		state.latest.StartEmojis = appendUniqueStrings(state.latest.StartEmojis, d.cfg.StartEmoji)
-		state.persisted = d.journal.persist(state.latest)
-	}
 	ctx, cancel := context.WithCancel(d.jobCtx)
 	state.cancel = cancel
 	state.startedAt = time.Now()
 	d.running++
 	return state.latest, ctx, true
+}
+
+// recordStartReactionAttempt persists the configured start name immediately
+// before the worker makes the remote request. Therefore restored names mean a
+// request may truly have reached GitLab; a crash during earlier policy checks
+// cannot make the resumed worker decorate an MR that was never started.
+func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
+	event.StartEmojis = appendUniqueStrings(event.StartEmojis, d.cfg.StartEmoji)
+	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.states[key]
+	if !ok {
+		return
+	}
+	state.latest.StartEmojis = appendUniqueStrings(state.latest.StartEmojis, d.cfg.StartEmoji)
+	resume := state.latest
+	if state.pending != nil {
+		resume, _ = mergeEvents(resume, *state.pending)
+	}
+	state.persisted = d.journal.persist(resume)
 }
 
 // finish completes a job. A pending event received mid-run re-queues the MR
@@ -624,7 +703,7 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 	if state.pending != nil {
 		pending := *state.pending
 		state.pending = nil
-		go d.releaseAcks(pending, pending.AckNoteIDs)
+		d.queueAckCleanup(pending, pending.AckNoteIDs)
 	}
 	if state.status == stateRunning {
 		if state.cancel != nil {
@@ -634,7 +713,7 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 	}
 	latest := state.latest
 	delete(d.states, key)
-	go d.releaseAcks(latest, latest.AckNoteIDs)
+	d.queueAckCleanup(latest, latest.AckNoteIDs)
 	return AbortOutcome{Found: true}
 }
 

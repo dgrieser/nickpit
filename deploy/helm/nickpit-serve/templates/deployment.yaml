@@ -1,6 +1,9 @@
 {{- if gt (int .Values.replicaCount) 1 }}
 {{- fail "nickpit-serve MUST run as a singleton; replicaCount cannot exceed 1 (in-memory review queue + dedup LRU would duplicate reviews)." }}
 {{- end }}
+{{- if and .Values.persistence.enabled .Values.serve.stateDir (not (hasPrefix "/" .Values.serve.stateDir)) }}
+{{- fail "persistence.enabled needs serve.stateDir to be an absolute path" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

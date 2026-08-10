@@ -57,6 +57,10 @@ type fakeGitLab struct {
 	// letting a test cancel a job while FetchMRStatus is provably in flight.
 	statusGate    chan struct{}
 	statusArrived atomic.Int32
+	// emojiGate blocks award-emoji reads so tests can measure cleanup request
+	// concurrency without holding the fake's mutex.
+	emojiGate    chan struct{}
+	emojiArrived atomic.Int32
 }
 
 func (f *fakeGitLab) gateReads() int {
@@ -85,6 +89,10 @@ func (f *fakeGitLab) handler() http.Handler {
 		if f.statusGate != nil && r.Method == http.MethodGet && mrStatusPath.MatchString(r.URL.Path) {
 			f.statusArrived.Add(1)
 			<-f.statusGate
+		}
+		if f.emojiGate != nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+			f.emojiArrived.Add(1)
+			<-f.emojiGate
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -481,6 +489,50 @@ func TestEnqueueCapOverflowReleasesDroppedAck(t *testing.T) {
 	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
 		t.Fatalf("revoked = %v, want the dropped note's ack", revoked)
 	}
+}
+
+// Overflow acknowledgement cleanup must have finite goroutine, queue, and
+// outbound-request bounds even when authenticated commands keep arriving.
+func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:    []string{"nickpit"},
+		state:     "opened",
+		headSHA:   "sha-1",
+		emojiGate: make(chan struct{}),
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	first := commandEvent(7, "sha-1", group, 0)
+	first.AckNoteIDs = make([]int, maxAckNotes)
+	for i := range first.AckNoteIDs {
+		first.AckNoteIDs[i] = i + 1
+	}
+	dispatcher.Enqueue(first)
+	for i := range ackCleanupQueueCapacity + maxAckCleanupWorkers + 32 {
+		noteID := 10_000 + i
+		fake.preAward(7, noteID, "eyes")
+		dispatcher.Enqueue(commandEvent(7, "sha-2", group, noteID))
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.emojiArrived.Load() == maxAckCleanupWorkers
+	})
+	dispatcher.cleanupMu.Lock()
+	workers := dispatcher.cleanupWorkers
+	queued := len(dispatcher.cleanupQueue)
+	dispatcher.cleanupMu.Unlock()
+	if workers != maxAckCleanupWorkers {
+		t.Fatalf("cleanup workers = %d, want %d", workers, maxAckCleanupWorkers)
+	}
+	if queued != ackCleanupQueueCapacity {
+		t.Fatalf("cleanup queue = %d, want bounded capacity %d", queued, ackCleanupQueueCapacity)
+	}
+	if requests := fake.emojiArrived.Load(); requests != maxAckCleanupWorkers {
+		t.Fatalf("live cleanup requests = %d, want at most %d", requests, maxAckCleanupWorkers)
+	}
+
+	close(fake.emojiGate)
+	dispatcher.Shutdown(0)
 }
 
 func TestEnqueuePendingPreservesManualKind(t *testing.T) {

@@ -54,10 +54,8 @@ func TestWorkerTopicMissNoRun(t *testing.T) {
 	}
 }
 
-// take persists the configured start-reaction name before process runs so a
-// crash can clean up a possibly completed remote request. That crash metadata
-// must not make a live worker settle an MR it rejects before attempting the
-// start reaction.
+// Taking a job must not make a live worker settle an MR it rejects before
+// attempting the start reaction.
 func TestWorkerTakeDoesNotDecorateSkippedAuto(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

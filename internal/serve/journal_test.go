@@ -192,9 +192,13 @@ func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
 	first, _, groups := newJournalEnvWithConfig(t, fake, dir, oldCfg)
 	first.Enqueue(commandEvent(7, "sha-1", groups.Match("platform/api"), 301))
 	key := <-first.queue
-	if _, _, ok := first.take(key); !ok {
+	event, _, ok := first.take(key)
+	if !ok {
 		t.Fatal("old-config job could not be marked running")
 	}
+	// Simulate the last local step before the old worker's remote request. The
+	// preAward above represents that request succeeding before the crash.
+	first.recordStartReactionAttempt(&event)
 	entries := first.journal.load()
 	if len(entries) != 1 || !slices.Contains(entries[0].StartEmojis, "old-start") || !slices.Contains(entries[0].AckEmojis, "old-ack") {
 		t.Fatalf("journaled reaction names = %+v, want old start and ack", entries)
@@ -220,6 +224,45 @@ func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
 	}
 	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "white_check_mark" {
 		t.Fatalf("note awards = %v, want only current outcome", awards)
+	}
+}
+
+// A crash after take but before policy checks finish must not turn the
+// configured start-emoji name into evidence that a request reached GitLab.
+// The restored skipped job therefore leaves the MR wholly undecorated.
+func TestJournalRestoreBeforeStartAttemptDoesNotDecorateSkippedAuto(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"go"}, state: "opened", headSHA: "sha-1"}
+
+	first, _, groups := newJournalEnv(t, fake, dir)
+	first.Enqueue(autoEvent(7, "sha-1", groups.Match("platform/api")))
+	key := <-first.queue
+	if _, _, ok := first.take(key); !ok {
+		t.Fatal("queued job could not be marked running")
+	}
+	entries := first.journal.load()
+	if len(entries) != 1 || len(entries[0].StartEmojis) != 0 {
+		t.Fatalf("journal entries = %+v, want no start reaction before API attempt", entries)
+	}
+	first.jobCancel() // simulate process loss without settling or removing state
+
+	second, runner, groups := newJournalEnv(t, fake, dir)
+	if resumed := second.Restore(groups); resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", resumed)
+	}
+	key = <-second.queue
+	event, ctx, ok := second.take(key)
+	if !ok {
+		t.Fatal("restored job could not be taken")
+	}
+	second.process(ctx, event)
+	second.finish(key)
+
+	if len(runner.ran()) != 0 {
+		t.Fatal("unopted restored review must not run")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none before or after restore", posted)
 	}
 }
 

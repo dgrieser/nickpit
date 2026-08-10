@@ -37,7 +37,7 @@ const (
 // note) are left untouched — an MR the daemon skipped must not be decorated.
 type reactions struct {
 	// mr is true once this worker attempted the start emoji, or when a restored
-	// journal says the previous worker may already have awarded one.
+	// journal contains a name recorded at that attempt boundary.
 	mr bool
 	// notes are the command notes wearing the ack emoji.
 	notes []int
@@ -51,14 +51,14 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID, "trigger", event.Kind.String())
 	// The command notes already wear the ack emoji: the handler awarded it when
 	// it accepted the command, before this job was picked up.
-	placed := reactions{mr: event.priorStartReaction, notes: event.AckNoteIDs}
-	outcome := d.review(ctx, event, &placed, log)
+	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
+	outcome := d.review(ctx, &event, &placed, log)
 	d.settle(ctx, event, placed, outcome, log)
 }
 
 // review is process without the reaction bookkeeping: it reports how the review
 // ended and records in placed which reactions it put in place.
-func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions, log *slog.Logger) reviewOutcome {
+func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions, log *slog.Logger) reviewOutcome {
 	if event.Kind == TriggerAuto {
 		optedIn, err := d.topics.HasTopic(ctx, event.Group, event.ProjectID, d.cfg.Topic)
 		if err != nil {
@@ -90,6 +90,10 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 	}
 
 	if d.cfg.StartEmoji != "" && event.Group.BotUserID != 0 {
+		// Persist crash-cleanup metadata at the last possible local boundary:
+		// after all skip checks, immediately before the remote request.
+		d.recordStartReactionAttempt(event)
+		placed.mr = true
 		// Revoke every previous bot-owned status reaction in the same call,
 		// including outcomes left under older configurations. Preserve the
 		// trigger reaction: if the bot itself requested this review, revoking it
@@ -102,7 +106,6 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 		// Recorded even when the call failed: it may have awarded and only
 		// failed to revoke, and settle's replace is harmless when there is
 		// nothing to revoke.
-		placed.mr = true
 	}
 
 	spec := ReviewSpec{
