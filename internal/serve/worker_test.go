@@ -30,11 +30,12 @@ func newWorkerEnv(t *testing.T, fake *fakeGitLab, cfg WorkerConfig) (*Dispatcher
 
 func workerCfg() WorkerConfig {
 	return WorkerConfig{
-		Topic:      "nickpit",
-		StartEmoji: "eyes",
-		AckEmoji:   "eyes",
-		DoneEmoji:  "white_check_mark",
-		FailEmoji:  "x",
+		Topic:        "nickpit",
+		TriggerEmoji: "nickpit",
+		StartEmoji:   "eyes",
+		AckEmoji:     "eyes",
+		DoneEmoji:    "white_check_mark",
+		FailEmoji:    "x",
 	}
 }
 
@@ -278,6 +279,33 @@ func TestWorkerRerunClearsPreviousOutcome(t *testing.T) {
 	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
 	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
 		t.Fatalf("MR awards after retry = %v, want the done emoji only", awards)
+	}
+}
+
+// Cleanup is based on reactions owned by the bot, not only names in the current
+// config. A restart with changed outcome names must not leave old success next
+// to new failure, even when no state journal survives the restart.
+func TestWorkerRerunClearsOutcomeFromPreviousConfig(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 0, "nickpit") // bot-triggered review; cleanup must preserve it
+
+	oldCfg := workerCfg()
+	oldCfg.DoneEmoji = "old-done"
+	oldDispatcher, _, oldGroup := newWorkerEnv(t, fake, oldCfg)
+	oldDispatcher.process(context.Background(), autoEvent(7, "sha-1", oldGroup))
+	if awards := fake.awardedOn(7, 0); len(awards) != 2 || awards[0] != "nickpit" || awards[1] != "old-done" {
+		t.Fatalf("MR awards after old config = %v, want trigger and old success", awards)
+	}
+
+	newCfg := workerCfg()
+	newCfg.DoneEmoji = "new-done"
+	newCfg.FailEmoji = "new-fail"
+	newDispatcher, runner, newGroup := newWorkerEnv(t, fake, newCfg)
+	runner.exit = 1
+	newDispatcher.process(context.Background(), autoEvent(7, "sha-1", newGroup))
+
+	if awards := fake.awardedOn(7, 0); len(awards) != 2 || awards[0] != "nickpit" || awards[1] != "new-fail" {
+		t.Fatalf("MR awards after config change = %v, want trigger and current failure only", awards)
 	}
 }
 

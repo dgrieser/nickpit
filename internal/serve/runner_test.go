@@ -63,7 +63,7 @@ func TestExecRunnerInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := string(data)
-	if !strings.Contains(log, "args:gitlab mr --repo platform/api --id 7 --publish --config .nickpit.yaml --profile default") {
+	if !strings.Contains(log, "args:gitlab mr --repo platform/api --id 7 --config .nickpit.yaml --profile default --publish --require-publish") {
 		t.Fatalf("argv wrong:\n%s", log)
 	}
 	if !strings.Contains(log, "token:group-token") || !strings.Contains(log, "base_url:https://gitlab.example.com") {

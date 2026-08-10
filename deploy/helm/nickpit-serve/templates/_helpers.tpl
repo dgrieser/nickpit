@@ -89,8 +89,12 @@ start_emoji: {{ .Values.serve.startEmoji | quote }}
 command_keyword: {{ .Values.serve.commandKeyword | quote }}
 ack_emoji: {{ .Values.serve.ackEmoji | quote }}
 abort_emoji: {{ .Values.serve.abortEmoji | quote }}
+{{- if ne .Values.serve.doneEmoji "white_check_mark" }}
 done_emoji: {{ .Values.serve.doneEmoji | quote }}
+{{- end }}
+{{- if ne .Values.serve.failEmoji "x" }}
 fail_emoji: {{ .Values.serve.failEmoji | quote }}
+{{- end }}
 {{- if .Values.serve.groupsSecretKey }}
 groups_file: "/etc/nickpit/groups.yaml"
 {{- end }}

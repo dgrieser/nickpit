@@ -179,6 +179,27 @@ func TestReplaceMREmojiRevokesOwnAwardsOnly(t *testing.T) {
 	}
 }
 
+func TestReplaceOwnMREmojiCleansUnknownOldOutcomes(t *testing.T) {
+	fake := &emojiServer{awards: []AwardEmoji{
+		award(1, "old-done", 9), // old config, ours
+		award(2, "old-fail", 9), // old config, ours
+		award(3, "nickpit", 9),  // protected trigger, ours
+		award(4, "old-done", 5), // same name, human's
+	}}
+	client := fake.start(t)
+
+	err := client.ReplaceOwnMREmoji(context.Background(), 42, 7, 9, "eyes", "nickpit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(fake.deleted) != "[1 2]" {
+		t.Fatalf("deleted = %v, want every old bot outcome and no protected/human reaction", fake.deleted)
+	}
+	if fmt.Sprint(fake.posted) != "[eyes]" {
+		t.Fatalf("posted = %v", fake.posted)
+	}
+}
+
 func TestReplaceMREmojiDoesNotRevokeWhenAwardFails(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

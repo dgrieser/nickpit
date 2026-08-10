@@ -143,11 +143,15 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	})
 	defer func() { _ = stream.Close() }()
 
-	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID), "--publish"}
+	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID)}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
 	}
 	args = append(args, spec.ExtraArgs...)
+	// Keep delivery requirements after operator-provided extra args so an
+	// accidental --publish=false or --require-publish=false cannot make a
+	// warning-only child exit look like successful delivery to the daemon.
+	args = append(args, "--publish", "--require-publish")
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

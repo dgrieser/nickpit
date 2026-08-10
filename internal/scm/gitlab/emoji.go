@@ -46,6 +46,19 @@ func (c *Client) ReplaceNoteEmoji(ctx context.Context, projectID, iid, noteID, u
 	return c.replaceEmoji(ctx, noteEmojiPath(projectID, iid, noteID), userID, add, remove)
 }
 
+// ReplaceOwnMREmoji awards add and revokes every other reaction owned by
+// userID on the merge request, except explicitly kept names. It is intended
+// for awardables where this dedicated bot owns all status reactions; unlike a
+// name-based replacement it also cleans outcomes left by older configurations.
+func (c *Client) ReplaceOwnMREmoji(ctx context.Context, projectID, iid, userID int, add string, keep ...string) error {
+	return c.replaceOwnEmoji(ctx, mrEmojiPath(projectID, iid), userID, add, keep)
+}
+
+// ReplaceOwnNoteEmoji is ReplaceOwnMREmoji for a merge request note.
+func (c *Client) ReplaceOwnNoteEmoji(ctx context.Context, projectID, iid, noteID, userID int, add string, keep ...string) error {
+	return c.replaceOwnEmoji(ctx, noteEmojiPath(projectID, iid, noteID), userID, add, keep)
+}
+
 func mrEmojiPath(projectID, iid int) string {
 	return fmt.Sprintf("/projects/%d/merge_requests/%d/award_emoji", projectID, iid)
 }
@@ -100,9 +113,28 @@ func (c *Client) replaceEmoji(ctx context.Context, basePath string, userID int, 
 		return errors.New("gitlab: refusing to replace award emoji: own user id unresolved")
 	}
 
+	return c.replaceEmojiWhere(ctx, basePath, userID, add, len(wanted) > 0, func(award AwardEmoji) bool {
+		return slices.Contains(wanted, award.Name)
+	})
+}
+
+func (c *Client) replaceOwnEmoji(ctx context.Context, basePath string, userID int, add string, keep []string) error {
+	if userID == 0 {
+		return errors.New("gitlab: refusing to replace award emoji: own user id unresolved")
+	}
+	protected := append(slices.Clone(keep), add)
+	return c.replaceEmojiWhere(ctx, basePath, userID, add, true, func(award AwardEmoji) bool {
+		return !slices.Contains(protected, award.Name)
+	})
+}
+
+// replaceEmojiWhere confirms add, then revokes matching awards owned by
+// userID. A failed add preserves old status markers; a failed list still tries
+// the informative add and returns the list error to the caller.
+func (c *Client) replaceEmojiWhere(ctx context.Context, basePath string, userID int, add string, list bool, remove func(AwardEmoji) bool) error {
 	var errs []error
 	var awards []AwardEmoji
-	if len(wanted) > 0 {
+	if list {
 		if err := c.GetPaginated(ctx, basePath, &awards); err != nil {
 			errs = append(errs, fmt.Errorf("gitlab: listing award emoji: %w", err))
 		}
@@ -114,7 +146,7 @@ func (c *Client) replaceEmoji(ctx context.Context, basePath string, userID int, 
 		}
 	}
 	for _, award := range awards {
-		if !slices.Contains(wanted, award.Name) {
+		if award.Name == add || !remove(award) {
 			continue
 		}
 		if award.User.ID != userID {

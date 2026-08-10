@@ -72,7 +72,8 @@ type jobState struct {
 
 // WorkerConfig is the static per-review configuration shared by all workers.
 type WorkerConfig struct {
-	Topic string
+	Topic        string
+	TriggerEmoji string
 	// StartEmoji marks the merge request while a review runs; AckEmoji is the
 	// same marker on the command note (awarded by the handler). Both are
 	// replaced when the review ends: DoneEmoji when it landed, FailEmoji when it

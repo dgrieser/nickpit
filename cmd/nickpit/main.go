@@ -228,6 +228,7 @@ type app struct {
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
 	disableSuggestions            bool
+	requirePublish                bool
 	disableWorkflowTimeBudget     bool
 	concurrency                   int
 	verifyDropPolicy              string
@@ -386,6 +387,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
+	root.PersistentFlags().BoolVar(&cli.requirePublish, "require-publish", false, "Fail unless the requested review is published successfully")
+	_ = root.PersistentFlags().MarkHidden("require-publish")
 	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Which classified findings and verifier verdicts are dropped before merge: none, refuted-only, refuted-and-unverified")
@@ -1116,15 +1119,16 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				log.Info("review job journal enabled", "dir", cfg.StateDir)
 			}
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, journal, serve.WorkerConfig{
-				Topic:      cfg.Topic,
-				StartEmoji: cfg.StartEmojiName(),
-				AckEmoji:   cfg.AckEmojiName(),
-				DoneEmoji:  cfg.DoneEmojiName(),
-				FailEmoji:  cfg.FailEmojiName(),
-				BaseURL:    baseURL,
-				ConfigPath: a.configPath,
-				ExtraArgs:  childArgs,
-				LogDir:     cfg.LogDir,
+				Topic:        cfg.Topic,
+				TriggerEmoji: cfg.TriggerEmoji,
+				StartEmoji:   cfg.StartEmojiName(),
+				AckEmoji:     cfg.AckEmojiName(),
+				DoneEmoji:    cfg.DoneEmojiName(),
+				FailEmoji:    cfg.FailEmojiName(),
+				BaseURL:      baseURL,
+				ConfigPath:   a.configPath,
+				ExtraArgs:    childArgs,
+				LogDir:       cfg.LogDir,
 			}, log)
 			if resumed := dispatcher.Restore(groups); resumed > 0 {
 				log.Info("resumed journaled review jobs", "count", resumed, "dir", cfg.StateDir)
@@ -1770,10 +1774,11 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 		return err
 	}
 	// Publish the review back to the origin (GitHub PR or GitLab MR) when
-	// requested. The review already succeeded and printed to stdout, so a
-	// publish failure is a warning, never a hard error. Only sources
-	// implementing ReviewPublisher (GitHub, GitLab) act here; local reviews
-	// are unaffected.
+	// requested. Interactive commands keep publish failures as warnings because
+	// the review still succeeded and printed to stdout. Serve children set the
+	// hidden require-publish flag so their exit code is an explicit delivery
+	// signal for the daemon's outcome reaction.
+	var deliveryErr error
 	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
 		if publisher, ok := source.(model.ReviewPublisher); ok {
 			// GitLab numbers MRs with "!", GitHub PRs with "#".
@@ -1785,11 +1790,23 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 			if err := publisher.PublishReview(ctx, req, result); err != nil {
 				a.logProgress(ctx, logging.StagePublish, logging.StateError, fmt.Sprintf("error=%v", err))
 				result.Warnings = append(result.Warnings, fmt.Sprintf("Publish failed: %v", err))
+				if a.requirePublish {
+					deliveryErr = fmt.Errorf("publishing review: %w", err)
+				}
 			} else {
 				a.logProgress(ctx, logging.StagePublish, logging.StateDone, "")
 			}
 		} else {
 			a.logProgress(ctx, logging.StagePublish, logging.StateSkip, "source does not support publishing")
+			if a.requirePublish {
+				deliveryErr = errors.New("publishing review: source does not support publishing")
+			}
+		}
+	} else if a.requirePublish {
+		if !req.PostReview {
+			deliveryErr = errors.New("publishing review: --publish is disabled")
+		} else {
+			deliveryErr = errors.New("publishing review: result contains no publishable content")
 		}
 	}
 	// Save a resumable discussion session so `nickpit chat` can pick up the
@@ -1808,6 +1825,9 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// CI-level failure. Empty findings alone are not a failure (clean diff).
 	if reviewProducedNothing(result) {
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
+	}
+	if deliveryErr != nil {
+		return deliveryErr
 	}
 	return nil
 }

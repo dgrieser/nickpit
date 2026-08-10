@@ -235,6 +235,8 @@ serve:
   # when it landed, failEmoji when it did not. "" only revokes the in-progress
   # reaction. Both must differ from triggerEmoji, from each other, and from the
   # reactions they replace.
+  # Built-in values are omitted from rendered server.yaml so legacy reaction
+  # settings that collide with a new default remain upgradeable.
   doneEmoji: "white_check_mark"
   failEmoji: "x"
   # Where the GitLab group inventory comes from. Default: the Secret key named
