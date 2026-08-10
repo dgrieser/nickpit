@@ -40,6 +40,11 @@ type journalEntry struct {
 	// changes so a resumed job can revoke the old markers.
 	StartEmojis []string `json:"start_emojis,omitempty"`
 	AckEmojis   []string `json:"ack_emojis,omitempty"`
+	// CleanupOutcome marks an entry that must only settle reactions, never
+	// rerun the review. Pending carries a review accepted while that cleanup
+	// was retrying.
+	CleanupOutcome string        `json:"cleanup_outcome,omitempty"`
+	Pending        *journalEntry `json:"pending,omitempty"`
 }
 
 // NewJournal opens (creating if needed) the state directory. An empty dir
@@ -71,12 +76,24 @@ func (j *Journal) path(projectID, iid int) string {
 // still gets its outcome flip. One file per (project, iid); newer state
 // overwrites older via an atomic rename.
 func (j *Journal) persist(event Event) bool {
-	if j == nil {
-		return false
+	return j.persistEntry(entryFromEvent(event))
+}
+
+// persistCleanup records remote reaction work that must survive until every
+// replacement succeeds. A pending review remains behind that cleanup and is
+// promoted only after the old reactions have settled.
+func (j *Journal) persistCleanup(cleanup reactionCleanup, pending *Event) bool {
+	entry := entryFromEvent(cleanup.event)
+	entry.CleanupOutcome = cleanupOutcomeName(cleanup.outcome)
+	if pending != nil {
+		pendingEntry := entryFromEvent(*pending)
+		entry.Pending = &pendingEntry
 	}
-	path := j.path(event.ProjectID, event.IID)
-	tmp := path + ".tmp"
-	entry := journalEntry{
+	return j.persistEntry(entry)
+}
+
+func entryFromEvent(event Event) journalEntry {
+	return journalEntry{
 		Kind:        event.Kind.String(),
 		ProjectID:   event.ProjectID,
 		ProjectPath: event.ProjectPath,
@@ -86,10 +103,18 @@ func (j *Journal) persist(event Event) bool {
 		StartEmojis: event.StartEmojis,
 		AckEmojis:   event.AckEmojis,
 	}
+}
+
+func (j *Journal) persistEntry(entry journalEntry) bool {
+	if j == nil {
+		return false
+	}
+	path := j.path(entry.ProjectID, entry.IID)
+	tmp := path + ".tmp"
 	data, err := json.Marshal(entry)
 	if err != nil {
-		j.log.Warn("journal: encoding job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
-		j.invalidate(path, tmp, event.ProjectID, event.IID)
+		j.log.Warn("journal: encoding job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
+		j.invalidate(path, tmp, entry.ProjectID, entry.IID)
 		return false
 	}
 	err = os.WriteFile(tmp, data, 0o600)
@@ -97,11 +122,37 @@ func (j *Journal) persist(event Event) bool {
 		err = os.Rename(tmp, path)
 	}
 	if err != nil {
-		j.log.Warn("journal: persisting job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
-		j.invalidate(path, tmp, event.ProjectID, event.IID)
+		j.log.Warn("journal: persisting job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
+		j.invalidate(path, tmp, entry.ProjectID, entry.IID)
 		return false
 	}
 	return true
+}
+
+func cleanupOutcomeName(outcome reviewOutcome) string {
+	switch outcome {
+	case outcomeDone:
+		return "done"
+	case outcomeFailed:
+		return "failed"
+	case outcomeAborted:
+		return "aborted"
+	default:
+		return ""
+	}
+}
+
+func parseCleanupOutcome(name string) (reviewOutcome, bool) {
+	switch name {
+	case "done":
+		return outcomeDone, true
+	case "failed":
+		return outcomeFailed, true
+	case "aborted":
+		return outcomeAborted, true
+	default:
+		return outcomeAborted, false
+	}
 }
 
 // invalidate removes both the uncommitted temporary file and any older

@@ -131,9 +131,8 @@ func postWebhookBody(t *testing.T, handler *Handler, body []byte, secret string)
 }
 
 func queuedJobs(d *Dispatcher) int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.states)
+	queued, _ := d.Stats()
+	return queued
 }
 
 func TestHandlerQueuesTrigger(t *testing.T) {

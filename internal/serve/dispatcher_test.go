@@ -61,6 +61,9 @@ type fakeGitLab struct {
 	// concurrency without holding the fake's mutex.
 	emojiGate    chan struct{}
 	emojiArrived atomic.Int32
+	// emojiFailures returns 503 from the next award-list requests. Tests set it
+	// after the start reaction succeeds to isolate settlement failures.
+	emojiFailures atomic.Int32
 }
 
 func (f *fakeGitLab) gateReads() int {
@@ -93,6 +96,14 @@ func (f *fakeGitLab) handler() http.Handler {
 		if f.emojiGate != nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
 			f.emojiArrived.Add(1)
 			<-f.emojiGate
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+			for failures := f.emojiFailures.Load(); failures > 0; failures = f.emojiFailures.Load() {
+				if f.emojiFailures.CompareAndSwap(failures, failures-1) {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+			}
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()

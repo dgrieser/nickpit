@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -77,14 +78,15 @@ func TestJournalFollowsJobLifecycle(t *testing.T) {
 	if got := journalFiles(t, dir); got != 1 {
 		t.Fatalf("journal files = %d, want 1 after enqueue", got)
 	}
-	dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
-	dispatcher.finish(jobKey{ProjectID: 42, IID: 7})
+	result := dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+	dispatcher.finish(jobKey{ProjectID: 42, IID: 7}, result)
 	if got := journalFiles(t, dir); got != 0 {
 		t.Fatalf("journal files = %d, want none after the job settled", got)
 	}
 }
 
-// An abort removes the journal entry: nothing of the job may resume later.
+// An abort replaces the runnable journal entry with cleanup-only state, then
+// removes it after that cleanup succeeds.
 func TestJournalRemovedOnAbort(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
@@ -93,9 +95,100 @@ func TestJournalRemovedOnAbort(t *testing.T) {
 
 	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
 	dispatcher.Abort(42, 7)
-	if got := journalFiles(t, dir); got != 0 {
-		t.Fatalf("journal files = %d, want none after abort", got)
+	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+}
+
+// A failed outcome replacement becomes cleanup-only durable work. Retries must
+// not rerun the review, and the journal may disappear only after replacement.
+func TestJournalSettlementFailureRetriesCleanupOnly(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 301, "eyes")
+	dispatcher, runner, groups := newJournalEnv(t, fake, dir)
+	runner.gate = make(chan struct{})
+	event := commandEvent(7, "sha-1", groups.Match("platform/api"), 301)
+	dispatcher.Enqueue(event)
+	key := <-dispatcher.queue
+	taken, ctx, ok := dispatcher.take(key)
+	if !ok {
+		t.Fatal("queued job could not be taken")
 	}
+	resultCh := make(chan settlementResult, 1)
+	go func() { resultCh <- dispatcher.process(ctx, taken) }()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	fake.emojiFailures.Store(100)
+	close(runner.gate)
+	result := <-resultCh
+	if result.settled {
+		t.Fatal("settlement must report the transient reaction failure")
+	}
+	dispatcher.finish(key, result)
+
+	entries := dispatcher.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "done" {
+		t.Fatalf("journal entries = %+v, want cleanup-only done outcome", entries)
+	}
+	if got := len(runner.ran()); got != 1 {
+		t.Fatalf("runs = %d, want one before cleanup retry", got)
+	}
+
+	fake.emojiFailures.Store(0)
+	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+	if got := len(runner.ran()); got != 1 {
+		t.Fatalf("runs = %d, cleanup retry must not rerun review", got)
+	}
+	for _, noteID := range []int{0, 301} {
+		awards := fake.awardedOn(7, noteID)
+		if len(awards) == 0 || slices.ContainsFunc(awards, func(name string) bool { return name != "white_check_mark" }) {
+			t.Fatalf("awards on note %d = %v, want only done outcomes", noteID, awards)
+		}
+	}
+	dispatcher.Shutdown(0)
+}
+
+// Abort persists cleanup-only state before its asynchronous revoke starts. A
+// replacement daemon can finish that cleanup without reviving the review.
+func TestJournalAbortCleanupRestoresAfterCrashWindow(t *testing.T) {
+	dir := t.TempDir()
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	fake := &fakeGitLab{
+		topics:    []string{"nickpit"},
+		state:     "opened",
+		headSHA:   "sha-1",
+		emojiGate: gate,
+	}
+	fake.preAward(7, 301, "eyes")
+
+	first, firstRunner, groups := newJournalEnv(t, fake, dir)
+	t.Cleanup(closeGate)
+	first.Enqueue(commandEvent(7, "sha-1", groups.Match("platform/api"), 301))
+	if outcome := first.Abort(42, 7); !outcome.Found || outcome.Running {
+		t.Fatalf("outcome = %+v, want queued abort", outcome)
+	}
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiArrived.Load() >= 1 })
+	entries := first.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "aborted" {
+		t.Fatalf("journal entries = %+v, want cleanup-only aborted state", entries)
+	}
+
+	second, secondRunner, groups := newJournalEnv(t, fake, dir)
+	t.Cleanup(closeGate)
+	if restored := second.Restore(groups); restored != 1 {
+		t.Fatalf("restored = %d, want one cleanup", restored)
+	}
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiArrived.Load() >= 2 })
+	if len(firstRunner.ran()) != 0 || len(secondRunner.ran()) != 0 {
+		t.Fatal("abort cleanup must not run a review")
+	}
+
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+	if awards := fake.awardedOn(7, 301); len(awards) != 0 {
+		t.Fatalf("note awards = %v, want ack revoked", awards)
+	}
+	first.Shutdown(0)
+	second.Shutdown(0)
 }
 
 // With a journal, shutdown keeps queued jobs on disk (and leaves their ack
@@ -216,8 +309,8 @@ func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("restored job could not be taken")
 	}
-	second.process(ctx, event)
-	second.finish(key)
+	result := second.process(ctx, event)
+	second.finish(key, result)
 
 	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
 		t.Fatalf("MR awards = %v, want only current outcome", awards)
@@ -255,8 +348,8 @@ func TestJournalRestoreBeforeStartAttemptDoesNotDecorateSkippedAuto(t *testing.T
 	if !ok {
 		t.Fatal("restored job could not be taken")
 	}
-	second.process(ctx, event)
-	second.finish(key)
+	result := second.process(ctx, event)
+	second.finish(key, result)
 
 	if len(runner.ran()) != 0 {
 		t.Fatal("unopted restored review must not run")
@@ -333,7 +426,7 @@ func TestJournalRestoreBeyondQueueCapacity(t *testing.T) {
 		if _, _, ok := second.take(key); !ok {
 			t.Fatalf("restored job %+v could not be taken", key)
 		}
-		second.finish(key)
+		second.finish(key, settlementResult{settled: true})
 	}
 	if got := len(second.overflow); got != 0 {
 		t.Fatalf("overflow length after drain = %d, want 0", got)

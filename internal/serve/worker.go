@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,17 +44,29 @@ type reactions struct {
 	notes []int
 }
 
+// settlementResult carries enough state for finish to retain a cleanup-only
+// journal entry when one or more remote reaction replacements failed.
+type settlementResult struct {
+	event   Event
+	outcome reviewOutcome
+	settled bool
+}
+
 // process runs one review job end to end: opt-in check, authoritative MR
 // recheck, start-emoji award, child process — then replaces the in-progress
 // reactions with the outcome. Failures are logged, never fatal — the daemon
 // outlives every review.
-func (d *Dispatcher) process(ctx context.Context, event Event) {
+func (d *Dispatcher) process(ctx context.Context, event Event) settlementResult {
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID, "trigger", event.Kind.String())
 	// The command notes already wear the ack emoji: the handler awarded it when
 	// it accepted the command, before this job was picked up.
 	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
 	outcome := d.review(ctx, &event, &placed, log)
-	d.settle(ctx, event, placed, outcome, log)
+	return settlementResult{
+		event:   event,
+		outcome: outcome,
+		settled: d.settle(ctx, event, placed, outcome, log),
+	}
 }
 
 // review is process without the reaction bookkeeping: it reports how the review
@@ -161,12 +174,12 @@ func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step s
 
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
-func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) {
+func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) bool {
 	// Safe replacement needs the token owner's user id. Production startup
 	// requires it; keep this guard for tests and defensive direct callers so a
 	// lookup failure can never add an outcome beside an unrevokable marker.
 	if event.Group == nil || event.Group.BotUserID == 0 {
-		return
+		return true
 	}
 	notes := placed.notes
 	ackEmojis := appendUniqueStrings(event.AckEmojis, d.cfg.AckEmoji)
@@ -175,7 +188,7 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		notes = nil
 	}
 	if !placed.mr && len(notes) == 0 {
-		return
+		return true
 	}
 	add := ""
 	switch outcome {
@@ -192,12 +205,14 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	base := context.WithoutCancel(ctx)
 	client := event.Group.Client
 	var wg sync.WaitGroup
+	var failed atomic.Bool
 	if placed.mr {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(base, settleTimeout)
 			defer cancel()
 			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, d.cfg.TriggerEmoji)
 			if err != nil {
+				failed.Store(true)
 				log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
 			}
 		})
@@ -208,9 +223,11 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 			defer cancel()
 			err := client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
 			if err != nil {
+				failed.Store(true)
 				log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
 			}
 		})
 	}
 	wg.Wait()
+	return !failed.Load()
 }

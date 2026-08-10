@@ -77,8 +77,8 @@ func TestWorkerTakeDoesNotDecorateSkippedAuto(t *testing.T) {
 			if !ok {
 				t.Fatal("queued event must be taken")
 			}
-			dispatcher.process(ctx, taken)
-			dispatcher.finish(key)
+			result := dispatcher.process(ctx, taken)
+			dispatcher.finish(key, result)
 
 			if len(runner.ran()) != 0 {
 				t.Fatal("skipped review must not run")

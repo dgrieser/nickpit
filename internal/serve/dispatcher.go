@@ -15,6 +15,7 @@ const (
 	shaLRUSize              = 512
 	ackCleanupQueueCapacity = 64
 	maxAckCleanupWorkers    = 4
+	reactionRetryDelay      = time.Second
 )
 
 // Event is one review request accepted by the handler and queued for a
@@ -48,7 +49,15 @@ type jobKey struct {
 const (
 	stateQueued = iota
 	stateRunning
+	// stateCleanup has no review running or queued: only durable reaction
+	// settlement remains. A later review waits in pending until cleanup wins.
+	stateCleanup
 )
+
+type reactionCleanup struct {
+	event   Event
+	outcome reviewOutcome
+}
 
 // jobState coalesces events per MR: while queued the newest event wins;
 // while running the newest event is parked in pending and re-queued when the
@@ -57,6 +66,11 @@ type jobState struct {
 	status  int
 	latest  Event
 	pending *Event
+	// cleanup is durable remote-only work. cleanupQueued prevents duplicate
+	// cleanup-pool requests while one is queued or running.
+	cleanup        *reactionCleanup
+	cleanupQueued  bool
+	cleanupVersion uint64
 	// persisted says the complete unfinished event represented by this state
 	// was written successfully. A configured journal is not proof of durability:
 	// its storage can become full or read-only after startup.
@@ -168,18 +182,35 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 			d.journal.remove(entry.ProjectID, entry.IID)
 			continue
 		}
-		event := Event{
-			Kind:        parseTriggerKind(entry.Kind),
-			ProjectID:   entry.ProjectID,
-			ProjectPath: entry.ProjectPath,
-			IID:         entry.IID,
-			HeadSHA:     entry.HeadSHA,
-			Group:       group,
-			AckNoteIDs:  entry.AckNoteIDs,
-			StartEmojis: entry.StartEmojis,
-			AckEmojis:   entry.AckEmojis,
-		}
+		event := eventFromJournal(entry, group)
 		key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
+		if entry.CleanupOutcome != "" {
+			outcome, ok := parseCleanupOutcome(entry.CleanupOutcome)
+			if !ok {
+				d.log.Warn("journal: dropping job with invalid cleanup outcome", "project", entry.ProjectPath, "iid", entry.IID, "outcome", entry.CleanupOutcome)
+				d.journal.remove(entry.ProjectID, entry.IID)
+				continue
+			}
+			cleanup := reactionCleanup{event: event, outcome: outcome}
+			var pending *Event
+			if entry.Pending != nil {
+				pendingEvent := eventFromJournal(*entry.Pending, group)
+				pending = &pendingEvent
+			}
+			d.mu.Lock()
+			d.states[key] = &jobState{
+				status:         stateCleanup,
+				latest:         event,
+				pending:        pending,
+				cleanup:        &cleanup,
+				cleanupVersion: 1,
+				persisted:      true,
+			}
+			d.mu.Unlock()
+			d.queueDurableCleanup(key)
+			resumed++
+			continue
+		}
 		d.mu.Lock()
 		d.states[key] = &jobState{status: stateQueued, latest: event, persisted: true}
 		select {
@@ -191,6 +222,20 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 		resumed++
 	}
 	return resumed
+}
+
+func eventFromJournal(entry journalEntry, group *Group) Event {
+	return Event{
+		Kind:        parseTriggerKind(entry.Kind),
+		ProjectID:   entry.ProjectID,
+		ProjectPath: entry.ProjectPath,
+		IID:         entry.IID,
+		HeadSHA:     entry.HeadSHA,
+		Group:       group,
+		AckNoteIDs:  entry.AckNoteIDs,
+		StartEmojis: entry.StartEmojis,
+		AckEmojis:   entry.AckEmojis,
+	}
 }
 
 // Enqueue accepts an event from the webhook handler. Never blocks, keeping the
@@ -238,6 +283,16 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 				resume, _ = mergeEvents(state.latest, *state.pending)
 			}
 			state.persisted = d.journal.persist(resume)
+		case stateCleanup:
+			// Keep new work behind the durable cleanup. Overwriting its
+			// journal entry could strand the old in-progress reactions.
+			pending := event
+			if state.pending != nil {
+				pending, dropped = mergeEvents(*state.pending, event)
+			}
+			state.pending = &pending
+			releaseEvent = pending
+			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
 		default:
 			state.latest, dropped = mergeEvents(state.latest, event)
 			releaseEvent = state.latest
@@ -379,8 +434,8 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 					if !ok {
 						continue
 					}
-					d.process(jobCtx, event)
-					d.finish(key)
+					result := d.process(jobCtx, event)
+					d.finish(key, result)
 				}
 			}
 		})
@@ -415,8 +470,8 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	}
 	d.jobCancel()
 	<-done
-	d.releaseUnfinished()
 	d.stopAckCleanup()
+	d.releaseUnfinished()
 }
 
 // releaseUnfinished handles the jobs shutdown leaves behind: queued jobs that
@@ -427,11 +482,24 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 func (d *Dispatcher) releaseUnfinished() {
 	type unfinished struct {
 		event     Event
+		cleanup   *reactionCleanup
 		persisted bool
 	}
 	d.mu.Lock()
 	remaining := make([]unfinished, 0, len(d.states))
 	for _, state := range d.states {
+		if state.cleanup != nil {
+			persisted := state.persisted
+			if d.journal != nil && !persisted {
+				persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+			}
+			remaining = append(remaining, unfinished{
+				event:     state.cleanup.event,
+				cleanup:   state.cleanup,
+				persisted: persisted,
+			})
+			continue
+		}
 		event := state.latest
 		if state.pending != nil {
 			event, _ = mergeEvents(event, *state.pending)
@@ -468,6 +536,17 @@ func (d *Dispatcher) releaseUnfinished() {
 		if job.persisted {
 			continue
 		}
+		if job.cleanup != nil {
+			cleanup := *job.cleanup
+			wg.Go(func() {
+				log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
+				d.settle(context.Background(), cleanup.event, reactions{
+					mr:    len(cleanup.event.StartEmojis) > 0,
+					notes: cleanup.event.AckNoteIDs,
+				}, cleanup.outcome, log)
+			})
+			continue
+		}
 		event := job.event
 		if len(event.AckNoteIDs) == 0 {
 			continue
@@ -489,8 +568,11 @@ func (d *Dispatcher) releaseAcks(event Event, notes []int) {
 }
 
 type ackCleanup struct {
-	event  Event
-	noteID int
+	event   Event
+	placed  reactions
+	outcome reviewOutcome
+	durable *jobKey
+	version uint64
 }
 
 // queueAckCleanup schedules best-effort acknowledgement revokes without
@@ -507,18 +589,65 @@ func (d *Dispatcher) queueAckCleanup(event Event, notes []int) {
 			if len(d.cleanupQueue) >= ackCleanupQueueCapacity {
 				break
 			}
-			d.cleanupQueue = append(d.cleanupQueue, ackCleanup{event: event, noteID: noteID})
+			d.cleanupQueue = append(d.cleanupQueue, ackCleanup{
+				event:   event,
+				placed:  reactions{notes: []int{noteID}},
+				outcome: outcomeAborted,
+			})
 			queued++
 		}
-		for d.cleanupWorkers < maxAckCleanupWorkers && d.cleanupWorkers < len(d.cleanupQueue) {
-			d.cleanupWorkers++
-			d.cleanupWG.Go(d.runAckCleanup)
-		}
+		d.startAckCleanupWorkersLocked()
 	}
 	d.cleanupMu.Unlock()
 	if queued < len(notes) {
 		d.log.Warn("ack cleanup backlog full, dropping cleanup requests",
 			"project", event.ProjectPath, "iid", event.IID, "dropped", len(notes)-queued)
+	}
+}
+
+// queueDurableCleanup schedules one complete settlement attempt. Unlike
+// overflow ack cleanup, this work is never discarded: saturation or a remote
+// failure leaves the journal entry intact and retries after a short delay.
+func (d *Dispatcher) queueDurableCleanup(key jobKey) {
+	retry := false
+	d.mu.Lock()
+	state, ok := d.states[key]
+	if !ok || state.status != stateCleanup || state.cleanup == nil || state.cleanupQueued || d.closed {
+		d.mu.Unlock()
+		return
+	}
+	cleanup := *state.cleanup
+	d.cleanupMu.Lock()
+	if !d.cleanupClosed && len(d.cleanupQueue) < ackCleanupQueueCapacity {
+		keyCopy := key
+		d.cleanupQueue = append(d.cleanupQueue, ackCleanup{
+			event: cleanup.event,
+			placed: reactions{
+				mr:    len(cleanup.event.StartEmojis) > 0,
+				notes: cleanup.event.AckNoteIDs,
+			},
+			outcome: cleanup.outcome,
+			durable: &keyCopy,
+			version: state.cleanupVersion,
+		})
+		state.cleanupQueued = true
+		d.startAckCleanupWorkersLocked()
+	} else {
+		retry = true
+	}
+	d.cleanupMu.Unlock()
+	d.mu.Unlock()
+	if retry {
+		time.AfterFunc(reactionRetryDelay, func() { d.queueDurableCleanup(key) })
+	}
+}
+
+// startAckCleanupWorkersLocked starts enough bounded workers for queued work.
+// Caller holds cleanupMu.
+func (d *Dispatcher) startAckCleanupWorkersLocked() {
+	for d.cleanupWorkers < maxAckCleanupWorkers && d.cleanupWorkers < len(d.cleanupQueue) {
+		d.cleanupWorkers++
+		d.cleanupWG.Go(d.runAckCleanup)
 	}
 }
 
@@ -535,8 +664,61 @@ func (d *Dispatcher) runAckCleanup() {
 		d.cleanupQueue = d.cleanupQueue[1:]
 		d.cleanupMu.Unlock()
 
-		d.releaseAcks(cleanup.event, []int{cleanup.noteID})
+		log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
+		settled := d.settle(context.Background(), cleanup.event, cleanup.placed, cleanup.outcome, log)
+		if cleanup.durable != nil {
+			d.completeDurableCleanup(*cleanup.durable, cleanup.version, settled)
+		}
 	}
+}
+
+func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, settled bool) {
+	retry := false
+	d.mu.Lock()
+	state, ok := d.states[key]
+	if !ok || state.status != stateCleanup || state.cleanup == nil {
+		d.mu.Unlock()
+		return
+	}
+	state.cleanupQueued = false
+	if version != state.cleanupVersion {
+		retry = !d.closed
+		d.mu.Unlock()
+		if retry {
+			d.queueDurableCleanup(key)
+		}
+		return
+	}
+	if !settled {
+		if d.journal != nil && !state.persisted {
+			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		}
+		retry = !d.closed
+		d.mu.Unlock()
+		if retry {
+			time.AfterFunc(reactionRetryDelay, func() { d.queueDurableCleanup(key) })
+		}
+		return
+	}
+	state.cleanup = nil
+	if state.pending == nil {
+		delete(d.states, key)
+		d.journal.remove(key.ProjectID, key.IID)
+		d.mu.Unlock()
+		return
+	}
+	state.latest = *state.pending
+	state.pending = nil
+	state.status = stateQueued
+	state.persisted = d.journal.persist(state.latest)
+	if !d.closed {
+		select {
+		case d.queue <- key:
+		default:
+			d.overflow = append(d.overflow, key)
+		}
+	}
+	d.mu.Unlock()
 }
 
 // stopAckCleanup prevents new cleanup work and drains the bounded queue. Server
@@ -574,7 +756,18 @@ type JobInfo struct {
 func (d *Dispatcher) Stats() (queued, running int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.states) - d.running, d.running
+	for _, state := range d.states {
+		if state.status == stateCleanup {
+			if state.pending != nil {
+				queued++
+			}
+			continue
+		}
+		if state.status == stateQueued {
+			queued++
+		}
+	}
+	return queued, d.running
 }
 
 // take claims a queued job for execution. The returned context is the job's
@@ -617,6 +810,13 @@ func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
 	if !ok {
 		return
 	}
+	if state.cleanup != nil {
+		state.cleanup.event.StartEmojis = appendUniqueStrings(state.cleanup.event.StartEmojis, d.cfg.StartEmoji)
+		state.latest = state.cleanup.event
+		state.cleanupVersion++
+		state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		return
+	}
 	state.latest.StartEmojis = appendUniqueStrings(state.latest.StartEmojis, d.cfg.StartEmoji)
 	resume := state.latest
 	if state.pending != nil {
@@ -632,12 +832,12 @@ func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
 // and take moves it into the next freed slot. During shutdown it cannot run
 // in this process; it stays journaled for the restart, or — without a journal
 // — releaseUnfinished revokes its ack reactions on the way out.
-func (d *Dispatcher) finish(key jobKey) {
+func (d *Dispatcher) finish(key jobKey, result settlementResult) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.running--
 	state, ok := d.states[key]
 	if !ok {
+		d.mu.Unlock()
 		return
 	}
 	if state.cancel != nil {
@@ -645,9 +845,38 @@ func (d *Dispatcher) finish(key jobKey) {
 		state.cancel = nil
 	}
 	state.startedAt = time.Time{}
+	// Abort may have replaced the running event with a durable cleanup snapshot.
+	// Let that complete as one unit, including notes from a cleared pending run.
+	if state.cleanup != nil {
+		state.status = stateCleanup
+		if d.journal != nil && !state.persisted {
+			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		}
+		queueCleanup := !d.closed
+		d.mu.Unlock()
+		if queueCleanup {
+			d.queueDurableCleanup(key)
+		}
+		return
+	}
+	if !result.settled {
+		cleanup := reactionCleanup{event: result.event, outcome: result.outcome}
+		state.latest = result.event
+		state.cleanup = &cleanup
+		state.cleanupVersion++
+		state.status = stateCleanup
+		state.persisted = d.journal.persistCleanup(cleanup, state.pending)
+		queueCleanup := !d.closed
+		d.mu.Unlock()
+		if queueCleanup {
+			d.queueDurableCleanup(key)
+		}
+		return
+	}
 	if state.pending == nil {
 		delete(d.states, key)
 		d.journal.remove(key.ProjectID, key.IID)
+		d.mu.Unlock()
 		return
 	}
 	state.latest = *state.pending
@@ -659,6 +888,7 @@ func (d *Dispatcher) finish(key jobKey) {
 			d.dropped++
 			d.log.Warn("shutdown: dropping pending re-run (no state_dir configured)", "project", state.latest.ProjectPath, "iid", state.latest.IID)
 		}
+		d.mu.Unlock()
 		return
 	}
 	select {
@@ -666,6 +896,7 @@ func (d *Dispatcher) finish(key jobKey) {
 	default:
 		d.overflow = append(d.overflow, key)
 	}
+	d.mu.Unlock()
 }
 
 // drainOverflowLocked moves parked re-run keys into free queue slots,
@@ -687,33 +918,56 @@ func (d *Dispatcher) drainOverflowLocked() {
 // races a finishing review may find nothing — the reply then says no review
 // was running even though one just completed, which is accurate enough.
 //
-// Ack reactions that no settle will ever flip — on the notes of a queued job,
-// or of a cleared pending re-run — are released here: only a running review
-// settles its own notes when its cancelled process winds down.
+// Before cancellation becomes visible, Abort replaces the runnable journal
+// entry with cleanup-only state. A crash can therefore never resurrect the
+// aborted review or lose the reactions that still need revocation.
 func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 	key := jobKey{ProjectID: projectID, IID: iid}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	state, ok := d.states[key]
 	if !ok {
+		d.mu.Unlock()
 		return AbortOutcome{}
 	}
-	// Nothing of this job should resume after a restart either.
-	d.journal.remove(projectID, iid)
-	if state.pending != nil {
-		pending := *state.pending
+	if state.status == stateCleanup {
+		// Cleanup itself is not an active review. An abort only has work to do
+		// when a newer review is waiting behind it.
+		if state.pending == nil {
+			d.mu.Unlock()
+			return AbortOutcome{}
+		}
+		cleanupEvent, _ := mergeEvents(state.cleanup.event, *state.pending)
+		state.cleanup.event = cleanupEvent
+		state.latest = cleanupEvent
 		state.pending = nil
-		d.queueAckCleanup(pending, pending.AckNoteIDs)
+		state.cleanupVersion++
+		state.persisted = d.journal.persistCleanup(*state.cleanup, nil)
+		d.mu.Unlock()
+		return AbortOutcome{Found: true}
 	}
+	cleanupEvent := state.latest
+	if state.pending != nil {
+		cleanupEvent, _ = mergeEvents(cleanupEvent, *state.pending)
+	}
+	cleanup := reactionCleanup{event: cleanupEvent, outcome: outcomeAborted}
+	state.latest = cleanupEvent
+	state.pending = nil
+	state.cleanup = &cleanup
+	state.cleanupVersion++
+	// Persist before cancellation or async cleanup: webhook acceptance can now
+	// safely outlive this process.
+	state.persisted = d.journal.persistCleanup(cleanup, nil)
 	if state.status == stateRunning {
+		outcome := AbortOutcome{Found: true, Running: true, Since: time.Since(state.startedAt)}
 		if state.cancel != nil {
 			state.cancel()
 		}
-		return AbortOutcome{Found: true, Running: true, Since: time.Since(state.startedAt)}
+		d.mu.Unlock()
+		return outcome
 	}
-	latest := state.latest
-	delete(d.states, key)
-	d.queueAckCleanup(latest, latest.AckNoteIDs)
+	state.status = stateCleanup
+	d.mu.Unlock()
+	d.queueDurableCleanup(key)
 	return AbortOutcome{Found: true}
 }
 
@@ -728,6 +982,9 @@ func (d *Dispatcher) JobInfo(projectID, iid int) JobInfo {
 	}
 	if state.status == stateRunning {
 		return JobInfo{Running: true, Since: time.Since(state.startedAt), Pending: state.pending != nil}
+	}
+	if state.status == stateCleanup {
+		return JobInfo{Queued: state.pending != nil}
 	}
 	return JobInfo{Queued: true}
 }
