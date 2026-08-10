@@ -49,6 +49,32 @@ func TestAwardMREmojiToleratesAlreadyAwarded(t *testing.T) {
 	}
 }
 
+func TestAwardMREmojiSurfacesNonDuplicateClientErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "invalid emoji", status: http.StatusBadRequest, body: `{"message":"Name is invalid"}`},
+		{name: "awardable vanished", status: http.StatusNotFound, body: `{"message":"404 Not Found"}`},
+		{name: "malformed response", status: http.StatusConflict, body: `not JSON`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "token")
+			if err := client.AwardMREmoji(context.Background(), 42, 7, "unknown_custom_emoji"); err == nil {
+				t.Fatal("expected non-duplicate client error")
+			}
+		})
+	}
+}
+
 // 401/403/429 mean the award never happened for a reason worth logging (lost
 // token access, rate limit) — unlike a double-award, they must surface, or a
 // replace could revoke successfully and drop the new reaction in silence.
@@ -82,8 +108,11 @@ type emojiServer struct {
 	awards  []AwardEmoji
 	posted  []string
 	deleted []string
+	actions []string
 	// listStatus, when non-zero, makes the list request fail with that status.
 	listStatus int
+	// postStatus, when non-zero, makes the award request fail with that status.
+	postStatus int
 }
 
 func (e *emojiServer) start(t *testing.T) *Client {
@@ -95,13 +124,20 @@ func (e *emojiServer) start(t *testing.T) *Client {
 			data, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(data, &body)
 			e.posted = append(e.posted, body["name"])
+			e.actions = append(e.actions, "post:"+body["name"])
+			if e.postStatus != 0 {
+				w.WriteHeader(e.postStatus)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
 		case http.MethodDelete:
 			_, id, _ := strings.Cut(r.URL.Path, "/award_emoji/")
 			e.deleted = append(e.deleted, id)
+			e.actions = append(e.actions, "delete:"+id)
 			w.WriteHeader(http.StatusNoContent)
 		default:
+			e.actions = append(e.actions, "list")
 			if e.listStatus != 0 {
 				w.WriteHeader(e.listStatus)
 				return
@@ -137,6 +173,29 @@ func TestReplaceMREmojiRevokesOwnAwardsOnly(t *testing.T) {
 	}
 	if fmt.Sprint(fake.posted) != "[white_check_mark]" {
 		t.Fatalf("posted = %v", fake.posted)
+	}
+	if fmt.Sprint(fake.actions) != "[list post:white_check_mark delete:1 delete:4]" {
+		t.Fatalf("actions = %v, want replacement confirmed before revokes", fake.actions)
+	}
+}
+
+func TestReplaceMREmojiDoesNotRevokeWhenAwardFails(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fake := &emojiServer{
+				awards:     []AwardEmoji{award(1, "eyes", 9)},
+				postStatus: status,
+			}
+			client := fake.start(t)
+
+			err := client.ReplaceMREmoji(context.Background(), 42, 7, 9, "white_check_mark", "eyes")
+			if err == nil {
+				t.Fatal("expected award failure")
+			}
+			if len(fake.deleted) != 0 {
+				t.Fatalf("deleted = %v, want old marker preserved", fake.deleted)
+			}
+		})
 	}
 }
 
