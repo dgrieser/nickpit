@@ -50,6 +50,10 @@ type jobState struct {
 	status  int
 	latest  Event
 	pending *Event
+	// persisted says the complete unfinished event represented by this state
+	// was written successfully. A configured journal is not proof of durability:
+	// its storage can become full or read-only after startup.
+	persisted bool
 	// cancel aborts the running review's context; set while running.
 	cancel context.CancelFunc
 	// startedAt stamps the running review's start for status/abort replies.
@@ -80,10 +84,10 @@ type Dispatcher struct {
 	mu     sync.Mutex
 	states map[jobKey]*jobState
 	queue  chan jobKey
-	// overflow parks pending re-run keys when the queue channel is full at
-	// finish time. Those events were already acknowledged with a 2xx, so they
-	// must not be dropped; take moves them into freed queue slots. Only
-	// re-runs land here — new events still get backpressure via Enqueue.
+	// overflow parks accepted keys when the queue channel is full. Those events
+	// must not be dropped; take moves them into freed queue slots. Restored jobs
+	// and re-runs land here — new webhook events still get backpressure via
+	// Enqueue.
 	overflow []jobKey
 	recent   *shaLRU
 	closed   bool
@@ -156,11 +160,15 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 			Group:       group,
 			AckNoteIDs:  entry.AckNoteIDs,
 		}
-		if !d.Enqueue(event) {
-			// Queue full — the file stays, so the next restart retries.
-			d.log.Error("journal: could not re-enqueue job", "project", entry.ProjectPath, "iid", entry.IID)
-			continue
+		key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
+		d.mu.Lock()
+		d.states[key] = &jobState{status: stateQueued, latest: event, persisted: true}
+		select {
+		case d.queue <- key:
+		default:
+			d.overflow = append(d.overflow, key)
 		}
+		d.mu.Unlock()
 		resumed++
 	}
 	return resumed
@@ -202,10 +210,10 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			// NOT released — they settle normally in this process, the cap
 			// only trims what a resume would flip.
 			resume, _ := mergeEvents(state.latest, pending)
-			d.journal.persist(resume)
+			state.persisted = d.journal.persist(resume)
 		default:
 			state.latest, dropped = mergeEvents(state.latest, event)
-			d.journal.persist(state.latest)
+			state.persisted = d.journal.persist(state.latest)
 		}
 		if len(dropped) > 0 {
 			// Already acknowledged, but over the per-job cap: no settle will
@@ -218,8 +226,11 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 	}
 	select {
 	case d.queue <- key:
-		d.states[key] = &jobState{status: stateQueued, latest: event}
-		d.journal.persist(event)
+		d.states[key] = &jobState{
+			status:    stateQueued,
+			latest:    event,
+			persisted: d.journal.persist(event),
+		}
 		return true
 	default:
 		d.dropped++
@@ -342,25 +353,50 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 // on disk and resume after restart; without one, their ack reactions are
 // revoked so no command note reads as in progress forever.
 func (d *Dispatcher) releaseUnfinished() {
+	type unfinished struct {
+		event     Event
+		persisted bool
+	}
 	d.mu.Lock()
-	remaining := make([]Event, 0, len(d.states))
+	remaining := make([]unfinished, 0, len(d.states))
 	for _, state := range d.states {
 		event := state.latest
 		if state.pending != nil {
 			event, _ = mergeEvents(event, *state.pending)
 		}
-		remaining = append(remaining, event)
+		persisted := state.persisted
+		if d.journal != nil && !persisted {
+			// Retry once at shutdown: transient storage failures need not force
+			// journal-less degradation if the state directory recovered.
+			persisted = d.journal.persist(event)
+		}
+		remaining = append(remaining, unfinished{event: event, persisted: persisted})
 	}
 	d.mu.Unlock()
 	if len(remaining) == 0 {
 		return
 	}
 	if d.journal != nil {
-		d.log.Info("shutdown: unfinished review jobs journaled for resume", "count", len(remaining), "dir", d.journal.Dir())
-		return
+		persisted := 0
+		for _, job := range remaining {
+			if job.persisted {
+				persisted++
+			}
+		}
+		if persisted > 0 {
+			d.log.Info("shutdown: unfinished review jobs journaled for resume", "count", persisted, "dir", d.journal.Dir())
+		}
+		if persisted == len(remaining) {
+			return
+		}
+		d.log.Warn("shutdown: releasing acknowledgements for jobs not persisted", "count", len(remaining)-persisted)
 	}
 	var wg sync.WaitGroup
-	for _, event := range remaining {
+	for _, job := range remaining {
+		if job.persisted {
+			continue
+		}
+		event := job.event
 		if len(event.AckNoteIDs) == 0 {
 			continue
 		}
@@ -463,7 +499,7 @@ func (d *Dispatcher) finish(key jobKey) {
 	state.latest = *state.pending
 	state.pending = nil
 	state.status = stateQueued
-	d.journal.persist(state.latest)
+	state.persisted = d.journal.persist(state.latest)
 	if d.closed {
 		if d.journal == nil {
 			d.dropped++

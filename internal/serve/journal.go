@@ -65,9 +65,9 @@ func (j *Journal) path(projectID, iid int) string {
 // daemon must enqueue so the review still happens and every acknowledged note
 // still gets its outcome flip. One file per (project, iid); newer state
 // overwrites older via an atomic rename.
-func (j *Journal) persist(event Event) {
+func (j *Journal) persist(event Event) bool {
 	if j == nil {
-		return
+		return false
 	}
 	entry := journalEntry{
 		Kind:        event.Kind.String(),
@@ -80,7 +80,7 @@ func (j *Journal) persist(event Event) {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		j.log.Warn("journal: encoding job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
-		return
+		return false
 	}
 	path := j.path(event.ProjectID, event.IID)
 	tmp := path + ".tmp"
@@ -90,7 +90,9 @@ func (j *Journal) persist(event Event) {
 	}
 	if err != nil {
 		j.log.Warn("journal: persisting job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
+		return false
 	}
+	return true
 }
 
 // remove deletes the job's file once nothing is left to resume (settled,
