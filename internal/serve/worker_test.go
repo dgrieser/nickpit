@@ -53,6 +53,44 @@ func TestWorkerTopicMissNoRun(t *testing.T) {
 	}
 }
 
+// take persists the configured start-reaction name before process runs so a
+// crash can clean up a possibly completed remote request. That crash metadata
+// must not make a live worker settle an MR it rejects before attempting the
+// start reaction.
+func TestWorkerTakeDoesNotDecorateSkippedAuto(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		topics []string
+		draft  bool
+	}{
+		{name: "not opted in", topics: []string{"go"}},
+		{name: "draft", topics: []string{"nickpit"}, draft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGitLab{topics: tc.topics, state: "opened", draft: tc.draft, headSHA: "sha-1"}
+			dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+			event := autoEvent(7, "sha-1", group)
+			if !dispatcher.Enqueue(event) {
+				t.Fatal("event must be accepted")
+			}
+			key := <-dispatcher.queue
+			taken, ctx, ok := dispatcher.take(key)
+			if !ok {
+				t.Fatal("queued event must be taken")
+			}
+			dispatcher.process(ctx, taken)
+			dispatcher.finish(key)
+
+			if len(runner.ran()) != 0 {
+				t.Fatal("skipped review must not run")
+			}
+			if posted := fake.awardPosted(); len(posted) != 0 {
+				t.Fatalf("award posts = %v, want none for skipped auto review", posted)
+			}
+		})
+	}
+}
+
 func TestWorkerManualTriggerSkipsTopicCheck(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"go"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())

@@ -52,7 +52,7 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID, "trigger", event.Kind.String())
 	// The command notes already wear the ack emoji: the handler awarded it when
 	// it accepted the command, before this job was picked up.
-	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
+	placed := reactions{mr: event.priorStartReaction, notes: event.AckNoteIDs}
 	outcome := d.review(ctx, event, &placed, log)
 	d.settle(ctx, event, placed, outcome, log)
 }

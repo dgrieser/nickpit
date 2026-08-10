@@ -36,6 +36,11 @@ type Event struct {
 	// journal restore clean markers from an older configuration.
 	StartEmojis []string
 	AckEmojis   []string
+	// priorStartReaction is true only for a restored job whose previous worker
+	// may have reached the start-reaction request. take persists the current
+	// name before this worker can make that request, but must not set this flag:
+	// a live worker knows whether it actually attempted the reaction.
+	priorStartReaction bool
 }
 
 type jobKey struct {
@@ -166,6 +171,9 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 			AckNoteIDs:  entry.AckNoteIDs,
 			StartEmojis: entry.StartEmojis,
 			AckEmojis:   entry.AckEmojis,
+			// A journal records the start name before the remote request, so
+			// after a crash the reaction may exist and must be cleaned up.
+			priorStartReaction: len(entry.StartEmojis) > 0,
 		}
 		key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 		d.mu.Lock()
@@ -270,6 +278,7 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 	incoming.AckNoteIDs = merged
 	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
 	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
+	incoming.priorStartReaction = existing.priorStartReaction || incoming.priorStartReaction
 	return incoming, dropped
 }
 
