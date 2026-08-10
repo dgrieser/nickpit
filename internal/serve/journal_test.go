@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -12,12 +13,15 @@ import (
 // newJournalEnv is newWorkerEnv plus a journal in dir, sharing the fake GitLab
 // across "restarts" of the daemon.
 func newJournalEnv(t *testing.T, fake *fakeGitLab, dir string) (*Dispatcher, *fakeRunner, *GroupSet) {
+	return newJournalEnvWithConfig(t, fake, dir, workerCfg())
+}
+
+func newJournalEnvWithConfig(t *testing.T, fake *fakeGitLab, dir string, cfg WorkerConfig) (*Dispatcher, *fakeRunner, *GroupSet) {
 	t.Helper()
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	groups := newTestGroupSetWithURL(t, server.URL)
 	runner := &fakeRunner{}
-	cfg := workerCfg()
 	cfg.BaseURL = server.URL
 	cfg.LogDir = t.TempDir()
 	journal, err := NewJournal(dir, discardLogger())
@@ -26,6 +30,31 @@ func newJournalEnv(t *testing.T, fake *fakeGitLab, dir string) (*Dispatcher, *fa
 	}
 	dispatcher := NewDispatcher(runner, TopicLookup(GitLabTopicLookup), journal, cfg, discardLogger())
 	return dispatcher, runner, groups
+}
+
+// A failed coalescing overwrite must invalidate the older canonical snapshot.
+// Otherwise restart would resume state that predates already-acknowledged work.
+func TestJournalFailedUpdateInvalidatesOlderEntry(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := Event{Kind: TriggerAuto, ProjectID: 42, ProjectPath: "platform/api", IID: 7, HeadSHA: "sha-1"}
+	if !journal.persist(event) {
+		t.Fatal("initial persist failed")
+	}
+	path := journal.path(event.ProjectID, event.IID)
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	event.HeadSHA = "sha-2"
+	if journal.persist(event) {
+		t.Fatal("update unexpectedly succeeded with a directory at the temp path")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("canonical entry survived failed update: %v", err)
+	}
 }
 
 func journalFiles(t *testing.T, dir string) int {
@@ -146,6 +175,87 @@ func TestJournalRestoreResumesAcrossRestart(t *testing.T) {
 		return len(awards) == 1 && awards[0] == "white_check_mark"
 	})
 	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+}
+
+// Reaction names belong to the job that placed them, not the config active at
+// restore time. A resumed run must remove old start/ack names while using the
+// current outcome name.
+func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 0, "old-start")
+	fake.preAward(7, 301, "old-ack")
+
+	oldCfg := workerCfg()
+	oldCfg.StartEmoji = "old-start"
+	oldCfg.AckEmoji = "old-ack"
+	first, _, groups := newJournalEnvWithConfig(t, fake, dir, oldCfg)
+	first.Enqueue(commandEvent(7, "sha-1", groups.Match("platform/api"), 301))
+	key := <-first.queue
+	if _, _, ok := first.take(key); !ok {
+		t.Fatal("old-config job could not be marked running")
+	}
+	entries := first.journal.load()
+	if len(entries) != 1 || !slices.Contains(entries[0].StartEmojis, "old-start") || !slices.Contains(entries[0].AckEmojis, "old-ack") {
+		t.Fatalf("journaled reaction names = %+v, want old start and ack", entries)
+	}
+
+	newCfg := workerCfg()
+	newCfg.StartEmoji = "new-start"
+	newCfg.AckEmoji = "new-ack"
+	second, _, groups := newJournalEnvWithConfig(t, fake, dir, newCfg)
+	if resumed := second.Restore(groups); resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", resumed)
+	}
+	key = <-second.queue
+	event, ctx, ok := second.take(key)
+	if !ok {
+		t.Fatal("restored job could not be taken")
+	}
+	second.process(ctx, event)
+	second.finish(key)
+
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("MR awards = %v, want only current outcome", awards)
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("note awards = %v, want only current outcome", awards)
+	}
+}
+
+// Running and pending events share one crash snapshot. If their combined note
+// set exceeds the cap, every omitted acknowledgement must be released now;
+// after a crash no restored state could settle it.
+func TestJournalRunningSnapshotReleasesOmittedAck(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, groups := newJournalEnv(t, fake, dir)
+	group := groups.Match("platform/api")
+	first := commandEvent(7, "sha-1", group, 0)
+	first.AckNoteIDs = make([]int, maxAckNotes)
+	for i := range first.AckNoteIDs {
+		first.AckNoteIDs[i] = i + 1
+	}
+	dispatcher.Enqueue(first)
+	key := <-dispatcher.queue
+	if _, _, ok := dispatcher.take(key); !ok {
+		t.Fatal("queued job could not be marked running")
+	}
+
+	fake.preAward(7, 9001, "eyes")
+	dispatcher.Enqueue(commandEvent(7, "sha-2", group, 9001))
+	waitFor(t, 3*time.Second, func() bool { return len(fake.awardedOn(7, 9001)) == 0 })
+
+	dispatcher.mu.Lock()
+	pending := slices.Clone(dispatcher.states[key].pending.AckNoteIDs)
+	dispatcher.mu.Unlock()
+	if slices.Contains(pending, 9001) {
+		t.Fatalf("pending notes = %v, omitted note must not be settled twice", pending)
+	}
+	entries := dispatcher.journal.load()
+	if len(entries) != 1 || slices.Contains(entries[0].AckNoteIDs, 9001) {
+		t.Fatalf("journal entries = %+v, omitted note must not appear in crash snapshot", entries)
+	}
 }
 
 // Restore runs before workers start, so more journal entries than queue slots

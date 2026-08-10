@@ -148,3 +148,21 @@ func TestNewGroupSetBotLookupFailureIsWarning(t *testing.T) {
 		t.Fatal("group must still be usable without bot id")
 	}
 }
+
+func TestNewGroupSetRejectsInvalidBotID(t *testing.T) {
+	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
+		return 0, nil
+	}
+	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
+		{Path: "platform", Token: "t", WebhookSecret: "s"},
+	}, "https://gitlab.example.com", lookup)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want invalid-id warning", warnings)
+	}
+	if set.Match("platform/api").BotUserID != 0 {
+		t.Fatal("invalid bot id must not be installed")
+	}
+	if set.BotIDs()[0] {
+		t.Fatal("invalid bot id must not enter the loop guard")
+	}
+}

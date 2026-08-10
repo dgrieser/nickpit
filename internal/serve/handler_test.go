@@ -214,6 +214,30 @@ func TestHandlerCommandReview(t *testing.T) {
 	}
 }
 
+// Managed review reactions are disabled without a resolved bot identity: the
+// worker could not safely revoke them later. The review itself still queues for
+// defensive direct callers; production startup rejects this configuration.
+func TestHandlerCommandReviewWithoutBotIDDoesNotAcknowledge(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 0
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", recorder.Code)
+	}
+	env.dispatcher.mu.Lock()
+	state := env.dispatcher.states[jobKey{ProjectID: 43, IID: 11}]
+	env.dispatcher.mu.Unlock()
+	if state == nil {
+		t.Fatal("review must still queue")
+	}
+	if len(state.latest.AckNoteIDs) != 0 || len(state.latest.AckEmojis) != 0 {
+		t.Fatalf("tracked ack = notes %v emojis %v, want none", state.latest.AckNoteIDs, state.latest.AckEmojis)
+	}
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("posts = %v, want no acknowledgement", posts)
+	}
+}
+
 func TestHandlerCommandAbortNothingRunning(t *testing.T) {
 	env := newHandlerEnv(t)
 	recorder := postWebhook(t, env.handler, "note_command_abort.json", "legacy-secret")

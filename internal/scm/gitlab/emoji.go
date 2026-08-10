@@ -33,7 +33,8 @@ func (c *Client) AwardNoteEmoji(ctx context.Context, projectID, iid, noteID int,
 // revokes; empty remove names are ignored. userID is the client's own user id
 // and is REQUIRED for revoking: with 0 (unknown) only the name would be left to
 // match, and an administrator/owner token CAN delete another user's award — so
-// the revoke is refused (reported as an error) and only add is awarded.
+// the whole replacement is refused. Awarding add without removing the old
+// marker would leave contradictory reactions behind.
 func (c *Client) ReplaceMREmoji(ctx context.Context, projectID, iid, userID int, add string, remove ...string) error {
 	return c.replaceEmoji(ctx, mrEmojiPath(projectID, iid), userID, add, remove)
 }
@@ -75,15 +76,16 @@ func (c *Client) awardEmoji(ctx context.Context, basePath, name string) error {
 // error is joined so the caller can log what went wrong. The list request is
 // skipped entirely when there is nothing to revoke.
 func (c *Client) replaceEmoji(ctx context.Context, basePath string, userID int, add string, remove []string) error {
-	var errs []error
 	wanted := slices.DeleteFunc(slices.Clone(remove), func(name string) bool { return name == "" })
-	switch {
-	case len(wanted) > 0 && userID == 0:
+	if len(wanted) > 0 && userID == 0 {
 		// Matching on the name alone is not safe: an administrator or owner
 		// token CAN delete another user's award, so a human's genuine reaction
 		// of the same name would be revoked.
-		errs = append(errs, errors.New("gitlab: refusing to revoke award emoji by name alone: own user id unresolved"))
-	case len(wanted) > 0:
+		return errors.New("gitlab: refusing to replace award emoji: own user id unresolved")
+	}
+
+	var errs []error
+	if len(wanted) > 0 {
 		var awards []AwardEmoji
 		if err := c.GetPaginated(ctx, basePath, &awards); err != nil {
 			errs = append(errs, fmt.Errorf("gitlab: listing award emoji: %w", err))

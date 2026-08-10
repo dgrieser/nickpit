@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -36,7 +37,8 @@ const (
 // never placed (start emoji disabled, or an auto event that carries no command
 // note) are left untouched — an MR the daemon skipped must not be decorated.
 type reactions struct {
-	// mr is true once the start emoji was awarded on the merge request.
+	// mr is true once this worker attempted the start emoji, or when a restored
+	// journal says the previous worker may already have awarded one.
 	mr bool
 	// notes are the command notes wearing the ack emoji.
 	notes []int
@@ -50,7 +52,7 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID, "trigger", event.Kind.String())
 	// The command notes already wear the ack emoji: the handler awarded it when
 	// it accepted the command, before this job was picked up.
-	placed := reactions{notes: event.AckNoteIDs}
+	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
 	outcome := d.review(ctx, event, &placed, log)
 	d.settle(ctx, event, placed, outcome, log)
 }
@@ -88,13 +90,16 @@ func (d *Dispatcher) review(ctx context.Context, event Event, placed *reactions,
 		return outcomeFailed
 	}
 
-	if d.cfg.StartEmoji != "" {
+	if d.cfg.StartEmoji != "" && event.Group.BotUserID != 0 {
 		// Revoke a previous run's outcome in the same call: without it an MR
 		// re-reviewed after a failure would carry both the old outcome and the
-		// new one. Settle removes stale outcomes too, so a transient failure
-		// here heals when the review ends.
+		// new one. A restored job can also carry an in-progress name from the
+		// previous config, so replace every managed start name at once. Settle
+		// repeats the cleanup if this call only partly succeeds.
+		managed := appendUniqueStrings(event.StartEmojis, d.cfg.StartEmoji)
+		remove := replacedEmojis(managed, d.cfg.StartEmoji, d.cfg.DoneEmoji, d.cfg.FailEmoji)
 		err := event.Group.Client.ReplaceMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID,
-			d.cfg.StartEmoji, d.cfg.DoneEmoji, d.cfg.FailEmoji)
+			d.cfg.StartEmoji, remove...)
 		if err != nil {
 			log.Warn("awarding start emoji failed", "emoji", d.cfg.StartEmoji, "error", err)
 		}
@@ -158,8 +163,15 @@ func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step s
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
 func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) {
+	// Safe replacement needs the token owner's user id. Production startup
+	// requires it; keep this guard for tests and defensive direct callers so a
+	// lookup failure can never add an outcome beside an unrevokable marker.
+	if event.Group == nil || event.Group.BotUserID == 0 {
+		return
+	}
 	notes := placed.notes
-	if d.cfg.AckEmoji == "" {
+	ackEmojis := appendUniqueStrings(event.AckEmojis, d.cfg.AckEmoji)
+	if len(ackEmojis) == 0 {
 		// No ack emoji was awarded, so there is nothing on the notes to replace.
 		notes = nil
 	}
@@ -185,7 +197,8 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(base, settleTimeout)
 			defer cancel()
-			remove := replacedEmoji(d.cfg.StartEmoji, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
+			startEmojis := appendUniqueStrings(event.StartEmojis, d.cfg.StartEmoji)
+			remove := replacedEmojis(startEmojis, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
 			err := client.ReplaceMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, remove...)
 			if err != nil {
 				log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
@@ -196,7 +209,7 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(base, settleTimeout)
 			defer cancel()
-			remove := replacedEmoji(d.cfg.AckEmoji, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
+			remove := replacedEmojis(ackEmojis, add, d.cfg.DoneEmoji, d.cfg.FailEmoji)
 			err := client.ReplaceNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add, remove...)
 			if err != nil {
 				log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
@@ -206,18 +219,11 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	wg.Wait()
 }
 
-// replacedEmoji lists the reactions an outcome flip revokes: the in-progress
-// marker plus any stale outcome a previous run left behind (review start only
-// cleans those up when its own replace succeeds, and a redelivered command note
-// is never cleaned at start at all) — except the outcome being awarded, so a
-// failed re-award cannot lose the reaction entirely.
-func replacedEmoji(inProgress, add, done, fail string) []string {
-	names := []string{inProgress}
-	if done != add {
-		names = append(names, done)
-	}
-	if fail != add {
-		names = append(names, fail)
-	}
-	return names
+// replacedEmojis lists the reactions an outcome flip revokes: every managed
+// in-progress name (including names persisted under older configs), plus stale
+// outcomes a previous run left behind. The outcome being awarded is excluded,
+// so a failed re-award cannot lose the existing reaction entirely.
+func replacedEmojis(inProgress []string, add string, stale ...string) []string {
+	names := appendUniqueStrings(inProgress, stale...)
+	return slices.DeleteFunc(names, func(name string) bool { return name == add })
 }

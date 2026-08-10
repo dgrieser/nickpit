@@ -141,8 +141,9 @@ func TestReplaceMREmojiRevokesOwnAwardsOnly(t *testing.T) {
 }
 
 // Without a resolved bot user id the name would be the only filter left, and an
-// administrator/owner token CAN delete another user's award — so the revoke is
-// refused (and reported), while the add half still goes through.
+// administrator/owner token CAN delete another user's award. Refuse the whole
+// replacement: adding the outcome without revoking the marker would leave
+// contradictory reactions behind.
 func TestReplaceMREmojiWithoutUserIDRefusesRevoke(t *testing.T) {
 	fake := &emojiServer{awards: []AwardEmoji{award(1, "eyes", 5), award(2, "rocket", 5)}}
 	client := fake.start(t)
@@ -154,8 +155,8 @@ func TestReplaceMREmojiWithoutUserIDRefusesRevoke(t *testing.T) {
 	if len(fake.deleted) != 0 {
 		t.Fatalf("deleted = %v, want no revoke without a resolved user id", fake.deleted)
 	}
-	if fmt.Sprint(fake.posted) != "[white_check_mark]" {
-		t.Fatalf("posted = %v, want the award to still happen", fake.posted)
+	if len(fake.posted) != 0 {
+		t.Fatalf("posted = %v, want no add after the unsafe revoke was refused", fake.posted)
 	}
 }
 

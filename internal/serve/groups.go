@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,8 +21,9 @@ import (
 const signatureTolerance = 5 * time.Minute
 
 // Group is one configured GitLab group: its path prefix, credentials, and the
-// API client built from its token. BotUserID is the token's user (0 when the
-// startup lookup failed) and feeds the emoji-loop guard.
+// API client built from its token. BotUserID is the token's user and feeds the
+// emoji-loop guard and safe reaction replacement. Production startup requires
+// it to be resolved; 0 is only useful for tests that omit identity lookup.
 type Group struct {
 	Path      string
 	Token     string
@@ -125,7 +127,9 @@ func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, 
 		if lookup != nil {
 			id, err := lookup(ctx, group.Client)
 			if err != nil {
-				warnings = append(warnings, err)
+				warnings = append(warnings, fmt.Errorf("group %q: bot user lookup: %w", group.Path, err))
+			} else if id <= 0 {
+				warnings = append(warnings, fmt.Errorf("group %q: bot user lookup returned invalid id %d", group.Path, id))
 			} else {
 				group.BotUserID = id
 				set.botIDs[id] = true

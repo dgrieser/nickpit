@@ -31,6 +31,11 @@ type Event struct {
 	// outcome, so the comment that asked for the review shows how it ended.
 	// Coalesced events contribute their notes too — every asker gets an answer.
 	AckNoteIDs []int
+	// StartEmojis and AckEmojis are every configured name under which this job
+	// may have placed its managed reactions. Keeping the names on the event lets
+	// journal restore clean markers from an older configuration.
+	StartEmojis []string
+	AckEmojis   []string
 }
 
 type jobKey struct {
@@ -159,6 +164,8 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 			HeadSHA:     entry.HeadSHA,
 			Group:       group,
 			AckNoteIDs:  entry.AckNoteIDs,
+			StartEmojis: entry.StartEmojis,
+			AckEmojis:   entry.AckEmojis,
 		}
 		key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 		d.mu.Lock()
@@ -181,6 +188,7 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 // LOST — the dispatcher is closed (shutdown) or the queue is full — and the
 // webhook must be answered with a non-2xx status so GitLab redelivers it.
 func (d *Dispatcher) Enqueue(event Event) bool {
+	d.trackAcknowledgement(&event)
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -197,6 +205,7 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 	}
 	if state, ok := d.states[key]; ok {
 		var dropped []int
+		var releaseEvent Event
 		switch state.status {
 		case stateRunning:
 			pending := event
@@ -206,13 +215,20 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			state.pending = &pending
 			// The journal holds the job's would-be re-run after a crash: the
 			// running review never settled, so its notes AND the pending ones
-			// still need their flip. Notes this merge drops over the cap are
-			// NOT released — they settle normally in this process, the cap
-			// only trims what a resume would flip.
-			resume, _ := mergeEvents(state.latest, pending)
+			// still need their flip. Notes omitted by this second merge would
+			// be absent after a crash, so release them now and remove them from
+			// the pending rerun's settlement set.
+			resume, omitted := mergeEvents(state.latest, pending)
+			releaseEvent = pending
+			if len(omitted) > 0 {
+				dropped = appendUniqueInts(dropped, omitted...)
+				state.pending.AckNoteIDs = removeInts(state.pending.AckNoteIDs, omitted)
+				resume, _ = mergeEvents(state.latest, *state.pending)
+			}
 			state.persisted = d.journal.persist(resume)
 		default:
 			state.latest, dropped = mergeEvents(state.latest, event)
+			releaseEvent = state.latest
 			state.persisted = d.journal.persist(state.latest)
 		}
 		if len(dropped) > 0 {
@@ -220,7 +236,7 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			// ever flip them, so take the ack back now instead of leaving the
 			// notes reading as in progress forever.
 			d.log.Warn("ack note cap exceeded, releasing dropped notes", "project", event.ProjectPath, "iid", event.IID, "notes", dropped)
-			go d.releaseAcks(event, dropped)
+			go d.releaseAcks(releaseEvent, dropped)
 		}
 		return true
 	}
@@ -252,7 +268,49 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 	}
 	merged, dropped := mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
 	incoming.AckNoteIDs = merged
+	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
+	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
 	return incoming, dropped
+}
+
+// trackAcknowledgement stamps the name already awarded by the handler onto the
+// event before it is journaled. Reactions are disabled defensively if a caller
+// constructs a group without the resolved identity required for safe cleanup.
+// Start reaction names are recorded later by take, immediately before a worker
+// can place them; queued jobs have not placed a start marker yet.
+func (d *Dispatcher) trackAcknowledgement(event *Event) {
+	if event.Group == nil || event.Group.BotUserID == 0 {
+		return
+	}
+	if len(event.AckNoteIDs) > 0 && d.cfg.AckEmoji != "" {
+		event.AckEmojis = appendUniqueStrings(event.AckEmojis, d.cfg.AckEmoji)
+	}
+}
+
+func appendUniqueStrings(existing []string, incoming ...string) []string {
+	merged := slices.Clone(existing)
+	for _, value := range incoming {
+		if value != "" && !slices.Contains(merged, value) {
+			merged = append(merged, value)
+		}
+	}
+	return merged
+}
+
+func appendUniqueInts(existing []int, incoming ...int) []int {
+	merged := slices.Clone(existing)
+	for _, value := range incoming {
+		if !slices.Contains(merged, value) {
+			merged = append(merged, value)
+		}
+	}
+	return merged
+}
+
+func removeInts(values, removed []int) []int {
+	return slices.DeleteFunc(slices.Clone(values), func(value int) bool {
+		return slices.Contains(removed, value)
+	})
 }
 
 // maxAckNotes bounds how many command notes one coalesced review carries, so a
@@ -464,6 +522,13 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 		return Event{}, nil, false
 	}
 	state.status = stateRunning
+	if state.latest.Group != nil && state.latest.Group.BotUserID != 0 && d.cfg.StartEmoji != "" && !slices.Contains(state.latest.StartEmojis, d.cfg.StartEmoji) {
+		// Persist the name before the worker can place it. A crash after the
+		// remote award but before any later local update must still leave the
+		// next process enough information to clean the marker.
+		state.latest.StartEmojis = appendUniqueStrings(state.latest.StartEmojis, d.cfg.StartEmoji)
+		state.persisted = d.journal.persist(state.latest)
+	}
 	ctx, cancel := context.WithCancel(d.jobCtx)
 	state.cancel = cancel
 	state.startedAt = time.Now()

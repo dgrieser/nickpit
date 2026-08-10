@@ -115,6 +115,19 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	}
 }
 
+func TestWorkerUnresolvedBotIDDisablesManagedReactions(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	group.BotUserID = 0
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 1 {
+		t.Fatal("review must still run for a defensive direct caller")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none without bot identity", posted)
+	}
+}
+
 // commandEvent is a manual event that came from a "/<keyword> review" comment,
 // whose note already wears the ack emoji.
 func commandEvent(iid int, sha string, group *Group, noteID int) Event {

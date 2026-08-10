@@ -35,6 +35,11 @@ type journalEntry struct {
 	IID         int    `json:"iid"`
 	HeadSHA     string `json:"head_sha,omitempty"`
 	AckNoteIDs  []int  `json:"ack_note_ids,omitempty"`
+	// StartEmojis and AckEmojis are the configured names under which this job
+	// may already have placed managed reactions. They must survive config
+	// changes so a resumed job can revoke the old markers.
+	StartEmojis []string `json:"start_emojis,omitempty"`
+	AckEmojis   []string `json:"ack_emojis,omitempty"`
 }
 
 // NewJournal opens (creating if needed) the state directory. An empty dir
@@ -69,6 +74,8 @@ func (j *Journal) persist(event Event) bool {
 	if j == nil {
 		return false
 	}
+	path := j.path(event.ProjectID, event.IID)
+	tmp := path + ".tmp"
 	entry := journalEntry{
 		Kind:        event.Kind.String(),
 		ProjectID:   event.ProjectID,
@@ -76,23 +83,37 @@ func (j *Journal) persist(event Event) bool {
 		IID:         event.IID,
 		HeadSHA:     event.HeadSHA,
 		AckNoteIDs:  event.AckNoteIDs,
+		StartEmojis: event.StartEmojis,
+		AckEmojis:   event.AckEmojis,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		j.log.Warn("journal: encoding job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
+		j.invalidate(path, tmp, event.ProjectID, event.IID)
 		return false
 	}
-	path := j.path(event.ProjectID, event.IID)
-	tmp := path + ".tmp"
 	err = os.WriteFile(tmp, data, 0o600)
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}
 	if err != nil {
 		j.log.Warn("journal: persisting job failed", "project", event.ProjectPath, "iid", event.IID, "error", err)
+		j.invalidate(path, tmp, event.ProjectID, event.IID)
 		return false
 	}
 	return true
+}
+
+// invalidate removes both the uncommitted temporary file and any older
+// canonical entry. Once an update fails, the old snapshot is unsafe to resume:
+// it may omit a newer manual trigger or acknowledgements already awarded.
+func (j *Journal) invalidate(path, tmp string, projectID, iid int) {
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		j.log.Warn("journal: removing failed temporary job file", "file", tmp, "error", err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		j.log.Warn("journal: invalidating stale job failed", "project_id", projectID, "iid", iid, "error", err)
+	}
 }
 
 // remove deletes the job's file once nothing is left to resume (settled,

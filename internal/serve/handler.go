@@ -421,11 +421,14 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		// own acknowledgement, which would re-add the in-progress reaction
 		// after the outcome flip, permanently.
 		var ackNotes []int
-		if decision.NoteID != 0 {
+		ackEmoji := h.dispatcher.AckEmoji()
+		if decision.NoteID != 0 && ackEmoji != "" && group.BotUserID != 0 {
 			ackNotes = []int{decision.NoteID}
 		}
 		ackCtx, cancel := context.WithTimeout(context.Background(), ackTimeout)
-		h.ackNote(ackCtx, group, projectID, decision, h.dispatcher.AckEmoji())
+		if group.BotUserID != 0 {
+			h.ackNote(ackCtx, group, projectID, decision, ackEmoji)
+		}
 		cancel()
 		accepted := h.dispatcher.Enqueue(Event{
 			Kind:        decision.Kind,
@@ -696,7 +699,7 @@ func (h *Handler) ackNote(ctx context.Context, group *Group, projectID int, deci
 // must not keep a reaction claiming the request was taken.
 func (h *Handler) revokeAck(group *Group, projectID int, decision Decision) {
 	emoji := h.dispatcher.AckEmoji()
-	if emoji == "" || decision.NoteID == 0 {
+	if emoji == "" || decision.NoteID == 0 || group.BotUserID == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
