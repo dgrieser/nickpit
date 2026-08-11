@@ -187,6 +187,19 @@ func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step s
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
 func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) reactions {
+	return d.settleWithLimit(ctx, event, placed, outcome, log, nil)
+}
+
+// settleWithLimit optionally caps live remote reaction requests across several
+// concurrent settle calls. A nil channel retains the normal per-job fan-out.
+func (d *Dispatcher) settleWithLimit(
+	ctx context.Context,
+	event Event,
+	placed reactions,
+	outcome reviewOutcome,
+	log *slog.Logger,
+	reactionSlots chan struct{},
+) reactions {
 	// Safe replacement needs the token owner's user id. Production startup
 	// requires it; keep this guard for tests and defensive direct callers so a
 	// lookup failure can never add an outcome beside an unrevokable marker.
@@ -224,44 +237,54 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	noteFailed := make([]bool, len(notes))
 	if placed.mr {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
-			defer cancel()
-			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, mrAdd, d.cfg.TriggerEmoji)
-			if err != nil && mrAdd != "" && reactionOutcomeRejected(err) {
-				// A bad configured outcome cannot improve on retry. Revoke the
-				// in-progress marker so a terminal POST validation response does
-				// not leave the MR looking active forever.
-				log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", mrAdd, "error", err)
-				err = client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, "", d.cfg.TriggerEmoji)
-			}
-			if err != nil {
-				if terminalReactionTargetError(err) {
-					log.Warn("stopping merge request emoji retries after terminal error", "emoji", mrAdd, "error", err)
-					return
+			completed := withReactionSlot(ctx, reactionSlots, func() {
+				requestCtx, cancel := context.WithTimeout(ctx, settleTimeout)
+				defer cancel()
+				err := client.ReplaceOwnMREmoji(requestCtx, event.ProjectID, event.IID, event.Group.BotUserID, mrAdd, d.cfg.TriggerEmoji)
+				if err != nil && mrAdd != "" && reactionOutcomeRejected(err) {
+					// A bad configured outcome cannot improve on retry. Revoke the
+					// in-progress marker so a terminal POST validation response does
+					// not leave the MR looking active forever.
+					log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", mrAdd, "error", err)
+					err = client.ReplaceOwnMREmoji(requestCtx, event.ProjectID, event.IID, event.Group.BotUserID, "", d.cfg.TriggerEmoji)
 				}
+				if err != nil {
+					if terminalReactionTargetError(err) {
+						log.Warn("stopping merge request emoji retries after terminal error", "emoji", mrAdd, "error", err)
+						return
+					}
+					mrFailed = true
+					log.Warn("updating merge request emoji failed", "emoji", mrAdd, "error", err)
+				}
+			})
+			if !completed {
 				mrFailed = true
-				log.Warn("updating merge request emoji failed", "emoji", mrAdd, "error", err)
 			}
 		})
 	}
 	for index, noteID := range notes {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
-			defer cancel()
-			err := client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
-			if err != nil && add != "" && reactionOutcomeRejected(err) {
-				// As above, an invalid outcome must degrade to revoke-only cleanup
-				// rather than strand the command acknowledgement.
-				log.Warn("outcome emoji rejected; revoking command note marker", "note", noteID, "emoji", add, "error", err)
-				err = client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, "")
-			}
-			if err != nil {
-				if terminalReactionTargetError(err) {
-					log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
-					return
+			completed := withReactionSlot(ctx, reactionSlots, func() {
+				requestCtx, cancel := context.WithTimeout(ctx, settleTimeout)
+				defer cancel()
+				err := client.ReplaceOwnNoteEmoji(requestCtx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
+				if err != nil && add != "" && reactionOutcomeRejected(err) {
+					// As above, an invalid outcome must degrade to revoke-only cleanup
+					// rather than strand the command acknowledgement.
+					log.Warn("outcome emoji rejected; revoking command note marker", "note", noteID, "emoji", add, "error", err)
+					err = client.ReplaceOwnNoteEmoji(requestCtx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, "")
 				}
+				if err != nil {
+					if terminalReactionTargetError(err) {
+						log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
+						return
+					}
+					noteFailed[index] = true
+					log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
+				}
+			})
+			if !completed {
 				noteFailed[index] = true
-				log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
 			}
 		})
 	}
@@ -273,6 +296,21 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		}
 	}
 	return remaining
+}
+
+func withReactionSlot(ctx context.Context, slots chan struct{}, fn func()) bool {
+	if slots == nil {
+		fn()
+		return true
+	}
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+		fn()
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // reactionOutcomeRejected identifies GitLab's permanent validation responses

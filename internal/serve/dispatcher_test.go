@@ -839,6 +839,51 @@ func TestDispatcherShutdownReleasesQueuedAckNotes(t *testing.T) {
 	}
 }
 
+// Journal-less shutdown cleanup must not bypass the normal remote-request
+// concurrency cap, even though each queued job carries several reactions.
+func TestDispatcherShutdownReactionCleanupIsBounded(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:    []string{"nickpit"},
+		state:     "opened",
+		headSHA:   "sha-1",
+		emojiGate: make(chan struct{}),
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	closeGate := sync.OnceFunc(func() { close(fake.emojiGate) })
+	defer closeGate()
+
+	for iid := 1; iid <= maxAckCleanupWorkers+1; iid++ {
+		event := commandEvent(iid, "sha-1", group, 0)
+		for note := 1; note <= maxAckCleanupWorkers; note++ {
+			noteID := iid*100 + note
+			event.AckNoteIDs = append(event.AckNoteIDs, noteID)
+			fake.preAward(iid, noteID, "eyes")
+		}
+		dispatcher.Enqueue(event)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		dispatcher.Shutdown(0)
+		close(done)
+	}()
+	waitFor(t, time.Second, func() bool { return fake.emojiArrived.Load() >= maxAckCleanupWorkers })
+	time.Sleep(20 * time.Millisecond)
+	if requests := fake.emojiArrived.Load(); requests != maxAckCleanupWorkers {
+		t.Fatalf("live shutdown cleanup requests = %d, want at most %d", requests, maxAckCleanupWorkers)
+	}
+
+	closeGate()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown cleanup did not drain")
+	}
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want all shutdown acknowledgements released", awards)
+	}
+}
+
 func TestStopAckCleanupCancelsBacklogAtDeadline(t *testing.T) {
 	fake := &fakeGitLab{
 		topics:             []string{"nickpit"},

@@ -570,29 +570,36 @@ func (d *Dispatcher) releaseUnfinished() {
 		}
 		d.log.Warn("shutdown: releasing acknowledgements for jobs not persisted", "count", len(remaining)-persisted)
 	}
+	// This fallback runs after the regular cleanup pool has stopped. Keep both
+	// its active jobs and their nested reaction requests bounded: settle fans a
+	// job's reactions out concurrently, so limiting only the outer jobs would
+	// still permit maxAckCleanupWorkers*maxAckNotes live GitLab requests.
+	jobs := make(chan unfinished)
+	reactionSlots := make(chan struct{}, maxAckCleanupWorkers)
 	var wg sync.WaitGroup
-	for _, job := range remaining {
-		if job.persisted {
-			continue
-		}
-		if job.cleanup != nil {
-			cleanup := *job.cleanup
-			pending := job.pending
-			wg.Go(func() {
-				log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
-				d.settleReactionCleanup(context.Background(), cleanup, log)
-				if pending != nil {
-					d.releaseAcks(*pending, pending.AckNoteIDs)
+	for range min(maxAckCleanupWorkers, len(remaining)) {
+		wg.Go(func() {
+			for job := range jobs {
+				if job.persisted {
+					continue
 				}
-			})
-			continue
-		}
-		event := job.event
-		if len(event.AckNoteIDs) == 0 {
-			continue
-		}
-		wg.Go(func() { d.releaseAcks(event, event.AckNoteIDs) })
+				if job.cleanup != nil {
+					cleanup := *job.cleanup
+					log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
+					d.settleReactionCleanupWithLimit(context.Background(), cleanup, log, reactionSlots)
+					if job.pending != nil {
+						d.releaseAcksWithLimit(*job.pending, job.pending.AckNoteIDs, reactionSlots)
+					}
+					continue
+				}
+				d.releaseAcksWithLimit(job.event, job.event.AckNoteIDs, reactionSlots)
+			}
+		})
 	}
+	for _, job := range remaining {
+		jobs <- job
+	}
+	close(jobs)
 	wg.Wait()
 }
 
@@ -600,11 +607,15 @@ func (d *Dispatcher) releaseUnfinished() {
 // never settle them (aborted while queued, dropped over the ack-note cap, or
 // discarded at shutdown without a journal).
 func (d *Dispatcher) releaseAcks(event Event, notes []int) {
+	d.releaseAcksWithLimit(event, notes, nil)
+}
+
+func (d *Dispatcher) releaseAcksWithLimit(event Event, notes []int, reactionSlots chan struct{}) {
 	if len(notes) == 0 {
 		return
 	}
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID)
-	d.settle(context.Background(), event, reactions{notes: notes}, outcomeAborted, log)
+	d.settleWithLimit(context.Background(), event, reactions{notes: notes}, outcomeAborted, log, reactionSlots)
 }
 
 type ackCleanup struct {
@@ -813,16 +824,25 @@ func cleanupHasReactions(cleanup reactionCleanup) bool {
 }
 
 func (d *Dispatcher) settleReactionCleanup(ctx context.Context, cleanup reactionCleanup, log *slog.Logger) reactionCleanup {
+	return d.settleReactionCleanupWithLimit(ctx, cleanup, log, nil)
+}
+
+func (d *Dispatcher) settleReactionCleanupWithLimit(
+	ctx context.Context,
+	cleanup reactionCleanup,
+	log *slog.Logger,
+	reactionSlots chan struct{},
+) reactionCleanup {
 	remaining := reactionCleanup{
-		event: eventWithReactions(cleanup.event, d.settle(ctx, cleanup.event, reactions{
+		event: eventWithReactions(cleanup.event, d.settleWithLimit(ctx, cleanup.event, reactions{
 			mr:    eventSettlesMR(cleanup.event),
 			notes: cleanup.event.AckNoteIDs,
-		}, cleanup.outcome, log)),
+		}, cleanup.outcome, log, reactionSlots)),
 		outcome: cleanup.outcome,
 	}
 	if cleanup.aborted != nil {
-		aborted := eventWithReactions(*cleanup.aborted, d.settle(ctx, *cleanup.aborted,
-			reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log))
+		aborted := eventWithReactions(*cleanup.aborted, d.settleWithLimit(ctx, *cleanup.aborted,
+			reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log, reactionSlots))
 		remaining.aborted = &aborted
 	}
 	return remaining
