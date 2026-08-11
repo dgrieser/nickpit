@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -211,6 +212,51 @@ func TestHandlerCommandReview(t *testing.T) {
 	if post.Path != "/api/v4/projects/43/merge_requests/11/notes/301/award_emoji" || post.Body["name"] != "white_check_mark" {
 		t.Fatalf("post = %+v", post)
 	}
+}
+
+// A timed-out award can still commit in GitLab after a fast skipped review has
+// already published its outcome. A later settlement pass must sweep that late
+// in-progress reaction instead of leaving both reactions on the note.
+func TestHandlerCommandReviewTimedOutAckGetsLateCleanup(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.ackRequestTimeout = 20 * time.Millisecond
+	env.handler.ackUncertaintyWindow = 200 * time.Millisecond
+	env.dispatcher.cfg.FailEmoji = "thumbsdown"
+	env.gitlab.state = "closed"
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	defer closeGate()
+	env.gitlab.emojiPostGate = gate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	env.dispatcher.Start(ctx, 1)
+	defer func() {
+		cancel()
+		env.dispatcher.Shutdown(time.Second)
+	}()
+
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", recorder.Code)
+	}
+	if env.gitlab.emojiPostArrived.Load() != 1 {
+		t.Fatal("acknowledgement POST did not reach delayed server handler")
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown")
+	})
+
+	// Let the original, already-cancelled POST commit after outcome settlement.
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown") && slices.Contains(awards, "white_check_mark")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown") && !slices.Contains(awards, "white_check_mark")
+	})
 }
 
 // Managed review reactions are disabled without a resolved bot identity: the

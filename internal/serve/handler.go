@@ -111,6 +111,12 @@ type Handler struct {
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
 	log        *slog.Logger
+	// ackUncertaintyWindow keeps settlement state alive after an acknowledgement
+	// request times out. Cancelling the client wait does not prove GitLab
+	// cancelled the server-side award, so a late award needs a later sweep.
+	// Kept as a field so timeout/race tests need not wait for production delays.
+	ackUncertaintyWindow time.Duration
+	ackRequestTimeout    time.Duration
 	// chatRunner spawns a `nickpit chat` child to answer a discussion-thread
 	// reply, keeping the daemon free of LLM logic. Nil disables chat, and chat
 	// candidate events are then ignored.
@@ -153,18 +159,20 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 	}
 	chatCtx, chatCancel := context.WithCancel(context.Background())
 	return &Handler{
-		groups:         groups,
-		dispatcher:     dispatcher,
-		cfg:            cfg,
-		chatRunner:     chatRunner,
-		chatCfg:        chatCfg,
-		chatSem:        make(chan struct{}, limit),
-		chatAdmit:      make(chan struct{}, chatQueueCap),
-		chatCtx:        chatCtx,
-		chatCancel:     chatCancel,
-		chatSeen:       newNoteDedup(chatSeenCap),
-		chatRetryDelay: defaultChatRetryDelay,
-		log:            log,
+		groups:               groups,
+		dispatcher:           dispatcher,
+		cfg:                  cfg,
+		chatRunner:           chatRunner,
+		chatCfg:              chatCfg,
+		chatSem:              make(chan struct{}, limit),
+		chatAdmit:            make(chan struct{}, chatQueueCap),
+		chatCtx:              chatCtx,
+		chatCancel:           chatCancel,
+		chatSeen:             newNoteDedup(chatSeenCap),
+		chatRetryDelay:       defaultChatRetryDelay,
+		ackUncertaintyWindow: commandReplyTimeout,
+		ackRequestTimeout:    ackTimeout,
+		log:                  log,
 	}
 }
 
@@ -419,25 +427,44 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		// review that starts (and settles) immediately — an MR ruled out by the
 		// status recheck settles within a second — must never be outrun by its
 		// own acknowledgement, which would re-add the in-progress reaction
-		// after the outcome flip, permanently.
+		// after the outcome flip, permanently. A client timeout is the exception:
+		// its uncertain server-side award is recorded for a later settlement pass.
 		var ackNotes []int
 		ackEmoji := h.dispatcher.AckEmoji()
 		if decision.NoteID != 0 && ackEmoji != "" && group.BotUserID != 0 {
 			ackNotes = []int{decision.NoteID}
 		}
-		ackCtx, cancel := context.WithTimeout(context.Background(), ackTimeout)
-		if group.BotUserID != 0 {
-			h.ackNote(ackCtx, group, projectID, decision, ackEmoji)
+		requestTimeout := h.ackRequestTimeout
+		if requestTimeout <= 0 {
+			requestTimeout = ackTimeout
 		}
+		ackCtx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		var ackErr error
+		if group.BotUserID != 0 {
+			ackErr = h.ackNote(ackCtx, group, projectID, decision, ackEmoji)
+		}
+		ackTimedOut := errors.Is(ackErr, context.DeadlineExceeded) || errors.Is(ackCtx.Err(), context.DeadlineExceeded)
 		cancel()
+		var uncertainAckNotes []int
+		var ackCleanupUntil time.Time
+		if ackTimedOut && len(ackNotes) > 0 {
+			uncertainAckNotes = slices.Clone(ackNotes)
+			window := h.ackUncertaintyWindow
+			if window <= 0 {
+				window = commandReplyTimeout
+			}
+			ackCleanupUntil = time.Now().Add(window)
+		}
 		accepted := h.dispatcher.Enqueue(Event{
-			Kind:        decision.Kind,
-			ProjectID:   projectID,
-			ProjectPath: event.Project.PathWithNamespace,
-			IID:         decision.IID,
-			HeadSHA:     decision.HeadSHA,
-			Group:       group,
-			AckNoteIDs:  ackNotes,
+			Kind:                decision.Kind,
+			ProjectID:           projectID,
+			ProjectPath:         event.Project.PathWithNamespace,
+			IID:                 decision.IID,
+			HeadSHA:             decision.HeadSHA,
+			Group:               group,
+			AckNoteIDs:          ackNotes,
+			UncertainAckNoteIDs: uncertainAckNotes,
+			AckCleanupUntil:     ackCleanupUntil,
 		})
 		if !accepted {
 			// Take the ack back: the emoji would claim a request that was
@@ -451,7 +478,7 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
 			defer cancel()
-			h.ackNote(ctx, group, projectID, decision, h.cfg.AbortEmoji)
+			_ = h.ackNote(ctx, group, projectID, decision, h.cfg.AbortEmoji)
 			// The emoji revoke has no note to answer; it only gets a
 			// confirmation when something was actually aborted — revoking a
 			// stale award is routine cleanup, not a question.
@@ -685,14 +712,17 @@ func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath
 }
 
 // ackNote awards the given acknowledgement emoji on the command note ("" skips).
-// Failures are logged, never fatal: the command itself is executed regardless.
-func (h *Handler) ackNote(ctx context.Context, group *Group, projectID int, decision Decision, emoji string) {
+// Failures are logged and returned so a timeout can be tracked as an uncertain
+// server-side award; the command itself is still executed regardless.
+func (h *Handler) ackNote(ctx context.Context, group *Group, projectID int, decision Decision, emoji string) error {
 	if emoji == "" || decision.NoteID == 0 {
-		return
+		return nil
 	}
 	if err := group.Client.AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, emoji); err != nil {
 		h.log.Warn("acknowledging command note failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
+		return err
 	}
+	return nil
 }
 
 // revokeAck takes a review ack back after the enqueue was rejected — the note

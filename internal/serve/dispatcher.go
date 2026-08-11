@@ -34,6 +34,11 @@ type Event struct {
 	// outcome, so the comment that asked for the review shows how it ended.
 	// Coalesced events contribute their notes too, up to maxAckNotes.
 	AckNoteIDs []int
+	// UncertainAckNoteIDs are awards whose client request timed out. GitLab may
+	// still commit them after the first outcome flip, so settlement keeps these
+	// targets alive for another replacement at AckCleanupUntil.
+	UncertainAckNoteIDs []int
+	AckCleanupUntil     time.Time
 	// StartEmojis and AckEmojis are every configured name under which this job
 	// may have placed its managed reactions. Keeping the names on the event lets
 	// journal restore clean markers from an older configuration.
@@ -245,19 +250,24 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 }
 
 func eventFromJournal(entry journalEntry, group *Group) Event {
-	return Event{
-		Kind:         parseTriggerKind(entry.Kind),
-		ProjectID:    entry.ProjectID,
-		ProjectPath:  entry.ProjectPath,
-		IID:          entry.IID,
-		HeadSHA:      entry.HeadSHA,
-		Group:        group,
-		AckNoteIDs:   entry.AckNoteIDs,
-		StartEmojis:  entry.StartEmojis,
-		AckEmojis:    entry.AckEmojis,
-		SettleMR:     entry.SettleMR,
-		RevokeMROnly: entry.RevokeMROnly,
+	event := Event{
+		Kind:                parseTriggerKind(entry.Kind),
+		ProjectID:           entry.ProjectID,
+		ProjectPath:         entry.ProjectPath,
+		IID:                 entry.IID,
+		HeadSHA:             entry.HeadSHA,
+		Group:               group,
+		AckNoteIDs:          entry.AckNoteIDs,
+		UncertainAckNoteIDs: entry.UncertainAckNoteIDs,
+		StartEmojis:         entry.StartEmojis,
+		AckEmojis:           entry.AckEmojis,
+		SettleMR:            entry.SettleMR,
+		RevokeMROnly:        entry.RevokeMROnly,
 	}
+	if entry.AckCleanupUntilUnixMilli != 0 {
+		event.AckCleanupUntil = time.UnixMilli(entry.AckCleanupUntilUnixMilli)
+	}
+	return event
 }
 
 // Enqueue accepts an event from the webhook handler. Never blocks, keeping the
@@ -368,6 +378,16 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 	}
 	merged, dropped := mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
 	incoming.AckNoteIDs = merged
+	uncertain := appendUniqueInts(existing.UncertainAckNoteIDs, incoming.UncertainAckNoteIDs...)
+	incoming.UncertainAckNoteIDs = slices.DeleteFunc(uncertain, func(noteID int) bool {
+		return !slices.Contains(merged, noteID)
+	})
+	if existing.AckCleanupUntil.After(incoming.AckCleanupUntil) {
+		incoming.AckCleanupUntil = existing.AckCleanupUntil
+	}
+	if len(incoming.UncertainAckNoteIDs) == 0 {
+		incoming.AckCleanupUntil = time.Time{}
+	}
 	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
 	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
 	if eventSettlesMR(existing) {
@@ -507,9 +527,18 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	}
 	d.jobCancel()
 	<-done
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), settleTimeout)
+	d.cleanupOnShutdown(settleTimeout)
+}
+
+// cleanupOnShutdown gives background acknowledgement cleanup only half the
+// total reaction budget. Cancelling that pool at the midpoint leaves the
+// remaining half for journal-less queued and pending jobs.
+func (d *Dispatcher) cleanupOnShutdown(timeout time.Duration) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), timeout)
 	defer cleanupCancel()
-	d.stopAckCleanup(cleanupCtx)
+	backgroundCtx, backgroundCancel := context.WithTimeout(cleanupCtx, timeout/2)
+	d.stopAckCleanup(backgroundCtx)
+	backgroundCancel()
 	d.releaseUnfinished(cleanupCtx)
 }
 
@@ -666,6 +695,13 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 		return
 	}
 	cleanup := *state.cleanup
+	if delay := time.Until(cleanup.event.AckCleanupUntil); len(cleanup.event.UncertainAckNoteIDs) > 0 && delay > 0 {
+		state.cleanupQueued = true
+		version := state.cleanupVersion
+		d.mu.Unlock()
+		time.AfterFunc(delay, func() { d.startDelayedCleanup(key, version) })
+		return
+	}
 	d.cleanupMu.Lock()
 	if !d.cleanupClosed && len(d.cleanupQueue) < ackCleanupQueueCapacity {
 		keyCopy := key
@@ -690,6 +726,29 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 	if retry {
 		time.AfterFunc(reactionRetryDelay, func() { d.queueDurableCleanup(key) })
 	}
+}
+
+// startDelayedCleanup releases the reservation made for an uncertain award
+// sweep. A version change means abort/coalescing updated the work while the
+// timer waited; queueDurableCleanup reads and schedules that newest snapshot.
+func (d *Dispatcher) startDelayedCleanup(key jobKey, version uint64) {
+	d.mu.Lock()
+	state, ok := d.states[key]
+	if !ok || state.status != stateCleanup || state.cleanup == nil || !state.cleanupQueued {
+		d.mu.Unlock()
+		return
+	}
+	state.cleanupQueued = false
+	closed := d.closed
+	changed := state.cleanupVersion != version
+	d.mu.Unlock()
+	if closed {
+		return
+	}
+	if changed {
+		d.log.Debug("acknowledgement cleanup changed while delayed", "project_id", key.ProjectID, "iid", key.IID)
+	}
+	d.queueDurableCleanup(key)
 }
 
 // startAckCleanupWorkersLocked starts enough bounded workers for queued work.

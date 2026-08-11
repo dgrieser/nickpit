@@ -30,12 +30,14 @@ type Journal struct {
 // tokens must never land on disk — but re-resolved from the project path at
 // restore time, exactly like the webhook handler routes a delivery.
 type journalEntry struct {
-	Kind        string `json:"kind"`
-	ProjectID   int    `json:"project_id"`
-	ProjectPath string `json:"project_path"`
-	IID         int    `json:"iid"`
-	HeadSHA     string `json:"head_sha,omitempty"`
-	AckNoteIDs  []int  `json:"ack_note_ids,omitempty"`
+	Kind                     string `json:"kind"`
+	ProjectID                int    `json:"project_id"`
+	ProjectPath              string `json:"project_path"`
+	IID                      int    `json:"iid"`
+	HeadSHA                  string `json:"head_sha,omitempty"`
+	AckNoteIDs               []int  `json:"ack_note_ids,omitempty"`
+	UncertainAckNoteIDs      []int  `json:"uncertain_ack_note_ids,omitempty"`
+	AckCleanupUntilUnixMilli int64  `json:"ack_cleanup_until_unix_milli,omitempty"`
 	// Reaction names and MR settlement mode must survive config changes so a
 	// resumed job revokes old markers without changing revoke-only work into an
 	// outcome award.
@@ -132,18 +134,23 @@ func (j *Journal) persistCleanup(cleanup reactionCleanup, pending *Event) bool {
 }
 
 func entryFromEvent(event Event) journalEntry {
-	return journalEntry{
-		Kind:         event.Kind.String(),
-		ProjectID:    event.ProjectID,
-		ProjectPath:  event.ProjectPath,
-		IID:          event.IID,
-		HeadSHA:      event.HeadSHA,
-		AckNoteIDs:   event.AckNoteIDs,
-		StartEmojis:  event.StartEmojis,
-		AckEmojis:    event.AckEmojis,
-		SettleMR:     event.SettleMR,
-		RevokeMROnly: event.RevokeMROnly,
+	entry := journalEntry{
+		Kind:                event.Kind.String(),
+		ProjectID:           event.ProjectID,
+		ProjectPath:         event.ProjectPath,
+		IID:                 event.IID,
+		HeadSHA:             event.HeadSHA,
+		AckNoteIDs:          event.AckNoteIDs,
+		UncertainAckNoteIDs: event.UncertainAckNoteIDs,
+		StartEmojis:         event.StartEmojis,
+		AckEmojis:           event.AckEmojis,
+		SettleMR:            event.SettleMR,
+		RevokeMROnly:        event.RevokeMROnly,
 	}
+	if !event.AckCleanupUntil.IsZero() {
+		entry.AckCleanupUntilUnixMilli = event.AckCleanupUntil.UnixMilli()
+	}
+	return entry
 }
 
 func (j *Journal) persistEntry(entry journalEntry) bool {

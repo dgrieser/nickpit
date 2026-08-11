@@ -74,6 +74,15 @@ type fakeGitLab struct {
 	emojiPostStatuses map[string]int
 	// emojiWaitForCancel holds award-list requests until client cancellation.
 	emojiWaitForCancel bool
+	// emojiWaitForCancelPaths restricts that behavior to selected award-list
+	// paths, allowing shutdown tests to stall background cleanup while queued-job
+	// cleanup remains responsive.
+	emojiWaitForCancelPaths map[string]bool
+	// emojiPostGate delays the first award POST even after its request context is
+	// cancelled, modeling a server-side award that commits after client timeout.
+	emojiPostGate    chan struct{}
+	emojiPostArrived atomic.Int32
+	emojiPostGated   atomic.Bool
 }
 
 func (f *fakeGitLab) gateReads() int {
@@ -99,6 +108,10 @@ type recordedAward struct {
 
 func (f *fakeGitLab) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.emojiPostGate != nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/award_emoji") && f.emojiPostGated.CompareAndSwap(false, true) {
+			f.emojiPostArrived.Add(1)
+			<-f.emojiPostGate
+		}
 		if f.statusGate != nil && r.Method == http.MethodGet && mrStatusPath.MatchString(r.URL.Path) {
 			f.statusArrived.Add(1)
 			<-f.statusGate
@@ -108,6 +121,11 @@ func (f *fakeGitLab) handler() http.Handler {
 			<-f.emojiGate
 		}
 		if f.emojiWaitForCancel && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+			f.emojiArrived.Add(1)
+			<-r.Context().Done()
+			return
+		}
+		if f.emojiWaitForCancelPaths[r.URL.Path] && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
 			f.emojiArrived.Add(1)
 			<-r.Context().Done()
 			return
@@ -944,6 +962,34 @@ func TestStopAckCleanupCancelsBacklogAtDeadline(t *testing.T) {
 	dispatcher.cleanupMu.Unlock()
 	if workers != 0 {
 		t.Fatalf("cleanup workers = %d, want 0 after stop", workers)
+	}
+	dispatcher.jobCancel()
+}
+
+// A stalled background cleanup must not consume the deadline needed to revoke
+// acknowledgements for queued journal-less jobs.
+func TestCleanupOnShutdownReservesTimeForUnfinishedJobs(t *testing.T) {
+	stalledPath := "/api/v4/projects/42/merge_requests/7/notes/301/award_emoji"
+	fake := &fakeGitLab{
+		topics:                  []string{"nickpit"},
+		state:                   "opened",
+		headSHA:                 "sha-1",
+		emojiWaitForCancelPaths: map[string]bool{stalledPath: true},
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	dispatcher.queueAckCleanup(commandEvent(7, "sha-1", group, 301), []int{301})
+	waitFor(t, time.Second, func() bool { return fake.emojiArrived.Load() == 1 })
+
+	fake.preAward(8, 401, "eyes")
+	dispatcher.Enqueue(commandEvent(8, "sha-1", group, 401))
+	dispatcher.cleanupOnShutdown(200 * time.Millisecond)
+
+	if awards := fake.awardedOn(8, 401); len(awards) != 0 {
+		t.Fatalf("queued note awards = %v, want acknowledgement revoked with reserved budget", awards)
+	}
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "eyes") {
+		t.Fatalf("revoked = %v, want queued acknowledgement cleanup", revoked)
 	}
 	dispatcher.jobCancel()
 }

@@ -98,6 +98,35 @@ func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {
 	}
 }
 
+func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Minute).Truncate(time.Millisecond)
+	event := Event{
+		Kind:                TriggerManual,
+		ProjectID:           42,
+		ProjectPath:         "platform/api",
+		IID:                 7,
+		AckNoteIDs:          []int{301},
+		UncertainAckNoteIDs: []int{301},
+		AckCleanupUntil:     deadline,
+	}
+	if !journal.persist(event) {
+		t.Fatal("persist failed")
+	}
+	entries := journal.load()
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	restored := eventFromJournal(entries[0], nil)
+	if !slices.Equal(restored.UncertainAckNoteIDs, []int{301}) || !restored.AckCleanupUntil.Equal(deadline) {
+		t.Fatalf("restored uncertainty = notes %v deadline %v, want note 301 through %v", restored.UncertainAckNoteIDs, restored.AckCleanupUntil, deadline)
+	}
+}
+
 func TestJournalLoadPreservesFileOnReadFailure(t *testing.T) {
 	dir := t.TempDir()
 	journal, err := NewJournal(dir, discardLogger())

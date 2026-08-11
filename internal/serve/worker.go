@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -264,6 +265,7 @@ func (d *Dispatcher) settleWithLimit(
 	}
 	for index, noteID := range notes {
 		wg.Go(func() {
+			terminal := false
 			completed := withReactionSlot(ctx, reactionSlots, func() {
 				requestCtx, cancel := context.WithTimeout(ctx, settleTimeout)
 				defer cancel()
@@ -276,6 +278,7 @@ func (d *Dispatcher) settleWithLimit(
 				}
 				if err != nil {
 					if terminalReactionTargetError(err) {
+						terminal = true
 						log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
 						return
 					}
@@ -284,6 +287,14 @@ func (d *Dispatcher) settleWithLimit(
 				}
 			})
 			if !completed {
+				noteFailed[index] = true
+				return
+			}
+			// A timed-out award can commit after a successful replacement that
+			// observed no acknowledgement. Keep this target for a later pass at
+			// the end of the uncertainty window; that pass removes any delayed
+			// award while preserving the outcome reaction.
+			if !terminal && slices.Contains(event.UncertainAckNoteIDs, noteID) && time.Now().Before(event.AckCleanupUntil) {
 				noteFailed[index] = true
 			}
 		})
@@ -380,5 +391,11 @@ func eventWithReactions(event Event, remaining reactions) Event {
 		event.SettleMR = true
 	}
 	event.AckNoteIDs = remaining.notes
+	event.UncertainAckNoteIDs = slices.DeleteFunc(event.UncertainAckNoteIDs, func(noteID int) bool {
+		return !slices.Contains(remaining.notes, noteID)
+	})
+	if len(event.UncertainAckNoteIDs) == 0 {
+		event.AckCleanupUntil = time.Time{}
+	}
 	return event
 }
