@@ -215,6 +215,13 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 			defer cancel()
 			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, d.cfg.TriggerEmoji)
+			if err != nil && add != "" && reactionOutcomeRejected(err) {
+				// A bad configured outcome cannot improve on retry. Revoke the
+				// in-progress marker so a terminal POST validation response does
+				// not leave the MR looking active forever.
+				log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", add, "error", err)
+				err = client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, "", d.cfg.TriggerEmoji)
+			}
 			if err != nil {
 				if terminalReactionTargetError(err) {
 					log.Warn("stopping merge request emoji retries after terminal error", "emoji", add, "error", err)
@@ -230,6 +237,12 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 			defer cancel()
 			err := client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
+			if err != nil && add != "" && reactionOutcomeRejected(err) {
+				// As above, an invalid outcome must degrade to revoke-only cleanup
+				// rather than strand the command acknowledgement.
+				log.Warn("outcome emoji rejected; revoking command note marker", "note", noteID, "emoji", add, "error", err)
+				err = client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, "")
+			}
 			if err != nil {
 				if terminalReactionTargetError(err) {
 					log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
@@ -250,25 +263,50 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	return remaining
 }
 
-// terminalReactionTargetError identifies client responses that cannot improve
-// by retrying the same target. Authentication, permission, timeout, and rate
-// limit responses remain retryable: credentials or server policy may recover,
-// and a forbidden DELETE must not discard a still-live bot reaction.
+// reactionOutcomeRejected identifies GitLab's permanent validation responses
+// for an award POST. Callers can then fall back to revoke-only cleanup instead
+// of either preserving the in-progress marker or retrying an invalid outcome.
+func reactionOutcomeRejected(err error) bool {
+	return matchingAPIError(err, func(apiErr *gitlab.APIError) bool {
+		return apiErr.Method == http.MethodPost &&
+			(apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusUnprocessableEntity)
+	})
+}
+
+// matchingAPIError walks both ordinary wrapped errors and errors.Join trees.
+// Replacement can report a list failure and an award failure together, so
+// errors.As alone may stop at an unrelated first API response.
+func matchingAPIError(err error, match func(*gitlab.APIError) bool) bool {
+	if err == nil {
+		return false
+	}
+	if apiErr, ok := err.(*gitlab.APIError); ok {
+		return match(apiErr)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if matchingAPIError(child, match) {
+				return true
+			}
+		}
+		return false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return matchingAPIError(wrapped.Unwrap(), match)
+	}
+	return false
+}
+
+// terminalReactionTargetError identifies a target that no longer exists. Other
+// responses remain retryable: notably 400/422 can mean an invalid outcome POST,
+// while the old marker still exists and needs revoke-only cleanup.
 func terminalReactionTargetError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	var apiErr *gitlab.APIError
-	if !errors.As(err, &apiErr) || apiErr.Status < 400 || apiErr.Status >= 500 {
-		return false
-	}
-	switch apiErr.Status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout,
-		http.StatusTooEarly, http.StatusTooManyRequests:
-		return false
-	default:
-		return true
-	}
+	return errors.As(err, &apiErr) &&
+		(apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusGone)
 }
 
 func hasReactions(placed reactions) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -263,13 +264,49 @@ func TestWorkerCleanupRetriesOnlyUnresolvedTargets(t *testing.T) {
 	}
 }
 
+// GitLab rejects invalid or unsupported configured outcome emoji before the
+// replacement can revoke the in-progress marker. Settlement must degrade to a
+// revoke-only operation and retire the target instead of leaving eyes forever.
+func TestWorkerRejectedOutcomeRevokesInProgressEmoji(t *testing.T) {
+	for _, status := range []int{400, 422} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			cfg := workerCfg()
+			cfg.DoneEmoji = "unsupported-outcome"
+			fake := &fakeGitLab{
+				topics:            []string{"nickpit"},
+				state:             "opened",
+				headSHA:           "sha-1",
+				emojiPostStatuses: map[string]int{cfg.DoneEmoji: status},
+			}
+			dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+			fake.preAward(7, 301, "eyes")
+
+			result := dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+			if !result.settled || hasReactions(reactions{
+				mr:    len(result.event.StartEmojis) > 0,
+				notes: result.event.AckNoteIDs,
+			}) {
+				t.Fatalf("result = %+v, want rejected outcome settled by revoke", result)
+			}
+			if awards := fake.awarded(); len(awards) != 0 {
+				t.Fatalf("live awards = %v, want in-progress markers revoked", awards)
+			}
+			if revoked := fake.revokedNames(); !slices.Equal(revoked, []string{"eyes", "eyes"}) {
+				t.Fatalf("revoked = %v, want MR and command markers", revoked)
+			}
+		})
+	}
+}
+
 func TestTerminalReactionTargetErrorKeepsForbiddenRetryable(t *testing.T) {
 	tests := []struct {
 		status   int
 		terminal bool
 	}{
 		{status: 404, terminal: true},
-		{status: 422, terminal: true},
+		{status: 410, terminal: true},
+		{status: 400, terminal: false},
+		{status: 422, terminal: false},
 		{status: 403, terminal: false},
 		{status: 429, terminal: false},
 		{status: 500, terminal: false},

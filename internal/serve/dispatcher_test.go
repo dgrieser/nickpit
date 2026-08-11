@@ -69,6 +69,9 @@ type fakeGitLab struct {
 	// emojiFailurePaths returns 503 from selected award-list paths. Protected by
 	// mu; tests configure it before requests begin.
 	emojiFailurePaths map[string]int
+	// emojiPostStatuses rejects selected award names with the configured HTTP
+	// status, modeling an invalid or unsupported configured emoji.
+	emojiPostStatuses map[string]int
 	// emojiWaitForCancel holds award-list requests until client cancellation.
 	emojiWaitForCancel bool
 }
@@ -142,6 +145,11 @@ func (f *fakeGitLab) handler() http.Handler {
 				return
 			}
 			f.posts = append(f.posts, recordedPost{Path: r.URL.Path, Body: body})
+			if status := f.emojiPostStatuses[body["name"]]; status != 0 && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"Name is invalid"}`))
+				return
+			}
 			if name := body["name"]; name != "" {
 				f.nextID++
 				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name})

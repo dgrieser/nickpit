@@ -276,8 +276,20 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 	if state, ok := d.states[key]; ok {
 		var dropped []int
 		var releaseEvent Event
-		switch state.status {
-		case stateRunning:
+		switch {
+		case state.cleanup != nil:
+			// Abort installs durable cleanup before a running worker reaches
+			// finish. Keep new work behind that cleanup even while status still
+			// says running; replacing the journal with a runnable snapshot could
+			// resurrect the aborted review after a crash.
+			pending := event
+			if state.pending != nil {
+				pending, dropped = mergeEvents(*state.pending, event)
+			}
+			state.pending = &pending
+			releaseEvent = pending
+			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		case state.status == stateRunning:
 			pending := event
 			if state.pending != nil {
 				pending, dropped = mergeEvents(*state.pending, event)
@@ -296,16 +308,6 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 				resume, _ = mergeEvents(state.latest, *state.pending)
 			}
 			state.persisted = d.journal.persist(resume)
-		case stateCleanup:
-			// Keep new work behind the durable cleanup. Overwriting its
-			// journal entry could strand the old in-progress reactions.
-			pending := event
-			if state.pending != nil {
-				pending, dropped = mergeEvents(*state.pending, event)
-			}
-			state.pending = &pending
-			releaseEvent = pending
-			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
 		default:
 			state.latest, dropped = mergeEvents(state.latest, event)
 			releaseEvent = state.latest

@@ -255,6 +255,74 @@ func TestJournalAbortCleanupRestoresAfterCrashWindow(t *testing.T) {
 	second.Shutdown(0)
 }
 
+// Abort leaves a running state in place until its cancelled worker reaches
+// finish. A newer webhook in that window must become pending behind the durable
+// abort cleanup, not overwrite the journal with a runnable merged snapshot.
+func TestJournalRunningAbortThenEnqueuePreservesCleanup(t *testing.T) {
+	dir := t.TempDir()
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	fake := &fakeGitLab{
+		topics:    []string{"nickpit"},
+		state:     "opened",
+		headSHA:   "sha-2",
+		emojiGate: gate,
+	}
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+
+	first, firstRunner, groups := newJournalEnv(t, fake, dir)
+	t.Cleanup(closeGate)
+	group := groups.Match("platform/api")
+	if !first.Enqueue(commandEvent(7, "sha-1", group, 301)) {
+		t.Fatal("initial event was not accepted")
+	}
+	key := <-first.queue
+	if _, _, ok := first.take(key); !ok {
+		t.Fatal("initial event could not be marked running")
+	}
+	if outcome := first.Abort(42, 7); !outcome.Found || !outcome.Running {
+		t.Fatalf("abort outcome = %+v, want running abort", outcome)
+	}
+	if !first.Enqueue(commandEvent(7, "sha-2", group, 302)) {
+		t.Fatal("new event was not accepted during abort finish window")
+	}
+
+	entries := first.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "aborted" ||
+		!slices.Equal(entries[0].AckNoteIDs, []int{301}) || entries[0].Pending == nil ||
+		!slices.Equal(entries[0].Pending.AckNoteIDs, []int{302}) {
+		t.Fatalf("journal entries = %+v, want old abort cleanup with new pending review", entries)
+	}
+	first.jobCancel()
+	first.cleanupCancel()
+
+	// Restart first revokes the aborted command, then promotes and runs only the
+	// new command. This also proves the old note cannot inherit the new outcome.
+	second, secondRunner, groups := newJournalEnv(t, fake, dir)
+	if restored := second.Restore(groups); restored != 1 {
+		t.Fatalf("restored = %d, want cleanup plus pending review", restored)
+	}
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiArrived.Load() >= 1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	second.Start(ctx, 1)
+	t.Cleanup(func() {
+		cancel()
+		second.Shutdown(time.Second)
+	})
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool { return len(secondRunner.ran()) == 1 })
+	waitFor(t, 3*time.Second, func() bool {
+		return slices.Equal(fake.awardedOn(7, 302), []string{"white_check_mark"})
+	})
+	if len(firstRunner.ran()) != 0 {
+		t.Fatal("aborted review ran before simulated crash")
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 0 {
+		t.Fatalf("aborted command awards = %v, want acknowledgement revoked without outcome", awards)
+	}
+}
+
 // With a journal, shutdown keeps queued jobs on disk (and leaves their ack
 // reactions in place — the restart resumes and settles them), instead of
 // releasing them like the journal-less path does.
