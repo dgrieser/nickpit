@@ -297,9 +297,9 @@ func TestReplaceNoteEmojiPath(t *testing.T) {
 	}
 }
 
-// A reaction someone else already removed (404) or one that is not ours (403)
-// leaves nothing to do — neither is an error worth reporting.
-func TestReplaceMREmojiToleratesGoneAndForbidden(t *testing.T) {
+// A reaction already removed is settled. Permission refusal is not: the list
+// was filtered to this user's award, so the managed reaction may remain live.
+func TestReplaceMREmojiToleratesGoneButSurfacesForbidden(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
@@ -313,8 +313,12 @@ func TestReplaceMREmojiToleratesGoneAndForbidden(t *testing.T) {
 			}
 		}))
 		client := NewClient(server.URL, "token")
-		if err := client.ReplaceMREmoji(context.Background(), 42, 7, 9, "x", "eyes"); err != nil {
+		err := client.ReplaceMREmoji(context.Background(), 42, 7, 9, "x", "eyes")
+		if status == http.StatusNotFound && err != nil {
 			t.Fatalf("status %d: expected nil, got %v", status, err)
+		}
+		if status == http.StatusForbidden && err == nil {
+			t.Fatalf("status %d: expected revoke error", status)
 		}
 		server.Close()
 	}

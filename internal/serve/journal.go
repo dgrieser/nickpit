@@ -42,9 +42,11 @@ type journalEntry struct {
 	AckEmojis   []string `json:"ack_emojis,omitempty"`
 	// CleanupOutcome marks an entry that must only settle reactions, never
 	// rerun the review. Pending carries a review accepted while that cleanup
-	// was retrying.
+	// was retrying. Aborted carries acknowledgements from a pending review that
+	// was cancelled behind cleanup; those must be revoked without an outcome.
 	CleanupOutcome string        `json:"cleanup_outcome,omitempty"`
 	Pending        *journalEntry `json:"pending,omitempty"`
+	Aborted        *journalEntry `json:"aborted,omitempty"`
 }
 
 // NewJournal opens (creating if needed) the state directory. An empty dir
@@ -56,7 +58,37 @@ func NewJournal(dir string, log *slog.Logger) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
+	if err := probeJournalDir(dir); err != nil {
+		return nil, fmt.Errorf("state dir: %w", err)
+	}
 	return &Journal{dir: dir, log: log}, nil
+}
+
+// probeJournalDir verifies the operations persistence depends on before intake
+// starts. MkdirAll alone succeeds for an existing read-only directory.
+func probeJournalDir(dir string) error {
+	probe, err := os.CreateTemp(dir, ".nickpit-journal-probe-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write probe: %w", err)
+	}
+	tmp := probe.Name()
+	committed := tmp + ".ready"
+	defer func() { _ = os.Remove(tmp) }()
+	defer func() { _ = os.Remove(committed) }()
+	if _, err := probe.Write([]byte("ok")); err != nil {
+		_ = probe.Close()
+		return fmt.Errorf("write probe: %w", err)
+	}
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("close probe: %w", err)
+	}
+	if err := os.Rename(tmp, committed); err != nil {
+		return fmt.Errorf("rename probe: %w", err)
+	}
+	if err := os.Remove(committed); err != nil {
+		return fmt.Errorf("remove probe: %w", err)
+	}
+	return nil
 }
 
 // Dir returns the journal's directory (empty when disabled).
@@ -85,6 +117,10 @@ func (j *Journal) persist(event Event) bool {
 func (j *Journal) persistCleanup(cleanup reactionCleanup, pending *Event) bool {
 	entry := entryFromEvent(cleanup.event)
 	entry.CleanupOutcome = cleanupOutcomeName(cleanup.outcome)
+	if cleanup.aborted != nil {
+		abortedEntry := entryFromEvent(*cleanup.aborted)
+		entry.Aborted = &abortedEntry
+	}
 	if pending != nil {
 		pendingEntry := entryFromEvent(*pending)
 		entry.Pending = &pendingEntry

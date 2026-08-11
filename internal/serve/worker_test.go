@@ -5,8 +5,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // newWorkerEnv builds a dispatcher whose fake GitLab state the test controls,
@@ -172,6 +176,110 @@ func commandEvent(iid int, sha string, group *Group, noteID int) Event {
 	event.Kind = TriggerManual
 	event.AckNoteIDs = []int{noteID}
 	return event
+}
+
+func TestWorkerTerminalMissingNoteDoesNotBlockPendingReview(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:         []string{"nickpit"},
+		state:          "opened",
+		headSHA:        "sha-1",
+		missingNoteIDs: map[int]bool{302: true},
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	event := commandEvent(7, "sha-1", group, 301)
+	event.AckNoteIDs = append(event.AckNoteIDs, 302)
+	if !dispatcher.Enqueue(event) {
+		t.Fatal("initial event was not accepted")
+	}
+	key := <-dispatcher.queue
+	taken, ctx, ok := dispatcher.take(key)
+	if !ok {
+		t.Fatal("initial event could not be taken")
+	}
+	result := dispatcher.process(ctx, taken)
+	if !result.settled || len(result.event.AckNoteIDs) != 0 {
+		t.Fatalf("result = %+v, missing note must be retired as terminal", result)
+	}
+	if awards := fake.awardedOn(7, 301); !slices.Equal(awards, []string{"white_check_mark"}) {
+		t.Fatalf("successful note awards = %v, want done outcome", awards)
+	}
+
+	// A newer request accepted before finish must be promoted immediately; a
+	// terminal target cannot leave the MR stuck in cleanup.
+	if !dispatcher.Enqueue(autoEvent(7, "sha-2", group)) {
+		t.Fatal("pending event was not accepted")
+	}
+	dispatcher.finish(key, result)
+	select {
+	case next := <-dispatcher.queue:
+		if next != key {
+			t.Fatalf("queued key = %+v, want %+v", next, key)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending review remained blocked after terminal cleanup result")
+	}
+}
+
+func TestWorkerCleanupRetriesOnlyUnresolvedTargets(t *testing.T) {
+	failedPath := "/api/v4/projects/42/merge_requests/7/notes/302/award_emoji"
+	fake := &fakeGitLab{
+		topics:            []string{"nickpit"},
+		state:             "opened",
+		headSHA:           "sha-1",
+		emojiFailurePaths: map[string]int{failedPath: 1},
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	event := commandEvent(7, "sha-1", group, 301)
+	event.AckNoteIDs = append(event.AckNoteIDs, 302)
+	result := dispatcher.process(context.Background(), event)
+	if result.settled || !slices.Equal(result.event.AckNoteIDs, []int{302}) || len(result.event.StartEmojis) != 0 {
+		t.Fatalf("result = %+v, want only transiently failed note 302", result)
+	}
+	remaining := dispatcher.settle(context.Background(), result.event,
+		reactions{notes: result.event.AckNoteIDs}, result.outcome, discardLogger())
+	if hasReactions(remaining) {
+		t.Fatalf("retry remaining = %+v, want fully settled", remaining)
+	}
+
+	posts := fake.posted()
+	countDone := func(pathSuffix string) int {
+		count := 0
+		for _, post := range posts {
+			if strings.HasSuffix(post.Path, pathSuffix) && post.Body["name"] == "white_check_mark" {
+				count++
+			}
+		}
+		return count
+	}
+	if got := countDone("/merge_requests/7/award_emoji"); got != 1 {
+		t.Fatalf("MR done posts = %d, want 1", got)
+	}
+	if got := countDone("/notes/301/award_emoji"); got != 1 {
+		t.Fatalf("successful note done posts = %d, want 1", got)
+	}
+}
+
+func TestTerminalReactionTargetErrorKeepsForbiddenRetryable(t *testing.T) {
+	tests := []struct {
+		status   int
+		terminal bool
+	}{
+		{status: 404, terminal: true},
+		{status: 422, terminal: true},
+		{status: 403, terminal: false},
+		{status: 429, terminal: false},
+		{status: 500, terminal: false},
+	}
+	for _, test := range tests {
+		err := &gitlab.APIError{Status: test.status}
+		if got := terminalReactionTargetError(err); got != test.terminal {
+			t.Errorf("status %d terminal = %v, want %v", test.status, got, test.terminal)
+		}
+	}
 }
 
 func TestWorkerFailedRunAwardsFailEmoji(t *testing.T) {

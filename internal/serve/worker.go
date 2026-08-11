@@ -2,10 +2,13 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // settleTimeout bounds EACH reaction flip that ends a review (the flips run
@@ -62,10 +65,11 @@ func (d *Dispatcher) process(ctx context.Context, event Event) settlementResult 
 	// it accepted the command, before this job was picked up.
 	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
 	outcome := d.review(ctx, &event, &placed, log)
+	remaining := d.settle(context.WithoutCancel(ctx), event, placed, outcome, log)
 	return settlementResult{
-		event:   event,
+		event:   eventWithReactions(event, remaining),
 		outcome: outcome,
-		settled: d.settle(ctx, event, placed, outcome, log),
+		settled: !hasReactions(remaining),
 	}
 }
 
@@ -174,12 +178,12 @@ func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step s
 
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
-func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) bool {
+func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) reactions {
 	// Safe replacement needs the token owner's user id. Production startup
 	// requires it; keep this guard for tests and defensive direct callers so a
 	// lookup failure can never add an outcome beside an unrevokable marker.
 	if event.Group == nil || event.Group.BotUserID == 0 {
-		return true
+		return reactions{}
 	}
 	notes := placed.notes
 	ackEmojis := appendUniqueStrings(event.AckEmojis, d.cfg.AckEmoji)
@@ -188,7 +192,7 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		notes = nil
 	}
 	if !placed.mr && len(notes) == 0 {
-		return true
+		return reactions{}
 	}
 	add := ""
 	switch outcome {
@@ -197,37 +201,86 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	case outcomeFailed:
 		add = d.cfg.FailEmoji
 	}
-	// A cancelled job context (abort, shutdown) must not skip the flip; the
-	// in-progress reaction would then be stuck forever. The flips are
-	// independent and run concurrently, each on its own deadline: one slow
-	// request must not eat the budget of the remaining notes (a coalesced
-	// review settles up to maxAckNotes of them).
-	base := context.WithoutCancel(ctx)
+	// Flips are independent and run concurrently, each on its own deadline: one
+	// slow request must not eat the budget of remaining notes (a coalesced review
+	// settles up to maxAckNotes of them). process passes a cancellation-free
+	// context so an aborted review still settles; cleanup workers pass their
+	// cancellable context so shutdown can bound queue draining.
 	client := event.Group.Client
 	var wg sync.WaitGroup
-	var failed atomic.Bool
+	mrFailed := false
+	noteFailed := make([]bool, len(notes))
 	if placed.mr {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(base, settleTimeout)
+			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 			defer cancel()
 			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, d.cfg.TriggerEmoji)
 			if err != nil {
-				failed.Store(true)
+				if terminalReactionTargetError(err) {
+					log.Warn("stopping merge request emoji retries after terminal error", "emoji", add, "error", err)
+					return
+				}
+				mrFailed = true
 				log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
 			}
 		})
 	}
-	for _, noteID := range notes {
+	for index, noteID := range notes {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(base, settleTimeout)
+			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 			defer cancel()
 			err := client.ReplaceOwnNoteEmoji(ctx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
 			if err != nil {
-				failed.Store(true)
+				if terminalReactionTargetError(err) {
+					log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
+					return
+				}
+				noteFailed[index] = true
 				log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
 			}
 		})
 	}
 	wg.Wait()
-	return !failed.Load()
+	remaining := reactions{mr: mrFailed}
+	for index, failed := range noteFailed {
+		if failed {
+			remaining.notes = append(remaining.notes, notes[index])
+		}
+	}
+	return remaining
+}
+
+// terminalReactionTargetError identifies client responses that cannot improve
+// by retrying the same target. Authentication, permission, timeout, and rate
+// limit responses remain retryable: credentials or server policy may recover,
+// and a forbidden DELETE must not discard a still-live bot reaction.
+func terminalReactionTargetError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var apiErr *gitlab.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status < 400 || apiErr.Status >= 500 {
+		return false
+	}
+	switch apiErr.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout,
+		http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	default:
+		return true
+	}
+}
+
+func hasReactions(placed reactions) bool {
+	return placed.mr || len(placed.notes) > 0
+}
+
+// eventWithReactions reduces durable cleanup state to targets that still need
+// work. Successful targets are not repeatedly updated on every retry.
+func eventWithReactions(event Event, remaining reactions) Event {
+	if !remaining.mr {
+		event.StartEmojis = nil
+	}
+	event.AckNoteIDs = remaining.notes
+	return event
 }

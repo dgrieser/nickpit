@@ -57,6 +57,10 @@ const (
 type reactionCleanup struct {
 	event   Event
 	outcome reviewOutcome
+	// aborted is a newer pending review cancelled while event cleanup was
+	// blocked. Its acknowledgements must be revoked, never assigned event's
+	// done/failed outcome.
+	aborted *Event
 }
 
 // jobState coalesces events per MR: while queued the newest event wins;
@@ -135,6 +139,8 @@ type Dispatcher struct {
 	cleanupWorkers int
 	cleanupClosed  bool
 	cleanupWG      sync.WaitGroup
+	cleanupCtx     context.Context
+	cleanupCancel  context.CancelFunc
 	// jobCtx outlives the intake context so in-flight reviews survive
 	// shutdown until the grace period expires.
 	jobCtx    context.Context
@@ -143,17 +149,20 @@ type Dispatcher struct {
 
 func NewDispatcher(runner ReviewRunner, lookup TopicLookup, journal *Journal, cfg WorkerConfig, log *slog.Logger) *Dispatcher {
 	jobCtx, jobCancel := context.WithCancel(context.Background())
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	return &Dispatcher{
-		states:    make(map[jobKey]*jobState),
-		queue:     make(chan jobKey, queueCapacity),
-		recent:    newSHALRU(shaLRUSize),
-		runner:    runner,
-		topics:    newTopicCache(lookup),
-		cfg:       cfg,
-		journal:   journal,
-		log:       log,
-		jobCtx:    jobCtx,
-		jobCancel: jobCancel,
+		states:        make(map[jobKey]*jobState),
+		queue:         make(chan jobKey, queueCapacity),
+		recent:        newSHALRU(shaLRUSize),
+		runner:        runner,
+		topics:        newTopicCache(lookup),
+		cfg:           cfg,
+		journal:       journal,
+		log:           log,
+		jobCtx:        jobCtx,
+		jobCancel:     jobCancel,
+		cleanupCtx:    cleanupCtx,
+		cleanupCancel: cleanupCancel,
 	}
 }
 
@@ -192,6 +201,10 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 				continue
 			}
 			cleanup := reactionCleanup{event: event, outcome: outcome}
+			if entry.Aborted != nil {
+				abortedEvent := eventFromJournal(*entry.Aborted, group)
+				cleanup.aborted = &abortedEvent
+			}
 			var pending *Event
 			if entry.Pending != nil {
 				pendingEvent := eventFromJournal(*entry.Pending, group)
@@ -470,7 +483,7 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	}
 	d.jobCancel()
 	<-done
-	d.stopAckCleanup()
+	d.stopAckCleanup(settleTimeout)
 	d.releaseUnfinished()
 }
 
@@ -483,6 +496,7 @@ func (d *Dispatcher) releaseUnfinished() {
 	type unfinished struct {
 		event     Event
 		cleanup   *reactionCleanup
+		pending   *Event
 		persisted bool
 	}
 	d.mu.Lock()
@@ -496,6 +510,7 @@ func (d *Dispatcher) releaseUnfinished() {
 			remaining = append(remaining, unfinished{
 				event:     state.cleanup.event,
 				cleanup:   state.cleanup,
+				pending:   state.pending,
 				persisted: persisted,
 			})
 			continue
@@ -538,12 +553,13 @@ func (d *Dispatcher) releaseUnfinished() {
 		}
 		if job.cleanup != nil {
 			cleanup := *job.cleanup
+			pending := job.pending
 			wg.Go(func() {
 				log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
-				d.settle(context.Background(), cleanup.event, reactions{
-					mr:    len(cleanup.event.StartEmojis) > 0,
-					notes: cleanup.event.AckNoteIDs,
-				}, cleanup.outcome, log)
+				d.settleReactionCleanup(context.Background(), cleanup, log)
+				if pending != nil {
+					d.releaseAcks(*pending, pending.AckNoteIDs)
+				}
 			})
 			continue
 		}
@@ -571,6 +587,7 @@ type ackCleanup struct {
 	event   Event
 	placed  reactions
 	outcome reviewOutcome
+	aborted *Event
 	durable *jobKey
 	version uint64
 }
@@ -627,6 +644,7 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 				notes: cleanup.event.AckNoteIDs,
 			},
 			outcome: cleanup.outcome,
+			aborted: cleanup.aborted,
 			durable: &keyCopy,
 			version: state.cleanupVersion,
 		})
@@ -665,14 +683,22 @@ func (d *Dispatcher) runAckCleanup() {
 		d.cleanupMu.Unlock()
 
 		log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
-		settled := d.settle(context.Background(), cleanup.event, cleanup.placed, cleanup.outcome, log)
+		remaining := reactionCleanup{
+			event:   eventWithReactions(cleanup.event, d.settle(d.cleanupCtx, cleanup.event, cleanup.placed, cleanup.outcome, log)),
+			outcome: cleanup.outcome,
+		}
+		if cleanup.aborted != nil {
+			aborted := eventWithReactions(*cleanup.aborted, d.settle(d.cleanupCtx, *cleanup.aborted,
+				reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log))
+			remaining.aborted = &aborted
+		}
 		if cleanup.durable != nil {
-			d.completeDurableCleanup(*cleanup.durable, cleanup.version, settled)
+			d.completeDurableCleanup(*cleanup.durable, cleanup.version, remaining)
 		}
 	}
 }
 
-func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, settled bool) {
+func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, remaining reactionCleanup) {
 	retry := false
 	d.mu.Lock()
 	state, ok := d.states[key]
@@ -689,10 +715,12 @@ func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, settled 
 		}
 		return
 	}
-	if !settled {
-		if d.journal != nil && !state.persisted {
-			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
-		}
+	if cleanupHasReactions(remaining) {
+		state.cleanup = &remaining
+		state.latest = remaining.event
+		// Always rewrite after an attempt: successful or terminal targets were
+		// removed, so restart must retry only unresolved targets.
+		state.persisted = d.journal.persistCleanup(remaining, state.pending)
 		retry = !d.closed
 		d.mu.Unlock()
 		if retry {
@@ -721,14 +749,59 @@ func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, settled 
 	d.mu.Unlock()
 }
 
-// stopAckCleanup prevents new cleanup work and drains the bounded queue. Server
-// shutdown calls this after HTTP handlers have drained, so no producer can race
-// the wait with a new WaitGroup task.
-func (d *Dispatcher) stopAckCleanup() {
+// stopAckCleanup prevents new cleanup work and drains until timeout. It then
+// cancels in-flight requests so a full queue cannot exceed process shutdown
+// budget. Server shutdown calls this after HTTP handlers have drained, so no
+// producer can race the wait with a new WaitGroup task.
+func (d *Dispatcher) stopAckCleanup(timeout time.Duration) {
 	d.cleanupMu.Lock()
 	d.cleanupClosed = true
 	d.cleanupMu.Unlock()
-	d.cleanupWG.Wait()
+	done := make(chan struct{})
+	go func() {
+		d.cleanupWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		d.cleanupCancel()
+		return
+	case <-timer.C:
+		d.log.Warn("shutdown: acknowledgement cleanup grace expired, cancelling requests")
+		d.cleanupCancel()
+		// Workers already hold at most maxAckCleanupWorkers items. Discard queued
+		// best-effort attempts; durable state remains in d.states/the journal and
+		// releaseUnfinished handles any required fallback below.
+		d.cleanupMu.Lock()
+		d.cleanupQueue = nil
+		d.cleanupMu.Unlock()
+	}
+	<-done
+}
+
+func cleanupHasReactions(cleanup reactionCleanup) bool {
+	if len(cleanup.event.StartEmojis) > 0 || len(cleanup.event.AckNoteIDs) > 0 {
+		return true
+	}
+	return cleanup.aborted != nil && (len(cleanup.aborted.StartEmojis) > 0 || len(cleanup.aborted.AckNoteIDs) > 0)
+}
+
+func (d *Dispatcher) settleReactionCleanup(ctx context.Context, cleanup reactionCleanup, log *slog.Logger) reactionCleanup {
+	remaining := reactionCleanup{
+		event: eventWithReactions(cleanup.event, d.settle(ctx, cleanup.event, reactions{
+			mr:    len(cleanup.event.StartEmojis) > 0,
+			notes: cleanup.event.AckNoteIDs,
+		}, cleanup.outcome, log)),
+		outcome: cleanup.outcome,
+	}
+	if cleanup.aborted != nil {
+		aborted := eventWithReactions(*cleanup.aborted, d.settle(ctx, *cleanup.aborted,
+			reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log))
+		remaining.aborted = &aborted
+	}
+	return remaining
 }
 
 // AbortOutcome reports what Abort found and did.
@@ -936,9 +1009,14 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 			d.mu.Unlock()
 			return AbortOutcome{}
 		}
-		cleanupEvent, _ := mergeEvents(state.cleanup.event, *state.pending)
-		state.cleanup.event = cleanupEvent
-		state.latest = cleanupEvent
+		aborted := *state.pending
+		if state.cleanup.aborted != nil {
+			aborted, _ = mergeEvents(*state.cleanup.aborted, aborted)
+		}
+		// Pending reviews have not placed an MR start reaction. Even malformed
+		// restored input must not let their abort affect old cleanup's MR target.
+		aborted.StartEmojis = nil
+		state.cleanup.aborted = &aborted
 		state.pending = nil
 		state.cleanupVersion++
 		state.persisted = d.journal.persistCleanup(*state.cleanup, nil)

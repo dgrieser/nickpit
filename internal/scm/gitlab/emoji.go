@@ -159,12 +159,13 @@ func (c *Client) replaceEmojiWhere(ctx context.Context, basePath string, userID 
 	return errors.Join(errs...)
 }
 
-// revokeEmoji deletes one award. 403 (not ours) and 404 (already gone) are
-// treated as success: both mean there is nothing left to revoke.
+// revokeEmoji deletes one award. A 404 means it is already gone. A 403 must
+// surface: replaceEmojiWhere already selected an award owned by this user, so
+// permission refusal can leave a managed reaction live.
 func (c *Client) revokeEmoji(ctx context.Context, basePath string, awardID int) error {
 	err := c.Delete(ctx, fmt.Sprintf("%s/%d", basePath, awardID))
 	var apiErr *APIError
-	if errors.As(err, &apiErr) && (apiErr.Status == 403 || apiErr.Status == 404) {
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
 		return nil
 	}
 	if err != nil {

@@ -64,6 +64,13 @@ type fakeGitLab struct {
 	// emojiFailures returns 503 from the next award-list requests. Tests set it
 	// after the start reaction succeeds to isolate settlement failures.
 	emojiFailures atomic.Int32
+	// missingNoteIDs makes every emoji request for selected notes return 404.
+	missingNoteIDs map[int]bool
+	// emojiFailurePaths returns 503 from selected award-list paths. Protected by
+	// mu; tests configure it before requests begin.
+	emojiFailurePaths map[string]int
+	// emojiWaitForCancel holds award-list requests until client cancellation.
+	emojiWaitForCancel bool
 }
 
 func (f *fakeGitLab) gateReads() int {
@@ -97,6 +104,11 @@ func (f *fakeGitLab) handler() http.Handler {
 			f.emojiArrived.Add(1)
 			<-f.emojiGate
 		}
+		if f.emojiWaitForCancel && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+			f.emojiArrived.Add(1)
+			<-r.Context().Done()
+			return
+		}
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
 			for failures := f.emojiFailures.Load(); failures > 0; failures = f.emojiFailures.Load() {
 				if f.emojiFailures.CompareAndSwap(failures, failures-1) {
@@ -107,6 +119,18 @@ func (f *fakeGitLab) handler() http.Handler {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		for noteID := range f.missingNoteIDs {
+			if strings.Contains(r.URL.Path, fmt.Sprintf("/notes/%d/award_emoji", noteID)) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"404 Not found"}`))
+				return
+			}
+		}
+		if r.Method == http.MethodGet && f.emojiFailurePaths[r.URL.Path] > 0 {
+			f.emojiFailurePaths[r.URL.Path]--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		switch {
 		case r.Method == http.MethodPost:
 			var body map[string]string
@@ -738,6 +762,64 @@ func TestDispatcherShutdownReleasesQueuedAckNotes(t *testing.T) {
 	}
 	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
 		t.Fatalf("revoked = %v, want the ack emoji", revoked)
+	}
+}
+
+func TestStopAckCleanupCancelsBacklogAtDeadline(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:             []string{"nickpit"},
+		state:              "opened",
+		headSHA:            "sha-1",
+		emojiWaitForCancel: true,
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	event := commandEvent(7, "sha-1", group, 1)
+	notes := make([]int, ackCleanupQueueCapacity)
+	for index := range notes {
+		notes[index] = index + 1
+	}
+	dispatcher.queueAckCleanup(event, notes)
+	waitFor(t, time.Second, func() bool { return fake.emojiArrived.Load() == maxAckCleanupWorkers })
+
+	started := time.Now()
+	dispatcher.stopAckCleanup(20 * time.Millisecond)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup stop took %s, want bounded cancellation", elapsed)
+	}
+	dispatcher.cleanupMu.Lock()
+	workers := dispatcher.cleanupWorkers
+	dispatcher.cleanupMu.Unlock()
+	if workers != 0 {
+		t.Fatalf("cleanup workers = %d, want 0 after stop", workers)
+	}
+	dispatcher.jobCancel()
+}
+
+// A cleanup state may also carry a newer pending review. If neither state was
+// journaled, shutdown must settle old work and separately revoke pending acks.
+func TestDispatcherShutdownCleanupFallbackReleasesPendingAckNotes(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	oldEvent := commandEvent(7, "sha-1", group, 301)
+	oldEvent.AckEmojis = []string{"eyes"}
+	pending := commandEvent(7, "sha-2", group, 302)
+	pending.AckEmojis = []string{"eyes"}
+	key := jobKey{ProjectID: 42, IID: 7}
+	dispatcher.states[key] = &jobState{
+		status:  stateCleanup,
+		latest:  oldEvent,
+		pending: &pending,
+		cleanup: &reactionCleanup{event: oldEvent, outcome: outcomeDone},
+	}
+
+	dispatcher.Shutdown(0)
+	if awards := fake.awardedOn(7, 301); !slices.Equal(awards, []string{"white_check_mark"}) {
+		t.Fatalf("old cleanup awards = %v, want done outcome", awards)
+	}
+	if awards := fake.awardedOn(7, 302); len(awards) != 0 {
+		t.Fatalf("pending awards = %v, want acknowledgement revoked", awards)
 	}
 }
 

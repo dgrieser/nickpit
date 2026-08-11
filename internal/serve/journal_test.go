@@ -67,6 +67,21 @@ func journalFiles(t *testing.T, dir string) int {
 	return len(entries)
 }
 
+func TestNewJournalRejectsUnwritableExistingDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	journal, err := NewJournal(dir, discardLogger())
+	if err == nil || journal != nil {
+		t.Fatalf("NewJournal = (%v, %v), want startup failure for unwritable state dir", journal, err)
+	}
+}
+
 // An accepted job is journaled; settling it removes the file again.
 func TestJournalFollowsJobLifecycle(t *testing.T) {
 	dir := t.TempDir()
@@ -96,6 +111,55 @@ func TestJournalRemovedOnAbort(t *testing.T) {
 	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
 	dispatcher.Abort(42, 7)
 	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+}
+
+func TestJournalAbortBehindCleanupKeepsSeparateOutcome(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	first, _, groups := newJournalEnv(t, fake, dir)
+	group := groups.Match("platform/api")
+	oldEvent := commandEvent(7, "sha-1", group, 301)
+	oldEvent.AckEmojis = []string{"eyes"}
+	pending := commandEvent(7, "sha-2", group, 302)
+	pending.AckEmojis = []string{"eyes"}
+	cleanup := reactionCleanup{event: oldEvent, outcome: outcomeDone}
+	key := jobKey{ProjectID: 42, IID: 7}
+	first.states[key] = &jobState{
+		status:         stateCleanup,
+		latest:         oldEvent,
+		pending:        &pending,
+		cleanup:        &cleanup,
+		cleanupQueued:  true,
+		cleanupVersion: 1,
+		persisted:      first.journal.persistCleanup(cleanup, &pending),
+	}
+	if outcome := first.Abort(42, 7); !outcome.Found || outcome.Running {
+		t.Fatalf("abort outcome = %+v, want pending review found", outcome)
+	}
+	entries := first.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "done" || entries[0].Pending != nil ||
+		entries[0].Aborted == nil || !slices.Equal(entries[0].Aborted.AckNoteIDs, []int{302}) {
+		t.Fatalf("journal entries = %+v, want done cleanup plus separately aborted note 302", entries)
+	}
+	first.jobCancel()
+	first.cleanupCancel()
+
+	// Restart proves separate outcome is durable: old note gets done; pending
+	// note only loses acknowledgement.
+	second, _, groups := newJournalEnv(t, fake, dir)
+	if restored := second.Restore(groups); restored != 1 {
+		t.Fatalf("restored = %d, want 1 cleanup", restored)
+	}
+	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+	if awards := fake.awardedOn(7, 301); !slices.Equal(awards, []string{"white_check_mark"}) {
+		t.Fatalf("old cleanup awards = %v, want done outcome", awards)
+	}
+	if awards := fake.awardedOn(7, 302); len(awards) != 0 {
+		t.Fatalf("aborted pending awards = %v, want acknowledgement revoked", awards)
+	}
+	second.Shutdown(0)
 }
 
 // A failed outcome replacement becomes cleanup-only durable work. Retries must
