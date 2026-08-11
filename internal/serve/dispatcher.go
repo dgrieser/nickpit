@@ -603,13 +603,8 @@ func (d *Dispatcher) releaseUnfinished() {
 	wg.Wait()
 }
 
-// releaseAcks revokes the ack reaction from command notes whose review will
-// never settle them (aborted while queued, dropped over the ack-note cap, or
-// discarded at shutdown without a journal).
-func (d *Dispatcher) releaseAcks(event Event, notes []int) {
-	d.releaseAcksWithLimit(event, notes, nil)
-}
-
+// releaseAcksWithLimit revokes the ack reaction from command notes whose
+// review was discarded at shutdown without a journal.
 func (d *Dispatcher) releaseAcksWithLimit(event Event, notes []int, reactionSlots chan struct{}) {
 	if len(notes) == 0 {
 		return
