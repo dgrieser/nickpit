@@ -122,6 +122,12 @@ func (r *ExecRunner) childEnv(token, baseURL string) []string {
 }
 
 func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, error) {
+	for _, arg := range spec.ExtraArgs {
+		if arg == "--" {
+			return -1, "", errors.New(`review extra args must not contain "--"`)
+		}
+	}
+
 	logPath, logFile, err := createChildLog("review", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
 	if err != nil {
 		return -1, "", err

@@ -614,6 +614,40 @@ func TestEnqueueCapOverflowPreservesUncertainAckUntilFinalSweep(t *testing.T) {
 	}
 }
 
+// A pending review can be aborted while an older review's cleanup is already
+// in flight. Its timed-out acknowledgement remains uncertain on the nested
+// aborted event, so durable cleanup must wait for that event's final sweep too.
+func TestDurableCleanupDelaysAbortedUncertainAckUntilFinalSweep(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	t.Cleanup(dispatcher.jobCancel)
+	t.Cleanup(dispatcher.cleanupCancel)
+
+	key := jobKey{ProjectID: 42, IID: 7}
+	event := autoEvent(7, "sha-1", group)
+	aborted := commandEvent(7, "sha-2", group, 301)
+	deadline := time.Now().Add(100 * time.Millisecond)
+	aborted.UncertainAckNoteIDs = []int{301}
+	aborted.AckCleanupUntil = deadline
+	cleanup := reactionCleanup{event: event, outcome: outcomeDone, aborted: &aborted}
+	dispatcher.states[key] = &jobState{
+		status:         stateCleanup,
+		latest:         event,
+		cleanup:        &cleanup,
+		cleanupVersion: 1,
+	}
+	dispatcher.queueDurableCleanup(key)
+
+	time.Sleep(25 * time.Millisecond)
+	if requests := fake.emojiGETs.Load(); requests != 0 {
+		t.Fatalf("cleanup requests before aborted uncertainty deadline = %d, want 0", requests)
+	}
+	fake.preAward(7, 301, "eyes")
+	waitFor(t, time.Second, func() bool {
+		return time.Now().After(deadline) && fake.emojiGETs.Load() > 0 && len(fake.awardedOn(7, 301)) == 0
+	})
+}
+
 // Overflow acknowledgement cleanup must have finite goroutine, queue, and
 // outbound-request bounds even when authenticated commands keep arriving.
 func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {

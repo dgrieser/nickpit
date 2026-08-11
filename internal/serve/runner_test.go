@@ -74,6 +74,20 @@ func TestExecRunnerInvocation(t *testing.T) {
 	}
 }
 
+func TestExecRunnerRejectsEndOfOptionsInExtraArgs(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := testSpec(t)
+	spec.ExtraArgs = []string{"--profile", "default", "--", "--publish=false"}
+
+	exitCode, logPath, err := runner.Run(context.Background(), spec)
+	if err == nil || !strings.Contains(err.Error(), `review extra args must not contain "--"`) {
+		t.Fatalf("err = %v, want end-of-options rejection", err)
+	}
+	if exitCode != -1 || logPath != "" {
+		t.Fatalf("result = (%d, %q), want rejection before child launch", exitCode, logPath)
+	}
+}
+
 // The child environment must not contain other groups' tokens or any
 // webhook secret, regardless of which env var names carry them.
 func TestExecRunnerScrubsSecretsFromChildEnv(t *testing.T) {

@@ -833,7 +833,7 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 		return
 	}
 	cleanup := *state.cleanup
-	if delay := time.Until(cleanup.event.AckCleanupUntil); len(cleanup.event.UncertainAckNoteIDs) > 0 && delay > 0 {
+	if delay := time.Until(reactionCleanupUncertaintyDeadline(cleanup)); delay > 0 {
 		state.cleanupQueued = true
 		version := state.cleanupVersion
 		d.mu.Unlock()
@@ -1227,11 +1227,7 @@ func (d *Dispatcher) settleReactionCleanupThroughUncertainty(
 	reactionSlots chan struct{},
 ) reactionCleanup {
 	remaining := d.settleReactionCleanupWithLimit(ctx, cleanup, log, reactionSlots)
-	deadline := ackUncertaintyDeadline(remaining.event)
-	if remaining.aborted != nil {
-		deadline = maxTime(deadline, ackUncertaintyDeadline(*remaining.aborted))
-	}
-	if waitUntilAckSweep(ctx, deadline) {
+	if waitUntilAckSweep(ctx, reactionCleanupUncertaintyDeadline(remaining)) {
 		remaining = d.settleReactionCleanupWithLimit(ctx, remaining, log, reactionSlots)
 	}
 	return remaining
@@ -1246,6 +1242,14 @@ func ackUncertaintyDeadline(event Event) time.Time {
 		return time.Time{}
 	}
 	return event.AckCleanupUntil
+}
+
+func reactionCleanupUncertaintyDeadline(cleanup reactionCleanup) time.Time {
+	deadline := ackUncertaintyDeadline(cleanup.event)
+	if cleanup.aborted != nil {
+		deadline = maxTime(deadline, ackUncertaintyDeadline(*cleanup.aborted))
+	}
+	return deadline
 }
 
 func maxTime(first, second time.Time) time.Time {
