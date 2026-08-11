@@ -109,11 +109,68 @@ func TestJournalFollowsJobLifecycle(t *testing.T) {
 	if got := journalFiles(t, dir); got != 1 {
 		t.Fatalf("journal files = %d, want 1 after enqueue", got)
 	}
-	result := dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
-	dispatcher.finish(jobKey{ProjectID: 42, IID: 7}, result)
+	key := <-dispatcher.queue
+	event, ctx, ok := dispatcher.take(key)
+	if !ok {
+		t.Fatal("queued job could not be taken")
+	}
+	result := dispatcher.process(ctx, event)
+	dispatcher.finish(key, result)
 	if got := journalFiles(t, dir); got != 0 {
 		t.Fatalf("journal files = %d, want none after the job settled", got)
 	}
+}
+
+// A successful child may already have published review comments. Before the
+// worker starts reaction I/O, its crash snapshot must become cleanup-only so a
+// replacement daemon cannot run and publish the paid review a second time.
+func TestJournalPersistsCompletionBeforeReactionSettlement(t *testing.T) {
+	dir := t.TempDir()
+	settleGate := make(chan struct{})
+	closeSettleGate := sync.OnceFunc(func() { close(settleGate) })
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 301, "eyes")
+	first, runner, groups := newJournalEnv(t, fake, dir)
+	runner.gate = make(chan struct{})
+	event := commandEvent(7, "sha-1", groups.Match("platform/api"), 301)
+	if !first.Enqueue(event) {
+		t.Fatal("event was not accepted")
+	}
+	key := <-first.queue
+	taken, ctx, ok := first.take(key)
+	if !ok {
+		t.Fatal("queued job could not be taken")
+	}
+	resultCh := make(chan settlementResult, 1)
+	go func() { resultCh <- first.process(ctx, taken) }()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+
+	// The start reaction has completed and the child is blocked. Gate only the
+	// later settlement requests, then let the successful child return.
+	fake.emojiGate = settleGate
+	close(runner.gate)
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiArrived.Load() >= 1 })
+
+	entries := first.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "done" {
+		t.Fatalf("journal entries = %+v, want cleanup-only done state during settlement", entries)
+	}
+
+	// Restore must schedule only reaction cleanup; it must not enqueue a review.
+	second, secondRunner, groups := newJournalEnv(t, fake, dir)
+	if restored := second.Restore(groups); restored != 1 {
+		t.Fatalf("restored = %d, want one cleanup-only job", restored)
+	}
+	if len(second.queue) != 0 || len(secondRunner.ran()) != 0 {
+		t.Fatal("cleanup-only restore must not enqueue or run a review")
+	}
+
+	closeSettleGate()
+	result := <-resultCh
+	first.finish(key, result)
+	waitFor(t, 3*time.Second, func() bool { return journalFiles(t, dir) == 0 })
+	first.Shutdown(0)
+	second.Shutdown(time.Second)
 }
 
 // An abort replaces the runnable journal entry with cleanup-only state, then

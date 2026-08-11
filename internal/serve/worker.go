@@ -47,12 +47,13 @@ type reactions struct {
 	notes []int
 }
 
-// settlementResult carries enough state for finish to retain a cleanup-only
-// journal entry when one or more remote reaction replacements failed.
+// settlementResult carries the remaining reaction work and identifies the
+// pre-settlement cleanup snapshot that finish may retire or reduce.
 type settlementResult struct {
-	event   Event
-	outcome reviewOutcome
-	settled bool
+	event          Event
+	outcome        reviewOutcome
+	settled        bool
+	cleanupVersion uint64
 }
 
 // process runs one review job end to end: opt-in check, authoritative MR
@@ -65,11 +66,13 @@ func (d *Dispatcher) process(ctx context.Context, event Event) settlementResult 
 	// it accepted the command, before this job was picked up.
 	placed := reactions{mr: eventSettlesMR(event), notes: event.AckNoteIDs}
 	outcome := d.review(ctx, &event, &placed, log)
+	cleanupVersion := d.beginSettlement(event, placed, outcome)
 	remaining := d.settle(context.WithoutCancel(ctx), event, placed, outcome, log)
 	return settlementResult{
-		event:   eventWithReactions(event, remaining),
-		outcome: outcome,
-		settled: !hasReactions(remaining),
+		event:          eventWithReactions(event, remaining),
+		outcome:        outcome,
+		settled:        !hasReactions(remaining),
+		cleanupVersion: cleanupVersion,
 	}
 }
 

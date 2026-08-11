@@ -214,7 +214,8 @@ serve:
   logDir: "/work/logs"
   # Journal for accepted-but-unfinished review jobs, resumed after a restart.
   # Lives on the `work` emptyDir unless persistence.enabled mounts a PVC there
-  # (see persistence above). Must be absolute when persistence is enabled.
+  # (see persistence above). Must be absolute when persistence is enabled and
+  # cannot equal a fixed mount path (/etc/nickpit, /work, /tmp, /home/nonroot).
   # "" disables journaling.
   stateDir: "/work/state"
   reviewConcurrency: 2

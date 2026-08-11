@@ -4,6 +4,9 @@
 {{- if and .Values.persistence.enabled .Values.serve.stateDir (not (hasPrefix "/" .Values.serve.stateDir)) }}
 {{- fail "persistence.enabled needs serve.stateDir to be an absolute path" }}
 {{- end }}
+{{- if and .Values.persistence.enabled .Values.serve.stateDir (has (clean .Values.serve.stateDir) (list "/etc/nickpit" "/work" "/tmp" "/home/nonroot")) }}
+{{- fail "persistence.enabled needs serve.stateDir not to duplicate a fixed mount path (/etc/nickpit, /work, /tmp, /home/nonroot)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

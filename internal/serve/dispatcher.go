@@ -928,6 +928,33 @@ func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
 	state.persisted = d.journal.persist(resume)
 }
 
+// beginSettlement replaces the runnable crash snapshot with cleanup-only work
+// after the review process has finished, before any remote reaction settlement
+// begins. A crash in that I/O window can therefore repeat harmless reaction
+// replacement, but can never rerun and republish the completed review.
+//
+// The version lets finish distinguish this snapshot from cleanup installed by
+// an Abort racing the settlement. Direct process callers without a running
+// dispatcher state have no journal lifecycle to transition and return zero.
+func (d *Dispatcher) beginSettlement(event Event, placed reactions, outcome reviewOutcome) uint64 {
+	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.states[key]
+	if !ok || state.status != stateRunning || state.cleanup != nil {
+		return 0
+	}
+	cleanup := reactionCleanup{
+		event:   eventWithReactions(event, placed),
+		outcome: outcome,
+	}
+	state.latest = cleanup.event
+	state.cleanup = &cleanup
+	state.cleanupVersion++
+	state.persisted = d.journal.persistCleanup(cleanup, state.pending)
+	return state.cleanupVersion
+}
+
 // finish completes a job. A pending event received mid-run re-queues the MR
 // at the back of the queue — behind other waiting MRs, so a busy MR cannot
 // monopolize a worker. The re-run was already acknowledged with a 2xx at
@@ -948,9 +975,12 @@ func (d *Dispatcher) finish(key jobKey, result settlementResult) {
 		state.cancel = nil
 	}
 	state.startedAt = time.Time{}
-	// Abort may have replaced the running event with a durable cleanup snapshot.
-	// Let that complete as one unit, including notes from a cleared pending run.
-	if state.cleanup != nil {
+	// Abort may have replaced the worker's completion snapshot while reaction
+	// settlement was in flight. Preserve that newer cleanup as one unit,
+	// including notes from a cleared pending run.
+	ownsCleanup := state.cleanup != nil && result.cleanupVersion != 0 &&
+		result.cleanupVersion == state.cleanupVersion
+	if state.cleanup != nil && !ownsCleanup {
 		state.status = stateCleanup
 		if d.journal != nil && !state.persisted {
 			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
@@ -961,6 +991,9 @@ func (d *Dispatcher) finish(key jobKey, result settlementResult) {
 			d.queueDurableCleanup(key)
 		}
 		return
+	}
+	if ownsCleanup {
+		state.cleanup = nil
 	}
 	if !result.settled {
 		cleanup := reactionCleanup{event: result.event, outcome: result.outcome}
