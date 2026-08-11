@@ -48,6 +48,16 @@ type reactions struct {
 	notes []int
 }
 
+// reactionSettlement separates a real retryable remote failure from a target
+// retained only for a timed-out acknowledgement's final uncertainty sweep.
+// Durable cleanup uses the distinction to back off outages without delaying a
+// known deadline, and carries any server-provided rate-limit time with it.
+type reactionSettlement struct {
+	remaining        reactions
+	retryableFailure bool
+	retryAfter       time.Time
+}
+
 // settlementResult carries the remaining reaction work and identifies the
 // pre-settlement cleanup snapshot that finish may retire or reduce.
 type settlementResult struct {
@@ -188,7 +198,7 @@ func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step s
 // settle replaces the in-progress reactions with the review's outcome, so the MR
 // and every comment that asked for the review stop reading as "in progress".
 func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, outcome reviewOutcome, log *slog.Logger) reactions {
-	return d.settleWithLimit(ctx, event, placed, outcome, log, nil)
+	return d.settleAttemptWithLimit(ctx, event, placed, outcome, log, nil).remaining
 }
 
 // settleWithLimit optionally caps live remote reaction requests across several
@@ -201,11 +211,22 @@ func (d *Dispatcher) settleWithLimit(
 	log *slog.Logger,
 	reactionSlots chan struct{},
 ) reactions {
+	return d.settleAttemptWithLimit(ctx, event, placed, outcome, log, reactionSlots).remaining
+}
+
+func (d *Dispatcher) settleAttemptWithLimit(
+	ctx context.Context,
+	event Event,
+	placed reactions,
+	outcome reviewOutcome,
+	log *slog.Logger,
+	reactionSlots chan struct{},
+) reactionSettlement {
 	// Safe replacement needs the token owner's user id. Production startup
 	// requires it; keep this guard for tests and defensive direct callers so a
 	// lookup failure can never add an outcome beside an unrevokable marker.
 	if event.Group == nil || event.Group.BotUserID == 0 {
-		return reactions{}
+		return reactionSettlement{}
 	}
 	notes := placed.notes
 	ackEmojis := appendUniqueStrings(event.AckEmojis, d.cfg.AckEmoji)
@@ -214,7 +235,7 @@ func (d *Dispatcher) settleWithLimit(
 		notes = nil
 	}
 	if !placed.mr && len(notes) == 0 {
-		return reactions{}
+		return reactionSettlement{}
 	}
 	add := ""
 	switch outcome {
@@ -235,7 +256,11 @@ func (d *Dispatcher) settleWithLimit(
 	client := event.Group.Client
 	var wg sync.WaitGroup
 	mrFailed := false
+	mrRetryable := false
+	var mrRetryAfter time.Time
 	noteFailed := make([]bool, len(notes))
+	noteRetryable := make([]bool, len(notes))
+	noteRetryAfter := make([]time.Time, len(notes))
 	if placed.mr {
 		wg.Go(func() {
 			completed := withReactionSlot(ctx, reactionSlots, func() {
@@ -255,11 +280,14 @@ func (d *Dispatcher) settleWithLimit(
 						return
 					}
 					mrFailed = true
+					mrRetryable = true
+					mrRetryAfter = reactionRetryAfter(err)
 					log.Warn("updating merge request emoji failed", "emoji", mrAdd, "error", err)
 				}
 			})
 			if !completed {
 				mrFailed = true
+				mrRetryable = true
 			}
 		})
 	}
@@ -283,11 +311,14 @@ func (d *Dispatcher) settleWithLimit(
 						return
 					}
 					noteFailed[index] = true
+					noteRetryable[index] = true
+					noteRetryAfter[index] = reactionRetryAfter(err)
 					log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
 				}
 			})
 			if !completed {
 				noteFailed[index] = true
+				noteRetryable[index] = true
 				return
 			}
 			// A timed-out award can commit after a successful replacement that
@@ -300,13 +331,23 @@ func (d *Dispatcher) settleWithLimit(
 		})
 	}
 	wg.Wait()
-	remaining := reactions{mr: mrFailed}
+	result := reactionSettlement{
+		remaining:        reactions{mr: mrFailed},
+		retryableFailure: mrRetryable,
+		retryAfter:       mrRetryAfter,
+	}
 	for index, failed := range noteFailed {
 		if failed {
-			remaining.notes = append(remaining.notes, notes[index])
+			result.remaining.notes = append(result.remaining.notes, notes[index])
+		}
+		if noteRetryable[index] {
+			result.retryableFailure = true
+			if noteRetryAfter[index].After(result.retryAfter) {
+				result.retryAfter = noteRetryAfter[index]
+			}
 		}
 	}
-	return remaining
+	return result
 }
 
 func withReactionSlot(ctx context.Context, slots chan struct{}, fn func()) bool {
@@ -356,6 +397,32 @@ func matchingAPIError(err error, match func(*gitlab.APIError) bool) bool {
 		return matchingAPIError(wrapped.Unwrap(), match)
 	}
 	return false
+}
+
+// reactionRetryAfter returns the latest server-requested retry time from an
+// ordinary wrapped error or errors.Join tree.
+func reactionRetryAfter(err error) time.Time {
+	if err == nil {
+		return time.Time{}
+	}
+	var retryAfter time.Time
+	if apiErr, ok := err.(*gitlab.APIError); ok && apiErr.RetryAfter.After(retryAfter) {
+		retryAfter = apiErr.RetryAfter
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if childRetryAfter := reactionRetryAfter(child); childRetryAfter.After(retryAfter) {
+				retryAfter = childRetryAfter
+			}
+		}
+		return retryAfter
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if childRetryAfter := reactionRetryAfter(wrapped.Unwrap()); childRetryAfter.After(retryAfter) {
+			retryAfter = childRetryAfter
+		}
+	}
+	return retryAfter
 }
 
 // terminalReactionTargetError identifies a target that no longer exists. Other

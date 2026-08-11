@@ -161,7 +161,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody)
+		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody, resp.Header, time.Now())
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
@@ -205,13 +205,14 @@ func escapeProject(project string) string {
 }
 
 // APIError is returned when the GitLab API responds with a >= 300 status. It
-// carries the HTTP status so callers (e.g. the review publisher) can branch on
-// specific codes such as 422 (position not in diff) via errors.As.
+// carries the HTTP status and any rate-limit retry time so callers can branch
+// on specific codes via errors.As and coordinate delayed work.
 type APIError struct {
-	Method string
-	URL    string
-	Status int
-	Body   string
+	Method     string
+	URL        string
+	Status     int
+	Body       string
+	RetryAfter time.Time
 }
 
 func (e *APIError) Error() string {
@@ -225,8 +226,34 @@ func (e *APIError) Error() string {
 	return message
 }
 
-func newAPIError(method, requestURL string, status int, body []byte) *APIError {
-	return &APIError{Method: method, URL: requestURL, Status: status, Body: string(body)}
+func newAPIError(method, requestURL string, status int, body []byte, header http.Header, now time.Time) *APIError {
+	return &APIError{
+		Method:     method,
+		URL:        requestURL,
+		Status:     status,
+		Body:       string(body),
+		RetryAfter: retryAfterTime(header, now),
+	}
+}
+
+// retryAfterTime preserves GitLab's rate-limit instruction on API errors so
+// asynchronous callers can coordinate retries after the response is closed.
+// Retry-After takes precedence; RateLimit-Reset is GitLab's Unix-time fallback.
+func retryAfterTime(header http.Header, now time.Time) time.Time {
+	if raw := strings.TrimSpace(header.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+			return now.Add(time.Duration(seconds) * time.Second)
+		}
+		if retryAt, err := http.ParseTime(raw); err == nil {
+			return retryAt
+		}
+	}
+	if raw := strings.TrimSpace(header.Get("RateLimit-Reset")); raw != "" {
+		if unixSeconds, err := strconv.ParseInt(raw, 10, 64); err == nil && unixSeconds >= 0 {
+			return time.Unix(unixSeconds, 0)
+		}
+	}
+	return time.Time{}
 }
 
 // withPage appends pagination parameters. per_page is always maximized (100,

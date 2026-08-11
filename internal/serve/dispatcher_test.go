@@ -64,6 +64,12 @@ type fakeGitLab struct {
 	// emojiFailures returns 503 from the next award-list requests. Tests set it
 	// after the start reaction succeeds to isolate settlement failures.
 	emojiFailures atomic.Int32
+	// emojiFailureStatus, when non-zero, fails every award-list request. GET
+	// timestamps let retry tests verify shared pacing across different jobs.
+	emojiFailureStatus int
+	emojiRetryAfter    string
+	emojiGETs          atomic.Int32
+	emojiGETTimes      []time.Time
 	// missingNoteIDs makes every emoji request for selected notes return 404.
 	missingNoteIDs map[int]bool
 	// emojiFailurePaths returns 503 from selected award-list paths. Protected by
@@ -115,6 +121,21 @@ func (f *fakeGitLab) handler() http.Handler {
 		if f.statusGate != nil && r.Method == http.MethodGet && mrStatusPath.MatchString(r.URL.Path) {
 			f.statusArrived.Add(1)
 			<-f.statusGate
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
+			f.emojiGETs.Add(1)
+			f.mu.Lock()
+			f.emojiGETTimes = append(f.emojiGETTimes, time.Now())
+			failureStatus := f.emojiFailureStatus
+			retryAfter := f.emojiRetryAfter
+			f.mu.Unlock()
+			if failureStatus != 0 {
+				if retryAfter != "" {
+					w.Header().Set("Retry-After", retryAfter)
+				}
+				w.WriteHeader(failureStatus)
+				return
+			}
 		}
 		if f.emojiGate != nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji") {
 			f.emojiArrived.Add(1)
@@ -291,6 +312,12 @@ func (f *fakeGitLab) posted() []recordedPost {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]recordedPost(nil), f.posts...)
+}
+
+func (f *fakeGitLab) emojiRequestTimes() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.emojiGETTimes)
 }
 
 // fakeRunner records specs and optionally blocks until released.
@@ -552,6 +579,41 @@ func TestEnqueueCapOverflowReleasesDroppedAck(t *testing.T) {
 	}
 }
 
+// A capped note whose award timed out must not be revoked until the uncertainty
+// window closes. GitLab can commit that POST after an earlier revoke returned
+// success; the delayed cleanup must then observe and remove it.
+func TestEnqueueCapOverflowPreservesUncertainAckUntilFinalSweep(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	first := commandEvent(7, "sha-1", group, 0)
+	first.AckNoteIDs = make([]int, maxAckNotes)
+	for index := range first.AckNoteIDs {
+		first.AckNoteIDs[index] = index + 1
+	}
+	dispatcher.Enqueue(first)
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	overflow := commandEvent(7, "sha-2", group, 9001)
+	overflow.UncertainAckNoteIDs = []int{9001}
+	overflow.AckCleanupUntil = deadline
+	dispatcher.Enqueue(overflow)
+
+	time.Sleep(25 * time.Millisecond)
+	if requests := fake.emojiGETs.Load(); requests != 0 {
+		t.Fatalf("cleanup requests before uncertainty deadline = %d, want 0", requests)
+	}
+	// Timed-out handler request commits after enqueue and after an immediate
+	// cleanup would have incorrectly declared success.
+	fake.preAward(7, 9001, "eyes")
+	waitFor(t, time.Second, func() bool {
+		return time.Now().After(deadline) && fake.emojiGETs.Load() > 0 && len(fake.awardedOn(7, 9001)) == 0
+	})
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "eyes") {
+		t.Fatalf("revoked = %v, want delayed acknowledgement removed", revoked)
+	}
+}
+
 // Overflow acknowledgement cleanup must have finite goroutine, queue, and
 // outbound-request bounds even when authenticated commands keep arriving.
 func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
@@ -619,6 +681,78 @@ func TestEnqueueCleanupStatesConsumeBacklogCapacity(t *testing.T) {
 	if got := len(dispatcher.states); got != queueCapacity {
 		t.Fatalf("states = %d, want bounded capacity %d", got, queueCapacity)
 	}
+}
+
+// Retry pacing belongs to the dispatcher, not each cleanup state. During a
+// fast GitLab outage, distinct backlog entries must share one exponentially
+// increasing gate instead of each firing once per second.
+func TestDurableCleanupBackoffIsSharedAcrossBacklog(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:             []string{"nickpit"},
+		state:              "opened",
+		headSHA:            "sha-1",
+		emojiFailureStatus: http.StatusServiceUnavailable,
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.cleanupRetryInitial = 30 * time.Millisecond
+	dispatcher.cleanupRetryMax = 60 * time.Millisecond
+	dispatcher.cleanupRetryJitter = func(delay, _ time.Duration) time.Duration { return delay }
+
+	var keys []jobKey
+	for iid := 1; iid <= maxAckCleanupWorkers+1; iid++ {
+		event := commandEvent(iid, "sha-1", group, iid*100+1)
+		cleanup := reactionCleanup{event: event, outcome: outcomeAborted}
+		key := jobKey{ProjectID: 42, IID: iid}
+		keys = append(keys, key)
+		dispatcher.states[key] = &jobState{status: stateCleanup, latest: event, cleanup: &cleanup}
+	}
+	for _, key := range keys {
+		dispatcher.queueDurableCleanup(key)
+	}
+	waitFor(t, time.Second, func() bool { return fake.emojiGETs.Load() >= maxAckCleanupWorkers+1 })
+	times := fake.emojiRequestTimes()
+	firstAfterWave := times[maxAckCleanupWorkers]
+	lastInWave := times[maxAckCleanupWorkers-1]
+	if gap := firstAfterWave.Sub(lastInWave); gap < 50*time.Millisecond {
+		t.Fatalf("shared retry gap after initial bounded wave = %s, want exponential backoff near 60ms", gap)
+	}
+
+	dispatcher.CloseIntake()
+	dispatcher.cleanupCancel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	dispatcher.stopAckCleanup(ctx)
+	dispatcher.jobCancel()
+}
+
+func TestCleanupBackoffHonorsServerRetryAfter(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, _ := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.cleanupRetryInitial = time.Millisecond
+	dispatcher.cleanupRetryMax = 2 * time.Millisecond
+	dispatcher.cleanupRetryJitter = func(delay, _ time.Duration) time.Duration { return delay }
+	retryAt := time.Now().Add(100 * time.Millisecond)
+	dispatcher.cleanupMu.Lock()
+	dispatcher.cleanupAttemptsActive = 2
+	dispatcher.cleanupMu.Unlock()
+	dispatcher.finishAckCleanupAttempt(0, true, retryAt)
+	dispatcher.cleanupMu.Lock()
+	got := dispatcher.cleanupRetryUntil
+	dispatcher.cleanupMu.Unlock()
+	if got.Before(retryAt) {
+		t.Fatalf("shared retry time = %v, want server delay through %v", got, retryAt)
+	}
+	// A successful peer from the same admitted wave started before this failure;
+	// it must not erase the newer server instruction when it finishes later.
+	dispatcher.finishAckCleanupAttempt(0, false, time.Time{})
+	dispatcher.cleanupMu.Lock()
+	afterPeerSuccess := dispatcher.cleanupRetryUntil
+	dispatcher.cleanupMu.Unlock()
+	if afterPeerSuccess.Before(retryAt) {
+		t.Fatalf("concurrent success cleared retry-after: got %v, want at least %v", afterPeerSuccess, retryAt)
+	}
+	dispatcher.jobCancel()
+	dispatcher.cleanupCancel()
 }
 
 // Repeated aborts merge pending acknowledgement sets behind durable cleanup.
@@ -1020,6 +1154,41 @@ func TestDispatcherShutdownCleanupFallbackReleasesPendingAckNotes(t *testing.T) 
 	if awards := fake.awardedOn(7, 302); len(awards) != 0 {
 		t.Fatalf("pending awards = %v, want acknowledgement revoked", awards)
 	}
+}
+
+// Journal-less cleanup cannot hand an uncertain timed-out award to a restart.
+// Shutdown must stay alive through the uncertainty deadline and perform the
+// final revoke after GitLab commits the late POST.
+func TestDispatcherShutdownCleanupFallbackSweepsLateUncertainAck(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	deadline := time.Now().Add(100 * time.Millisecond)
+	event := commandEvent(7, "sha-1", group, 301)
+	event.AckEmojis = []string{"eyes"}
+	event.UncertainAckNoteIDs = []int{301}
+	event.AckCleanupUntil = deadline
+	cleanup := reactionCleanup{event: event, outcome: outcomeAborted}
+	key := jobKey{ProjectID: 42, IID: 7}
+	dispatcher.states[key] = &jobState{
+		status:  stateCleanup,
+		latest:  event,
+		cleanup: &cleanup,
+	}
+
+	lateCommit := time.AfterFunc(40*time.Millisecond, func() { fake.preAward(7, 301, "eyes") })
+	defer lateCommit.Stop()
+	started := time.Now()
+	dispatcher.cleanupOnShutdown(40 * time.Millisecond)
+	if elapsed := time.Since(started); elapsed < 80*time.Millisecond {
+		t.Fatalf("shutdown fallback returned after %s, before uncertainty deadline", elapsed)
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 0 {
+		t.Fatalf("late acknowledgement awards = %v, want final sweep to revoke them", awards)
+	}
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "eyes") {
+		t.Fatalf("revoked = %v, want late acknowledgement revoked", revoked)
+	}
+	dispatcher.jobCancel()
 }
 
 func TestDispatcherJobInfo(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"sync"
 	"time"
@@ -15,7 +16,9 @@ const (
 	shaLRUSize              = 512
 	ackCleanupQueueCapacity = 64
 	maxAckCleanupWorkers    = 4
-	reactionRetryDelay      = time.Second
+	reactionRetryInitial    = time.Second
+	reactionRetryMax        = time.Minute
+	maxRateLimitRetryDelay  = 5 * time.Minute
 )
 
 // Event is one review request accepted by the handler and queued for a
@@ -153,6 +156,20 @@ type Dispatcher struct {
 	cleanupWG      sync.WaitGroup
 	cleanupCtx     context.Context
 	cleanupCancel  context.CancelFunc
+	// cleanupWaiting holds durable jobs admitted while cleanupQueue is full.
+	// One shared attempt gate admits a bounded wave and carries outage backoff
+	// across the whole backlog instead of giving each job a hot loop.
+	cleanupWaiting        map[jobKey]struct{}
+	cleanupFallback       []ackCleanup
+	cleanupAttemptsActive int
+	cleanupBackoffGen     uint64
+	cleanupRetryFailures  int
+	cleanupRetryUntil     time.Time
+	cleanupWake           chan struct{}
+	cleanupReactionSlots  chan struct{}
+	cleanupRetryInitial   time.Duration
+	cleanupRetryMax       time.Duration
+	cleanupRetryJitter    func(time.Duration, time.Duration) time.Duration
 	// jobCtx outlives the intake context so in-flight reviews survive
 	// shutdown until the grace period expires.
 	jobCtx    context.Context
@@ -163,18 +180,24 @@ func NewDispatcher(runner ReviewRunner, lookup TopicLookup, journal *Journal, cf
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	return &Dispatcher{
-		states:        make(map[jobKey]*jobState),
-		queue:         make(chan jobKey, queueCapacity),
-		recent:        newSHALRU(shaLRUSize),
-		runner:        runner,
-		topics:        newTopicCache(lookup),
-		cfg:           cfg,
-		journal:       journal,
-		log:           log,
-		jobCtx:        jobCtx,
-		jobCancel:     jobCancel,
-		cleanupCtx:    cleanupCtx,
-		cleanupCancel: cleanupCancel,
+		states:               make(map[jobKey]*jobState),
+		queue:                make(chan jobKey, queueCapacity),
+		recent:               newSHALRU(shaLRUSize),
+		runner:               runner,
+		topics:               newTopicCache(lookup),
+		cfg:                  cfg,
+		journal:              journal,
+		log:                  log,
+		jobCtx:               jobCtx,
+		jobCancel:            jobCancel,
+		cleanupCtx:           cleanupCtx,
+		cleanupCancel:        cleanupCancel,
+		cleanupWaiting:       make(map[jobKey]struct{}),
+		cleanupWake:          make(chan struct{}),
+		cleanupReactionSlots: make(chan struct{}, maxAckCleanupWorkers),
+		cleanupRetryInitial:  reactionRetryInitial,
+		cleanupRetryMax:      reactionRetryMax,
+		cleanupRetryJitter:   jitterReactionRetry,
 	}
 }
 
@@ -293,8 +316,7 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 		return true
 	}
 	if state, ok := d.states[key]; ok {
-		var dropped []int
-		var releaseEvent Event
+		var overflows []ackOverflow
 		switch {
 		case state.cleanup != nil:
 			// Abort installs durable cleanup before a running worker reaches
@@ -303,15 +325,18 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			// resurrect the aborted review after a crash.
 			pending := event
 			if state.pending != nil {
-				pending, dropped = mergeEvents(*state.pending, event)
+				var overflow ackOverflow
+				pending, overflow = mergeEvents(*state.pending, event)
+				overflows = appendAckOverflow(overflows, overflow)
 			}
 			state.pending = &pending
-			releaseEvent = pending
 			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
 		case state.status == stateRunning:
 			pending := event
 			if state.pending != nil {
-				pending, dropped = mergeEvents(*state.pending, event)
+				var overflow ackOverflow
+				pending, overflow = mergeEvents(*state.pending, event)
+				overflows = appendAckOverflow(overflows, overflow)
 			}
 			state.pending = &pending
 			// The journal holds the job's would-be re-run after a crash: the
@@ -320,24 +345,28 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 			// be absent after a crash, so release them now and remove them from
 			// the pending rerun's settlement set.
 			resume, omitted := mergeEvents(state.latest, pending)
-			releaseEvent = pending
-			if len(omitted) > 0 {
-				dropped = appendUniqueInts(dropped, omitted...)
-				state.pending.AckNoteIDs = removeInts(state.pending.AckNoteIDs, omitted)
+			overflows = appendAckOverflow(overflows, omitted)
+			if len(omitted.notes) > 0 {
+				state.pending.AckNoteIDs = removeInts(state.pending.AckNoteIDs, omitted.notes)
+				state.pending.UncertainAckNoteIDs = removeInts(state.pending.UncertainAckNoteIDs, omitted.notes)
+				if len(state.pending.UncertainAckNoteIDs) == 0 {
+					state.pending.AckCleanupUntil = time.Time{}
+				}
 				resume, _ = mergeEvents(state.latest, *state.pending)
 			}
 			state.persisted = d.journal.persist(resume)
 		default:
-			state.latest, dropped = mergeEvents(state.latest, event)
-			releaseEvent = state.latest
+			var overflow ackOverflow
+			state.latest, overflow = mergeEvents(state.latest, event)
+			overflows = appendAckOverflow(overflows, overflow)
 			state.persisted = d.journal.persist(state.latest)
 		}
-		if len(dropped) > 0 {
+		for _, overflow := range overflows {
 			// Already acknowledged, but over the per-job cap: no settle will
-			// ever flip them, so take the ack back now instead of leaving the
-			// notes reading as in progress forever.
-			d.log.Warn("ack note cap exceeded, releasing dropped notes", "project", event.ProjectPath, "iid", event.IID, "notes", dropped)
-			d.queueAckCleanup(releaseEvent, dropped)
+			// ever flip them, so schedule a bounded release (after the timeout
+			// uncertainty window when needed).
+			d.log.Warn("ack note cap exceeded, releasing dropped notes", "project", event.ProjectPath, "iid", event.IID, "notes", overflow.notes)
+			d.queueAckCleanup(overflow.event, overflow.notes)
 		}
 		return true
 	}
@@ -372,11 +401,24 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 // of being replaced: each one wears the in-progress reaction and must be flipped
 // to the outcome when the coalesced review ends. Notes dropped over the per-job
 // cap are returned so the caller can release their ack reaction.
-func mergeEvents(existing, incoming Event) (Event, []int) {
+type ackOverflow struct {
+	event Event
+	notes []int
+}
+
+func appendAckOverflow(overflows []ackOverflow, overflow ackOverflow) []ackOverflow {
+	if len(overflow.notes) == 0 {
+		return overflows
+	}
+	return append(overflows, overflow)
+}
+
+func mergeEvents(existing, incoming Event) (Event, ackOverflow) {
 	if existing.Kind == TriggerManual {
 		incoming.Kind = TriggerManual
 	}
 	merged, dropped := mergeAckNotes(existing.AckNoteIDs, incoming.AckNoteIDs)
+	overflow := overflowAckCleanup(existing, incoming, dropped)
 	incoming.AckNoteIDs = merged
 	uncertain := appendUniqueInts(existing.UncertainAckNoteIDs, incoming.UncertainAckNoteIDs...)
 	incoming.UncertainAckNoteIDs = slices.DeleteFunc(uncertain, func(noteID int) bool {
@@ -394,7 +436,35 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 		incoming.RevokeMROnly = existing.RevokeMROnly
 	}
 	incoming.SettleMR = existing.SettleMR || incoming.SettleMR
-	return incoming, dropped
+	return incoming, overflow
+}
+
+// overflowAckCleanup preserves timeout uncertainty separately from the capped
+// job event. Otherwise an immediate successful revoke can race a timed-out POST
+// that GitLab commits later, leaving the dropped acknowledgement permanent.
+func overflowAckCleanup(existing, incoming Event, dropped []int) ackOverflow {
+	if len(dropped) == 0 {
+		return ackOverflow{}
+	}
+	event := incoming
+	event.AckNoteIDs = slices.Clone(dropped)
+	event.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
+	event.StartEmojis = nil
+	event.SettleMR = false
+	event.RevokeMROnly = false
+	event.UncertainAckNoteIDs = nil
+	event.AckCleanupUntil = time.Time{}
+	for _, source := range []Event{existing, incoming} {
+		for _, noteID := range source.UncertainAckNoteIDs {
+			if slices.Contains(dropped, noteID) {
+				event.UncertainAckNoteIDs = appendUniqueInts(event.UncertainAckNoteIDs, noteID)
+				if source.AckCleanupUntil.After(event.AckCleanupUntil) {
+					event.AckCleanupUntil = source.AckCleanupUntil
+				}
+			}
+		}
+	}
+	return ackOverflow{event: event, notes: slices.Clone(dropped)}
 }
 
 // trackAcknowledgement stamps the name already awarded by the handler onto the
@@ -530,16 +600,58 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	d.cleanupOnShutdown(settleTimeout)
 }
 
-// cleanupOnShutdown gives background acknowledgement cleanup only half the
-// total reaction budget. Cancelling that pool at the midpoint leaves the
-// remaining half for journal-less queued and pending jobs.
+// cleanupOnShutdown gives background acknowledgement cleanup half the normal
+// reaction budget, then reserves a separate fallback budget. If an unpersisted
+// timed-out award is still uncertain, fallback extends through that deadline
+// so process exit cannot discard the mandatory final sweep.
 func (d *Dispatcher) cleanupOnShutdown(timeout time.Duration) {
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), timeout)
-	defer cleanupCancel()
-	backgroundCtx, backgroundCancel := context.WithTimeout(cleanupCtx, timeout/2)
+	backgroundBudget := timeout / 2
+	backgroundCtx, backgroundCancel := context.WithTimeout(context.Background(), backgroundBudget)
 	d.stopAckCleanup(backgroundCtx)
 	backgroundCancel()
-	d.releaseUnfinished(cleanupCtx)
+
+	fallbackBudget := timeout - backgroundBudget
+	if uncertaintyDelay := d.unpersistedAckUncertaintyDelay(); uncertaintyDelay > 0 {
+		fallbackBudget = max(fallbackBudget, uncertaintyDelay+timeout/2)
+	}
+	fallbackCtx, fallbackCancel := context.WithTimeout(context.Background(), fallbackBudget)
+	defer fallbackCancel()
+	d.releaseUnfinished(fallbackCtx)
+}
+
+func (d *Dispatcher) unpersistedAckUncertaintyDelay() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var deadline time.Time
+	consider := func(event Event) {
+		if len(event.UncertainAckNoteIDs) > 0 && event.AckCleanupUntil.After(deadline) {
+			deadline = event.AckCleanupUntil
+		}
+	}
+	for _, state := range d.states {
+		if state.persisted {
+			continue
+		}
+		consider(state.latest)
+		if state.cleanup != nil {
+			consider(state.cleanup.event)
+			if state.cleanup.aborted != nil {
+				consider(*state.cleanup.aborted)
+			}
+		}
+		if state.pending != nil {
+			consider(*state.pending)
+		}
+	}
+	d.cleanupMu.Lock()
+	for _, cleanup := range d.cleanupFallback {
+		consider(cleanup.event)
+		if cleanup.aborted != nil {
+			consider(*cleanup.aborted)
+		}
+	}
+	d.cleanupMu.Unlock()
+	return max(time.Until(deadline), 0)
 }
 
 // releaseUnfinished handles the jobs shutdown leaves behind: queued jobs that
@@ -582,6 +694,17 @@ func (d *Dispatcher) releaseUnfinished(ctx context.Context) {
 		}
 		remaining = append(remaining, unfinished{event: event, persisted: persisted})
 	}
+	d.cleanupMu.Lock()
+	for _, cleanup := range d.cleanupFallback {
+		fallback := reactionCleanup{
+			event:   eventWithReactions(cleanup.event, cleanup.placed),
+			outcome: cleanup.outcome,
+			aborted: cleanup.aborted,
+		}
+		remaining = append(remaining, unfinished{event: fallback.event, cleanup: &fallback})
+	}
+	d.cleanupFallback = nil
+	d.cleanupMu.Unlock()
 	d.mu.Unlock()
 	if len(remaining) == 0 {
 		return
@@ -617,7 +740,10 @@ func (d *Dispatcher) releaseUnfinished(ctx context.Context) {
 				if job.cleanup != nil {
 					cleanup := *job.cleanup
 					log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
-					d.settleReactionCleanupWithLimit(ctx, cleanup, log, reactionSlots)
+					remaining := d.settleReactionCleanupThroughUncertainty(ctx, cleanup, log, reactionSlots)
+					if cleanupHasReactions(remaining) {
+						log.Warn("shutdown: reaction cleanup remains unresolved after fallback")
+					}
 					if job.pending != nil {
 						d.releaseAcksWithLimit(ctx, *job.pending, job.pending.AckNoteIDs, reactionSlots)
 					}
@@ -641,7 +767,14 @@ func (d *Dispatcher) releaseAcksWithLimit(ctx context.Context, event Event, note
 		return
 	}
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID)
-	d.settleWithLimit(ctx, event, reactions{notes: notes}, outcomeAborted, log, reactionSlots)
+	remaining := eventWithReactions(event, d.settleWithLimit(ctx, event, reactions{notes: notes}, outcomeAborted, log, reactionSlots))
+	if waitForAckUncertainty(ctx, remaining) {
+		remaining = eventWithReactions(remaining, d.settleWithLimit(ctx, remaining,
+			reactions{notes: remaining.AckNoteIDs}, outcomeAborted, log, reactionSlots))
+	}
+	if len(remaining.AckNoteIDs) > 0 {
+		log.Warn("shutdown: acknowledgement cleanup remains unresolved after fallback", "notes", remaining.AckNoteIDs)
+	}
 }
 
 type ackCleanup struct {
@@ -651,6 +784,7 @@ type ackCleanup struct {
 	aborted *Event
 	durable *jobKey
 	version uint64
+	readyAt time.Time
 }
 
 // queueAckCleanup schedules best-effort acknowledgement revokes without
@@ -667,11 +801,15 @@ func (d *Dispatcher) queueAckCleanup(event Event, notes []int) {
 			if len(d.cleanupQueue) >= ackCleanupQueueCapacity {
 				break
 			}
-			d.cleanupQueue = append(d.cleanupQueue, ackCleanup{
+			cleanup := ackCleanup{
 				event:   event,
 				placed:  reactions{notes: []int{noteID}},
 				outcome: outcomeAborted,
-			})
+			}
+			if slices.Contains(event.UncertainAckNoteIDs, noteID) {
+				cleanup.readyAt = event.AckCleanupUntil
+			}
+			d.cleanupQueue = append(d.cleanupQueue, cleanup)
 			queued++
 		}
 		d.startAckCleanupWorkersLocked()
@@ -684,10 +822,10 @@ func (d *Dispatcher) queueAckCleanup(event Event, notes []int) {
 }
 
 // queueDurableCleanup schedules one complete settlement attempt. Unlike
-// overflow ack cleanup, this work is never discarded: saturation or a remote
-// failure leaves the journal entry intact and retries after a short delay.
+// overflow ack cleanup, this work is never discarded: saturation reserves it
+// in cleanupWaiting, while remote failures re-enter the queue behind the
+// dispatcher's shared outage gate.
 func (d *Dispatcher) queueDurableCleanup(key jobKey) {
-	retry := false
 	d.mu.Lock()
 	state, ok := d.states[key]
 	if !ok || state.status != stateCleanup || state.cleanup == nil || state.cleanupQueued || d.closed {
@@ -704,28 +842,54 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 	}
 	d.cleanupMu.Lock()
 	if !d.cleanupClosed && len(d.cleanupQueue) < ackCleanupQueueCapacity {
-		keyCopy := key
-		d.cleanupQueue = append(d.cleanupQueue, ackCleanup{
-			event: cleanup.event,
-			placed: reactions{
-				mr:    eventSettlesMR(cleanup.event),
-				notes: cleanup.event.AckNoteIDs,
-			},
-			outcome: cleanup.outcome,
-			aborted: cleanup.aborted,
-			durable: &keyCopy,
-			version: state.cleanupVersion,
-		})
+		d.cleanupQueue = append(d.cleanupQueue, durableAckCleanup(key, cleanup, state.cleanupVersion))
 		state.cleanupQueued = true
 		d.startAckCleanupWorkersLocked()
-	} else {
-		retry = true
+	} else if !d.cleanupClosed {
+		// The reservation counts as queued so repeated state transitions cannot
+		// add duplicate waiting entries. A worker promotes it when a slot opens.
+		d.cleanupWaiting[key] = struct{}{}
+		state.cleanupQueued = true
 	}
 	d.cleanupMu.Unlock()
 	d.mu.Unlock()
-	if retry {
-		time.AfterFunc(reactionRetryDelay, func() { d.queueDurableCleanup(key) })
+}
+
+func durableAckCleanup(key jobKey, cleanup reactionCleanup, version uint64) ackCleanup {
+	keyCopy := key
+	return ackCleanup{
+		event: cleanup.event,
+		placed: reactions{
+			mr:    eventSettlesMR(cleanup.event),
+			notes: cleanup.event.AckNoteIDs,
+		},
+		outcome: cleanup.outcome,
+		aborted: cleanup.aborted,
+		durable: &keyCopy,
+		version: version,
 	}
+}
+
+// drainWaitingDurableCleanup promotes reservations after a worker frees queue
+// capacity. Lock order matches queueDurableCleanup: state, then cleanup.
+func (d *Dispatcher) drainWaitingDurableCleanup() {
+	d.mu.Lock()
+	d.cleanupMu.Lock()
+	for key := range d.cleanupWaiting {
+		if d.closed || d.cleanupClosed || len(d.cleanupQueue) >= ackCleanupQueueCapacity {
+			break
+		}
+		state, ok := d.states[key]
+		if !ok || state.status != stateCleanup || state.cleanup == nil || !state.cleanupQueued {
+			delete(d.cleanupWaiting, key)
+			continue
+		}
+		d.cleanupQueue = append(d.cleanupQueue, durableAckCleanup(key, *state.cleanup, state.cleanupVersion))
+		delete(d.cleanupWaiting, key)
+	}
+	d.startAckCleanupWorkersLocked()
+	d.cleanupMu.Unlock()
+	d.mu.Unlock()
 }
 
 // startDelayedCleanup releases the reservation made for an uncertain award
@@ -760,6 +924,112 @@ func (d *Dispatcher) startAckCleanupWorkersLocked() {
 	}
 }
 
+// beginAckCleanupAttempt admits one cleanup job after both its semantic
+// deadline and the shared outage backoff. Bounded waves at this boundary keep
+// a large durable backlog from multiplying a fast GitLab failure into
+// independent retry loops; reactions across admitted jobs remain bounded by
+// cleanupReactionSlots.
+func (d *Dispatcher) beginAckCleanupAttempt(ctx context.Context, readyAt time.Time) (uint64, bool) {
+	for {
+		d.cleanupMu.Lock()
+		now := time.Now()
+		notBefore := readyAt
+		if d.cleanupRetryUntil.After(notBefore) {
+			notBefore = d.cleanupRetryUntil
+		}
+		if d.cleanupAttemptsActive < maxAckCleanupWorkers && !now.Before(notBefore) {
+			d.cleanupAttemptsActive++
+			generation := d.cleanupBackoffGen
+			d.cleanupMu.Unlock()
+			return generation, true
+		}
+		wake := d.cleanupWake
+		atCapacity := d.cleanupAttemptsActive >= maxAckCleanupWorkers
+		d.cleanupMu.Unlock()
+
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if !atCapacity {
+			if delay := time.Until(notBefore); delay > 0 {
+				timer = time.NewTimer(delay)
+				timerC = timer.C
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, false
+		case <-wake:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timerC:
+		}
+	}
+}
+
+func (d *Dispatcher) finishAckCleanupAttempt(generation uint64, failed bool, retryAfter time.Time) {
+	now := time.Now()
+	d.cleanupMu.Lock()
+	if d.cleanupAttemptsActive > 0 {
+		d.cleanupAttemptsActive--
+	}
+	if failed {
+		d.cleanupBackoffGen++
+		d.cleanupRetryFailures++
+		delay := exponentialReactionRetry(d.cleanupRetryFailures, d.cleanupRetryInitial, d.cleanupRetryMax)
+		if d.cleanupRetryJitter != nil {
+			delay = d.cleanupRetryJitter(delay, d.cleanupRetryMax)
+		}
+		d.cleanupRetryUntil = now.Add(delay)
+		serverLimit := now.Add(maxRateLimitRetryDelay)
+		if retryAfter.After(serverLimit) {
+			retryAfter = serverLimit
+		}
+		if retryAfter.After(d.cleanupRetryUntil) {
+			d.cleanupRetryUntil = retryAfter
+		}
+	} else if generation == d.cleanupBackoffGen {
+		d.cleanupRetryFailures = 0
+		d.cleanupRetryUntil = time.Time{}
+	}
+	retryUntil := d.cleanupRetryUntil
+	failures := d.cleanupRetryFailures
+	close(d.cleanupWake)
+	d.cleanupWake = make(chan struct{})
+	d.cleanupMu.Unlock()
+	if failed {
+		d.log.Warn("acknowledgement cleanup backing off", "delay", time.Until(retryUntil).Round(time.Millisecond), "failures", failures)
+	}
+}
+
+func exponentialReactionRetry(failures int, initial, maximum time.Duration) time.Duration {
+	if initial <= 0 || maximum <= 0 {
+		return 0
+	}
+	delay := initial
+	for attempt := 1; attempt < failures && delay < maximum; attempt++ {
+		if delay > maximum/2 {
+			return maximum
+		}
+		delay *= 2
+	}
+	return min(delay, maximum)
+}
+
+func jitterReactionRetry(delay, maximum time.Duration) time.Duration {
+	if delay <= 0 || maximum <= delay {
+		return delay
+	}
+	spread := min(delay/2, maximum-delay)
+	if spread <= 0 {
+		return delay
+	}
+	return delay + time.Duration(rand.Int64N(int64(spread)+1))
+}
+
 func (d *Dispatcher) runAckCleanup() {
 	for {
 		d.cleanupMu.Lock()
@@ -772,21 +1042,63 @@ func (d *Dispatcher) runAckCleanup() {
 		d.cleanupQueue[0] = ackCleanup{}
 		d.cleanupQueue = d.cleanupQueue[1:]
 		d.cleanupMu.Unlock()
+		d.drainWaitingDurableCleanup()
+
+		generation, admitted := d.beginAckCleanupAttempt(d.cleanupCtx, cleanup.readyAt)
+		if !admitted {
+			if cleanup.durable != nil {
+				remaining := reactionCleanup{event: eventWithReactions(cleanup.event, cleanup.placed), outcome: cleanup.outcome, aborted: cleanup.aborted}
+				d.completeDurableCleanup(*cleanup.durable, cleanup.version, remaining)
+			} else {
+				d.preserveAckCleanupForFallback(cleanup)
+			}
+			continue
+		}
 
 		log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
+		attempt := d.settleAttemptWithLimit(d.cleanupCtx, cleanup.event, cleanup.placed, cleanup.outcome, log, d.cleanupReactionSlots)
 		remaining := reactionCleanup{
-			event:   eventWithReactions(cleanup.event, d.settle(d.cleanupCtx, cleanup.event, cleanup.placed, cleanup.outcome, log)),
+			event:   eventWithReactions(cleanup.event, attempt.remaining),
 			outcome: cleanup.outcome,
 		}
 		if cleanup.aborted != nil {
-			aborted := eventWithReactions(*cleanup.aborted, d.settle(d.cleanupCtx, *cleanup.aborted,
-				reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log))
+			abortedAttempt := d.settleAttemptWithLimit(d.cleanupCtx, *cleanup.aborted,
+				reactions{notes: cleanup.aborted.AckNoteIDs}, outcomeAborted, log, d.cleanupReactionSlots)
+			aborted := eventWithReactions(*cleanup.aborted, abortedAttempt.remaining)
 			remaining.aborted = &aborted
+			attempt.retryableFailure = attempt.retryableFailure || abortedAttempt.retryableFailure
+			if abortedAttempt.retryAfter.After(attempt.retryAfter) {
+				attempt.retryAfter = abortedAttempt.retryAfter
+			}
 		}
+		d.finishAckCleanupAttempt(generation, attempt.retryableFailure, attempt.retryAfter)
 		if cleanup.durable != nil {
 			d.completeDurableCleanup(*cleanup.durable, cleanup.version, remaining)
+		} else if d.cleanupCtx.Err() != nil && cleanupHasReactions(remaining) {
+			d.preserveAckCleanupForFallback(ackCleanup{
+				event: eventWithReactions(remaining.event, reactions{
+					mr:    eventSettlesMR(remaining.event),
+					notes: remaining.event.AckNoteIDs,
+				}),
+				placed: reactions{
+					mr:    eventSettlesMR(remaining.event),
+					notes: remaining.event.AckNoteIDs,
+				},
+				outcome: remaining.outcome,
+				aborted: remaining.aborted,
+			})
 		}
 	}
+}
+
+func (d *Dispatcher) preserveAckCleanupForFallback(cleanup ackCleanup) {
+	if cleanup.durable != nil {
+		return
+	}
+	cleanup.event = eventWithReactions(cleanup.event, cleanup.placed)
+	d.cleanupMu.Lock()
+	d.cleanupFallback = append(d.cleanupFallback, cleanup)
+	d.cleanupMu.Unlock()
 }
 
 func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, remaining reactionCleanup) {
@@ -815,7 +1127,7 @@ func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, remainin
 		retry = !d.closed
 		d.mu.Unlock()
 		if retry {
-			time.AfterFunc(reactionRetryDelay, func() { d.queueDurableCleanup(key) })
+			d.queueDurableCleanup(key)
 		}
 		return
 	}
@@ -864,6 +1176,12 @@ func (d *Dispatcher) stopAckCleanup(ctx context.Context) {
 		// best-effort attempts; durable state remains in d.states/the journal and
 		// releaseUnfinished handles any required fallback below.
 		d.cleanupMu.Lock()
+		for _, cleanup := range d.cleanupQueue {
+			if cleanup.durable == nil {
+				cleanup.event = eventWithReactions(cleanup.event, cleanup.placed)
+				d.cleanupFallback = append(d.cleanupFallback, cleanup)
+			}
+		}
 		d.cleanupQueue = nil
 		d.cleanupMu.Unlock()
 	}
@@ -900,6 +1218,59 @@ func (d *Dispatcher) settleReactionCleanupWithLimit(
 		remaining.aborted = &aborted
 	}
 	return remaining
+}
+
+func (d *Dispatcher) settleReactionCleanupThroughUncertainty(
+	ctx context.Context,
+	cleanup reactionCleanup,
+	log *slog.Logger,
+	reactionSlots chan struct{},
+) reactionCleanup {
+	remaining := d.settleReactionCleanupWithLimit(ctx, cleanup, log, reactionSlots)
+	deadline := ackUncertaintyDeadline(remaining.event)
+	if remaining.aborted != nil {
+		deadline = maxTime(deadline, ackUncertaintyDeadline(*remaining.aborted))
+	}
+	if waitUntilAckSweep(ctx, deadline) {
+		remaining = d.settleReactionCleanupWithLimit(ctx, remaining, log, reactionSlots)
+	}
+	return remaining
+}
+
+func waitForAckUncertainty(ctx context.Context, event Event) bool {
+	return waitUntilAckSweep(ctx, ackUncertaintyDeadline(event))
+}
+
+func ackUncertaintyDeadline(event Event) time.Time {
+	if len(event.UncertainAckNoteIDs) == 0 {
+		return time.Time{}
+	}
+	return event.AckCleanupUntil
+}
+
+func maxTime(first, second time.Time) time.Time {
+	if second.After(first) {
+		return second
+	}
+	return first
+}
+
+// waitUntilAckSweep reports whether a final sweep is required and its deadline
+// was reached. A zero deadline means no uncertain acknowledgement remains.
+func waitUntilAckSweep(ctx context.Context, deadline time.Time) bool {
+	if deadline.IsZero() {
+		return false
+	}
+	if delay := time.Until(deadline); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return ctx.Err() == nil
 }
 
 // AbortOutcome reports what Abort found and did.
@@ -1147,9 +1518,9 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 			return AbortOutcome{}
 		}
 		aborted := *state.pending
-		var dropped []int
+		var overflow ackOverflow
 		if state.cleanup.aborted != nil {
-			aborted, dropped = mergeEvents(*state.cleanup.aborted, aborted)
+			aborted, overflow = mergeEvents(*state.cleanup.aborted, aborted)
 		}
 		// Pending reviews have not placed an MR start reaction. Even malformed
 		// restored input must not let their abort affect old cleanup's MR target.
@@ -1161,10 +1532,10 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 		state.cleanupVersion++
 		state.persisted = d.journal.persistCleanup(*state.cleanup, nil)
 		d.mu.Unlock()
-		if len(dropped) > 0 {
+		if len(overflow.notes) > 0 {
 			d.log.Warn("ack note cap exceeded while aborting pending review, releasing dropped notes",
-				"project", aborted.ProjectPath, "iid", aborted.IID, "notes", dropped)
-			d.queueAckCleanup(aborted, dropped)
+				"project", aborted.ProjectPath, "iid", aborted.IID, "notes", overflow.notes)
+			d.queueAckCleanup(overflow.event, overflow.notes)
 		}
 		return AbortOutcome{Found: true}
 	}

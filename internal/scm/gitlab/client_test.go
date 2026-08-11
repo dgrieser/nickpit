@@ -11,9 +11,28 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
+
+func TestAPIErrorPreservesRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "token")
+	before := time.Now()
+	err := client.AwardMREmoji(context.Background(), 42, 7, "eyes")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want APIError", err)
+	}
+	if apiErr.RetryAfter.Before(before.Add(1900*time.Millisecond)) || apiErr.RetryAfter.After(before.Add(3*time.Second)) {
+		t.Fatalf("retry after = %v, want about two seconds after response", apiErr.RetryAfter)
+	}
+}
 
 func TestFetchMR(t *testing.T) {
 	fixtures := map[string][]byte{
