@@ -884,6 +884,38 @@ func TestDispatcherShutdownReactionCleanupIsBounded(t *testing.T) {
 	}
 }
 
+// All journal-less fallback cleanup shares one deadline. A large queue and a
+// stalled GitLab must not multiply the per-request timeout across batches.
+func TestDispatcherReleaseUnfinishedStopsAtDeadline(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:             []string{"nickpit"},
+		state:              "opened",
+		headSHA:            "sha-1",
+		emojiWaitForCancel: true,
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	for iid := 1; iid <= maxAckCleanupWorkers+1; iid++ {
+		event := commandEvent(iid, "sha-1", group, 0)
+		for note := 1; note <= maxAckCleanupWorkers; note++ {
+			event.AckNoteIDs = append(event.AckNoteIDs, iid*100+note)
+		}
+		dispatcher.Enqueue(event)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	dispatcher.releaseUnfinished(ctx)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("unfinished cleanup took %s, want shared deadline", elapsed)
+	}
+	if requests := fake.emojiArrived.Load(); requests != maxAckCleanupWorkers {
+		t.Fatalf("cleanup requests = %d, want only initial bounded batch", requests)
+	}
+	dispatcher.jobCancel()
+	dispatcher.cleanupCancel()
+}
+
 func TestStopAckCleanupCancelsBacklogAtDeadline(t *testing.T) {
 	fake := &fakeGitLab{
 		topics:             []string{"nickpit"},
@@ -900,8 +932,10 @@ func TestStopAckCleanupCancelsBacklogAtDeadline(t *testing.T) {
 	dispatcher.queueAckCleanup(event, notes)
 	waitFor(t, time.Second, func() bool { return fake.emojiArrived.Load() == maxAckCleanupWorkers })
 
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
 	started := time.Now()
-	dispatcher.stopAckCleanup(20 * time.Millisecond)
+	dispatcher.stopAckCleanup(ctx)
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("cleanup stop took %s, want bounded cancellation", elapsed)
 	}

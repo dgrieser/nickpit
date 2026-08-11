@@ -219,8 +219,8 @@ func (j *Journal) remove(projectID, iid int) {
 	}
 }
 
-// load reads every journaled job. Unreadable or malformed files are removed
-// (they can never be resumed) and logged.
+// load reads every journaled job. Read failures leave the file for a later
+// restart; files successfully read and confirmed malformed are removed.
 func (j *Journal) load() []journalEntry {
 	if j == nil {
 		return nil
@@ -238,12 +238,13 @@ func (j *Journal) load() []journalEntry {
 		}
 		path := filepath.Join(j.dir, name)
 		data, err := os.ReadFile(path)
-		var entry journalEntry
-		if err == nil {
-			err = json.Unmarshal(data, &entry)
-		}
 		if err != nil {
-			j.log.Warn("journal: dropping unreadable job file", "file", path, "error", err)
+			j.log.Warn("journal: reading job file failed; preserving for retry", "file", path, "error", err)
+			continue
+		}
+		var entry journalEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			j.log.Warn("journal: dropping malformed job file", "file", path, "error", err)
 			_ = os.Remove(path)
 			continue
 		}

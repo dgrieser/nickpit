@@ -98,6 +98,44 @@ func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {
 	}
 }
 
+func TestJournalLoadPreservesFileOnReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := journal.path(42, 7)
+	if err := os.Symlink("missing-target", path); err != nil {
+		t.Fatal(err)
+	}
+
+	if entries := journal.load(); len(entries) != 0 {
+		t.Fatalf("entries = %+v, want none from unreadable file", entries)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("unreadable journal file was removed: %v", err)
+	}
+}
+
+func TestJournalLoadRemovesMalformedFile(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := journal.path(42, 7)
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if entries := journal.load(); len(entries) != 0 {
+		t.Fatalf("entries = %+v, want none from malformed file", entries)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("malformed journal file survived: %v", err)
+	}
+}
+
 // An accepted job is journaled; settling it removes the file again.
 func TestJournalFollowsJobLifecycle(t *testing.T) {
 	dir := t.TempDir()

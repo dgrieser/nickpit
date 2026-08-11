@@ -507,8 +507,10 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	}
 	d.jobCancel()
 	<-done
-	d.stopAckCleanup(settleTimeout)
-	d.releaseUnfinished()
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), settleTimeout)
+	defer cleanupCancel()
+	d.stopAckCleanup(cleanupCtx)
+	d.releaseUnfinished(cleanupCtx)
 }
 
 // releaseUnfinished handles the jobs shutdown leaves behind: queued jobs that
@@ -516,7 +518,7 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 // so nothing here will ever settle in this process). With a journal they stay
 // on disk and resume after restart; without one, their ack reactions are
 // revoked so no command note reads as in progress forever.
-func (d *Dispatcher) releaseUnfinished() {
+func (d *Dispatcher) releaseUnfinished(ctx context.Context) {
 	type unfinished struct {
 		event     Event
 		cleanup   *reactionCleanup
@@ -586,13 +588,13 @@ func (d *Dispatcher) releaseUnfinished() {
 				if job.cleanup != nil {
 					cleanup := *job.cleanup
 					log := d.log.With("project", cleanup.event.ProjectPath, "iid", cleanup.event.IID)
-					d.settleReactionCleanupWithLimit(context.Background(), cleanup, log, reactionSlots)
+					d.settleReactionCleanupWithLimit(ctx, cleanup, log, reactionSlots)
 					if job.pending != nil {
-						d.releaseAcksWithLimit(*job.pending, job.pending.AckNoteIDs, reactionSlots)
+						d.releaseAcksWithLimit(ctx, *job.pending, job.pending.AckNoteIDs, reactionSlots)
 					}
 					continue
 				}
-				d.releaseAcksWithLimit(job.event, job.event.AckNoteIDs, reactionSlots)
+				d.releaseAcksWithLimit(ctx, job.event, job.event.AckNoteIDs, reactionSlots)
 			}
 		})
 	}
@@ -605,12 +607,12 @@ func (d *Dispatcher) releaseUnfinished() {
 
 // releaseAcksWithLimit revokes the ack reaction from command notes whose
 // review was discarded at shutdown without a journal.
-func (d *Dispatcher) releaseAcksWithLimit(event Event, notes []int, reactionSlots chan struct{}) {
+func (d *Dispatcher) releaseAcksWithLimit(ctx context.Context, event Event, notes []int, reactionSlots chan struct{}) {
 	if len(notes) == 0 {
 		return
 	}
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID)
-	d.settleWithLimit(context.Background(), event, reactions{notes: notes}, outcomeAborted, log, reactionSlots)
+	d.settleWithLimit(ctx, event, reactions{notes: notes}, outcomeAborted, log, reactionSlots)
 }
 
 type ackCleanup struct {
@@ -779,11 +781,11 @@ func (d *Dispatcher) completeDurableCleanup(key jobKey, version uint64, remainin
 	d.mu.Unlock()
 }
 
-// stopAckCleanup prevents new cleanup work and drains until timeout. It then
+// stopAckCleanup prevents new cleanup work and drains until ctx expires. It then
 // cancels in-flight requests so a full queue cannot exceed process shutdown
 // budget. Server shutdown calls this after HTTP handlers have drained, so no
 // producer can race the wait with a new WaitGroup task.
-func (d *Dispatcher) stopAckCleanup(timeout time.Duration) {
+func (d *Dispatcher) stopAckCleanup(ctx context.Context) {
 	d.cleanupMu.Lock()
 	d.cleanupClosed = true
 	d.cleanupMu.Unlock()
@@ -792,13 +794,11 @@ func (d *Dispatcher) stopAckCleanup(timeout time.Duration) {
 		d.cleanupWG.Wait()
 		close(done)
 	}()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case <-done:
 		d.cleanupCancel()
 		return
-	case <-timer.C:
+	case <-ctx.Done():
 		d.log.Warn("shutdown: acknowledgement cleanup grace expired, cancelling requests")
 		d.cleanupCancel()
 		// Workers already hold at most maxAckCleanupWorkers items. Discard queued
