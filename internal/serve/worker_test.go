@@ -143,6 +143,7 @@ func TestWorkerDraftRecheckSkipsAutoNotManual(t *testing.T) {
 // leaves the MR undecorated end to end — no outcome reaction either.
 func TestWorkerStartEmojiDisabled(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 0, "x")
 	cfg := workerCfg()
 	cfg.StartEmoji = ""
 	dispatcher, runner, group := newWorkerEnv(t, fake, cfg)
@@ -154,6 +155,35 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	// would have decorated the MR transiently and must fail this test.
 	if posted := fake.awardPosted(); len(posted) != 0 {
 		t.Fatalf("award posts = %v, want none when start_emoji disabled", posted)
+	}
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, want stale outcome revoked", awards)
+	}
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "x") {
+		t.Fatalf("revoked = %v, want stale outcome revoked", revoked)
+	}
+}
+
+func TestWorkerStartEmojiDisabledRetainsFailedCleanup(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.emojiFailures.Store(2) // start-time revoke and settle-time retry
+	cfg := workerCfg()
+	cfg.StartEmoji = ""
+	dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+
+	result := dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if result.settled || !result.event.SettleMR || len(result.event.StartEmojis) != 0 {
+		t.Fatalf("result = %+v, want durable revoke-only MR cleanup", result)
+	}
+	dispatcher.cfg.StartEmoji = "eyes" // retry after a configuration change
+	remaining := dispatcher.settleReactionCleanup(context.Background(), reactionCleanup{
+		event: result.event, outcome: result.outcome,
+	}, discardLogger())
+	if cleanupHasReactions(remaining) {
+		t.Fatalf("remaining cleanup = %+v, want retry success", remaining)
+	}
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, revoke-only cleanup must survive config change", awards)
 	}
 }
 

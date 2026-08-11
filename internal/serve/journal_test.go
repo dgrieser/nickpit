@@ -82,6 +82,22 @@ func TestNewJournalRejectsUnwritableExistingDirectory(t *testing.T) {
 	}
 }
 
+func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state[")
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := Event{Kind: TriggerAuto, ProjectID: 42, ProjectPath: "platform/api", IID: 7, HeadSHA: "sha-1"}
+	if !journal.persist(event) {
+		t.Fatal("persist failed")
+	}
+	entries := journal.load()
+	if len(entries) != 1 || entries[0].ProjectID != 42 || entries[0].IID != 7 {
+		t.Fatalf("entries = %+v, want job from literal metacharacter directory", entries)
+	}
+}
+
 // An accepted job is journaled; settling it removes the file again.
 func TestJournalFollowsJobLifecycle(t *testing.T) {
 	dir := t.TempDir()

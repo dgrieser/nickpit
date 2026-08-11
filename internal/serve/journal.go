@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Journal persists accepted-but-unfinished review jobs as one small JSON file
@@ -35,11 +36,13 @@ type journalEntry struct {
 	IID         int    `json:"iid"`
 	HeadSHA     string `json:"head_sha,omitempty"`
 	AckNoteIDs  []int  `json:"ack_note_ids,omitempty"`
-	// StartEmojis and AckEmojis are the configured names under which this job
-	// may already have placed managed reactions. They must survive config
-	// changes so a resumed job can revoke the old markers.
-	StartEmojis []string `json:"start_emojis,omitempty"`
-	AckEmojis   []string `json:"ack_emojis,omitempty"`
+	// Reaction names and MR settlement mode must survive config changes so a
+	// resumed job revokes old markers without changing revoke-only work into an
+	// outcome award.
+	StartEmojis  []string `json:"start_emojis,omitempty"`
+	AckEmojis    []string `json:"ack_emojis,omitempty"`
+	SettleMR     bool     `json:"settle_mr,omitempty"`
+	RevokeMROnly bool     `json:"revoke_mr_only,omitempty"`
 	// CleanupOutcome marks an entry that must only settle reactions, never
 	// rerun the review. Pending carries a review accepted while that cleanup
 	// was retrying. Aborted carries acknowledgements from a pending review that
@@ -130,14 +133,16 @@ func (j *Journal) persistCleanup(cleanup reactionCleanup, pending *Event) bool {
 
 func entryFromEvent(event Event) journalEntry {
 	return journalEntry{
-		Kind:        event.Kind.String(),
-		ProjectID:   event.ProjectID,
-		ProjectPath: event.ProjectPath,
-		IID:         event.IID,
-		HeadSHA:     event.HeadSHA,
-		AckNoteIDs:  event.AckNoteIDs,
-		StartEmojis: event.StartEmojis,
-		AckEmojis:   event.AckEmojis,
+		Kind:         event.Kind.String(),
+		ProjectID:    event.ProjectID,
+		ProjectPath:  event.ProjectPath,
+		IID:          event.IID,
+		HeadSHA:      event.HeadSHA,
+		AckNoteIDs:   event.AckNoteIDs,
+		StartEmojis:  event.StartEmojis,
+		AckEmojis:    event.AckEmojis,
+		SettleMR:     event.SettleMR,
+		RevokeMROnly: event.RevokeMROnly,
 	}
 }
 
@@ -220,13 +225,18 @@ func (j *Journal) load() []journalEntry {
 	if j == nil {
 		return nil
 	}
-	paths, err := filepath.Glob(filepath.Join(j.dir, "job-*.json"))
+	files, err := os.ReadDir(j.dir)
 	if err != nil {
 		j.log.Warn("journal: listing state dir failed", "dir", j.dir, "error", err)
 		return nil
 	}
-	entries := make([]journalEntry, 0, len(paths))
-	for _, path := range paths {
+	entries := make([]journalEntry, 0, len(files))
+	for _, file := range files {
+		name := file.Name()
+		if file.IsDir() || !strings.HasPrefix(name, "job-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(j.dir, name)
 		data, err := os.ReadFile(path)
 		var entry journalEntry
 		if err == nil {

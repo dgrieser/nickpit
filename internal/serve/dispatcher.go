@@ -39,6 +39,13 @@ type Event struct {
 	// journal restore clean markers from an older configuration.
 	StartEmojis []string
 	AckEmojis   []string
+	// SettleMR records that the worker reached the MR-reaction boundary. It is
+	// separate from StartEmojis because an empty start emoji still requires
+	// revoke-only cleanup of status reactions left by earlier runs.
+	SettleMR bool
+	// RevokeMROnly preserves disabled-decoration semantics if cleanup survives
+	// a restart under a configuration that enables start reactions again.
+	RevokeMROnly bool
 }
 
 type jobKey struct {
@@ -92,8 +99,8 @@ type WorkerConfig struct {
 	// StartEmoji marks the merge request while a review runs; AckEmoji is the
 	// same marker on the command note (awarded by the handler). Both are
 	// replaced when the review ends: DoneEmoji when it landed, FailEmoji when it
-	// did not. Any of them may be "" — the emoji is then never placed, and
-	// nothing replaces it either.
+	// did not. Any of them may be "". An empty start emoji makes MR handling
+	// revoke-only; an empty ack or outcome emoji suppresses that award.
 	StartEmoji string
 	AckEmoji   string
 	DoneEmoji  string
@@ -239,15 +246,17 @@ func (d *Dispatcher) Restore(groups *GroupSet) int {
 
 func eventFromJournal(entry journalEntry, group *Group) Event {
 	return Event{
-		Kind:        parseTriggerKind(entry.Kind),
-		ProjectID:   entry.ProjectID,
-		ProjectPath: entry.ProjectPath,
-		IID:         entry.IID,
-		HeadSHA:     entry.HeadSHA,
-		Group:       group,
-		AckNoteIDs:  entry.AckNoteIDs,
-		StartEmojis: entry.StartEmojis,
-		AckEmojis:   entry.AckEmojis,
+		Kind:         parseTriggerKind(entry.Kind),
+		ProjectID:    entry.ProjectID,
+		ProjectPath:  entry.ProjectPath,
+		IID:          entry.IID,
+		HeadSHA:      entry.HeadSHA,
+		Group:        group,
+		AckNoteIDs:   entry.AckNoteIDs,
+		StartEmojis:  entry.StartEmojis,
+		AckEmojis:    entry.AckEmojis,
+		SettleMR:     entry.SettleMR,
+		RevokeMROnly: entry.RevokeMROnly,
 	}
 }
 
@@ -322,6 +331,15 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 		}
 		return true
 	}
+	// Durable cleanup no longer occupies the channel, but it still consumes an
+	// admitted MR slot until remote settlement succeeds. Count all non-running
+	// states here so a prolonged GitLab outage cannot grow cleanup state,
+	// journals, and retry timers without bound.
+	if len(d.states)-d.running >= queueCapacity {
+		d.dropped++
+		d.log.Error("job backlog full, dropping event", "project", event.ProjectPath, "iid", event.IID, "dropped_total", d.dropped)
+		return false
+	}
 	select {
 	case d.queue <- key:
 		d.states[key] = &jobState{
@@ -352,6 +370,10 @@ func mergeEvents(existing, incoming Event) (Event, []int) {
 	incoming.AckNoteIDs = merged
 	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
 	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
+	if eventSettlesMR(existing) {
+		incoming.RevokeMROnly = existing.RevokeMROnly
+	}
+	incoming.SettleMR = existing.SettleMR || incoming.SettleMR
 	return incoming, dropped
 }
 
@@ -642,7 +664,7 @@ func (d *Dispatcher) queueDurableCleanup(key jobKey) {
 		d.cleanupQueue = append(d.cleanupQueue, ackCleanup{
 			event: cleanup.event,
 			placed: reactions{
-				mr:    len(cleanup.event.StartEmojis) > 0,
+				mr:    eventSettlesMR(cleanup.event),
 				notes: cleanup.event.AckNoteIDs,
 			},
 			outcome: cleanup.outcome,
@@ -784,16 +806,16 @@ func (d *Dispatcher) stopAckCleanup(timeout time.Duration) {
 }
 
 func cleanupHasReactions(cleanup reactionCleanup) bool {
-	if len(cleanup.event.StartEmojis) > 0 || len(cleanup.event.AckNoteIDs) > 0 {
+	if eventSettlesMR(cleanup.event) || len(cleanup.event.AckNoteIDs) > 0 {
 		return true
 	}
-	return cleanup.aborted != nil && (len(cleanup.aborted.StartEmojis) > 0 || len(cleanup.aborted.AckNoteIDs) > 0)
+	return cleanup.aborted != nil && (eventSettlesMR(*cleanup.aborted) || len(cleanup.aborted.AckNoteIDs) > 0)
 }
 
 func (d *Dispatcher) settleReactionCleanup(ctx context.Context, cleanup reactionCleanup, log *slog.Logger) reactionCleanup {
 	remaining := reactionCleanup{
 		event: eventWithReactions(cleanup.event, d.settle(ctx, cleanup.event, reactions{
-			mr:    len(cleanup.event.StartEmojis) > 0,
+			mr:    eventSettlesMR(cleanup.event),
 			notes: cleanup.event.AckNoteIDs,
 		}, cleanup.outcome, log)),
 		outcome: cleanup.outcome,
@@ -872,11 +894,13 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	return state.latest, ctx, true
 }
 
-// recordStartReactionAttempt persists the configured start name immediately
-// before the worker makes the remote request. Therefore restored names mean a
-// request may truly have reached GitLab; a crash during earlier policy checks
-// cannot make the resumed worker decorate an MR that was never started.
+// recordStartReactionAttempt persists MR settlement intent and any configured
+// start name immediately before the worker makes the remote request. Therefore
+// restored state means a request may truly have reached GitLab; a crash during
+// earlier policy checks cannot make the resumed worker touch an unstarted MR.
 func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
+	event.SettleMR = true
+	event.RevokeMROnly = d.cfg.StartEmoji == ""
 	event.StartEmojis = appendUniqueStrings(event.StartEmojis, d.cfg.StartEmoji)
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 	d.mu.Lock()
@@ -886,12 +910,16 @@ func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
 		return
 	}
 	if state.cleanup != nil {
+		state.cleanup.event.SettleMR = true
+		state.cleanup.event.RevokeMROnly = d.cfg.StartEmoji == ""
 		state.cleanup.event.StartEmojis = appendUniqueStrings(state.cleanup.event.StartEmojis, d.cfg.StartEmoji)
 		state.latest = state.cleanup.event
 		state.cleanupVersion++
 		state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
 		return
 	}
+	state.latest.SettleMR = true
+	state.latest.RevokeMROnly = d.cfg.StartEmoji == ""
 	state.latest.StartEmojis = appendUniqueStrings(state.latest.StartEmojis, d.cfg.StartEmoji)
 	resume := state.latest
 	if state.pending != nil {
@@ -1012,17 +1040,25 @@ func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
 			return AbortOutcome{}
 		}
 		aborted := *state.pending
+		var dropped []int
 		if state.cleanup.aborted != nil {
-			aborted, _ = mergeEvents(*state.cleanup.aborted, aborted)
+			aborted, dropped = mergeEvents(*state.cleanup.aborted, aborted)
 		}
 		// Pending reviews have not placed an MR start reaction. Even malformed
 		// restored input must not let their abort affect old cleanup's MR target.
 		aborted.StartEmojis = nil
+		aborted.SettleMR = false
+		aborted.RevokeMROnly = false
 		state.cleanup.aborted = &aborted
 		state.pending = nil
 		state.cleanupVersion++
 		state.persisted = d.journal.persistCleanup(*state.cleanup, nil)
 		d.mu.Unlock()
+		if len(dropped) > 0 {
+			d.log.Warn("ack note cap exceeded while aborting pending review, releasing dropped notes",
+				"project", aborted.ProjectPath, "iid", aborted.IID, "notes", dropped)
+			d.queueAckCleanup(aborted, dropped)
+		}
 		return AbortOutcome{Found: true}
 	}
 	cleanupEvent := state.latest

@@ -578,6 +578,72 @@ func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
 	dispatcher.Shutdown(0)
 }
 
+// Cleanup-only states remain admitted work even though they no longer occupy
+// the review queue. They must apply backpressure during a prolonged outage.
+func TestEnqueueCleanupStatesConsumeBacklogCapacity(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	t.Cleanup(dispatcher.jobCancel)
+	t.Cleanup(dispatcher.cleanupCancel)
+
+	for iid := 1; iid <= queueCapacity; iid++ {
+		event := autoEvent(iid, "sha-1", group)
+		cleanup := reactionCleanup{event: event, outcome: outcomeDone}
+		dispatcher.states[jobKey{ProjectID: 42, IID: iid}] = &jobState{
+			status:  stateCleanup,
+			latest:  event,
+			cleanup: &cleanup,
+		}
+	}
+	if dispatcher.Enqueue(autoEvent(queueCapacity+1, "sha-1", group)) {
+		t.Fatal("new MR accepted beyond cleanup-backed admission capacity")
+	}
+	if got := len(dispatcher.states); got != queueCapacity {
+		t.Fatalf("states = %d, want bounded capacity %d", got, queueCapacity)
+	}
+}
+
+// Repeated aborts merge pending acknowledgement sets behind durable cleanup.
+// Notes omitted by the cap must be revoked instead of disappearing from state.
+func TestDispatcherRepeatedAbortReleasesDroppedAck(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	key := jobKey{ProjectID: 42, IID: 7}
+	event := autoEvent(7, "sha-1", group)
+	cleanup := reactionCleanup{event: event, outcome: outcomeDone}
+	dispatcher.states[key] = &jobState{
+		status:        stateCleanup,
+		latest:        event,
+		cleanup:       &cleanup,
+		cleanupQueued: true,
+	}
+
+	first := commandEvent(7, "sha-2", group, 0)
+	first.AckNoteIDs = make([]int, maxAckNotes)
+	for index := range first.AckNoteIDs {
+		first.AckNoteIDs[index] = index + 1
+	}
+	if !dispatcher.Enqueue(first) || !dispatcher.Abort(42, 7).Found {
+		t.Fatal("first pending review was not accepted and aborted")
+	}
+
+	fake.preAward(7, 9001, "eyes")
+	if !dispatcher.Enqueue(commandEvent(7, "sha-3", group, 9001)) || !dispatcher.Abort(42, 7).Found {
+		t.Fatal("second pending review was not accepted and aborted")
+	}
+	waitFor(t, 3*time.Second, func() bool { return len(fake.awardedOn(7, 9001)) == 0 })
+
+	dispatcher.mu.Lock()
+	abortedNotes := slices.Clone(dispatcher.states[key].cleanup.aborted.AckNoteIDs)
+	dispatcher.mu.Unlock()
+	if len(abortedNotes) != maxAckNotes || slices.Contains(abortedNotes, 9001) {
+		t.Fatalf("durable aborted notes = %v, want capped original set", abortedNotes)
+	}
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "eyes") {
+		t.Fatalf("revoked = %v, want overflow acknowledgement released", revoked)
+	}
+}
+
 func TestEnqueuePendingPreservesManualKind(t *testing.T) {
 	env := newDispatcherEnv(t, 1, true)
 	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))

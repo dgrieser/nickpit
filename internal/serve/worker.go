@@ -63,7 +63,7 @@ func (d *Dispatcher) process(ctx context.Context, event Event) settlementResult 
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID, "trigger", event.Kind.String())
 	// The command notes already wear the ack emoji: the handler awarded it when
 	// it accepted the command, before this job was picked up.
-	placed := reactions{mr: len(event.StartEmojis) > 0, notes: event.AckNoteIDs}
+	placed := reactions{mr: eventSettlesMR(event), notes: event.AckNoteIDs}
 	outcome := d.review(ctx, &event, &placed, log)
 	remaining := d.settle(context.WithoutCancel(ctx), event, placed, outcome, log)
 	return settlementResult{
@@ -106,7 +106,7 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		return outcomeFailed
 	}
 
-	if d.cfg.StartEmoji != "" && event.Group.BotUserID != 0 {
+	if event.Group.BotUserID != 0 {
 		// Persist crash-cleanup metadata at the last possible local boundary:
 		// after all skip checks, immediately before the remote request.
 		d.recordStartReactionAttempt(event)
@@ -114,11 +114,16 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		// Revoke every previous bot-owned status reaction in the same call,
 		// including outcomes left under older configurations. Preserve the
 		// trigger reaction: if the bot itself requested this review, revoking it
-		// would emit an abort event. Settle repeats cleanup after partial failure.
+		// would emit an abort event. An empty start emoji makes this revoke-only;
+		// settle repeats cleanup and never adds an MR outcome in that mode.
 		err := event.Group.Client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID,
 			d.cfg.StartEmoji, d.cfg.TriggerEmoji)
 		if err != nil {
-			log.Warn("awarding start emoji failed", "emoji", d.cfg.StartEmoji, "error", err)
+			if d.cfg.StartEmoji == "" {
+				log.Warn("clearing previous merge request emoji failed", "error", err)
+			} else {
+				log.Warn("awarding start emoji failed", "emoji", d.cfg.StartEmoji, "error", err)
+			}
 		}
 		// Recorded even when the call failed: it may have awarded and only
 		// failed to revoke, and settle's replace is harmless when there is
@@ -201,6 +206,10 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 	case outcomeFailed:
 		add = d.cfg.FailEmoji
 	}
+	mrAdd := add
+	if d.cfg.StartEmoji == "" || event.RevokeMROnly {
+		mrAdd = ""
+	}
 	// Flips are independent and run concurrently, each on its own deadline: one
 	// slow request must not eat the budget of remaining notes (a coalesced review
 	// settles up to maxAckNotes of them). process passes a cancellation-free
@@ -214,21 +223,21 @@ func (d *Dispatcher) settle(ctx context.Context, event Event, placed reactions, 
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 			defer cancel()
-			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, add, d.cfg.TriggerEmoji)
-			if err != nil && add != "" && reactionOutcomeRejected(err) {
+			err := client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, mrAdd, d.cfg.TriggerEmoji)
+			if err != nil && mrAdd != "" && reactionOutcomeRejected(err) {
 				// A bad configured outcome cannot improve on retry. Revoke the
 				// in-progress marker so a terminal POST validation response does
 				// not leave the MR looking active forever.
-				log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", add, "error", err)
+				log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", mrAdd, "error", err)
 				err = client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID, "", d.cfg.TriggerEmoji)
 			}
 			if err != nil {
 				if terminalReactionTargetError(err) {
-					log.Warn("stopping merge request emoji retries after terminal error", "emoji", add, "error", err)
+					log.Warn("stopping merge request emoji retries after terminal error", "emoji", mrAdd, "error", err)
 					return
 				}
 				mrFailed = true
-				log.Warn("updating merge request emoji failed", "emoji", add, "error", err)
+				log.Warn("updating merge request emoji failed", "emoji", mrAdd, "error", err)
 			}
 		})
 	}
@@ -313,11 +322,21 @@ func hasReactions(placed reactions) bool {
 	return placed.mr || len(placed.notes) > 0
 }
 
+func eventSettlesMR(event Event) bool {
+	// StartEmojis keeps old journal entries compatible; SettleMR covers
+	// revoke-only operation when start reactions are disabled.
+	return event.SettleMR || len(event.StartEmojis) > 0
+}
+
 // eventWithReactions reduces durable cleanup state to targets that still need
 // work. Successful targets are not repeatedly updated on every retry.
 func eventWithReactions(event Event, remaining reactions) Event {
 	if !remaining.mr {
+		event.SettleMR = false
+		event.RevokeMROnly = false
 		event.StartEmojis = nil
+	} else {
+		event.SettleMR = true
 	}
 	event.AckNoteIDs = remaining.notes
 	return event
