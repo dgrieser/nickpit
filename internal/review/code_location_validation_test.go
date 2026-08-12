@@ -455,6 +455,7 @@ func TestOutOfDiffRetryGuidanceUsesExactCodeLocationJSON(t *testing.T) {
 	}, resp)
 	if invalid == nil {
 		t.Fatal("expected out-of-diff validation retry")
+		return
 	}
 	if invalid.RetryGuidanceTemplate != "code_location_diff_scope_retry_guidance.tmpl" {
 		t.Fatalf("retry guidance = %q", invalid.RetryGuidanceTemplate)

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -123,8 +122,11 @@ func (r *ExecRunner) childEnv(token, baseURL string) []string {
 }
 
 func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, error) {
-	if slices.Contains(spec.ExtraArgs, "--") {
-		return -1, "", errors.New(`review extra args must not contain "--"`)
+	for _, arg := range spec.ExtraArgs {
+		switch arg {
+		case "--", "--help", "-h":
+			return -1, "", fmt.Errorf("review extra args must not contain %q", arg)
+		}
 	}
 
 	logPath, logFile, err := createChildLog("review", spec.ProjectPath, spec.IID, spec.LogDir, r.now())

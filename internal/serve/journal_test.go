@@ -289,6 +289,7 @@ func TestJournalShutdownInterruptedReviewResumes(t *testing.T) {
 
 	first, runner, groups := newJournalEnv(t, fake, dir)
 	runner.gate = make(chan struct{})
+	runner.exit = 143 // model the SIGTERM exit from a child canceled by shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	first.Start(ctx, 1)
 	if !first.Enqueue(commandEvent(7, "sha-1", groups.Match("platform/api"), 301)) {

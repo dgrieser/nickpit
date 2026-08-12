@@ -174,17 +174,23 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 	exitCode, logPath, err := d.runner.Run(ctx, spec)
 	duration := time.Since(start).Round(time.Second)
 	switch {
+	// A live per-job cancellation is an explicit user abort, even if a runner
+	// ignores cancellation and reports zero. Check it before successful exit.
+	case ctx.Err() != nil && d.jobCtx.Err() == nil:
+		log.Info("review aborted", "duration", duration, "log", logPath)
+		return outcomeAborted
+	// Once the child reports successful delivery, a root cancellation that
+	// lands while its output is still draining must not make the work runnable
+	// again after restart.
+	case err == nil && exitCode == 0:
+		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
+		log.Info("review finished", "duration", duration, "log", logPath)
+		return outcomeDone
 	// Root shutdown cancellation preserves accepted work for journal resume.
 	// It must not publish a failed reaction or retire the runnable snapshot.
 	case ctx.Err() != nil && d.jobCtx.Err() != nil:
 		log.Info("review interrupted by shutdown", "duration", duration, "log", logPath)
 		return outcomeInterrupted
-	// Per-job cancel while the pool is alive is a user abort, not a failure;
-	// a SIGTERM'd child exits non-zero, so this case must come first. The
-	// head is not marked reviewed: the same SHA stays re-reviewable.
-	case ctx.Err() != nil && d.jobCtx.Err() == nil:
-		log.Info("review aborted", "duration", duration, "log", logPath)
-		return outcomeAborted
 	case err != nil:
 		log.Error("review failed to run", "error", err, "duration", duration)
 		return outcomeFailed
@@ -192,12 +198,8 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		log.Error("review exited with error", "exit_code", exitCode, "duration", duration, "log", logPath)
 		return outcomeFailed
 	default:
-		// Only a successful run marks the head reviewed: a transient failure
-		// must not make later auto events for the same SHA drop as
-		// "already reviewed" when nothing was published.
-		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
-		log.Info("review finished", "duration", duration, "log", logPath)
-		return outcomeDone
+		log.Error("review returned invalid result", "exit_code", exitCode, "duration", duration, "log", logPath)
+		return outcomeFailed
 	}
 }
 

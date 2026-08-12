@@ -623,6 +623,46 @@ func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
 	}
 }
 
+// Root shutdown may expire after the child has successfully delivered but
+// while Run is still draining output. The completed review must win over the
+// late cancellation so its durable job is retired instead of replayed.
+func TestWorkerSuccessfulRunWinsOverShutdownDuringLogDrain(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	server := httptest.NewServer(fake.handler())
+	t.Cleanup(server.Close)
+	group := newTestGroupSetWithURL(t, server.URL).Match("platform/api")
+	runner := &successfulDrainingRunner{childExited: make(chan struct{})}
+	cfg := workerCfg()
+	cfg.BaseURL = server.URL
+	cfg.LogDir = t.TempDir()
+	dispatcher := NewDispatcher(runner, TopicLookup(GitLabTopicLookup), nil, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	done := make(chan settlementResult)
+	go func() {
+		done <- dispatcher.process(dispatcher.jobCtx, autoEvent(7, "sha-1", group))
+	}()
+	<-runner.childExited
+	dispatcher.jobCancel()
+	result := <-done
+
+	if result.outcome != outcomeDone || result.resume {
+		t.Fatalf("result = %+v, want completed non-resumable review", result)
+	}
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("successful review must mark the SHA reviewed")
+	}
+}
+
+type successfulDrainingRunner struct {
+	childExited chan struct{}
+}
+
+func (r *successfulDrainingRunner) Run(ctx context.Context, _ ReviewSpec) (int, string, error) {
+	close(r.childExited)
+	<-ctx.Done()
+	return 0, "fake.log", nil
+}
+
 // A cancelled start-reaction request can still commit after abort settlement
 // listed no marker. Durable cleanup must retain the MR through a final sweep.
 func TestWorkerAmbiguousStartReactionGetsLateCleanup(t *testing.T) {
