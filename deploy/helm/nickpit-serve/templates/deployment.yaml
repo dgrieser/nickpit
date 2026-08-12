@@ -4,6 +4,9 @@
 {{- if and .Values.persistence.enabled .Values.serve.stateDir (not (hasPrefix "/" .Values.serve.stateDir)) }}
 {{- fail "persistence.enabled needs serve.stateDir to be an absolute path" }}
 {{- end }}
+{{- if and .Values.persistence.enabled (eq (clean .Values.serve.stateDir) "/") }}
+{{- fail "persistence.enabled needs serve.stateDir not to be /" }}
+{{- end }}
 {{- if and .Values.persistence.enabled .Values.serve.stateDir (has (clean .Values.serve.stateDir) (list "/etc/nickpit" "/work" "/tmp" "/home/nonroot")) }}
 {{- fail "persistence.enabled needs serve.stateDir not to duplicate a fixed mount path (/etc/nickpit, /work, /tmp, /home/nonroot)" }}
 {{- end }}
@@ -115,9 +118,8 @@ spec:
             - name: work
               mountPath: /work
             {{- if .Values.persistence.enabled }}
-            # Mounted over the emptyDir path so the review-job journal
-            # (serve.stateDir) survives pod replacement, not just container
-            # restarts.
+            # PVC root is a parent mount. The daemon creates a private 0700
+            # journal child below it, avoiding the fsGroup-writable PVC root.
             - name: state
               mountPath: {{ .Values.serve.stateDir | quote }}
             {{- end }}

@@ -103,8 +103,8 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
 | `maxSessions` | `50` | `--max-sessions` for every review child. Sessions live on the `home` emptyDir; `0` (the CLI default) grows one full review context per MR until the pod is evicted. |
 | `serve.loki.url` | `""` | Set to stream review logs live to Grafana Loki (durable, queryable). Empty = disabled. Auth/tenant come from Secret keys via `serve.loki.{tenantIdEnv,basicAuthUserEnv,basicAuthPassEnv}`. |
-| `serve.stateDir` | `/work/state` | Journal of accepted-but-unfinished review jobs, resumed after a restart. Must be absolute with persistence enabled; `""` disables. |
-| `persistence.enabled` | `false` | Mount a small PVC (`persistence.size`, default `1Gi`) at `serve.stateDir` so the journal survives pod replacement (upgrades, reschedules), not just container restarts. |
+| `serve.stateDir` | `/work/state` | Journal path (PVC parent mount when persistence is enabled; journal uses its private `journal/` child), resumed after a restart. Must be absolute with persistence enabled; `""` disables. |
+| `persistence.enabled` | `false` | Mount a small PVC (`persistence.size`, default `1Gi`) at `serve.stateDir`; a private `journal/` child stores state across pod replacement (upgrades, reschedules). |
 | `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats

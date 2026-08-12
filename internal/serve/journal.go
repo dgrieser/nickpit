@@ -9,7 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+const journalRetirementRetry = time.Second
 
 // Journal persists accepted-but-unfinished review jobs as one small JSON file
 // per merge request, so a restarted daemon (crash, upgrade, reschedule) resumes
@@ -24,12 +28,22 @@ import (
 type Journal struct {
 	dir string
 	log *slog.Logger
+
+	mu              sync.Mutex
+	retirements     map[jobKey]uint64
+	nextRetirement  uint64
+	retirementRetry time.Duration
+	unlink          func(string) error
 }
 
 // journalEntry is the persisted form of an Event. The group is not stored —
 // tokens must never land on disk — but re-resolved from the project path at
 // restore time, exactly like the webhook handler routes a delivery.
 type journalEntry struct {
+	// Retired replaces a completed job before its file is unlinked. Restore
+	// ignores the tombstone, so a transient unlink failure cannot rerun a
+	// completed review after restart.
+	Retired                    bool   `json:"retired,omitempty"`
 	Kind                       string `json:"kind"`
 	ProjectID                  int    `json:"project_id"`
 	ProjectPath                string `json:"project_path"`
@@ -70,7 +84,13 @@ func NewJournal(dir string, log *slog.Logger) (*Journal, error) {
 	if err := probeJournalDir(dir); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
-	return &Journal{dir: dir, log: log}, nil
+	return &Journal{
+		dir:             dir,
+		log:             log,
+		retirements:     make(map[jobKey]uint64),
+		retirementRetry: journalRetirementRetry,
+		unlink:          os.Remove,
+	}, nil
 }
 
 // validateJournalDir keeps untrusted local users from replacing predictable
@@ -87,7 +107,7 @@ func validateJournalDir(dir string) error {
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("permissions %04o allow group or world writes", info.Mode().Perm())
 	}
-	return nil
+	return validateJournalDirOwner(info)
 }
 
 // probeJournalDir verifies the operations persistence depends on before intake
@@ -200,6 +220,13 @@ func (j *Journal) persistEntry(entry journalEntry) bool {
 	if j == nil {
 		return false
 	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	delete(j.retirements, jobKey{ProjectID: entry.ProjectID, IID: entry.IID})
+	return j.persistEntryLocked(entry)
+}
+
+func (j *Journal) persistEntryLocked(entry journalEntry) bool {
 	path := j.path(entry.ProjectID, entry.IID)
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -276,14 +303,71 @@ func (j *Journal) invalidate(path, tmp string, projectID, iid int) {
 	}
 }
 
-// remove deletes the job's file once nothing is left to resume (settled,
-// aborted, or dropped on purpose). A missing file is fine.
+// remove retires a job once nothing is left to resume (settled, aborted, or
+// dropped on purpose). It first atomically replaces runnable state with a
+// tombstone, then unlinks it. Failed unlinks retry until confirmed; Restore
+// ignores a tombstone left by a crash during those retries.
 func (j *Journal) remove(projectID, iid int) {
 	if j == nil {
 		return
 	}
-	if err := os.Remove(j.path(projectID, iid)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		j.log.Warn("journal: removing job failed", "project_id", projectID, "iid", iid, "error", err)
+	key := jobKey{ProjectID: projectID, IID: iid}
+	j.mu.Lock()
+	j.nextRetirement++
+	generation := j.nextRetirement
+	j.retirements[key] = generation
+	retired := j.retireLocked(key)
+	if retired {
+		delete(j.retirements, key)
+	}
+	j.mu.Unlock()
+	if !retired {
+		go j.retryRetirement(key, generation)
+	}
+}
+
+// retireLocked returns true only after unlink confirms the tombstone is gone.
+// Even while it returns false, a successfully written tombstone is safe for
+// Restore to ignore. Caller holds j.mu.
+func (j *Journal) retireLocked(key jobKey) bool {
+	tombstone := journalEntry{Retired: true, ProjectID: key.ProjectID, IID: key.IID}
+	if !j.persistEntryLocked(tombstone) {
+		j.log.Warn("journal: writing retirement tombstone failed; retrying",
+			"project_id", key.ProjectID, "iid", key.IID)
+		return false
+	}
+	path := j.path(key.ProjectID, key.IID)
+	if err := j.unlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		j.log.Warn("journal: removing retirement tombstone failed; retrying",
+			"project_id", key.ProjectID, "iid", key.IID, "error", err)
+		return false
+	}
+	if err := syncJournalDir(j.dir); err != nil {
+		j.log.Warn("journal: syncing retirement failed; retrying",
+			"project_id", key.ProjectID, "iid", key.IID, "error", err)
+		return false
+	}
+	return true
+}
+
+func (j *Journal) retryRetirement(key jobKey, generation uint64) {
+	delay := j.retirementRetry
+	for {
+		timer := time.NewTimer(delay)
+		<-timer.C
+
+		j.mu.Lock()
+		if j.retirements[key] != generation {
+			j.mu.Unlock()
+			return
+		}
+		if j.retireLocked(key) {
+			delete(j.retirements, key)
+			j.mu.Unlock()
+			return
+		}
+		j.mu.Unlock()
+		delay = min(delay*2, time.Minute)
 	}
 }
 
@@ -293,6 +377,8 @@ func (j *Journal) load() []journalEntry {
 	if j == nil {
 		return nil
 	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	files, err := os.ReadDir(j.dir)
 	if err != nil {
 		j.log.Warn("journal: listing state dir failed", "dir", j.dir, "error", err)
@@ -314,6 +400,18 @@ func (j *Journal) load() []journalEntry {
 		if err := json.Unmarshal(data, &entry); err != nil {
 			j.log.Warn("journal: dropping malformed job file", "file", path, "error", err)
 			_ = os.Remove(path)
+			continue
+		}
+		if entry.Retired {
+			key := jobKey{ProjectID: entry.ProjectID, IID: entry.IID}
+			j.nextRetirement++
+			generation := j.nextRetirement
+			j.retirements[key] = generation
+			if j.retireLocked(key) {
+				delete(j.retirements, key)
+			} else {
+				go j.retryRetirement(key, generation)
+			}
 			continue
 		}
 		entries = append(entries, entry)

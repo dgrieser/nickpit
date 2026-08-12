@@ -104,7 +104,8 @@ volumes:
     sizeLimit: 256Mi
 
 # Persistent storage for the review-job state journal (serve.stateDir): the
-# daemon journals accepted-but-unfinished reviews there and resumes them at the
+# daemon journals accepted-but-unfinished reviews in a private `journal` child
+# below this PVC mount and resumes them at the
 # next start. With enabled: false the journal lands on the `work` emptyDir —
 # it then survives container restarts (crash, OOM, liveness kill) but NOT pod
 # replacement: every image upgrade or reschedule loses queued reviews and their
@@ -213,9 +214,10 @@ serve:
   listen: ":8080"
   logDir: "/work/logs"
   # Journal for accepted-but-unfinished review jobs, resumed after a restart.
-  # Lives on the `work` emptyDir unless persistence.enabled mounts a PVC there
-  # (see persistence above). Must be absolute when persistence is enabled and
-  # cannot equal a fixed mount path (/etc/nickpit, /work, /tmp, /home/nonroot).
+  # Lives directly on the `work` emptyDir unless persistence.enabled mounts a
+  # PVC here and uses its private `journal` child (see persistence above). Must
+  # be absolute when persistence is enabled and cannot equal a fixed mount path
+  # (/etc/nickpit, /work, /tmp, /home/nonroot) or filesystem root (/).
   # "" disables journaling.
   stateDir: "/work/state"
   reviewConcurrency: 2

@@ -1,6 +1,6 @@
 {{- if .Values.persistence.enabled }}
 {{- if not .Values.serve.stateDir }}
-{{- fail "persistence.enabled needs serve.stateDir set: the PVC is mounted at that path" }}
+{{- fail "persistence.enabled needs serve.stateDir set: the PVC parent is mounted at that path" }}
 {{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim

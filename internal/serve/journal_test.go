@@ -2,11 +2,16 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -113,6 +118,68 @@ func TestNewJournalRejectsSharedWritableDirectory(t *testing.T) {
 	if err == nil || journal != nil {
 		t.Fatalf("NewJournal = (%v, %v), want shared writable state dir rejected", journal, err)
 	}
+}
+
+func TestValidateJournalDirRejectsDifferentOwner(t *testing.T) {
+	dir := privateJournalDir(t)
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("file ownership is unavailable")
+	}
+	otherUID := stat.Uid + 1
+	if otherUID == stat.Uid {
+		otherUID--
+	}
+	if err := validateJournalDirOwnerAs(info, otherUID); err == nil {
+		t.Fatal("owner mismatch was accepted")
+	}
+}
+
+func TestJournalRetirementTombstoneRetriesDeletion(t *testing.T) {
+	dir := privateJournalDir(t)
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.retirementRetry = 10 * time.Millisecond
+	var blocked atomic.Bool
+	blocked.Store(true)
+	journal.unlink = func(path string) error {
+		if blocked.Load() {
+			return os.ErrPermission
+		}
+		return os.Remove(path)
+	}
+	event := Event{Kind: TriggerAuto, ProjectID: 42, ProjectPath: "platform/api", IID: 7, HeadSHA: "sha-1"}
+	if !journal.persist(event) {
+		t.Fatal("persist failed")
+	}
+
+	journal.remove(event.ProjectID, event.IID)
+	data, err := os.ReadFile(journal.path(event.ProjectID, event.IID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tombstone journalEntry
+	if err := json.Unmarshal(data, &tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if !tombstone.Retired {
+		t.Fatalf("entry = %+v, want retirement tombstone", tombstone)
+	}
+	if entries := journal.load(); len(entries) != 0 {
+		t.Fatalf("load returned retired jobs = %+v", entries)
+	}
+
+	blocked.Store(false)
+	waitFor(t, time.Second, func() bool {
+		_, err := os.Stat(journal.path(event.ProjectID, event.IID))
+		return errors.Is(err, fs.ErrNotExist)
+	})
 }
 
 func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {
