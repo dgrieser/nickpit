@@ -19,12 +19,16 @@ func newTestGroupSet(t *testing.T, cfgs []config.ServeGroup) *GroupSet {
 }
 
 // newTestGroupSetWithURL builds a one-group set whose client points at a test
-// server.
+// server. The bot user id resolves to fakeBotUserID, matching the user the
+// fake GitLab attributes awards to, so revokes exercise the user-filtered path
+// (revoking by name alone is refused — see gitlab.ReplaceMREmoji).
 func newTestGroupSetWithURL(t *testing.T, baseURL string) *GroupSet {
 	t.Helper()
 	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t", WebhookSecret: "s"},
-	}, baseURL, nil)
+	}, baseURL, func(ctx context.Context, client *gitlab.Client) (int, error) {
+		return fakeBotUserID, nil
+	})
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %v", warnings)
 	}
@@ -142,5 +146,23 @@ func TestNewGroupSetBotLookupFailureIsWarning(t *testing.T) {
 	}
 	if set.Match("platform/api") == nil {
 		t.Fatal("group must still be usable without bot id")
+	}
+}
+
+func TestNewGroupSetRejectsInvalidBotID(t *testing.T) {
+	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
+		return 0, nil
+	}
+	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
+		{Path: "platform", Token: "t", WebhookSecret: "s"},
+	}, "https://gitlab.example.com", lookup)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want invalid-id warning", warnings)
+	}
+	if set.Match("platform/api").BotUserID != 0 {
+		t.Fatal("invalid bot id must not be installed")
+	}
+	if set.BotIDs()[0] {
+		t.Fatal("invalid bot id must not enter the loop guard")
 	}
 }

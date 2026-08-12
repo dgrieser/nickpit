@@ -122,6 +122,13 @@ func (r *ExecRunner) childEnv(token, baseURL string) []string {
 }
 
 func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, error) {
+	for _, arg := range spec.ExtraArgs {
+		switch arg {
+		case "--", "--help", "-h":
+			return -1, "", fmt.Errorf("review extra args must not contain %q", arg)
+		}
+	}
+
 	logPath, logFile, err := createChildLog("review", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
 	if err != nil {
 		return -1, "", err
@@ -143,11 +150,15 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	})
 	defer func() { _ = stream.Close() }()
 
-	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID), "--publish"}
+	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID)}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
 	}
 	args = append(args, spec.ExtraArgs...)
+	// Keep delivery requirements after operator-provided extra args so an
+	// accidental --publish=false or --require-publish=false cannot make a
+	// warning-only child exit look like successful delivery to the daemon.
+	args = append(args, "--publish", "--require-publish")
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

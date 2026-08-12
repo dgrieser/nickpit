@@ -13,6 +13,15 @@ review_concurrency: 2
 # How long running reviews may finish after SIGTERM before being terminated.
 shutdown_grace: "10m"
 
+# Directory journaling accepted-but-unfinished review jobs (one small JSON file
+# per MR), so a restart — crash, upgrade — resumes them and every acknowledged
+# command comment still gets its outcome reaction. Empty ("") disables the
+# journal; queued jobs then have their ack reaction revoked at shutdown and are
+# lost. Put it on durable storage (a mounted volume) to survive pod replacement;
+# directory must not be writable by group or other users.
+# state_dir: "/var/lib/nickpit/state"
+state_dir: ""
+
 # GitLab instance the webhooks come from and the reviews are posted to.
 gitlab_base_url: "https://gitlab.example.com"
 
@@ -22,14 +31,24 @@ topic: "nickpit"
 # Awarding this emoji on an MR requests a review (any project, drafts too).
 trigger_emoji: "nickpit"
 
-# Emoji the daemon awards on the MR when a review starts ("" disables).
+# Emoji the daemon awards on the MR while a review runs ("" disables).
 start_emoji: "eyes"
 
 # Keyword for MR comment commands: /<keyword> review|abort|status|help.
 command_keyword: "nickpit"
 
 # Emoji the daemon awards on a command comment to acknowledge it ("" disables).
-ack_emoji: "white_check_mark"
+ack_emoji: "eyes"
+
+# Emoji the daemon awards on an abort command comment ("" disables).
+abort_emoji: "stop_button"
+
+# Emoji that REPLACE start_emoji/ack_emoji when the review ends: done_emoji when
+# it landed, fail_emoji when it did not (a failed run, or an MR that turned out
+# not to be reviewable). "" only revokes the in-progress emoji. An aborted review
+# gets neither — nothing went wrong.
+done_emoji: "white_check_mark"
+fail_emoji: "x"
 
 # Optional second YAML file whose top-level `groups:` list (same shape as
 # below) is appended to the inline groups — lets the group inventory live

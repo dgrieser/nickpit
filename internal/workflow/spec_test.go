@@ -176,6 +176,7 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 	}
 	if parallel == nil {
 		t.Fatal("expected a parallel reviewer group")
+		return
 	}
 	if len(parallel.Parallel) != len(ReviewVectorIDs) {
 		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))

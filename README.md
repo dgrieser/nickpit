@@ -477,7 +477,9 @@ Triggers:
   - `/nickpit status` — reply with the MR's review state
   - `/nickpit help` — reply with the command list
 
-When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables). Command comments are acknowledged with a reaction emoji (default `:white_check_mark:`, `ack_emoji: ""` disables); `status`, `help`, and `abort` also get a comment reply, threaded under the command.
+  The command must be the comment's first non-blank line; anything after it on that line is ignored, so `/nickpit review please` works like `/nickpit review`. A bare `/nickpit` replies with the command list. A command quoted further down a comment is deliberately not executed.
+
+Reactions track the review: when it starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables), and a `/nickpit review` comment gets the same acknowledgement on the comment itself (default `:eyes:`, `ack_emoji: ""` disables). When the review ends, both are **replaced** by its outcome — `done_emoji` (default `:white_check_mark:`) once it landed, `fail_emoji` (default `:x:`) when it could not be delivered (a failed run, or an MR that turned out not to be reviewable, e.g. closed meanwhile). An aborted review only loses the in-progress reaction: nothing went wrong. Set an outcome emoji to `""` to only revoke instead. Because the outcome replaces the in-progress reaction, `start_emoji: ""` leaves the MR undecorated end to end. `/nickpit abort` is acknowledged with `abort_emoji` (default `:stop_button:`), and `status`, `help`, and `abort` also get a comment reply, threaded under the command.
 
 - **Discussion (chat)**: reply in a thread NickPit started — under a finding's comment or the summary — and the daemon answers in-thread with the discussion agent, no keyword needed. Like reviews, each reply runs as a separate `nickpit chat` child process (the daemon itself never loads the LLM), which reassembles the review from the hidden markers on the MR, rebuilds the diff from the current MR, and posts the answer threaded (a reply under a finding is focused on that finding; under the summary it is about the whole review). The whole conversation lives in the MR thread, so it survives daemon restarts. The same `nickpit chat --gitlab --url <MR> --reply-discussion <id>` is runnable from the terminal.
 
@@ -508,24 +510,38 @@ Docker compose example:
 
 ```yaml
 services:
+  state-init:
+    image: busybox:1.37
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /state/journal && chown 65532:65532 /state/journal && chmod 0700 /state/journal"]
+    volumes:
+      - nickpit-state:/state
+
   nickpit:
     image: nickpit
     command: ["gitlab", "serve"]
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     volumes:
       - ./nickpit.yaml:/work/.nickpit.yaml:ro
       - ./server.yaml:/work/server.yaml:ro
       - nickpit-logs:/work/logs
+      - nickpit-state:/work/state    # use state_dir: "/work/state/journal"
     environment:
       OPENROUTER_API_KEY: "..."
       NICKPIT_GL_TOKEN_PLATFORM: "..."
       NICKPIT_GL_SECRET_PLATFORM: "..."
 volumes:
   nickpit-logs:
+  nickpit-state:
 ```
 
-Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command).
+Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints.
+
+The queue lives in memory, with an optional on-disk journal: set `state_dir` (or `--state-dir`) and every accepted-but-unfinished review job is persisted as a small JSON file (no tokens — groups are re-resolved from the config) and resumed at the next start, so a restart or upgrade neither loses queued reviews nor strands the in-progress reaction on acknowledged command comments. The state directory must be owned by the daemon user and must not be writable by group or other users; NickPit creates a missing directory with mode `0700` and rejects an existing shared-writable directory. Docker named-volume roots start as `root`, so the Compose init service above creates a private UID-65532-owned child for `state_dir`. The journal survives exactly as long as its directory does — put it on durable storage (a volume, a PVC) to cover pod replacement. Without a `state_dir`, queued jobs release their ack reactions at shutdown and are lost; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command) again.
 
 ## Tuning a Review
 

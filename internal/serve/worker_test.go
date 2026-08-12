@@ -4,9 +4,15 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // newWorkerEnv builds a dispatcher whose fake GitLab state the test controls,
@@ -24,12 +30,19 @@ func newWorkerEnv(t *testing.T, fake *fakeGitLab, cfg WorkerConfig) (*Dispatcher
 	if cfg.LogDir == "" {
 		cfg.LogDir = t.TempDir()
 	}
-	dispatcher := NewDispatcher(runner, topics, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dispatcher := NewDispatcher(runner, topics, nil, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return dispatcher, runner, group
 }
 
 func workerCfg() WorkerConfig {
-	return WorkerConfig{Topic: "nickpit", StartEmoji: "eyes"}
+	return WorkerConfig{
+		Topic:        "nickpit",
+		TriggerEmoji: "nickpit",
+		StartEmoji:   "eyes",
+		AckEmoji:     "eyes",
+		DoneEmoji:    "white_check_mark",
+		FailEmoji:    "x",
+	}
 }
 
 func TestWorkerTopicMissNoRun(t *testing.T) {
@@ -39,8 +52,47 @@ func TestWorkerTopicMissNoRun(t *testing.T) {
 	if len(runner.ran()) != 0 {
 		t.Fatal("review must not run without opt-in topic")
 	}
-	if len(fake.awarded()) != 0 {
-		t.Fatal("no emoji must be awarded without opt-in topic")
+	// awardPosted, not awarded: an award revoked again at settle time would
+	// leave the live view empty, yet the daemon must not have decorated (and
+	// notified every watcher of) an MR it skipped, even transiently.
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none without opt-in topic", posted)
+	}
+}
+
+// Taking a job must not make a live worker settle an MR it rejects before
+// attempting the start reaction.
+func TestWorkerTakeDoesNotDecorateSkippedAuto(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		topics []string
+		draft  bool
+	}{
+		{name: "not opted in", topics: []string{"go"}},
+		{name: "draft", topics: []string{"nickpit"}, draft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGitLab{topics: tc.topics, state: "opened", draft: tc.draft, headSHA: "sha-1"}
+			dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+			event := autoEvent(7, "sha-1", group)
+			if !dispatcher.Enqueue(event) {
+				t.Fatal("event must be accepted")
+			}
+			key := <-dispatcher.queue
+			taken, ctx, ok := dispatcher.take(key)
+			if !ok {
+				t.Fatal("queued event must be taken")
+			}
+			result := dispatcher.process(ctx, taken)
+			dispatcher.finish(key, result)
+
+			if len(runner.ran()) != 0 {
+				t.Fatal("skipped review must not run")
+			}
+			if posted := fake.awardPosted(); len(posted) != 0 {
+				t.Fatalf("award posts = %v, want none for skipped auto review", posted)
+			}
+		})
 	}
 }
 
@@ -88,8 +140,11 @@ func TestWorkerDraftRecheckSkipsAutoNotManual(t *testing.T) {
 	}
 }
 
+// The outcome emoji REPLACES the start emoji, so disabling the start emoji
+// leaves the MR undecorated end to end — no outcome reaction either.
 func TestWorkerStartEmojiDisabled(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 0, "x")
 	cfg := workerCfg()
 	cfg.StartEmoji = ""
 	dispatcher, runner, group := newWorkerEnv(t, fake, cfg)
@@ -97,8 +152,413 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	if len(runner.ran()) != 1 {
 		t.Fatal("review must run")
 	}
-	if len(fake.awarded()) != 0 {
-		t.Fatalf("awards = %v, want none when start_emoji disabled", fake.awarded())
+	// awardPosted, not awarded: even an award revoked again at settle time
+	// would have decorated the MR transiently and must fail this test.
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none when start_emoji disabled", posted)
+	}
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, want stale outcome revoked", awards)
+	}
+	if revoked := fake.revokedNames(); !slices.Contains(revoked, "x") {
+		t.Fatalf("revoked = %v, want stale outcome revoked", revoked)
+	}
+}
+
+func TestWorkerStartEmojiDisabledRetainsFailedCleanup(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.emojiFailures.Store(2) // start-time revoke and settle-time retry
+	cfg := workerCfg()
+	cfg.StartEmoji = ""
+	dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+
+	result := dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if result.settled || !result.event.SettleMR || len(result.event.StartEmojis) != 0 {
+		t.Fatalf("result = %+v, want durable revoke-only MR cleanup", result)
+	}
+	dispatcher.cfg.StartEmoji = "eyes" // retry after a configuration change
+	remaining := dispatcher.settleReactionCleanup(context.Background(), reactionCleanup{
+		event: result.event, outcome: result.outcome,
+	}, discardLogger())
+	if cleanupHasReactions(remaining) {
+		t.Fatalf("remaining cleanup = %+v, want retry success", remaining)
+	}
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, revoke-only cleanup must survive config change", awards)
+	}
+}
+
+func TestWorkerUnresolvedBotIDDisablesManagedReactions(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	group.BotUserID = 0
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 1 {
+		t.Fatal("review must still run for a defensive direct caller")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none without bot identity", posted)
+	}
+}
+
+// commandEvent is a manual event that came from a "/<keyword> review" comment,
+// whose note already wears the ack emoji.
+func commandEvent(iid int, sha string, group *Group, noteID int) Event {
+	event := autoEvent(iid, sha, group)
+	event.Kind = TriggerManual
+	event.AckNoteIDs = []int{noteID}
+	return event
+}
+
+func TestWorkerTerminalMissingNoteDoesNotBlockPendingReview(t *testing.T) {
+	fake := &fakeGitLab{
+		topics:         []string{"nickpit"},
+		state:          "opened",
+		headSHA:        "sha-1",
+		missingNoteIDs: map[int]bool{302: true},
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	event := commandEvent(7, "sha-1", group, 301)
+	event.AckNoteIDs = append(event.AckNoteIDs, 302)
+	if !dispatcher.Enqueue(event) {
+		t.Fatal("initial event was not accepted")
+	}
+	key := <-dispatcher.queue
+	taken, ctx, ok := dispatcher.take(key)
+	if !ok {
+		t.Fatal("initial event could not be taken")
+	}
+	result := dispatcher.process(ctx, taken)
+	if !result.settled || len(result.event.AckNoteIDs) != 0 {
+		t.Fatalf("result = %+v, missing note must be retired as terminal", result)
+	}
+	if awards := fake.awardedOn(7, 301); !slices.Equal(awards, []string{"white_check_mark"}) {
+		t.Fatalf("successful note awards = %v, want done outcome", awards)
+	}
+
+	// A newer request accepted before finish must be promoted immediately; a
+	// terminal target cannot leave the MR stuck in cleanup.
+	if !dispatcher.Enqueue(autoEvent(7, "sha-2", group)) {
+		t.Fatal("pending event was not accepted")
+	}
+	dispatcher.finish(key, result)
+	select {
+	case next := <-dispatcher.queue:
+		if next != key {
+			t.Fatalf("queued key = %+v, want %+v", next, key)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending review remained blocked after terminal cleanup result")
+	}
+}
+
+func TestWorkerCleanupRetriesOnlyUnresolvedTargets(t *testing.T) {
+	failedPath := "/api/v4/projects/42/merge_requests/7/notes/302/award_emoji"
+	fake := &fakeGitLab{
+		topics:            []string{"nickpit"},
+		state:             "opened",
+		headSHA:           "sha-1",
+		emojiFailurePaths: map[string]int{failedPath: 1},
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+	fake.preAward(7, 302, "eyes")
+	event := commandEvent(7, "sha-1", group, 301)
+	event.AckNoteIDs = append(event.AckNoteIDs, 302)
+	result := dispatcher.process(context.Background(), event)
+	if result.settled || !slices.Equal(result.event.AckNoteIDs, []int{302}) || len(result.event.StartEmojis) != 0 {
+		t.Fatalf("result = %+v, want only transiently failed note 302", result)
+	}
+	remaining := dispatcher.settle(context.Background(), result.event,
+		reactions{notes: result.event.AckNoteIDs}, result.outcome, discardLogger())
+	if hasReactions(remaining) {
+		t.Fatalf("retry remaining = %+v, want fully settled", remaining)
+	}
+
+	posts := fake.posted()
+	countDone := func(pathSuffix string) int {
+		count := 0
+		for _, post := range posts {
+			if strings.HasSuffix(post.Path, pathSuffix) && post.Body["name"] == "white_check_mark" {
+				count++
+			}
+		}
+		return count
+	}
+	if got := countDone("/merge_requests/7/award_emoji"); got != 1 {
+		t.Fatalf("MR done posts = %d, want 1", got)
+	}
+	if got := countDone("/notes/301/award_emoji"); got != 1 {
+		t.Fatalf("successful note done posts = %d, want 1", got)
+	}
+}
+
+// GitLab rejects invalid or unsupported configured outcome emoji before the
+// replacement can revoke the in-progress marker. Settlement must degrade to a
+// revoke-only operation and retire the target instead of leaving eyes forever.
+func TestWorkerRejectedOutcomeRevokesInProgressEmoji(t *testing.T) {
+	for _, status := range []int{400, 422} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			cfg := workerCfg()
+			cfg.DoneEmoji = "unsupported-outcome"
+			fake := &fakeGitLab{
+				topics:            []string{"nickpit"},
+				state:             "opened",
+				headSHA:           "sha-1",
+				emojiPostStatuses: map[string]int{cfg.DoneEmoji: status},
+			}
+			dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+			fake.preAward(7, 301, "eyes")
+
+			result := dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+			if !result.settled || hasReactions(reactions{
+				mr:    len(result.event.StartEmojis) > 0,
+				notes: result.event.AckNoteIDs,
+			}) {
+				t.Fatalf("result = %+v, want rejected outcome settled by revoke", result)
+			}
+			if awards := fake.awarded(); len(awards) != 0 {
+				t.Fatalf("live awards = %v, want in-progress markers revoked", awards)
+			}
+			if revoked := fake.revokedNames(); !slices.Equal(revoked, []string{"eyes", "eyes"}) {
+				t.Fatalf("revoked = %v, want MR and command markers", revoked)
+			}
+		})
+	}
+}
+
+func TestTerminalReactionTargetErrorKeepsForbiddenRetryable(t *testing.T) {
+	tests := []struct {
+		status   int
+		terminal bool
+	}{
+		{status: 404, terminal: true},
+		{status: 410, terminal: true},
+		{status: 400, terminal: false},
+		{status: 422, terminal: false},
+		{status: 403, terminal: false},
+		{status: 429, terminal: false},
+		{status: 500, terminal: false},
+	}
+	for _, test := range tests {
+		err := &gitlab.APIError{Status: test.status}
+		if got := terminalReactionTargetError(err); got != test.terminal {
+			t.Errorf("status %d terminal = %v, want %v", test.status, got, test.terminal)
+		}
+	}
+}
+
+func TestWorkerFailedRunAwardsFailEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.exit = 1
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("MR awards = %v, want the fail emoji", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the start emoji", revoked)
+	}
+}
+
+// An abort is the user withdrawing the request, not a failure: the in-progress
+// reaction goes away and nothing takes its place.
+func TestWorkerAbortedRunOnlyRevokesStartEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.gate = make(chan struct{}) // never released; only ctx cancel frees it
+
+	ctx, cancel := context.WithCancel(dispatcher.jobCtx)
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(ctx, commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	fake.preAward(7, 301, "eyes")
+	cancel()
+	<-done
+
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want none after an abort", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 2 {
+		t.Fatalf("revoked = %v, want the MR and the note marker", revoked)
+	}
+}
+
+// The comment that asked for the review shows how it ended, on the note itself.
+func TestWorkerCommandNoteReactionFollowsOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit int
+		want string
+	}{
+		{"landed", 0, "white_check_mark"},
+		{"failed", 1, "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+			dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+			runner.exit = tc.exit
+			fake.preAward(7, 301, "eyes")
+
+			dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+			if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != tc.want {
+				t.Fatalf("note awards = %v, want %q", awards, tc.want)
+			}
+			if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != tc.want {
+				t.Fatalf("MR awards = %v, want %q", awards, tc.want)
+			}
+		})
+	}
+}
+
+// A review command the worker then rules out (the MR closed meanwhile) must not
+// leave the comment reading as "in progress" forever.
+func TestWorkerSkippedCommandGetsFailEmoji(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "merged", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+
+	dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+	if len(runner.ran()) != 0 {
+		t.Fatal("merged MR must not run")
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("note awards = %v, want the fail emoji", awards)
+	}
+	// The MR was never marked in progress, so it is left untouched.
+	if awards := fake.awardedOn(7, 0); len(awards) != 0 {
+		t.Fatalf("MR awards = %v, want none", awards)
+	}
+}
+
+// A re-review must not stack outcomes: awarding the start emoji clears whatever
+// the previous run left behind.
+func TestWorkerRerunClearsPreviousOutcome(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+
+	runner.exit = 1
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "x" {
+		t.Fatalf("MR awards after failure = %v, want the fail emoji", awards)
+	}
+
+	runner.exit = 0
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("MR awards after retry = %v, want the done emoji only", awards)
+	}
+}
+
+// Cleanup is based on reactions owned by the bot, not only names in the current
+// config. A restart with changed outcome names must not leave old success next
+// to new failure, even when no state journal survives the restart.
+func TestWorkerRerunClearsOutcomeFromPreviousConfig(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 0, "nickpit") // bot-triggered review; cleanup must preserve it
+
+	oldCfg := workerCfg()
+	oldCfg.DoneEmoji = "old-done"
+	oldDispatcher, _, oldGroup := newWorkerEnv(t, fake, oldCfg)
+	oldDispatcher.process(context.Background(), autoEvent(7, "sha-1", oldGroup))
+	if awards := fake.awardedOn(7, 0); len(awards) != 2 || awards[0] != "nickpit" || awards[1] != "old-done" {
+		t.Fatalf("MR awards after old config = %v, want trigger and old success", awards)
+	}
+
+	newCfg := workerCfg()
+	newCfg.DoneEmoji = "new-done"
+	newCfg.FailEmoji = "new-fail"
+	newDispatcher, runner, newGroup := newWorkerEnv(t, fake, newCfg)
+	runner.exit = 1
+	newDispatcher.process(context.Background(), autoEvent(7, "sha-1", newGroup))
+
+	if awards := fake.awardedOn(7, 0); len(awards) != 2 || awards[0] != "nickpit" || awards[1] != "new-fail" {
+		t.Fatalf("MR awards after config change = %v, want trigger and current failure only", awards)
+	}
+}
+
+// An abort landing while the pre-run MR status check is in flight is still the
+// user's abort, not a failure: the note loses its ack and gets no outcome.
+func TestWorkerAbortDuringStatusCheckIsNotAFailure(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", statusGate: make(chan struct{})}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	fake.preAward(7, 301, "eyes")
+
+	ctx, cancel := context.WithCancel(dispatcher.jobCtx)
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(ctx, commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return fake.statusArrived.Load() == 1 })
+	cancel()
+	<-done
+	close(fake.statusGate) // release the parked fake handler
+
+	if len(runner.ran()) != 0 {
+		t.Fatal("aborted job must not run")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none: an abort is not a failure", posted)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the note ack released", revoked)
+	}
+}
+
+// Settle removes a stale outcome a previous run left behind: the review-start
+// replace only cleans it up when its own call succeeds, and a redelivered
+// command note never gets a start-time cleanup at all — without this, the MR
+// or note would wear the old and the new outcome side by side.
+func TestWorkerSettleClearsStaleOutcome(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.gate = make(chan struct{})
+	fake.preAward(7, 301, "eyes")
+
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(context.Background(), commandEvent(7, "sha-1", group, 301))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	// Leftovers the start-time cleanup missed, appearing mid-run.
+	fake.preAward(7, 0, "x")
+	fake.preAward(7, 301, "x")
+	close(runner.gate)
+	<-done
+
+	if awards := fake.awardedOn(7, 0); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("MR awards = %v, want the stale outcome replaced by the done emoji", awards)
+	}
+	if awards := fake.awardedOn(7, 301); len(awards) != 1 || awards[0] != "white_check_mark" {
+		t.Fatalf("note awards = %v, want the stale outcome replaced by the done emoji", awards)
+	}
+}
+
+// Every emoji off: the daemon must then touch no reactions at all, and in
+// particular must not list or revoke reactions it never placed.
+func TestWorkerOutcomeEmojiDisabled(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	cfg := workerCfg()
+	cfg.DoneEmoji = ""
+	cfg.FailEmoji = ""
+	dispatcher, _, group := newWorkerEnv(t, fake, cfg)
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	// The start emoji is still revoked when the review ends: it means
+	// "in progress", and the review is not.
+	if awards := fake.awarded(); len(awards) != 0 {
+		t.Fatalf("awards = %v, want none", awards)
+	}
+	if revoked := fake.revokedNames(); len(revoked) != 1 || revoked[0] != "eyes" {
+		t.Fatalf("revoked = %v, want the start emoji", revoked)
 	}
 }
 
@@ -161,6 +621,97 @@ func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
 	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
 		t.Fatal("aborted run must not mark the SHA reviewed")
 	}
+}
+
+// Root shutdown may expire after the child has successfully delivered but
+// while Run is still draining output. The completed review must win over the
+// late cancellation so its durable job is retired instead of replayed.
+func TestWorkerSuccessfulRunWinsOverShutdownDuringLogDrain(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	server := httptest.NewServer(fake.handler())
+	t.Cleanup(server.Close)
+	group := newTestGroupSetWithURL(t, server.URL).Match("platform/api")
+	runner := &successfulDrainingRunner{childExited: make(chan struct{})}
+	cfg := workerCfg()
+	cfg.BaseURL = server.URL
+	cfg.LogDir = t.TempDir()
+	dispatcher := NewDispatcher(runner, TopicLookup(GitLabTopicLookup), nil, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	done := make(chan settlementResult)
+	go func() {
+		done <- dispatcher.process(dispatcher.jobCtx, autoEvent(7, "sha-1", group))
+	}()
+	<-runner.childExited
+	dispatcher.jobCancel()
+	result := <-done
+
+	if result.outcome != outcomeDone || result.resume {
+		t.Fatalf("result = %+v, want completed non-resumable review", result)
+	}
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("successful review must mark the SHA reviewed")
+	}
+}
+
+type successfulDrainingRunner struct {
+	childExited chan struct{}
+}
+
+func (r *successfulDrainingRunner) Run(ctx context.Context, _ ReviewSpec) (int, string, error) {
+	close(r.childExited)
+	<-ctx.Done()
+	return 0, "fake.log", nil
+}
+
+// A cancelled start-reaction request can still commit after abort settlement
+// listed no marker. Durable cleanup must retain the MR through a final sweep.
+func TestWorkerAmbiguousStartReactionGetsLateCleanup(t *testing.T) {
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(closeGate)
+	fake := &fakeGitLab{
+		topics:        []string{"nickpit"},
+		state:         "opened",
+		headSHA:       "sha-1",
+		emojiPostGate: gate,
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.startReactionUncertaintyWindow = 150 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dispatcher.Start(ctx, 1)
+	t.Cleanup(func() {
+		cancel()
+		dispatcher.Shutdown(time.Second)
+	})
+	if !dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("event must be accepted")
+	}
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiPostArrived.Load() == 1 })
+	if outcome := dispatcher.Abort(42, 7); !outcome.Found || !outcome.Running {
+		t.Fatalf("abort outcome = %+v, want running review", outcome)
+	}
+
+	key := jobKey{ProjectID: 42, IID: 7}
+	waitFor(t, 3*time.Second, func() bool {
+		dispatcher.mu.Lock()
+		defer dispatcher.mu.Unlock()
+		state := dispatcher.states[key]
+		return state != nil && state.status == stateCleanup && dispatcher.running == 0 &&
+			state.cleanup != nil && !state.cleanup.event.StartCleanupUntil.IsZero()
+	})
+
+	// Original POST commits only after initial abort settlement already finished.
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		return slices.Contains(fake.awardedOn(7, 0), "eyes")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		dispatcher.mu.Lock()
+		_, exists := dispatcher.states[key]
+		dispatcher.mu.Unlock()
+		return !exists && len(fake.awardedOn(7, 0)) == 0
+	})
 }
 
 func TestDispatcherShutdownGraceKillsChild(t *testing.T) {

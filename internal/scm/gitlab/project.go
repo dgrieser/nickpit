@@ -2,7 +2,6 @@ package gitlab
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
 
@@ -39,18 +38,4 @@ func (c *Client) CurrentUser(ctx context.Context) (*User, error) {
 		return nil, err
 	}
 	return &user, nil
-}
-
-// AwardMREmoji awards an emoji reaction on a merge request. Any 4xx response
-// is treated as success: GitLab rejects double-awards by the same user (and
-// the exact status varies across versions), and a missing award must never
-// fail the review that triggered it.
-func (c *Client) AwardMREmoji(ctx context.Context, projectID, iid int, name string) error {
-	path := fmt.Sprintf("/projects/%d/merge_requests/%d/award_emoji", projectID, iid)
-	err := c.Post(ctx, path, map[string]string{"name": name}, nil)
-	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
-		return nil
-	}
-	return err
 }

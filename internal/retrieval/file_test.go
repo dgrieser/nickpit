@@ -535,6 +535,7 @@ func TestFindLinesInNilContent(t *testing.T) {
 	got := FindLinesIn(nil, " \nneedle\n ")
 	if got == nil {
 		t.Fatal("FindLinesIn returned nil")
+		return
 	}
 	if got.Code != " \nneedle\n " {
 		t.Fatalf("code = %q, want the specified code preserved", got.Code)

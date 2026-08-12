@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -63,7 +64,7 @@ func TestExecRunnerInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := string(data)
-	if !strings.Contains(log, "args:gitlab mr --repo platform/api --id 7 --publish --config .nickpit.yaml --profile default") {
+	if !strings.Contains(log, "args:gitlab mr --repo platform/api --id 7 --config .nickpit.yaml --profile default --publish --require-publish") {
 		t.Fatalf("argv wrong:\n%s", log)
 	}
 	if !strings.Contains(log, "token:group-token") || !strings.Contains(log, "base_url:https://gitlab.example.com") {
@@ -71,6 +72,24 @@ func TestExecRunnerInvocation(t *testing.T) {
 	}
 	if !strings.Contains(filepath.Base(logPath), "review-platform-api-7-") {
 		t.Fatalf("log name = %s", filepath.Base(logPath))
+	}
+}
+
+func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
+	for _, arg := range []string{"--", "--help", "-h"} {
+		t.Run(arg, func(t *testing.T) {
+			runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+			spec := testSpec(t)
+			spec.ExtraArgs = []string{"--profile", "default", arg}
+
+			exitCode, logPath, err := runner.Run(context.Background(), spec)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("must not contain %q", arg)) {
+				t.Fatalf("err = %v, want %q rejection", err, arg)
+			}
+			if exitCode != -1 || logPath != "" {
+				t.Fatalf("result = (%d, %q), want rejection before child launch", exitCode, logPath)
+			}
+		})
 	}
 }
 

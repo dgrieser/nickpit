@@ -79,6 +79,13 @@ exactly one per group.
 {{- end -}}
 listen: {{ .Values.serve.listen | quote }}
 log_dir: {{ .Values.serve.logDir | quote }}
+{{- if and .Values.persistence.enabled .Values.serve.stateDir }}
+# PVC root can be group-writable through fsGroup. Keep journal files in a
+# process-owned private child created by the daemon with mode 0700.
+state_dir: {{ printf "%s/journal" (trimSuffix "/" (clean .Values.serve.stateDir)) | quote }}
+{{- else }}
+state_dir: {{ .Values.serve.stateDir | quote }}
+{{- end }}
 review_concurrency: {{ .Values.serve.reviewConcurrency }}
 shutdown_grace: {{ .Values.serve.shutdownGrace | quote }}
 gitlab_base_url: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
@@ -88,6 +95,12 @@ start_emoji: {{ .Values.serve.startEmoji | quote }}
 command_keyword: {{ .Values.serve.commandKeyword | quote }}
 ack_emoji: {{ .Values.serve.ackEmoji | quote }}
 abort_emoji: {{ .Values.serve.abortEmoji | quote }}
+{{- if ne .Values.serve.doneEmoji "white_check_mark" }}
+done_emoji: {{ .Values.serve.doneEmoji | quote }}
+{{- end }}
+{{- if ne .Values.serve.failEmoji "x" }}
+fail_emoji: {{ .Values.serve.failEmoji | quote }}
+{{- end }}
 {{- if .Values.serve.groupsSecretKey }}
 groups_file: "/etc/nickpit/groups.yaml"
 {{- end }}

@@ -40,10 +40,14 @@ func TestAwardNoteEmoji(t *testing.T) {
 }
 
 func TestAwardNoteEmojiToleratesAlreadyAwarded(t *testing.T) {
-	server, _, _ := recordingServer(t, http.StatusNotFound)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Award Emoji Name has already been taken"}`))
+	}))
+	defer server.Close()
 	client := NewClient(server.URL, "token")
 	if err := client.AwardNoteEmoji(context.Background(), 42, 7, 314, "white_check_mark"); err != nil {
-		t.Fatalf("expected nil on 4xx, got %v", err)
+		t.Fatalf("expected nil for duplicate award, got %v", err)
 	}
 }
 

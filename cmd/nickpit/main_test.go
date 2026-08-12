@@ -1966,6 +1966,58 @@ func TestEmitResultStampsVersionForOutputAndSession(t *testing.T) {
 	}
 }
 
+type failingReviewPublisher struct {
+	err error
+}
+
+func (f failingReviewPublisher) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return nil, nil
+}
+
+func (f failingReviewPublisher) PublishReview(context.Context, model.ReviewRequest, *model.ReviewResult) error {
+	return f.err
+}
+
+// Terminal use keeps a completed review usable when publishing fails, while a
+// serve child must turn the same failure into a non-zero exit so the daemon
+// cannot report successful delivery.
+func TestEmitResultRequirePublishControlsDeliveryFailure(t *testing.T) {
+	publishErr := errors.New("gitlab returned 503")
+	for _, tc := range []struct {
+		name           string
+		requirePublish bool
+		wantErr        bool
+	}{
+		{name: "interactive warning", requirePublish: false, wantErr: false},
+		{name: "serve delivery failure", requirePublish: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &app{
+				requirePublish: tc.requirePublish,
+				noSession:      true,
+				jsonOutput:     true,
+				logger:         logging.New(io.Discard, false, false),
+			}
+			req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "platform/api", Identifier: 7, PostReview: true}
+			result := &model.ReviewResult{OverallExplanation: "Review completed."}
+
+			var err error
+			captureStdout(t, func() {
+				err = a.emitResult(context.Background(), failingReviewPublisher{err: publishErr}, config.Profile{}, req, result, nil, "")
+			})
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("emitResult error = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, publishErr) {
+				t.Fatalf("emitResult error = %v, want wrapped publish error", err)
+			}
+			if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], publishErr.Error()) {
+				t.Fatalf("warnings = %v, want publish failure", result.Warnings)
+			}
+		})
+	}
+}
+
 // The logger every command logs through carries the flags AND the version, so a
 // new command cannot forget to name its build.
 func TestNewLoggerCarriesFlagsAndVersion(t *testing.T) {

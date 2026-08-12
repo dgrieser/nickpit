@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
+	gitlab "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
@@ -71,17 +73,22 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
+	// The bot user id resolves to fakeBotUserID so ack revokes pass the
+	// own-award filter (revoking by name alone is refused by the client).
 	set, _ := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t1", WebhookSecret: "hook-secret"},
 		{Path: "platform/legacy", Token: "t2", WebhookSecret: "legacy-secret"},
-	}, server.URL, nil)
+	}, server.URL, func(ctx context.Context, client *gitlab.Client) (int, error) {
+		return fakeBotUserID, nil
+	})
 	lookup := &countingTopicLookup{}
-	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	// The handler reads the review ack emoji from the dispatcher's config —
+	// the same name its workers revoke at settle time.
+	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), nil, WorkerConfig{Topic: "nickpit", AckEmoji: "white_check_mark"}, discardLogger())
 	chat := newFakeChatRunner()
 	handler := NewHandler(set, dispatcher, HandlerConfig{
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
-		AckEmoji:       "white_check_mark",
 		AbortEmoji:     "stop_button",
 	}, chat, ChatConfig{ConfigPath: "cfg.yaml", BaseURL: "https://gl.example"}, discardLogger())
 	return &handlerEnv{
@@ -125,9 +132,8 @@ func postWebhookBody(t *testing.T, handler *Handler, body []byte, secret string)
 }
 
 func queuedJobs(d *Dispatcher) int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.states)
+	queued, _ := d.Stats()
+	return queued
 }
 
 func TestHandlerQueuesTrigger(t *testing.T) {
@@ -195,11 +201,85 @@ func TestHandlerCommandReview(t *testing.T) {
 	if state == nil || state.latest.Kind != TriggerManual {
 		t.Fatalf("state = %+v, want queued manual job", state)
 	}
+	// The note is handed over as acknowledged so the worker can replace the ack
+	// emoji with the review's outcome.
+	if got := state.latest.AckNoteIDs; len(got) != 1 || got[0] != 301 {
+		t.Fatalf("ack notes = %v, want the command note", got)
+	}
 	// The command note gets the acknowledgement emoji, no reply.
 	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
 	post := env.gitlab.posted()[0]
 	if post.Path != "/api/v4/projects/43/merge_requests/11/notes/301/award_emoji" || post.Body["name"] != "white_check_mark" {
 		t.Fatalf("post = %+v", post)
+	}
+}
+
+// A timed-out award can still commit in GitLab after a fast skipped review has
+// already published its outcome. A later settlement pass must sweep that late
+// in-progress reaction instead of leaving both reactions on the note.
+func TestHandlerCommandReviewTimedOutAckGetsLateCleanup(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.ackRequestTimeout = 20 * time.Millisecond
+	env.handler.ackUncertaintyWindow = 200 * time.Millisecond
+	env.dispatcher.cfg.FailEmoji = "thumbsdown"
+	env.gitlab.state = "closed"
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	defer closeGate()
+	env.gitlab.emojiPostGate = gate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	env.dispatcher.Start(ctx, 1)
+	defer func() {
+		cancel()
+		env.dispatcher.Shutdown(time.Second)
+	}()
+
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", recorder.Code)
+	}
+	if env.gitlab.emojiPostArrived.Load() != 1 {
+		t.Fatal("acknowledgement POST did not reach delayed server handler")
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown")
+	})
+
+	// Let the original, already-cancelled POST commit after outcome settlement.
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown") && slices.Contains(awards, "white_check_mark")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		awards := env.gitlab.awardedOn(11, 301)
+		return slices.Contains(awards, "thumbsdown") && !slices.Contains(awards, "white_check_mark")
+	})
+}
+
+// Managed review reactions are disabled without a resolved bot identity: the
+// worker could not safely revoke them later. The review itself still queues for
+// defensive direct callers; production startup rejects this configuration.
+func TestHandlerCommandReviewWithoutBotIDDoesNotAcknowledge(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 0
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", recorder.Code)
+	}
+	env.dispatcher.mu.Lock()
+	state := env.dispatcher.states[jobKey{ProjectID: 43, IID: 11}]
+	env.dispatcher.mu.Unlock()
+	if state == nil {
+		t.Fatal("review must still queue")
+	}
+	if len(state.latest.AckNoteIDs) != 0 || len(state.latest.AckEmojis) != 0 {
+		t.Fatalf("tracked ack = notes %v emojis %v, want none", state.latest.AckNoteIDs, state.latest.AckEmojis)
+	}
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("posts = %v, want no acknowledgement", posts)
 	}
 }
 
@@ -741,10 +821,11 @@ func TestHandlerShutdownReturns503(t *testing.T) {
 	}
 }
 
-// A review command whose enqueue is rejected must not be acknowledged with the
-// ack emoji (the emoji would claim the request was taken), and the webhook
-// must be answered with 503 so GitLab redelivers the note event.
-func TestHandlerCommandReviewQueueFullSkipsAck(t *testing.T) {
+// A review command whose enqueue is rejected must not keep the ack emoji (it
+// would claim the request was taken): the ack awarded before the enqueue is
+// revoked again, and the webhook is answered with 503 so GitLab redelivers the
+// note event (whose retry re-awards the ack).
+func TestHandlerCommandReviewQueueFullRevokesAck(t *testing.T) {
 	env := newHandlerEnv(t)
 	fillDispatcherQueue(env.dispatcher)
 	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
@@ -754,10 +835,42 @@ func TestHandlerCommandReviewQueueFullSkipsAck(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"rejected"`) {
 		t.Fatalf("body = %s, want a truthful rejected status", recorder.Body.String())
 	}
-	time.Sleep(50 * time.Millisecond)
-	if posts := env.gitlab.posted(); len(posts) != 0 {
-		t.Fatalf("posts = %v, want no ack emoji for a rejected review command", posts)
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.awardedOn(11, 301)) == 0 })
+	if revoked := env.gitlab.revokedNames(); len(revoked) != 1 || revoked[0] != "white_check_mark" {
+		t.Fatalf("revoked = %v, want the ack taken back", revoked)
 	}
+}
+
+// Enqueue rejection must retain a timed-out acknowledgement through its final
+// uncertainty sweep; an immediate revoke can miss a POST that commits later.
+func TestHandlerCommandReviewQueueFullSweepsLateTimedOutAck(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.ackRequestTimeout = 20 * time.Millisecond
+	env.handler.ackUncertaintyWindow = 150 * time.Millisecond
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(closeGate)
+	env.gitlab.emojiPostGate = gate
+	fillDispatcherQueue(env.dispatcher)
+
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 when the review cannot be queued", recorder.Code)
+	}
+	if env.gitlab.emojiPostArrived.Load() != 1 {
+		t.Fatal("acknowledgement POST did not reach delayed server handler")
+	}
+	if requests := env.gitlab.emojiGETs.Load(); requests != 0 {
+		t.Fatalf("cleanup requests before uncertainty deadline = %d, want 0", requests)
+	}
+
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		return slices.Contains(env.gitlab.awardedOn(11, 301), "white_check_mark")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		return env.gitlab.emojiGETs.Load() > 0 && len(env.gitlab.awardedOn(11, 301)) == 0
+	})
 }
 
 // Non-review commands (status, help, ...) do not need queue capacity and keep
