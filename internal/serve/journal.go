@@ -30,14 +30,15 @@ type Journal struct {
 // tokens must never land on disk — but re-resolved from the project path at
 // restore time, exactly like the webhook handler routes a delivery.
 type journalEntry struct {
-	Kind                     string `json:"kind"`
-	ProjectID                int    `json:"project_id"`
-	ProjectPath              string `json:"project_path"`
-	IID                      int    `json:"iid"`
-	HeadSHA                  string `json:"head_sha,omitempty"`
-	AckNoteIDs               []int  `json:"ack_note_ids,omitempty"`
-	UncertainAckNoteIDs      []int  `json:"uncertain_ack_note_ids,omitempty"`
-	AckCleanupUntilUnixMilli int64  `json:"ack_cleanup_until_unix_milli,omitempty"`
+	Kind                       string `json:"kind"`
+	ProjectID                  int    `json:"project_id"`
+	ProjectPath                string `json:"project_path"`
+	IID                        int    `json:"iid"`
+	HeadSHA                    string `json:"head_sha,omitempty"`
+	AckNoteIDs                 []int  `json:"ack_note_ids,omitempty"`
+	UncertainAckNoteIDs        []int  `json:"uncertain_ack_note_ids,omitempty"`
+	AckCleanupUntilUnixMilli   int64  `json:"ack_cleanup_until_unix_milli,omitempty"`
+	StartCleanupUntilUnixMilli int64  `json:"start_cleanup_until_unix_milli,omitempty"`
 	// Reaction names and MR settlement mode must survive config changes so a
 	// resumed job revokes old markers without changing revoke-only work into an
 	// outcome award.
@@ -149,6 +150,9 @@ func entryFromEvent(event Event) journalEntry {
 	}
 	if !event.AckCleanupUntil.IsZero() {
 		entry.AckCleanupUntilUnixMilli = event.AckCleanupUntil.UnixMilli()
+	}
+	if !event.StartCleanupUntil.IsZero() {
+		entry.StartCleanupUntilUnixMilli = event.StartCleanupUntil.UnixMilli()
 	}
 	return entry
 }

@@ -12,13 +12,14 @@ import (
 )
 
 const (
-	queueCapacity           = 256
-	shaLRUSize              = 512
-	ackCleanupQueueCapacity = 64
-	maxAckCleanupWorkers    = 4
-	reactionRetryInitial    = time.Second
-	reactionRetryMax        = time.Minute
-	maxRateLimitRetryDelay  = 5 * time.Minute
+	queueCapacity             = 256
+	shaLRUSize                = 512
+	ackCleanupQueueCapacity   = 64
+	maxAckCleanupWorkers      = 4
+	reactionRetryInitial      = time.Second
+	reactionRetryMax          = time.Minute
+	maxRateLimitRetryDelay    = 5 * time.Minute
+	reactionUncertaintyWindow = 30 * time.Second
 )
 
 // Event is one review request accepted by the handler and queued for a
@@ -42,6 +43,10 @@ type Event struct {
 	// targets alive for another replacement at AckCleanupUntil.
 	UncertainAckNoteIDs []int
 	AckCleanupUntil     time.Time
+	// StartCleanupUntil keeps MR settlement alive after a cancelled or timed-out
+	// start-reaction request. GitLab may commit that award after an earlier
+	// replacement listed no marker, so one final sweep runs at this deadline.
+	StartCleanupUntil time.Time
 	// StartEmojis and AckEmojis are every configured name under which this job
 	// may have placed its managed reactions. Keeping the names on the event lets
 	// journal restore clean markers from an older configuration.
@@ -170,6 +175,9 @@ type Dispatcher struct {
 	cleanupRetryInitial   time.Duration
 	cleanupRetryMax       time.Duration
 	cleanupRetryJitter    func(time.Duration, time.Duration) time.Duration
+	// startReactionUncertaintyWindow is configurable in tests so delayed-award
+	// races do not require production-length waits.
+	startReactionUncertaintyWindow time.Duration
 	// jobCtx outlives the intake context so in-flight reviews survive
 	// shutdown until the grace period expires.
 	jobCtx    context.Context
@@ -180,24 +188,25 @@ func NewDispatcher(runner ReviewRunner, lookup TopicLookup, journal *Journal, cf
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	return &Dispatcher{
-		states:               make(map[jobKey]*jobState),
-		queue:                make(chan jobKey, queueCapacity),
-		recent:               newSHALRU(shaLRUSize),
-		runner:               runner,
-		topics:               newTopicCache(lookup),
-		cfg:                  cfg,
-		journal:              journal,
-		log:                  log,
-		jobCtx:               jobCtx,
-		jobCancel:            jobCancel,
-		cleanupCtx:           cleanupCtx,
-		cleanupCancel:        cleanupCancel,
-		cleanupWaiting:       make(map[jobKey]struct{}),
-		cleanupWake:          make(chan struct{}),
-		cleanupReactionSlots: make(chan struct{}, maxAckCleanupWorkers),
-		cleanupRetryInitial:  reactionRetryInitial,
-		cleanupRetryMax:      reactionRetryMax,
-		cleanupRetryJitter:   jitterReactionRetry,
+		states:                         make(map[jobKey]*jobState),
+		queue:                          make(chan jobKey, queueCapacity),
+		recent:                         newSHALRU(shaLRUSize),
+		runner:                         runner,
+		topics:                         newTopicCache(lookup),
+		cfg:                            cfg,
+		journal:                        journal,
+		log:                            log,
+		jobCtx:                         jobCtx,
+		jobCancel:                      jobCancel,
+		cleanupCtx:                     cleanupCtx,
+		cleanupCancel:                  cleanupCancel,
+		cleanupWaiting:                 make(map[jobKey]struct{}),
+		cleanupWake:                    make(chan struct{}),
+		cleanupReactionSlots:           make(chan struct{}, maxAckCleanupWorkers),
+		cleanupRetryInitial:            reactionRetryInitial,
+		cleanupRetryMax:                reactionRetryMax,
+		cleanupRetryJitter:             jitterReactionRetry,
+		startReactionUncertaintyWindow: reactionUncertaintyWindow,
 	}
 }
 
@@ -289,6 +298,9 @@ func eventFromJournal(entry journalEntry, group *Group) Event {
 	}
 	if entry.AckCleanupUntilUnixMilli != 0 {
 		event.AckCleanupUntil = time.UnixMilli(entry.AckCleanupUntilUnixMilli)
+	}
+	if entry.StartCleanupUntilUnixMilli != 0 {
+		event.StartCleanupUntil = time.UnixMilli(entry.StartCleanupUntilUnixMilli)
 	}
 	return event
 }
@@ -430,6 +442,9 @@ func mergeEvents(existing, incoming Event) (Event, ackOverflow) {
 	if len(incoming.UncertainAckNoteIDs) == 0 {
 		incoming.AckCleanupUntil = time.Time{}
 	}
+	if existing.StartCleanupUntil.After(incoming.StartCleanupUntil) {
+		incoming.StartCleanupUntil = existing.StartCleanupUntil
+	}
 	incoming.StartEmojis = appendUniqueStrings(existing.StartEmojis, incoming.StartEmojis...)
 	incoming.AckEmojis = appendUniqueStrings(existing.AckEmojis, incoming.AckEmojis...)
 	if eventSettlesMR(existing) {
@@ -452,6 +467,7 @@ func overflowAckCleanup(existing, incoming Event, dropped []int) ackOverflow {
 	event.StartEmojis = nil
 	event.SettleMR = false
 	event.RevokeMROnly = false
+	event.StartCleanupUntil = time.Time{}
 	event.UncertainAckNoteIDs = nil
 	event.AckCleanupUntil = time.Time{}
 	for _, source := range []Event{existing, incoming} {
@@ -611,7 +627,7 @@ func (d *Dispatcher) cleanupOnShutdown(timeout time.Duration) {
 	backgroundCancel()
 
 	fallbackBudget := timeout - backgroundBudget
-	if uncertaintyDelay := d.unpersistedAckUncertaintyDelay(); uncertaintyDelay > 0 {
+	if uncertaintyDelay := d.unpersistedReactionUncertaintyDelay(); uncertaintyDelay > 0 {
 		fallbackBudget = max(fallbackBudget, uncertaintyDelay+timeout/2)
 	}
 	fallbackCtx, fallbackCancel := context.WithTimeout(context.Background(), fallbackBudget)
@@ -619,14 +635,12 @@ func (d *Dispatcher) cleanupOnShutdown(timeout time.Duration) {
 	d.releaseUnfinished(fallbackCtx)
 }
 
-func (d *Dispatcher) unpersistedAckUncertaintyDelay() time.Duration {
+func (d *Dispatcher) unpersistedReactionUncertaintyDelay() time.Duration {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var deadline time.Time
 	consider := func(event Event) {
-		if len(event.UncertainAckNoteIDs) > 0 && event.AckCleanupUntil.After(deadline) {
-			deadline = event.AckCleanupUntil
-		}
+		deadline = maxTime(deadline, eventUncertaintyDeadline(event))
 	}
 	for _, state := range d.states {
 		if state.persisted {
@@ -745,11 +759,11 @@ func (d *Dispatcher) releaseUnfinished(ctx context.Context) {
 						log.Warn("shutdown: reaction cleanup remains unresolved after fallback")
 					}
 					if job.pending != nil {
-						d.releaseAcksWithLimit(ctx, *job.pending, job.pending.AckNoteIDs, reactionSlots)
+						d.releaseReactionsWithLimit(ctx, *job.pending, reactionSlots)
 					}
 					continue
 				}
-				d.releaseAcksWithLimit(ctx, job.event, job.event.AckNoteIDs, reactionSlots)
+				d.releaseReactionsWithLimit(ctx, job.event, reactionSlots)
 			}
 		})
 	}
@@ -760,20 +774,21 @@ func (d *Dispatcher) releaseUnfinished(ctx context.Context) {
 	wg.Wait()
 }
 
-// releaseAcksWithLimit revokes the ack reaction from command notes whose
-// review was discarded at shutdown without a journal.
-func (d *Dispatcher) releaseAcksWithLimit(ctx context.Context, event Event, notes []int, reactionSlots chan struct{}) {
-	if len(notes) == 0 {
+// releaseReactionsWithLimit revokes every in-progress reaction from a review
+// discarded at shutdown without a journal.
+func (d *Dispatcher) releaseReactionsWithLimit(ctx context.Context, event Event, reactionSlots chan struct{}) {
+	placed := reactions{mr: eventSettlesMR(event), notes: event.AckNoteIDs}
+	if !hasReactions(placed) {
 		return
 	}
 	log := d.log.With("project", event.ProjectPath, "iid", event.IID)
-	remaining := eventWithReactions(event, d.settleWithLimit(ctx, event, reactions{notes: notes}, outcomeAborted, log, reactionSlots))
-	if waitForAckUncertainty(ctx, remaining) {
+	remaining := eventWithReactions(event, d.settleWithLimit(ctx, event, placed, outcomeAborted, log, reactionSlots))
+	if waitForReactionUncertainty(ctx, remaining) {
 		remaining = eventWithReactions(remaining, d.settleWithLimit(ctx, remaining,
-			reactions{notes: remaining.AckNoteIDs}, outcomeAborted, log, reactionSlots))
+			reactions{mr: eventSettlesMR(remaining), notes: remaining.AckNoteIDs}, outcomeAborted, log, reactionSlots))
 	}
-	if len(remaining.AckNoteIDs) > 0 {
-		log.Warn("shutdown: acknowledgement cleanup remains unresolved after fallback", "notes", remaining.AckNoteIDs)
+	if eventSettlesMR(remaining) || len(remaining.AckNoteIDs) > 0 {
+		log.Warn("shutdown: reaction cleanup remains unresolved after fallback", "notes", remaining.AckNoteIDs)
 	}
 }
 
@@ -1227,27 +1242,31 @@ func (d *Dispatcher) settleReactionCleanupThroughUncertainty(
 	reactionSlots chan struct{},
 ) reactionCleanup {
 	remaining := d.settleReactionCleanupWithLimit(ctx, cleanup, log, reactionSlots)
-	if waitUntilAckSweep(ctx, reactionCleanupUncertaintyDeadline(remaining)) {
+	if waitUntilReactionSweep(ctx, reactionCleanupUncertaintyDeadline(remaining)) {
 		remaining = d.settleReactionCleanupWithLimit(ctx, remaining, log, reactionSlots)
 	}
 	return remaining
 }
 
-func waitForAckUncertainty(ctx context.Context, event Event) bool {
-	return waitUntilAckSweep(ctx, ackUncertaintyDeadline(event))
+func waitForReactionUncertainty(ctx context.Context, event Event) bool {
+	return waitUntilReactionSweep(ctx, eventUncertaintyDeadline(event))
 }
 
-func ackUncertaintyDeadline(event Event) time.Time {
-	if len(event.UncertainAckNoteIDs) == 0 {
-		return time.Time{}
+func eventUncertaintyDeadline(event Event) time.Time {
+	var deadline time.Time
+	if len(event.UncertainAckNoteIDs) > 0 {
+		deadline = event.AckCleanupUntil
 	}
-	return event.AckCleanupUntil
+	if eventSettlesMR(event) {
+		deadline = maxTime(deadline, event.StartCleanupUntil)
+	}
+	return deadline
 }
 
 func reactionCleanupUncertaintyDeadline(cleanup reactionCleanup) time.Time {
-	deadline := ackUncertaintyDeadline(cleanup.event)
+	deadline := eventUncertaintyDeadline(cleanup.event)
 	if cleanup.aborted != nil {
-		deadline = maxTime(deadline, ackUncertaintyDeadline(*cleanup.aborted))
+		deadline = maxTime(deadline, eventUncertaintyDeadline(*cleanup.aborted))
 	}
 	return deadline
 }
@@ -1259,9 +1278,9 @@ func maxTime(first, second time.Time) time.Time {
 	return first
 }
 
-// waitUntilAckSweep reports whether a final sweep is required and its deadline
-// was reached. A zero deadline means no uncertain acknowledgement remains.
-func waitUntilAckSweep(ctx context.Context, deadline time.Time) bool {
+// waitUntilReactionSweep reports whether a final sweep is required and its
+// deadline was reached. A zero deadline means no uncertain award remains.
+func waitUntilReactionSweep(ctx context.Context, deadline time.Time) bool {
 	if deadline.IsZero() {
 		return false
 	}
@@ -1377,6 +1396,38 @@ func (d *Dispatcher) recordStartReactionAttempt(event *Event) {
 	state.persisted = d.journal.persist(resume)
 }
 
+// recordStartReactionUncertainty persists the deadline for a final sweep after
+// a start-reaction request returned an ambiguous cancellation/timeout.
+func (d *Dispatcher) recordStartReactionUncertainty(event *Event, until time.Time) {
+	if until.After(event.StartCleanupUntil) {
+		event.StartCleanupUntil = until
+	}
+	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.states[key]
+	if !ok {
+		return
+	}
+	if state.cleanup != nil {
+		if until.After(state.cleanup.event.StartCleanupUntil) {
+			state.cleanup.event.StartCleanupUntil = until
+		}
+		state.latest = state.cleanup.event
+		state.cleanupVersion++
+		state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		return
+	}
+	if until.After(state.latest.StartCleanupUntil) {
+		state.latest.StartCleanupUntil = until
+	}
+	resume := state.latest
+	if state.pending != nil {
+		resume, _ = mergeEvents(resume, *state.pending)
+	}
+	state.persisted = d.journal.persist(resume)
+}
+
 // beginSettlement replaces the runnable crash snapshot with cleanup-only work
 // after the review process has finished, before any remote reaction settlement
 // begins. A crash in that I/O window can therefore repeat harmless reaction
@@ -1424,6 +1475,24 @@ func (d *Dispatcher) finish(key jobKey, result settlementResult) {
 		state.cancel = nil
 	}
 	state.startedAt = time.Time{}
+	if result.resume {
+		// Root shutdown interrupted accepted work. Keep runnable state instead of
+		// converting it to failed cleanup; restart must execute the review again.
+		if state.cleanup != nil {
+			state.status = stateCleanup
+			state.persisted = d.journal.persistCleanup(*state.cleanup, state.pending)
+		} else {
+			state.latest = result.event
+			state.status = stateQueued
+			resume := state.latest
+			if state.pending != nil {
+				resume, _ = mergeEvents(resume, *state.pending)
+			}
+			state.persisted = d.journal.persist(resume)
+		}
+		d.mu.Unlock()
+		return
+	}
 	// Abort may have replaced the worker's completion snapshot while reaction
 	// settlement was in flight. Preserve that newer cleanup as one unit,
 	// including notes from a cleared pending run.

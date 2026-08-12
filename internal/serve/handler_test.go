@@ -841,6 +841,38 @@ func TestHandlerCommandReviewQueueFullRevokesAck(t *testing.T) {
 	}
 }
 
+// Enqueue rejection must retain a timed-out acknowledgement through its final
+// uncertainty sweep; an immediate revoke can miss a POST that commits later.
+func TestHandlerCommandReviewQueueFullSweepsLateTimedOutAck(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.ackRequestTimeout = 20 * time.Millisecond
+	env.handler.ackUncertaintyWindow = 150 * time.Millisecond
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(closeGate)
+	env.gitlab.emojiPostGate = gate
+	fillDispatcherQueue(env.dispatcher)
+
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 when the review cannot be queued", recorder.Code)
+	}
+	if env.gitlab.emojiPostArrived.Load() != 1 {
+		t.Fatal("acknowledgement POST did not reach delayed server handler")
+	}
+	if requests := env.gitlab.emojiGETs.Load(); requests != 0 {
+		t.Fatalf("cleanup requests before uncertainty deadline = %d, want 0", requests)
+	}
+
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		return slices.Contains(env.gitlab.awardedOn(11, 301), "white_check_mark")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		return env.gitlab.emojiGETs.Load() > 0 && len(env.gitlab.awardedOn(11, 301)) == 0
+	})
+}
+
 // Non-review commands (status, help, ...) do not need queue capacity and keep
 // working while the queue is full.
 func TestHandlerCommandStatusWorksWithFullQueue(t *testing.T) {

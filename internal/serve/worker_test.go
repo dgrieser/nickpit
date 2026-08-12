@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -620,6 +621,57 @@ func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
 	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
 		t.Fatal("aborted run must not mark the SHA reviewed")
 	}
+}
+
+// A cancelled start-reaction request can still commit after abort settlement
+// listed no marker. Durable cleanup must retain the MR through a final sweep.
+func TestWorkerAmbiguousStartReactionGetsLateCleanup(t *testing.T) {
+	gate := make(chan struct{})
+	closeGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(closeGate)
+	fake := &fakeGitLab{
+		topics:        []string{"nickpit"},
+		state:         "opened",
+		headSHA:       "sha-1",
+		emojiPostGate: gate,
+	}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.startReactionUncertaintyWindow = 150 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dispatcher.Start(ctx, 1)
+	t.Cleanup(func() {
+		cancel()
+		dispatcher.Shutdown(time.Second)
+	})
+	if !dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("event must be accepted")
+	}
+	waitFor(t, 3*time.Second, func() bool { return fake.emojiPostArrived.Load() == 1 })
+	if outcome := dispatcher.Abort(42, 7); !outcome.Found || !outcome.Running {
+		t.Fatalf("abort outcome = %+v, want running review", outcome)
+	}
+
+	key := jobKey{ProjectID: 42, IID: 7}
+	waitFor(t, 3*time.Second, func() bool {
+		dispatcher.mu.Lock()
+		defer dispatcher.mu.Unlock()
+		state := dispatcher.states[key]
+		return state != nil && state.status == stateCleanup && dispatcher.running == 0 &&
+			state.cleanup != nil && !state.cleanup.event.StartCleanupUntil.IsZero()
+	})
+
+	// Original POST commits only after initial abort settlement already finished.
+	closeGate()
+	waitFor(t, 3*time.Second, func() bool {
+		return slices.Contains(fake.awardedOn(7, 0), "eyes")
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		dispatcher.mu.Lock()
+		_, exists := dispatcher.states[key]
+		dispatcher.mu.Unlock()
+		return !exists && len(fake.awardedOn(7, 0)) == 0
+	})
 }
 
 func TestDispatcherShutdownGraceKillsChild(t *testing.T) {

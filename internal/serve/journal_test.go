@@ -105,6 +105,7 @@ func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Minute).Truncate(time.Millisecond)
+	startDeadline := deadline.Add(time.Minute)
 	event := Event{
 		Kind:                TriggerManual,
 		ProjectID:           42,
@@ -113,6 +114,8 @@ func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
 		AckNoteIDs:          []int{301},
 		UncertainAckNoteIDs: []int{301},
 		AckCleanupUntil:     deadline,
+		SettleMR:            true,
+		StartCleanupUntil:   startDeadline,
 	}
 	if !journal.persist(event) {
 		t.Fatal("persist failed")
@@ -125,6 +128,56 @@ func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
 	if !slices.Equal(restored.UncertainAckNoteIDs, []int{301}) || !restored.AckCleanupUntil.Equal(deadline) {
 		t.Fatalf("restored uncertainty = notes %v deadline %v, want note 301 through %v", restored.UncertainAckNoteIDs, restored.AckCleanupUntil, deadline)
 	}
+	if !restored.StartCleanupUntil.Equal(startDeadline) {
+		t.Fatalf("restored start uncertainty = %v, want %v", restored.StartCleanupUntil, startDeadline)
+	}
+}
+
+// Root shutdown cancellation means accepted review did not finish. Keep its
+// journal entry runnable so replacement daemon executes it instead of treating
+// SIGTERM exit as a terminal failure.
+func TestJournalShutdownInterruptedReviewResumes(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake.preAward(7, 301, "eyes")
+
+	first, runner, groups := newJournalEnv(t, fake, dir)
+	runner.gate = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	first.Start(ctx, 1)
+	if !first.Enqueue(commandEvent(7, "sha-1", groups.Match("platform/api"), 301)) {
+		t.Fatal("event must be accepted")
+	}
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+
+	cancel()
+	first.Shutdown(20 * time.Millisecond)
+	entries := first.journal.load()
+	if len(entries) != 1 || entries[0].CleanupOutcome != "" {
+		t.Fatalf("journal entries = %+v, want one runnable interrupted review", entries)
+	}
+	if posted := fake.awardPosted(); slices.Contains(posted, "x") {
+		t.Fatalf("award posts = %v, shutdown interruption must not publish failure", posted)
+	}
+
+	second, secondRunner, groups := newJournalEnv(t, fake, dir)
+	if resumed := second.Restore(groups); resumed != 1 {
+		t.Fatalf("resumed = %d, want interrupted review", resumed)
+	}
+	key := <-second.queue
+	event, jobCtx, ok := second.take(key)
+	if !ok {
+		t.Fatal("restored review could not be taken")
+	}
+	result := second.process(jobCtx, event)
+	second.finish(key, result)
+	if len(secondRunner.ran()) != 1 {
+		t.Fatalf("restored runs = %d, want 1", len(secondRunner.ran()))
+	}
+	if files := journalFiles(t, dir); files != 0 {
+		t.Fatalf("journal files = %d, want removed after resumed completion", files)
+	}
+	second.Shutdown(0)
 }
 
 func TestJournalLoadPreservesFileOnReadFailure(t *testing.T) {

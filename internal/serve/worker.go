@@ -34,6 +34,9 @@ const (
 	// emoji revoke). It leaves no outcome reaction: the in-progress one is only
 	// revoked, because nothing went wrong.
 	outcomeAborted
+	// outcomeInterrupted is accepted work terminated by root shutdown. It is
+	// never settled: its runnable journal snapshot resumes after restart.
+	outcomeInterrupted
 )
 
 // reactions records the in-progress reactions this job is responsible for, so
@@ -49,7 +52,7 @@ type reactions struct {
 }
 
 // reactionSettlement separates a real retryable remote failure from a target
-// retained only for a timed-out acknowledgement's final uncertainty sweep.
+// retained only for a timed-out award's final uncertainty sweep.
 // Durable cleanup uses the distinction to back off outages without delaying a
 // known deadline, and carries any server-provided rate-limit time with it.
 type reactionSettlement struct {
@@ -65,6 +68,7 @@ type settlementResult struct {
 	outcome        reviewOutcome
 	settled        bool
 	cleanupVersion uint64
+	resume         bool
 }
 
 // process runs one review job end to end: opt-in check, authoritative MR
@@ -77,6 +81,9 @@ func (d *Dispatcher) process(ctx context.Context, event Event) settlementResult 
 	// it accepted the command, before this job was picked up.
 	placed := reactions{mr: eventSettlesMR(event), notes: event.AckNoteIDs}
 	outcome := d.review(ctx, &event, &placed, log)
+	if outcome == outcomeInterrupted {
+		return settlementResult{event: event, outcome: outcome, resume: true}
+	}
 	cleanupVersion := d.beginSettlement(event, placed, outcome)
 	remaining := d.settle(context.WithoutCancel(ctx), event, placed, outcome, log)
 	return settlementResult{
@@ -132,6 +139,13 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		// settle repeats cleanup and never adds an MR outcome in that mode.
 		err := event.Group.Client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID,
 			d.cfg.StartEmoji, d.cfg.TriggerEmoji)
+		if err != nil && d.cfg.StartEmoji != "" && uncertainReactionRequest(err) {
+			window := d.startReactionUncertaintyWindow
+			if window <= 0 {
+				window = reactionUncertaintyWindow
+			}
+			d.recordStartReactionUncertainty(event, time.Now().Add(window))
+		}
 		if err != nil {
 			if d.cfg.StartEmoji == "" {
 				log.Warn("clearing previous merge request emoji failed", "error", err)
@@ -160,6 +174,11 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 	exitCode, logPath, err := d.runner.Run(ctx, spec)
 	duration := time.Since(start).Round(time.Second)
 	switch {
+	// Root shutdown cancellation preserves accepted work for journal resume.
+	// It must not publish a failed reaction or retire the runnable snapshot.
+	case ctx.Err() != nil && d.jobCtx.Err() != nil:
+		log.Info("review interrupted by shutdown", "duration", duration, "log", logPath)
+		return outcomeInterrupted
 	// Per-job cancel while the pool is alive is a user abort, not a failure;
 	// a SIGTERM'd child exits non-zero, so this case must come first. The
 	// head is not marked reviewed: the same SHA stays re-reviewable.
@@ -187,6 +206,10 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 // not a failure — the fail reaction would tell the asker something went wrong
 // when nothing did. Everything else is the step failing.
 func (d *Dispatcher) preRunFailure(ctx context.Context, log *slog.Logger, step string, err error) reviewOutcome {
+	if ctx.Err() != nil && d.jobCtx.Err() != nil {
+		log.Info("review interrupted by shutdown", "during", step)
+		return outcomeInterrupted
+	}
 	if ctx.Err() != nil && d.jobCtx.Err() == nil {
 		log.Info("review aborted", "during", step)
 		return outcomeAborted
@@ -257,6 +280,7 @@ func (d *Dispatcher) settleAttemptWithLimit(
 	var wg sync.WaitGroup
 	mrFailed := false
 	mrRetryable := false
+	mrTerminal := false
 	var mrRetryAfter time.Time
 	noteFailed := make([]bool, len(notes))
 	noteRetryable := make([]bool, len(notes))
@@ -276,6 +300,7 @@ func (d *Dispatcher) settleAttemptWithLimit(
 				}
 				if err != nil {
 					if terminalReactionTargetError(err) {
+						mrTerminal = true
 						log.Warn("stopping merge request emoji retries after terminal error", "emoji", mrAdd, "error", err)
 						return
 					}
@@ -288,6 +313,12 @@ func (d *Dispatcher) settleAttemptWithLimit(
 			if !completed {
 				mrFailed = true
 				mrRetryable = true
+				return
+			}
+			// A cancelled/timed-out start POST can commit after this successful
+			// replacement observed no marker. Retain MR for final deadline sweep.
+			if !mrTerminal && !event.StartCleanupUntil.IsZero() && time.Now().Before(event.StartCleanupUntil) {
+				mrFailed = true
 			}
 		})
 	}
@@ -437,6 +468,10 @@ func terminalReactionTargetError(err error) bool {
 		(apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusGone)
 }
 
+func uncertainReactionRequest(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func hasReactions(placed reactions) bool {
 	return placed.mr || len(placed.notes) > 0
 }
@@ -454,6 +489,7 @@ func eventWithReactions(event Event, remaining reactions) Event {
 		event.SettleMR = false
 		event.RevokeMROnly = false
 		event.StartEmojis = nil
+		event.StartCleanupUntil = time.Time{}
 	} else {
 		event.SettleMR = true
 	}

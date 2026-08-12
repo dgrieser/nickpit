@@ -170,7 +170,7 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		chatCancel:           chatCancel,
 		chatSeen:             newNoteDedup(chatSeenCap),
 		chatRetryDelay:       defaultChatRetryDelay,
-		ackUncertaintyWindow: commandReplyTimeout,
+		ackUncertaintyWindow: reactionUncertaintyWindow,
 		ackRequestTimeout:    ackTimeout,
 		log:                  log,
 	}
@@ -451,11 +451,11 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			uncertainAckNotes = slices.Clone(ackNotes)
 			window := h.ackUncertaintyWindow
 			if window <= 0 {
-				window = commandReplyTimeout
+				window = reactionUncertaintyWindow
 			}
 			ackCleanupUntil = time.Now().Add(window)
 		}
-		accepted := h.dispatcher.Enqueue(Event{
+		reviewEvent := Event{
 			Kind:                decision.Kind,
 			ProjectID:           projectID,
 			ProjectPath:         event.Project.PathWithNamespace,
@@ -465,12 +465,15 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			AckNoteIDs:          ackNotes,
 			UncertainAckNoteIDs: uncertainAckNotes,
 			AckCleanupUntil:     ackCleanupUntil,
-		})
+		}
+		accepted := h.dispatcher.Enqueue(reviewEvent)
 		if !accepted {
 			// Take the ack back: the emoji would claim a request that was
 			// never queued. GitLab redelivers on the caller's 503, and the
 			// retried command awards it again.
-			go h.revokeAck(group, projectID, decision)
+			// Preserve timeout uncertainty even though no review was admitted:
+			// delayed GitLab commit must be swept at ackCleanupUntil.
+			h.dispatcher.queueAckCleanup(reviewEvent, ackNotes)
 			return false
 		}
 	case CommandAbort:
@@ -723,20 +726,6 @@ func (h *Handler) ackNote(ctx context.Context, group *Group, projectID int, deci
 		return err
 	}
 	return nil
-}
-
-// revokeAck takes a review ack back after the enqueue was rejected — the note
-// must not keep a reaction claiming the request was taken.
-func (h *Handler) revokeAck(group *Group, projectID int, decision Decision) {
-	emoji := h.dispatcher.AckEmoji()
-	if emoji == "" || decision.NoteID == 0 || group.BotUserID == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
-	defer cancel()
-	if err := group.Client.ReplaceNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, group.BotUserID, "", emoji); err != nil {
-		h.log.Warn("revoking command ack failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
-	}
 }
 
 // reply answers a command, threaded under its note when the payload carried a
