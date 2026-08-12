@@ -614,6 +614,7 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	d.jobCancel()
 	<-done
 	d.cleanupOnShutdown(settleTimeout)
+	d.journal.stopRetirements()
 }
 
 // cleanupOnShutdown gives background acknowledgement cleanup half the normal

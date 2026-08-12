@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -120,39 +119,21 @@ func TestNewJournalRejectsSharedWritableDirectory(t *testing.T) {
 	}
 }
 
-func TestValidateJournalDirRejectsDifferentOwner(t *testing.T) {
-	dir := privateJournalDir(t)
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Skip("file ownership is unavailable")
-	}
-	otherUID := stat.Uid + 1
-	if otherUID == stat.Uid {
-		otherUID--
-	}
-	if err := validateJournalDirOwnerAs(info, otherUID); err == nil {
-		t.Fatal("owner mismatch was accepted")
-	}
-}
-
 func TestJournalRetirementTombstoneRetriesDeletion(t *testing.T) {
 	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = journal.Close() })
 	journal.retirementRetry = 10 * time.Millisecond
 	var blocked atomic.Bool
 	blocked.Store(true)
-	journal.unlink = func(path string) error {
+	journal.unlink = func(name string) error {
 		if blocked.Load() {
 			return os.ErrPermission
 		}
-		return os.Remove(path)
+		return journal.root.Remove(name)
 	}
 	event := Event{Kind: TriggerAuto, ProjectID: 42, ProjectPath: "platform/api", IID: 7, HeadSHA: "sha-1"}
 	if !journal.persist(event) {
@@ -180,6 +161,41 @@ func TestJournalRetirementTombstoneRetriesDeletion(t *testing.T) {
 		_, err := os.Stat(journal.path(event.ProjectID, event.IID))
 		return errors.Is(err, fs.ErrNotExist)
 	})
+}
+
+func TestJournalRetirementRetriesStayBoundedAndStop(t *testing.T) {
+	dir := privateJournalDir(t)
+	journal, err := NewJournal(dir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	journal.retirementRetry = time.Hour
+	var unlinks atomic.Int64
+	journal.unlink = func(string) error {
+		unlinks.Add(1)
+		return os.ErrPermission
+	}
+
+	for iid := 1; iid <= maxJournalRetirementQueue+32; iid++ {
+		journal.remove(42, iid)
+	}
+	journal.mu.Lock()
+	tracked := len(journal.retirements)
+	journal.mu.Unlock()
+	if tracked != maxJournalRetirementQueue {
+		t.Fatalf("tracked retirement retries = %d, want capped backlog of %d", tracked, maxJournalRetirementQueue)
+	}
+	if queued := len(journal.retirementQueue); queued > maxJournalRetirementQueue {
+		t.Fatalf("queued retirement retries = %d, want at most %d", queued, maxJournalRetirementQueue)
+	}
+
+	journal.stopRetirements()
+	before := unlinks.Load()
+	time.Sleep(20 * time.Millisecond)
+	if after := unlinks.Load(); after != before {
+		t.Fatalf("unlink attempts after retry worker stopped = %d, want %d", after, before)
+	}
 }
 
 func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {

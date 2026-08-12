@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +15,10 @@ import (
 	"time"
 )
 
-const journalRetirementRetry = time.Second
+const (
+	journalRetirementRetry    = time.Second
+	maxJournalRetirementQueue = 128
+)
 
 // Journal persists accepted-but-unfinished review jobs as one small JSON file
 // per merge request, so a restarted daemon (crash, upgrade, reschedule) resumes
@@ -27,13 +32,28 @@ const journalRetirementRetry = time.Second
 // on ephemeral storage it still covers plain process restarts.
 type Journal struct {
 	dir string
-	log *slog.Logger
+	// root pins the validated directory. Every journal operation goes through
+	// it, so replacing dir through a writable ancestor cannot redirect I/O.
+	root *os.Root
+	log  *slog.Logger
 
-	mu              sync.Mutex
-	retirements     map[jobKey]uint64
-	nextRetirement  uint64
-	retirementRetry time.Duration
-	unlink          func(string) error
+	mu               sync.Mutex
+	closed           bool
+	retirements      map[jobKey]uint64
+	nextRetirement   uint64
+	retirementRetry  time.Duration
+	retirementQueue  chan journalRetirement
+	retirementCtx    context.Context
+	retirementCancel context.CancelFunc
+	retirementWG     sync.WaitGroup
+	retirementStop   sync.Once
+	closeOnce        sync.Once
+	unlink           func(string) error
+}
+
+type journalRetirement struct {
+	key        jobKey
+	generation uint64
 }
 
 // journalEntry is the persisted form of an Event. The group is not stored —
@@ -78,26 +98,42 @@ func NewJournal(dir string, log *slog.Logger) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
-	if err := validateJournalDir(dir); err != nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("state dir: open: %w", err)
+	}
+	if err := validateJournalRoot(root); err != nil {
+		_ = root.Close()
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
-	if err := probeJournalDir(dir); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	j := &Journal{
+		dir:              dir,
+		root:             root,
+		log:              log,
+		retirements:      make(map[jobKey]uint64),
+		retirementRetry:  journalRetirementRetry,
+		retirementQueue:  make(chan journalRetirement, maxJournalRetirementQueue),
+		retirementCtx:    ctx,
+		retirementCancel: cancel,
+	}
+	j.unlink = j.root.Remove
+	if err := j.probe(); err != nil {
+		cancel()
+		_ = root.Close()
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
-	return &Journal{
-		dir:             dir,
-		log:             log,
-		retirements:     make(map[jobKey]uint64),
-		retirementRetry: journalRetirementRetry,
-		unlink:          os.Remove,
-	}, nil
+	j.retirementWG.Add(1)
+	go j.runRetirements()
+	return j, nil
 }
 
-// validateJournalDir keeps untrusted local users from replacing predictable
-// job paths and injecting work for the daemon. Read-only access is harmless:
+// validateJournalRoot validates the same retained handle used for later I/O.
+// Untrusted local users therefore cannot swap a checked pathname for another
+// directory between validation and Restore. Read-only access is harmless:
 // journal files themselves are mode 0600 and contain no credentials.
-func validateJournalDir(dir string) error {
-	info, err := os.Stat(dir)
+func validateJournalRoot(root *os.Root) error {
+	info, err := root.Stat(".")
 	if err != nil {
 		return fmt.Errorf("inspect permissions: %w", err)
 	}
@@ -110,17 +146,16 @@ func validateJournalDir(dir string) error {
 	return validateJournalDirOwner(info)
 }
 
-// probeJournalDir verifies the operations persistence depends on before intake
-// starts. MkdirAll alone succeeds for an existing read-only directory.
-func probeJournalDir(dir string) error {
-	probe, err := os.CreateTemp(dir, ".nickpit-journal-probe-*.tmp")
+// probe verifies the operations persistence depends on before intake starts.
+// MkdirAll alone succeeds for an existing read-only directory.
+func (j *Journal) probe() error {
+	name, probe, err := j.createTemp(".nickpit-journal-probe")
 	if err != nil {
 		return fmt.Errorf("write probe: %w", err)
 	}
-	tmp := probe.Name()
-	committed := tmp + ".ready"
-	defer func() { _ = os.Remove(tmp) }()
-	defer func() { _ = os.Remove(committed) }()
+	committed := name + ".ready"
+	defer func() { _ = j.root.Remove(name) }()
+	defer func() { _ = j.root.Remove(committed) }()
 	if _, err := probe.Write([]byte("ok")); err != nil {
 		_ = probe.Close()
 		return fmt.Errorf("write probe: %w", err)
@@ -132,20 +167,20 @@ func probeJournalDir(dir string) error {
 	if err := probe.Close(); err != nil {
 		return fmt.Errorf("close probe: %w", err)
 	}
-	if err := os.Rename(tmp, committed); err != nil {
+	if err := j.root.Rename(name, committed); err != nil {
 		return fmt.Errorf("rename probe: %w", err)
 	}
-	if err := syncJournalDir(dir); err != nil {
+	if err := j.sync(); err != nil {
 		return fmt.Errorf("sync directory: %w", err)
 	}
-	if err := os.Remove(committed); err != nil {
+	if err := j.root.Remove(committed); err != nil {
 		return fmt.Errorf("remove probe: %w", err)
 	}
 	return nil
 }
 
-func syncJournalDir(dir string) error {
-	directory, err := os.Open(dir)
+func (j *Journal) sync() error {
+	directory, err := j.root.Open(".")
 	if err != nil {
 		return err
 	}
@@ -154,6 +189,22 @@ func syncJournalDir(dir string) error {
 		err = closeErr
 	}
 	return err
+}
+
+func (j *Journal) createTemp(prefix string) (string, *os.File, error) {
+	for range 100 {
+		var suffix [16]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return "", nil, err
+		}
+		name := fmt.Sprintf("%s-%x.tmp", prefix, suffix)
+		file, err := j.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return name, file, err
+	}
+	return "", nil, fmt.Errorf("cannot allocate unique temporary file")
 }
 
 // Dir returns the journal's directory (empty when disabled).
@@ -165,7 +216,11 @@ func (j *Journal) Dir() string {
 }
 
 func (j *Journal) path(projectID, iid int) string {
-	return filepath.Join(j.dir, fmt.Sprintf("job-%d-%d.json", projectID, iid))
+	return filepath.Join(j.dir, j.name(projectID, iid))
+}
+
+func (j *Journal) name(projectID, iid int) string {
+	return fmt.Sprintf("job-%d-%d.json", projectID, iid)
 }
 
 // persist records the event as the job's would-be re-run: what a restarted
@@ -222,25 +277,26 @@ func (j *Journal) persistEntry(entry journalEntry) bool {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.closed {
+		return false
+	}
 	delete(j.retirements, jobKey{ProjectID: entry.ProjectID, IID: entry.IID})
 	return j.persistEntryLocked(entry)
 }
 
 func (j *Journal) persistEntryLocked(entry journalEntry) bool {
-	path := j.path(entry.ProjectID, entry.IID)
+	name := j.name(entry.ProjectID, entry.IID)
 	data, err := json.Marshal(entry)
 	if err != nil {
 		j.log.Warn("journal: encoding job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
-		j.invalidate(path, "", entry.ProjectID, entry.IID)
+		j.invalidate(name, "", entry.ProjectID, entry.IID)
 		return false
 	}
 
-	// CreateTemp uses O_EXCL and a randomized name. A writable ancestor cannot
-	// pre-place a symlink that makes this write follow an attacker-chosen path.
-	tmpFile, err := os.CreateTemp(j.dir, "."+filepath.Base(path)+"-*.tmp")
-	tmp := ""
+	// O_EXCL plus a randomized name prevents stale or attacker-created files
+	// from redirecting the write within the pinned directory.
+	tmp, tmpFile, err := j.createTemp("." + name)
 	if err == nil {
-		tmp = tmpFile.Name()
 		_, err = tmpFile.Write(data)
 		if err == nil {
 			err = tmpFile.Sync()
@@ -250,14 +306,14 @@ func (j *Journal) persistEntryLocked(entry journalEntry) bool {
 		}
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = j.root.Rename(tmp, name)
 	}
 	if err == nil {
-		err = syncJournalDir(j.dir)
+		err = j.sync()
 	}
 	if err != nil {
 		j.log.Warn("journal: persisting job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
-		j.invalidate(path, tmp, entry.ProjectID, entry.IID)
+		j.invalidate(name, tmp, entry.ProjectID, entry.IID)
 		return false
 	}
 	return true
@@ -292,13 +348,13 @@ func parseCleanupOutcome(name string) (reviewOutcome, bool) {
 // invalidate removes both the uncommitted temporary file and any older
 // canonical entry. Once an update fails, the old snapshot is unsafe to resume:
 // it may omit a newer manual trigger or acknowledgements already awarded.
-func (j *Journal) invalidate(path, tmp string, projectID, iid int) {
+func (j *Journal) invalidate(name, tmp string, projectID, iid int) {
 	if tmp != "" {
-		if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			j.log.Warn("journal: removing failed temporary job file", "file", tmp, "error", err)
+		if err := j.root.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			j.log.Warn("journal: removing failed temporary job file", "file", filepath.Join(j.dir, tmp), "error", err)
 		}
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := j.root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		j.log.Warn("journal: invalidating stale job failed", "project_id", projectID, "iid", iid, "error", err)
 	}
 }
@@ -313,17 +369,19 @@ func (j *Journal) remove(projectID, iid int) {
 	}
 	key := jobKey{ProjectID: projectID, IID: iid}
 	j.mu.Lock()
+	if j.closed {
+		j.mu.Unlock()
+		return
+	}
 	j.nextRetirement++
 	generation := j.nextRetirement
-	j.retirements[key] = generation
 	retired := j.retireLocked(key)
 	if retired {
 		delete(j.retirements, key)
+	} else {
+		j.queueRetirementLocked(journalRetirement{key: key, generation: generation})
 	}
 	j.mu.Unlock()
-	if !retired {
-		go j.retryRetirement(key, generation)
-	}
 }
 
 // retireLocked returns true only after unlink confirms the tombstone is gone.
@@ -332,17 +390,20 @@ func (j *Journal) remove(projectID, iid int) {
 func (j *Journal) retireLocked(key jobKey) bool {
 	tombstone := journalEntry{Retired: true, ProjectID: key.ProjectID, IID: key.IID}
 	if !j.persistEntryLocked(tombstone) {
+		if _, err := j.root.Stat(j.name(key.ProjectID, key.IID)); errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
 		j.log.Warn("journal: writing retirement tombstone failed; retrying",
 			"project_id", key.ProjectID, "iid", key.IID)
 		return false
 	}
-	path := j.path(key.ProjectID, key.IID)
-	if err := j.unlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	name := j.name(key.ProjectID, key.IID)
+	if err := j.unlink(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		j.log.Warn("journal: removing retirement tombstone failed; retrying",
 			"project_id", key.ProjectID, "iid", key.IID, "error", err)
 		return false
 	}
-	if err := syncJournalDir(j.dir); err != nil {
+	if err := j.sync(); err != nil {
 		j.log.Warn("journal: syncing retirement failed; retrying",
 			"project_id", key.ProjectID, "iid", key.IID, "error", err)
 		return false
@@ -350,25 +411,92 @@ func (j *Journal) retireLocked(key jobKey) bool {
 	return true
 }
 
-func (j *Journal) retryRetirement(key jobKey, generation uint64) {
-	delay := j.retirementRetry
-	for {
-		timer := time.NewTimer(delay)
-		<-timer.C
+func (j *Journal) queueRetirementLocked(retirement journalRetirement) {
+	if _, exists := j.retirements[retirement.key]; !exists && len(j.retirements) >= maxJournalRetirementQueue {
+		j.log.Warn("journal: retirement retry backlog full; preserving tombstone for next restart",
+			"project_id", retirement.key.ProjectID, "iid", retirement.key.IID)
+		return
+	}
+	j.retirements[retirement.key] = retirement.generation
+	select {
+	case j.retirementQueue <- retirement:
+	default:
+		if j.retirements[retirement.key] == retirement.generation {
+			delete(j.retirements, retirement.key)
+		}
+		j.log.Warn("journal: retirement retry queue full; preserving tombstone for next restart",
+			"project_id", retirement.key.ProjectID, "iid", retirement.key.IID)
+	}
+}
 
+// runRetirements is the journal's sole retry worker. Its fixed queue bounds
+// memory, goroutines, and filesystem work during a permanent storage outage.
+func (j *Journal) runRetirements() {
+	defer j.retirementWG.Done()
+	var delay time.Duration
+	for {
+		var retirement journalRetirement
+		select {
+		case <-j.retirementCtx.Done():
+			return
+		case retirement = <-j.retirementQueue:
+		}
+		if delay <= 0 {
+			j.mu.Lock()
+			delay = j.retirementRetry
+			j.mu.Unlock()
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-j.retirementCtx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 		j.mu.Lock()
-		if j.retirements[key] != generation {
+		if j.closed || j.retirements[retirement.key] != retirement.generation {
 			j.mu.Unlock()
-			return
+			delay = 0
+			continue
 		}
-		if j.retireLocked(key) {
-			delete(j.retirements, key)
+		if j.retireLocked(retirement.key) {
+			delete(j.retirements, retirement.key)
 			j.mu.Unlock()
-			return
+			delay = 0
+			continue
 		}
+		j.queueRetirementLocked(retirement)
 		j.mu.Unlock()
 		delay = min(delay*2, time.Minute)
 	}
+}
+
+// stopRetirements cancels background retries while leaving the pinned root
+// usable for shutdown persistence and tests that inspect post-shutdown state.
+func (j *Journal) stopRetirements() {
+	if j == nil {
+		return
+	}
+	j.retirementStop.Do(func() {
+		j.retirementCancel()
+		j.retirementWG.Wait()
+	})
+}
+
+// Close stops retries and releases the pinned directory handle.
+func (j *Journal) Close() error {
+	if j == nil {
+		return nil
+	}
+	var err error
+	j.closeOnce.Do(func() {
+		j.stopRetirements()
+		j.mu.Lock()
+		j.closed = true
+		err = j.root.Close()
+		j.mu.Unlock()
+	})
+	return err
 }
 
 // load reads every journaled job. Read failures leave the file for a later
@@ -379,7 +507,18 @@ func (j *Journal) load() []journalEntry {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	files, err := os.ReadDir(j.dir)
+	if j.closed {
+		return nil
+	}
+	directory, err := j.root.Open(".")
+	if err != nil {
+		j.log.Warn("journal: opening state dir failed", "dir", j.dir, "error", err)
+		return nil
+	}
+	files, err := directory.ReadDir(-1)
+	if closeErr := directory.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		j.log.Warn("journal: listing state dir failed", "dir", j.dir, "error", err)
 		return nil
@@ -391,7 +530,7 @@ func (j *Journal) load() []journalEntry {
 			continue
 		}
 		path := filepath.Join(j.dir, name)
-		data, err := os.ReadFile(path)
+		data, err := j.root.ReadFile(name)
 		if err != nil {
 			j.log.Warn("journal: reading job file failed; preserving for retry", "file", path, "error", err)
 			continue
@@ -399,18 +538,17 @@ func (j *Journal) load() []journalEntry {
 		var entry journalEntry
 		if err := json.Unmarshal(data, &entry); err != nil {
 			j.log.Warn("journal: dropping malformed job file", "file", path, "error", err)
-			_ = os.Remove(path)
+			_ = j.root.Remove(name)
 			continue
 		}
 		if entry.Retired {
 			key := jobKey{ProjectID: entry.ProjectID, IID: entry.IID}
 			j.nextRetirement++
 			generation := j.nextRetirement
-			j.retirements[key] = generation
 			if j.retireLocked(key) {
 				delete(j.retirements, key)
 			} else {
-				go j.retryRetirement(key, generation)
+				j.queueRetirementLocked(journalRetirement{key: key, generation: generation})
 			}
 			continue
 		}

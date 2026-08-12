@@ -1115,6 +1115,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("serve config: %w", err)
 			}
+			defer func() { _ = journal.Close() }()
 			if journal != nil {
 				log.Info("review job journal enabled", "dir", cfg.StateDir)
 			}
