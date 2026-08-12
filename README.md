@@ -510,16 +510,26 @@ Docker compose example:
 
 ```yaml
 services:
+  state-init:
+    image: busybox:1.37
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /state/journal && chown 65532:65532 /state/journal && chmod 0700 /state/journal"]
+    volumes:
+      - nickpit-state:/state
+
   nickpit:
     image: nickpit
     command: ["gitlab", "serve"]
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     volumes:
       - ./nickpit.yaml:/work/.nickpit.yaml:ro
       - ./server.yaml:/work/server.yaml:ro
       - nickpit-logs:/work/logs
-      - nickpit-state:/work/state    # with state_dir: "/work/state" queued reviews survive restarts
+      - nickpit-state:/work/state    # use state_dir: "/work/state/journal"
     environment:
       OPENROUTER_API_KEY: "..."
       NICKPIT_GL_TOKEN_PLATFORM: "..."
@@ -531,7 +541,7 @@ volumes:
 
 Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints.
 
-The queue lives in memory, with an optional on-disk journal: set `state_dir` (or `--state-dir`) and every accepted-but-unfinished review job is persisted as a small JSON file (no tokens — groups are re-resolved from the config) and resumed at the next start, so a restart or upgrade neither loses queued reviews nor strands the in-progress reaction on acknowledged command comments. The state directory must not be writable by group or other users; NickPit creates a missing directory with mode `0700` and rejects an existing shared-writable directory. The journal survives exactly as long as its directory does — put it on durable storage (a volume, a PVC) to cover pod replacement. Without a `state_dir`, queued jobs release their ack reactions at shutdown and are lost; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command) again.
+The queue lives in memory, with an optional on-disk journal: set `state_dir` (or `--state-dir`) and every accepted-but-unfinished review job is persisted as a small JSON file (no tokens — groups are re-resolved from the config) and resumed at the next start, so a restart or upgrade neither loses queued reviews nor strands the in-progress reaction on acknowledged command comments. The state directory must be owned by the daemon user and must not be writable by group or other users; NickPit creates a missing directory with mode `0700` and rejects an existing shared-writable directory. Docker named-volume roots start as `root`, so the Compose init service above creates a private UID-65532-owned child for `state_dir`. The journal survives exactly as long as its directory does — put it on durable storage (a volume, a PVC) to cover pod replacement. Without a `state_dir`, queued jobs release their ack reactions at shutdown and are lost; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command) again.
 
 ## Tuning a Review
 

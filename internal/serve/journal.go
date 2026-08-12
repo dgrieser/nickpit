@@ -89,16 +89,13 @@ type journalEntry struct {
 	Aborted        *journalEntry `json:"aborted,omitempty"`
 }
 
-// NewJournal opens (creating if needed) the state directory. An empty dir
-// returns a nil journal: journaling disabled.
+// NewJournal opens (creating if needed) the state directory without following
+// symlink components. An empty dir returns a nil journal: journaling disabled.
 func NewJournal(dir string, log *slog.Logger) (*Journal, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("state dir: %w", err)
-	}
-	root, err := os.OpenRoot(dir)
+	root, err := openJournalRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("state dir: open: %w", err)
 	}

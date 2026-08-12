@@ -119,6 +119,36 @@ func TestNewJournalRejectsSharedWritableDirectory(t *testing.T) {
 	}
 }
 
+func TestNewJournalRejectsSymlinkedStateDirectory(t *testing.T) {
+	target := privateJournalDir(t)
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "state")
+	if err := os.Symlink(target, dir); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	journal, err := NewJournal(dir, discardLogger())
+	if err == nil || journal != nil {
+		t.Fatalf("NewJournal = (%v, %v), want symlinked state dir rejected", journal, err)
+	}
+}
+
+func TestNewJournalRejectsSymlinkedStateDirectoryAncestor(t *testing.T) {
+	target := privateJournalDir(t)
+	parent := t.TempDir()
+	link := filepath.Join(parent, "redirect")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	dir := filepath.Join(link, "state")
+	journal, err := NewJournal(dir, discardLogger())
+	if err == nil || journal != nil {
+		t.Fatalf("NewJournal = (%v, %v), want symlinked state-dir ancestor rejected", journal, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "state")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("redirect target state dir exists after rejection: %v", err)
+	}
+}
+
 func TestJournalRetirementTombstoneRetriesDeletion(t *testing.T) {
 	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())

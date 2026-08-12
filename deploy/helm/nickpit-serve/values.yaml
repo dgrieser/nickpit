@@ -40,6 +40,9 @@ podSecurityContext:
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
+  # Avoid recursively reapplying fsGroup to the private 0700 journal child on
+  # every PVC remount. The PVC root already matches after its first mount.
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
