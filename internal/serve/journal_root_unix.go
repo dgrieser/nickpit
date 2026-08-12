@@ -31,7 +31,7 @@ func openJournalRoot(dir string) (*os.Root, error) {
 	}
 	defer func() { _ = current.Close() }()
 
-	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+	for component := range strings.SplitSeq(clean, string(filepath.Separator)) {
 		if component == "" || component == "." {
 			continue
 		}

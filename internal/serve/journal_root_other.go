@@ -50,7 +50,7 @@ func rejectJournalPathSymlinks(path string) error {
 	volume := filepath.VolumeName(abs)
 	current := volume + string(filepath.Separator)
 	rest := strings.TrimPrefix(abs, current)
-	for _, component := range strings.Split(rest, string(filepath.Separator)) {
+	for component := range strings.SplitSeq(rest, string(filepath.Separator)) {
 		if component == "" {
 			continue
 		}
