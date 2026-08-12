@@ -998,13 +998,19 @@ func (d *Dispatcher) finishAckCleanupAttempt(generation uint64, failed bool, ret
 		if d.cleanupRetryJitter != nil {
 			delay = d.cleanupRetryJitter(delay, d.cleanupRetryMax)
 		}
-		d.cleanupRetryUntil = now.Add(delay)
+		retryUntil := now.Add(delay)
 		serverLimit := now.Add(maxRateLimitRetryDelay)
 		if retryAfter.After(serverLimit) {
 			retryAfter = serverLimit
 		}
-		if retryAfter.After(d.cleanupRetryUntil) {
-			d.cleanupRetryUntil = retryAfter
+		if retryAfter.After(retryUntil) {
+			retryUntil = retryAfter
+		}
+		// Concurrent attempts finish out of order. Keep a longer server deadline
+		// established by an earlier completion instead of replacing it with this
+		// attempt's local backoff.
+		if retryUntil.After(d.cleanupRetryUntil) {
+			d.cleanupRetryUntil = retryUntil
 		}
 	} else if generation == d.cleanupBackoffGen {
 		d.cleanupRetryFailures = 0

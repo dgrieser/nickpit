@@ -64,10 +64,30 @@ func NewJournal(dir string, log *slog.Logger) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
+	if err := validateJournalDir(dir); err != nil {
+		return nil, fmt.Errorf("state dir: %w", err)
+	}
 	if err := probeJournalDir(dir); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
 	return &Journal{dir: dir, log: log}, nil
+}
+
+// validateJournalDir keeps untrusted local users from replacing predictable
+// job paths and injecting work for the daemon. Read-only access is harmless:
+// journal files themselves are mode 0600 and contain no credentials.
+func validateJournalDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect permissions: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("permissions %04o allow group or world writes", info.Mode().Perm())
+	}
+	return nil
 }
 
 // probeJournalDir verifies the operations persistence depends on before intake
@@ -85,16 +105,35 @@ func probeJournalDir(dir string) error {
 		_ = probe.Close()
 		return fmt.Errorf("write probe: %w", err)
 	}
+	if err := probe.Sync(); err != nil {
+		_ = probe.Close()
+		return fmt.Errorf("sync probe: %w", err)
+	}
 	if err := probe.Close(); err != nil {
 		return fmt.Errorf("close probe: %w", err)
 	}
 	if err := os.Rename(tmp, committed); err != nil {
 		return fmt.Errorf("rename probe: %w", err)
 	}
+	if err := syncJournalDir(dir); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
 	if err := os.Remove(committed); err != nil {
 		return fmt.Errorf("remove probe: %w", err)
 	}
 	return nil
+}
+
+func syncJournalDir(dir string) error {
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = directory.Sync()
+	if closeErr := directory.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 // Dir returns the journal's directory (empty when disabled).
@@ -162,16 +201,32 @@ func (j *Journal) persistEntry(entry journalEntry) bool {
 		return false
 	}
 	path := j.path(entry.ProjectID, entry.IID)
-	tmp := path + ".tmp"
 	data, err := json.Marshal(entry)
 	if err != nil {
 		j.log.Warn("journal: encoding job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
-		j.invalidate(path, tmp, entry.ProjectID, entry.IID)
+		j.invalidate(path, "", entry.ProjectID, entry.IID)
 		return false
 	}
-	err = os.WriteFile(tmp, data, 0o600)
+
+	// CreateTemp uses O_EXCL and a randomized name. A writable ancestor cannot
+	// pre-place a symlink that makes this write follow an attacker-chosen path.
+	tmpFile, err := os.CreateTemp(j.dir, "."+filepath.Base(path)+"-*.tmp")
+	tmp := ""
+	if err == nil {
+		tmp = tmpFile.Name()
+		_, err = tmpFile.Write(data)
+		if err == nil {
+			err = tmpFile.Sync()
+		}
+		if closeErr := tmpFile.Close(); err == nil {
+			err = closeErr
+		}
+	}
 	if err == nil {
 		err = os.Rename(tmp, path)
+	}
+	if err == nil {
+		err = syncJournalDir(j.dir)
 	}
 	if err != nil {
 		j.log.Warn("journal: persisting job failed", "project", entry.ProjectPath, "iid", entry.IID, "error", err)
@@ -211,8 +266,10 @@ func parseCleanupOutcome(name string) (reviewOutcome, bool) {
 // canonical entry. Once an update fails, the old snapshot is unsafe to resume:
 // it may omit a newer manual trigger or acknowledgements already awarded.
 func (j *Journal) invalidate(path, tmp string, projectID, iid int) {
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		j.log.Warn("journal: removing failed temporary job file", "file", tmp, "error", err)
+	if tmp != "" {
+		if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			j.log.Warn("journal: removing failed temporary job file", "file", tmp, "error", err)
+		}
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		j.log.Warn("journal: invalidating stale job failed", "project_id", projectID, "iid", iid, "error", err)

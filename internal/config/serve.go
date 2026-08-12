@@ -55,7 +55,8 @@ type ServeConfig struct {
 	// so a restart (crash, upgrade) neither loses queued reviews nor strands
 	// their acknowledged command notes. Empty disables journaling; queued jobs
 	// then have their ack reactions revoked at shutdown instead. The directory
-	// must be writable and, to survive pod replacement, on durable storage.
+	// must be daemon-writable but not group/world-writable and, to survive pod
+	// replacement, on durable storage.
 	StateDir string `yaml:"state_dir"`
 	// Notices collects non-fatal adjustments made while loading the config
 	// (e.g. a defaulted outcome emoji dropped because it collided with an

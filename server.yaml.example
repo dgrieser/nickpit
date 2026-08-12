@@ -17,7 +17,8 @@ shutdown_grace: "10m"
 # per MR), so a restart — crash, upgrade — resumes them and every acknowledged
 # command comment still gets its outcome reaction. Empty ("") disables the
 # journal; queued jobs then have their ack reaction revoked at shutdown and are
-# lost. Put it on durable storage (a mounted volume) to survive pod replacement.
+# lost. Put it on durable storage (a mounted volume) to survive pod replacement;
+# directory must not be writable by group or other users.
 # state_dir: "/var/lib/nickpit/state"
 state_dir: ""
 

@@ -67,9 +67,12 @@ type fakeGitLab struct {
 	// emojiFailureStatus, when non-zero, fails every award-list request. GET
 	// timestamps let retry tests verify shared pacing across different jobs.
 	emojiFailureStatus int
-	emojiRetryAfter    string
-	emojiGETs          atomic.Int32
-	emojiGETTimes      []time.Time
+	// emojiFailureGate blocks configured failures after their timestamps are
+	// recorded, letting retry tests form a complete initial admitted wave.
+	emojiFailureGate chan struct{}
+	emojiRetryAfter  string
+	emojiGETs        atomic.Int32
+	emojiGETTimes    []time.Time
 	// missingNoteIDs makes every emoji request for selected notes return 404.
 	missingNoteIDs map[int]bool
 	// emojiFailurePaths returns 503 from selected award-list paths. Protected by
@@ -127,9 +130,13 @@ func (f *fakeGitLab) handler() http.Handler {
 			f.mu.Lock()
 			f.emojiGETTimes = append(f.emojiGETTimes, time.Now())
 			failureStatus := f.emojiFailureStatus
+			failureGate := f.emojiFailureGate
 			retryAfter := f.emojiRetryAfter
 			f.mu.Unlock()
 			if failureStatus != 0 {
+				if failureGate != nil {
+					<-failureGate
+				}
 				if retryAfter != "" {
 					w.Header().Set("Retry-After", retryAfter)
 				}
@@ -721,11 +728,15 @@ func TestEnqueueCleanupStatesConsumeBacklogCapacity(t *testing.T) {
 // fast GitLab outage, distinct backlog entries must share one exponentially
 // increasing gate instead of each firing once per second.
 func TestDurableCleanupBackoffIsSharedAcrossBacklog(t *testing.T) {
+	failureGate := make(chan struct{})
+	closeFailureGate := sync.OnceFunc(func() { close(failureGate) })
+	defer closeFailureGate()
 	fake := &fakeGitLab{
 		topics:             []string{"nickpit"},
 		state:              "opened",
 		headSHA:            "sha-1",
 		emojiFailureStatus: http.StatusServiceUnavailable,
+		emojiFailureGate:   failureGate,
 	}
 	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
 	dispatcher.cleanupRetryInitial = 30 * time.Millisecond
@@ -743,7 +754,18 @@ func TestDurableCleanupBackoffIsSharedAcrossBacklog(t *testing.T) {
 	for _, key := range keys {
 		dispatcher.queueDurableCleanup(key)
 	}
-	waitFor(t, time.Second, func() bool { return fake.emojiGETs.Load() >= maxAckCleanupWorkers+1 })
+	// Hold every initially admitted request at the fake server until all four
+	// timestamps exist. This makes slots 0-3 a deterministic initial wave even
+	// when race instrumentation delays individual goroutines.
+	waitFor(t, time.Second, func() bool { return len(fake.emojiRequestTimes()) == maxAckCleanupWorkers })
+	dispatcher.cleanupMu.Lock()
+	active := dispatcher.cleanupAttemptsActive
+	dispatcher.cleanupMu.Unlock()
+	if active != maxAckCleanupWorkers {
+		t.Fatalf("active cleanup attempts = %d, want initial wave of %d", active, maxAckCleanupWorkers)
+	}
+	closeFailureGate()
+	waitFor(t, time.Second, func() bool { return len(fake.emojiRequestTimes()) >= maxAckCleanupWorkers+1 })
 	times := fake.emojiRequestTimes()
 	firstAfterWave := times[maxAckCleanupWorkers]
 	lastInWave := times[maxAckCleanupWorkers-1]
@@ -765,7 +787,7 @@ func TestCleanupBackoffHonorsServerRetryAfter(t *testing.T) {
 	dispatcher.cleanupRetryInitial = time.Millisecond
 	dispatcher.cleanupRetryMax = 2 * time.Millisecond
 	dispatcher.cleanupRetryJitter = func(delay, _ time.Duration) time.Duration { return delay }
-	retryAt := time.Now().Add(100 * time.Millisecond)
+	retryAt := time.Now().Add(5 * time.Second)
 	dispatcher.cleanupMu.Lock()
 	dispatcher.cleanupAttemptsActive = 2
 	dispatcher.cleanupMu.Unlock()
@@ -775,6 +797,15 @@ func TestCleanupBackoffHonorsServerRetryAfter(t *testing.T) {
 	dispatcher.cleanupMu.Unlock()
 	if got.Before(retryAt) {
 		t.Fatalf("shared retry time = %v, want server delay through %v", got, retryAt)
+	}
+	// A concurrent 5xx may finish later with only a short local delay. It must
+	// preserve the longer Retry-After already established by its peer.
+	dispatcher.finishAckCleanupAttempt(0, true, time.Time{})
+	dispatcher.cleanupMu.Lock()
+	afterPeerFailure := dispatcher.cleanupRetryUntil
+	dispatcher.cleanupMu.Unlock()
+	if afterPeerFailure.Before(retryAt) {
+		t.Fatalf("concurrent failure shortened retry-after: got %v, want at least %v", afterPeerFailure, retryAt)
 	}
 	// A successful peer from the same admitted wave started before this failure;
 	// it must not erase the newer server instruction when it finishes later.

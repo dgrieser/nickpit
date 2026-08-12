@@ -33,10 +33,20 @@ func newJournalEnvWithConfig(t *testing.T, fake *fakeGitLab, dir string, cfg Wor
 	return dispatcher, runner, groups
 }
 
-// A failed coalescing overwrite must invalidate the older canonical snapshot.
-// Otherwise restart would resume state that predates already-acknowledged work.
-func TestJournalFailedUpdateInvalidatesOlderEntry(t *testing.T) {
+func privateJournalDir(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// Predictable legacy temporary paths may be attacker-controlled in an existing
+// state directory. Persistence must neither follow them nor let them block an
+// update.
+func TestJournalPersistUsesExclusiveTemporaryFile(t *testing.T) {
+	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -46,15 +56,27 @@ func TestJournalFailedUpdateInvalidatesOlderEntry(t *testing.T) {
 		t.Fatal("initial persist failed")
 	}
 	path := journal.path(event.ProjectID, event.IID)
-	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+	target := filepath.Join(t.TempDir(), "attacker-target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".tmp"); err != nil {
 		t.Fatal(err)
 	}
 	event.HeadSHA = "sha-2"
-	if journal.persist(event) {
-		t.Fatal("update unexpectedly succeeded with a directory at the temp path")
+	if !journal.persist(event) {
+		t.Fatal("update failed because predictable temp symlink existed")
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("canonical entry survived failed update: %v", err)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "unchanged" {
+		t.Fatalf("attacker target = %q, want unchanged", data)
+	}
+	entries := journal.load()
+	if len(entries) != 1 || entries[0].HeadSHA != "sha-2" {
+		t.Fatalf("journal entries = %+v, want updated canonical entry", entries)
 	}
 }
 
@@ -71,7 +93,7 @@ func TestNewJournalRejectsUnwritableExistingDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory write permissions")
 	}
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +101,17 @@ func TestNewJournalRejectsUnwritableExistingDirectory(t *testing.T) {
 	journal, err := NewJournal(dir, discardLogger())
 	if err == nil || journal != nil {
 		t.Fatalf("NewJournal = (%v, %v), want startup failure for unwritable state dir", journal, err)
+	}
+}
+
+func TestNewJournalRejectsSharedWritableDirectory(t *testing.T) {
+	dir := privateJournalDir(t)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(dir, discardLogger())
+	if err == nil || journal != nil {
+		t.Fatalf("NewJournal = (%v, %v), want shared writable state dir rejected", journal, err)
 	}
 }
 
@@ -99,7 +132,7 @@ func TestJournalLoadUsesLiteralStateDirectory(t *testing.T) {
 }
 
 func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +170,7 @@ func TestJournalPreservesUncertainAcknowledgementCleanup(t *testing.T) {
 // journal entry runnable so replacement daemon executes it instead of treating
 // SIGTERM exit as a terminal failure.
 func TestJournalShutdownInterruptedReviewResumes(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	fake.preAward(7, 301, "eyes")
 
@@ -181,7 +214,7 @@ func TestJournalShutdownInterruptedReviewResumes(t *testing.T) {
 }
 
 func TestJournalLoadPreservesFileOnReadFailure(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +233,7 @@ func TestJournalLoadPreservesFileOnReadFailure(t *testing.T) {
 }
 
 func TestJournalLoadRemovesMalformedFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	journal, err := NewJournal(dir, discardLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +253,7 @@ func TestJournalLoadRemovesMalformedFile(t *testing.T) {
 
 // An accepted job is journaled; settling it removes the file again.
 func TestJournalFollowsJobLifecycle(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
@@ -245,7 +278,7 @@ func TestJournalFollowsJobLifecycle(t *testing.T) {
 // worker starts reaction I/O, its crash snapshot must become cleanup-only so a
 // replacement daemon cannot run and publish the paid review a second time.
 func TestJournalPersistsCompletionBeforeReactionSettlement(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	settleGate := make(chan struct{})
 	closeSettleGate := sync.OnceFunc(func() { close(settleGate) })
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
@@ -296,7 +329,7 @@ func TestJournalPersistsCompletionBeforeReactionSettlement(t *testing.T) {
 // An abort replaces the runnable journal entry with cleanup-only state, then
 // removes it after that cleanup succeeds.
 func TestJournalRemovedOnAbort(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
@@ -307,7 +340,7 @@ func TestJournalRemovedOnAbort(t *testing.T) {
 }
 
 func TestJournalAbortBehindCleanupKeepsSeparateOutcome(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	fake.preAward(7, 301, "eyes")
 	fake.preAward(7, 302, "eyes")
@@ -358,7 +391,7 @@ func TestJournalAbortBehindCleanupKeepsSeparateOutcome(t *testing.T) {
 // A failed outcome replacement becomes cleanup-only durable work. Retries must
 // not rerun the review, and the journal may disappear only after replacement.
 func TestJournalSettlementFailureRetriesCleanupOnly(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	fake.preAward(7, 301, "eyes")
 	dispatcher, runner, groups := newJournalEnv(t, fake, dir)
@@ -406,7 +439,7 @@ func TestJournalSettlementFailureRetriesCleanupOnly(t *testing.T) {
 // Abort persists cleanup-only state before its asynchronous revoke starts. A
 // replacement daemon can finish that cleanup without reviving the review.
 func TestJournalAbortCleanupRestoresAfterCrashWindow(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	gate := make(chan struct{})
 	closeGate := sync.OnceFunc(func() { close(gate) })
 	fake := &fakeGitLab{
@@ -452,7 +485,7 @@ func TestJournalAbortCleanupRestoresAfterCrashWindow(t *testing.T) {
 // finish. A newer webhook in that window must become pending behind the durable
 // abort cleanup, not overwrite the journal with a runnable merged snapshot.
 func TestJournalRunningAbortThenEnqueuePreservesCleanup(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	gate := make(chan struct{})
 	closeGate := sync.OnceFunc(func() { close(gate) })
 	fake := &fakeGitLab{
@@ -520,7 +553,7 @@ func TestJournalRunningAbortThenEnqueuePreservesCleanup(t *testing.T) {
 // reactions in place — the restart resumes and settles them), instead of
 // releasing them like the journal-less path does.
 func TestJournalShutdownKeepsJobs(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
@@ -564,7 +597,7 @@ func TestJournalShutdownReleasesAckWhenPersistFails(t *testing.T) {
 // The full restart story: a job accepted (and its note acknowledged) by one
 // daemon process is picked up by the next one, runs, and settles the note.
 func TestJournalRestoreResumesAcrossRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	fake.preAward(7, 301, "eyes")
 
@@ -599,7 +632,7 @@ func TestJournalRestoreResumesAcrossRestart(t *testing.T) {
 // restore time. A resumed run must remove old start/ack names while using the
 // current outcome name.
 func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	fake.preAward(7, 0, "old-start")
 	fake.preAward(7, 301, "old-ack")
@@ -649,7 +682,7 @@ func TestJournalRestoreCleansReactionNamesFromOldConfig(t *testing.T) {
 // configured start-emoji name into evidence that a request reached GitLab.
 // The restored skipped job therefore leaves the MR wholly undecorated.
 func TestJournalRestoreBeforeStartAttemptDoesNotDecorateSkippedAuto(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"go"}, state: "opened", headSHA: "sha-1"}
 
 	first, _, groups := newJournalEnv(t, fake, dir)
@@ -688,7 +721,7 @@ func TestJournalRestoreBeforeStartAttemptDoesNotDecorateSkippedAuto(t *testing.T
 // set exceeds the cap, every omitted acknowledgement must be released now;
 // after a crash no restored state could settle it.
 func TestJournalRunningSnapshotReleasesOmittedAck(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
@@ -723,7 +756,7 @@ func TestJournalRunningSnapshotReleasesOmittedAck(t *testing.T) {
 // must be parked in overflow and admitted as workers free those slots. Leaving
 // excess files only on disk would strand them until another daemon restart.
 func TestJournalRestoreBeyondQueueCapacity(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	first, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
@@ -764,7 +797,7 @@ func TestJournalRestoreBeyondQueueCapacity(t *testing.T) {
 // A journaled job whose group vanished from the config cannot run; it is
 // dropped (with its file) instead of poisoning every restart.
 func TestJournalRestoreDropsUnmatchedGroup(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateJournalDir(t)
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, _, groups := newJournalEnv(t, fake, dir)
 	group := groups.Match("platform/api")
