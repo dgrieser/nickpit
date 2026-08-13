@@ -503,7 +503,15 @@ GitLab setup per group (group webhooks require GitLab Premium; emoji events requ
 
 1. Create a group access token (role Developer, scope `api`) — reviews are posted as this bot user.
 2. Create the custom emoji `nickpit` in the group (for manual trigger).
-3. Group → Settings → Webhooks: URL `https://<daemon>/webhooks/gitlab`, the secret token, and enable **Merge request events**, **Emoji events**, and **Comment events** (for the `/nickpit` commands).
+3. Group → Settings → Webhooks:
+  - URL: `https://<daemon>/webhooks/gitlab`
+  - Click **Generate signing token** and copy the token
+  - Select **Trigger**:
+    - **Merge request events**
+    - **Emoji events** and
+    - **Comments** (for the `/nickpit` commands)
+  - Enable SSL verification
+  - Click **Add webhook**
 4. Opt projects into auto-review by adding the topic `nickpit` (Project → Settings → General → Topics).
 
 Docker compose example:
