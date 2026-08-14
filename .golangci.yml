@@ -10,6 +10,12 @@ linters:
     # reproduces exactly what CI checks.
     - modernize
 
+issues:
+  # Defaults cap a single check at 3 reports, which turns one bad pattern into
+  # several rounds of CI failures instead of one complete list.
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
 formatters:
   enable:
     - gofmt
