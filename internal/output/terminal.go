@@ -97,8 +97,9 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 	return err
 }
 
-// writeSummary renders the overall verdict comment: badge, confidence, and the
-// explanation as rendered markdown.
+// writeSummary renders the overall verdict comment: badge and the explanation
+// as rendered markdown. The overall confidence score is deliberately not shown
+// here — it stays in the JSON output and the review envelope only.
 func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.ReviewResult) {
 	correctness := strings.TrimSpace(result.OverallCorrectness)
 	if correctness == "" {
@@ -108,8 +109,6 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 		b.WriteString(correctnessBadge(correctness, f.useANSI))
 	}
 	b.WriteString("\n")
-	b.WriteString(f.dim(reviewmd.ConfidencePercent(result.OverallConfidenceScore)))
-	b.WriteString("\n")
 	if explanation := textsan.StripControl(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
 		b.WriteString("\n")
 		b.WriteString(f.renderMarkdown(explanation))
@@ -117,13 +116,12 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 	}
 }
 
-// writeFinding renders one finding comment: badge, confidence, location, and
-// the title/body/suggestions markdown.
+// writeFinding renders one finding comment: badge, location, and the
+// title/body/suggestions markdown. Confidence scores are deliberately not shown
+// here — they stay in the JSON output and the review envelope only.
 func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Finding) {
-	_, _, rank, confidence := reviewmd.FindingDisplay(finding)
+	_, _, rank, _ := reviewmd.FindingDisplay(finding)
 	b.WriteString(priorityBadge(rank, f.useANSI))
-	b.WriteString("\n")
-	b.WriteString(f.dim(reviewmd.ConfidencePercent(confidence)))
 	b.WriteString("\n\n")
 	b.WriteString(f.bold(findingLocation(finding)))
 	b.WriteString("\n\n")

@@ -1,12 +1,10 @@
 [INCORRECT]
-(77% confidence)
 
 Summary text
 
 ---
 
 [HIGH]
-(60% confidence)
 
 b.go:7
 
@@ -17,7 +15,6 @@ Short.
 ---
 
 [MEDIUM]
-(82% confidence)
 
 a.go:10-12
 

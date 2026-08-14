@@ -148,10 +148,14 @@ func TestSummaryBodyTaggedAndBadged(t *testing.T) {
 	if !strings.HasPrefix(body, SummaryMarker) {
 		t.Fatalf("summary not tagged with marker: %q", body)
 	}
-	if !strings.Contains(body, "incorrect.svg") || !strings.Contains(body, "90% confidence") || !strings.Contains(body, "boom") {
-		t.Fatalf("summary missing badge/confidence/explanation: %q", body)
+	if !strings.Contains(body, "incorrect.svg") || !strings.Contains(body, "boom") {
+		t.Fatalf("summary missing badge/explanation: %q", body)
 	}
-	if !strings.Contains(body, "_(90% confidence)_  \n\nboom  \n\nsecond paragraph  \n") {
+	// The overall confidence score is not rendered in the visible summary.
+	if strings.Contains(body, "confidence") {
+		t.Fatalf("summary renders overall confidence: %q", body)
+	}
+	if !strings.Contains(body, "incorrect.svg)\n\nboom  \n\nsecond paragraph  \n") {
 		t.Fatalf("summary missing hard breaks after paragraphs: %q", body)
 	}
 }
@@ -183,9 +187,9 @@ func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	if !strings.HasPrefix(body, marker) {
 		t.Fatalf("finding not tagged with fingerprint: %q", body)
 	}
+	// No confidence line: it stays in the envelope/JSON, not the visible body.
 	wantPrefix := marker + "\n\n" +
-		"![P1](https://host/p1.svg)  \n" +
-		"_(91% confidence)_  \n\n" +
+		"![P1](https://host/p1.svg)\n\n" +
 		"`file.go:5`  \n\n" +
 		"### Title  \n\n" +
 		"Detail  "

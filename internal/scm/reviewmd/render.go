@@ -866,16 +866,6 @@ func sanitizeWithHardBreaks(s string) string {
 	return hardBreakParagraphs(EscapeQuickActions(Sanitize(s)))
 }
 
-// ConfidencePercent renders a 0..1 confidence score as "(NN% confidence)".
-func ConfidencePercent(score float64) string {
-	return fmt.Sprintf("(%.0f%% confidence)", score*100)
-}
-
-// ConfidenceLine renders a 0..1 confidence score as an italic percentage.
-func ConfidenceLine(score float64) string {
-	return "_" + ConfidencePercent(score) + "_"
-}
-
 // CorrectnessName maps the overall verdict to its badge name. The verdict enum
 // is "patch is correct" / "patch is incorrect"; anything containing
 // "incorrect" maps to "incorrect", else "correct".
@@ -959,14 +949,14 @@ func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) 
 	var b strings.Builder
 	b.WriteString(SummaryMarker)
 	b.WriteString("\n")
-	// The trailing two spaces are a markdown hard break so the badge and the
-	// confidence line render stacked rather than joined into one line.
+	// The overall confidence score is deliberately not rendered here — it stays
+	// in the review envelope (and the JSON output) only.
 	correctness := strings.TrimSpace(result.OverallCorrectness)
 	if correctness == "" {
 		// No verdict to badge; fall back to plain text.
-		fmt.Fprintf(&b, "**review complete**  \n%s  \n", ConfidenceLine(result.OverallConfidenceScore))
+		b.WriteString("**review complete**\n")
 	} else {
-		fmt.Fprintf(&b, "%s  \n%s  \n", r.CorrectnessBadge(correctness), ConfidenceLine(result.OverallConfidenceScore))
+		fmt.Fprintf(&b, "%s\n", r.CorrectnessBadge(correctness))
 	}
 	if explanation := EscapeQuickActions(Sanitize(strings.TrimSpace(result.OverallExplanation))); explanation != "" {
 		b.WriteString("\n")
@@ -1061,20 +1051,21 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 // FindingBodyCarried renders a finding as markdown, tagged with its
 // FingerprintMarker, plus whether the full-finding carrier marker actually rode
 // along. When locationPrefix is non-empty (the general-comment fallback used
-// when a finding cannot be anchored inline) it is shown after the
-// badge/confidence block so the location is still visible without an inline
-// anchor. The carrier is omitted when it would push the comment past the
+// when a finding cannot be anchored inline) it is shown after the priority
+// badge so the location is still visible without an inline
+// anchor. The confidence score is deliberately not rendered — it stays in the
+// review envelope (and the JSON output) only. The carrier is omitted when it
+// would push the comment past the
 // platform size limit — an unusually long (e.g. imported) finding must still
 // publish its visible text; carrier metadata is never worth losing the comment
 // over. Publishers use carried=false to route the finding into the chunked
 // fallback carrier notes instead.
 func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix string) (string, bool) {
-	title, body, rank, confidence := FindingDisplay(finding)
+	title, body, rank, _ := FindingDisplay(finding)
 	fingerprint := FingerprintMarker(finding, title)
 	var b strings.Builder
 	b.WriteString("\n\n")
-	// Trailing two spaces: markdown hard break stacking badge over confidence.
-	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))
+	fmt.Fprintf(&b, "%s\n\n", r.PriorityBadge(rank))
 	if locationPrefix != "" {
 		// Hard break so the location sits on its own line above the title/body.
 		b.WriteString(locationPrefix)
