@@ -671,11 +671,15 @@ func TestShallowCheckoutIsDeepenedOnceForConcurrentCalls(t *testing.T) {
 		t.Fatalf("deepen fetches = %d, want 1 or 2 for four concurrent calls: %v", deepens, calls)
 	}
 	for i, result := range results {
+		// Report every bad result rather than stopping at the first: a nil here
+		// means that goroutine already failed via t.Errorf, and which of the four
+		// concurrent calls came back wrong is the interesting part.
 		if result == nil {
-			t.Fatalf("result[%d] missing", i)
+			t.Errorf("result[%d] missing", i)
+			continue
 		}
 		if !result.Shallow || result.Note == "" {
-			t.Fatalf("result[%d] shallow = %t, note = %q", i, result.Shallow, result.Note)
+			t.Errorf("result[%d] shallow = %t, note = %q", i, result.Shallow, result.Note)
 		}
 	}
 }

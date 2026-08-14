@@ -148,10 +148,14 @@ func TestSummaryBodyTaggedAndBadged(t *testing.T) {
 	if !strings.HasPrefix(body, SummaryMarker) {
 		t.Fatalf("summary not tagged with marker: %q", body)
 	}
-	if !strings.Contains(body, "incorrect.svg") || !strings.Contains(body, "90% confidence") || !strings.Contains(body, "boom") {
-		t.Fatalf("summary missing badge/confidence/explanation: %q", body)
+	if !strings.Contains(body, "incorrect.svg") || !strings.Contains(body, "boom") {
+		t.Fatalf("summary missing badge/explanation: %q", body)
 	}
-	if !strings.Contains(body, "_(90% confidence)_  \n\nboom  \n\nsecond paragraph  \n") {
+	// The overall confidence score is not rendered in the visible summary.
+	if strings.Contains(body, "confidence") {
+		t.Fatalf("summary renders overall confidence: %q", body)
+	}
+	if !strings.Contains(body, "incorrect.svg)\n\nboom  \n\nsecond paragraph  \n") {
 		t.Fatalf("summary missing hard breaks after paragraphs: %q", body)
 	}
 }
@@ -183,9 +187,9 @@ func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	if !strings.HasPrefix(body, marker) {
 		t.Fatalf("finding not tagged with fingerprint: %q", body)
 	}
+	// No confidence line: it stays in the envelope/JSON, not the visible body.
 	wantPrefix := marker + "\n\n" +
-		"![P1](https://host/p1.svg)  \n" +
-		"_(91% confidence)_  \n\n" +
+		"![P1](https://host/p1.svg)\n\n" +
 		"`file.go:5`  \n\n" +
 		"### Title  \n\n" +
 		"Detail  "
@@ -355,8 +359,8 @@ func TestCarrierNotesReassemble(t *testing.T) {
 		Repo:                   "grp/proj",
 		Identifier:             9,
 		Findings: []model.Finding{
-			{ID: "f1", Title: "One", Body: "b1", CodeLocation: model.CodeLocation{FilePath: "a.go"}},
-			{ID: "f2", Title: "Two", Body: "b2", CodeLocation: model.CodeLocation{FilePath: "b.go"}},
+			{ID: "f1", Title: "One", Body: "b1", ConfidenceScore: 0.4, CodeLocation: model.CodeLocation{FilePath: "a.go"}},
+			{ID: "f2", Title: "Two", Body: "b2", ConfidenceScore: 0.8, CodeLocation: model.CodeLocation{FilePath: "b.go"}},
 		},
 	}
 	notes := NewRenderer("https://host/").CarrierNotes(result, result.Findings)
@@ -370,6 +374,17 @@ func TestCarrierNotesReassemble(t *testing.T) {
 	}
 	if got.OverallExplanation != "carrier note test" || len(got.Findings) != 2 {
 		t.Fatalf("carrier reassembly incomplete: %+v", got)
+	}
+	// Confidence scores are no longer rendered in the visible comment bodies, so
+	// the carrier envelope is the only thing keeping them alive across a re-run.
+	if got.OverallConfidenceScore != 0.6 {
+		t.Fatalf("overall confidence lost in carrier: %v", got.OverallConfidenceScore)
+	}
+	for _, f := range got.Findings {
+		want := map[string]float64{"f1": 0.4, "f2": 0.8}[f.ID]
+		if f.ConfidenceScore != want {
+			t.Fatalf("finding %s confidence = %v, want %v", f.ID, f.ConfidenceScore, want)
+		}
 	}
 	// Only the passed findings ride in the carrier — the review envelope alone
 	// when none are missing.

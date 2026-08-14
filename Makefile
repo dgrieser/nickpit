@@ -21,7 +21,7 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 .DEFAULT_GOAL := build
 
-.PHONY: help generate build debug install test race lint modernize vet fmt
+.PHONY: help generate build debug install test race lint vet fmt
 
 .DEFAULT:
 	@echo "Error: unknown target '$@'"
@@ -52,11 +52,11 @@ test: ## Run the test suite
 race: ## Run the race detector
 	go test -tags "$(GRAMMAR_TAGS)" -race ./...
 
-lint: ## Run golangci-lint (install: https://golangci-lint.run/welcome/install/)
+lint: ## Run golangci-lint, modernize analyzers included (install: https://golangci-lint.run/welcome/install/)
+	# A restored analysis cache loses staticcheck's fact that testing.Fatal never
+	# returns and then reports bogus SA5011 nil derefs, so always start cold.
+	golangci-lint cache clean
 	golangci-lint run ./...
-
-modernize: ## Run gopls modernize analyzers (add -fix to auto-apply)
-	go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0 ./...
 
 vet: ## Run go vet
 	go vet ./...

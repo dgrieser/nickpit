@@ -14,12 +14,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      # The modernize analyzers run as part of this too — they are enabled in
+      # .golangci.yml, so `make lint` locally checks exactly what CI checks.
+      #
+      # skip-cache: a restored analysis cache loses staticcheck's fact that
+      # (*testing.common).Fatal never returns, so every `if x == nil { t.Fatal }`
+      # followed by a dereference is reported as SA5011. A cold run recomputes
+      # the fact and stays quiet; `make lint` cleans the cache for the same
+      # reason. Lint takes ~20s, so the cache buys little.
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
-      # gopls modernize analyzers (range-over-int, slices/maps helpers, min/max,
-      # etc.) — not part of golangci-lint's standard set, so gate them here.
-      - run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0 ./...
+          skip-cache: true
 
   test:
     runs-on: ubuntu-latest

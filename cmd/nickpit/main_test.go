@@ -640,10 +640,11 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	} {
 		flag := cmd.PersistentFlags().Lookup(tt.name)
 		if flag == nil {
-			t.Fatalf("%s flag missing", tt.name)
+			t.Errorf("%s flag missing", tt.name)
+			continue
 		}
 		if flag.DefValue != tt.want {
-			t.Fatalf("%s default = %q, want %q", tt.name, flag.DefValue, tt.want)
+			t.Errorf("%s default = %q, want %q", tt.name, flag.DefValue, tt.want)
 		}
 	}
 	diffScope := cmd.PersistentFlags().Lookup("disable-diff-scope")

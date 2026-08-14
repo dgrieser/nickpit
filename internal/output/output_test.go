@@ -81,6 +81,13 @@ func TestTerminalFormatter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Confidence scores stay in the JSON output and the review envelope; the
+	// terminal renders neither the overall score nor the per-finding ones. The
+	// golden file below would also catch a re-added line, but only as an opaque
+	// diff — this asserts the rule itself.
+	if strings.Contains(strings.ToLower(buf.String()), "confidence") {
+		t.Fatalf("terminal output renders confidence: %q", buf.String())
+	}
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
 }
 
