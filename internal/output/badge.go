@@ -33,6 +33,15 @@ func ansiBadge(label string, c rgb) string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm\x1b[38;2;0;0;0m%s\x1b[0m", c.r, c.g, c.b, label)
 }
 
+// ansiVerdictBadge renders a correctness badge whose trailing glyph is bold —
+// SGR 1 turns the weight on and 22 turns it off again without disturbing the
+// badge's fore/background, so only the glyph is emphasised.
+func ansiVerdictBadge(word, glyph string, c rgb) string {
+	pad := max(badgeWidth-len([]rune(word))-3, 0) // "WORD g " tail
+	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm\x1b[38;2;0;0;0m%s%s \x1b[1m%s\x1b[22m \x1b[0m",
+		c.r, c.g, c.b, strings.Repeat(" ", pad), word, glyph)
+}
+
 // centerBadgeLabel centers a label inside the fixed badge width.
 func centerBadgeLabel(label string) string {
 	pad := max(badgeWidth-len([]rune(label)), 0)
@@ -40,12 +49,14 @@ func centerBadgeLabel(label string) string {
 	return strings.Repeat(" ", left) + label + strings.Repeat(" ", pad-left)
 }
 
-// correctnessBadgeLabel right-aligns "WORD ✓ " inside the fixed badge width,
-// mirroring the SVG layout (text left of the glyph circle on the right edge).
-func correctnessBadgeLabel(word, glyph string) string {
-	pad := max(badgeWidth-len([]rune(word))-3, 0) // "WORD ✓ " tail is word+space+glyph+space
-	return strings.Repeat(" ", pad) + word + " " + glyph + " "
-}
+// Verdict glyphs, shared with the live dashboard's frozen headline so both mark
+// a run the same way. The check mark renders as a single cell in the fonts we
+// care about, while "✗" is wide or misaligned in many of them, so failure uses a
+// plain ASCII "x". Both are emitted bold.
+const (
+	GlyphCorrect   = "✓"
+	GlyphIncorrect = "x"
+)
 
 // priorityBadge renders a priority rank badge, clamping to [0,3] like
 // reviewmd.PriorityBadge so an out-of-range rank never panics.
@@ -66,12 +77,12 @@ func priorityBadge(rank int, ansi bool) string {
 func correctnessBadge(correctness string, ansi bool) string {
 	if reviewmd.CorrectnessName(correctness) == "incorrect" {
 		if ansi {
-			return ansiBadge(correctnessBadgeLabel("INCORRECT", "✗"), incorrectColor)
+			return ansiVerdictBadge("INCORRECT", GlyphIncorrect, incorrectColor)
 		}
 		return "[INCORRECT]"
 	}
 	if ansi {
-		return ansiBadge(correctnessBadgeLabel("CORRECT", "✓"), correctColor)
+		return ansiVerdictBadge("CORRECT", GlyphCorrect, correctColor)
 	}
 	return "[CORRECT]"
 }

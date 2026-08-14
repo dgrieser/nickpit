@@ -191,24 +191,30 @@ const (
 	progressColorSkipPurple        = "38;5;177"
 )
 
+// progressStageStyles colours the stage column. Truecolor rather than the
+// xterm-256 cube: seventeen stages need more separation than the cube offers at
+// a readable lightness, and the previous 256-colour set had pairs that were
+// practically indistinguishable (Model/Chat, Tool/Verify, ModelCheck/Response).
+// Every entry sits at L* ≥ 64 so it stays readable on a dark background, and no
+// two are closer than ΔE*ab ≈ 25 in CIELAB.
 var progressStageStyles = map[Stage]string{
-	StageNickPit:    "1;38;5;213",
-	StageModel:      "1;38;5;81",
-	StageAgent:      "1;38;5;111",
-	StageModelCheck: "1;38;5;114",
-	StageReview:     "1;38;5;219",
-	StageChat:       "1;38;5;117",
-	StageRequest:    "1;38;5;214",
-	StageReasoning:  "1;38;5;183",
-	StageResponse:   "1;38;5;150",
-	StageTool:       "1;38;5;80",
-	StageCategorize: "1;38;5;153",
-	StageVerify:     "1;38;5;123",
-	StageFinalize:   "1;38;5;207",
-	StageVerdict:    "1;38;5;141",
-	StageSummarize:  "1;38;5;222",
-	StagePublish:    "1;38;5;209",
-	StageResult:     "1;38;5;118",
+	StageNickPit:    "1;38;2;252;104;176", // pink-magenta
+	StageModel:      "1;38;2;140;206;252", // pale sky blue
+	StageAgent:      "1;38;2;88;156;252",  // azure blue
+	StageModelCheck: "1;38;2;20;252;144",  // spring green
+	StageReview:     "1;38;2;252;152;172", // rose
+	StageChat:       "1;38;2;172;140;236", // lavender
+	StageRequest:    "1;38;2;252;168;24",  // amber
+	StageReasoning:  "1;38;2;252;88;220",  // magenta
+	StageResponse:   "1;38;2;100;184;20",  // leaf green
+	StageTool:       "1;38;2;20;244;216",  // turquoise
+	StageCategorize: "1;38;2;244;184;252", // pale orchid
+	StageVerify:     "1;38;2;0;172;176",   // deep teal
+	StageFinalize:   "1;38;2;100;172;108", // sage green
+	StageVerdict:    "1;38;2;208;120;252", // violet
+	StageSummarize:  "1;38;2;240;216;140", // pale gold
+	StagePublish:    "1;38;2;252;112;76",  // coral
+	StageResult:     "1;38;2;228;228;20",  // yellow
 }
 
 func progressStyle(code, text string) string {
