@@ -565,7 +565,6 @@ func TestSummarizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
 	invalid := summarizerOutputValidator(inputItems)(resp)
 	if invalid == nil {
 		t.Fatal("want invalid response")
-		return
 	}
 	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
 	if err != nil {
