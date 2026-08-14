@@ -1277,6 +1277,34 @@ io.Copy(dst, src)
 ow := io.NewOffsetWriter(file, 512) // 1.20+
 ```
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+```go
+// Contain a user-supplied path:
+rel, err := filepath.Localize(userPath) // 1.23+ — errors if the path escapes
+if !filepath.IsLocal(userPath) { ... }  // 1.20+ — lexical predicate
+
+// Or force-root then re-join; works precisely because of the Join semantics.
+f, err := os.Open(filepath.Join(baseDir, filepath.Clean("/"+userPath)))
+```
+
+All three are lexical only and do not resolve symlinks; `os.Root` (1.24+) is the
+first API that enforces the boundary at the OS level.
+
 ##### os.CopyFS [NEW in 1.23]
 
 ```go

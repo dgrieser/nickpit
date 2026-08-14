@@ -1184,6 +1184,32 @@ filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 })
 ```
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+```go
+// Contain a user-supplied path — reject, or force-root then re-join. The latter
+// works precisely because of the Join semantics above.
+if !filepath.IsLocal(userPath) { return errors.New("invalid path") } // 1.20+
+f, err := os.Open(filepath.Join(baseDir, filepath.Clean("/"+userPath)))
+```
+
+Both forms are lexical only and do not resolve symlinks; `os.Root` (1.24+) is
+the first API that enforces the boundary at the OS level.
+
 ##### fs.FS additions [NEW in 1.22]
 
 ```go

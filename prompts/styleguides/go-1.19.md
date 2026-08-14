@@ -1658,6 +1658,36 @@ FetchUser(nil, 1)                  // wrong — may panic
 
 #### File I/O & Streaming
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+**Containing a user-supplied path.** Go 1.19 has neither `filepath.IsLocal`
+(1.20) nor `os.Root` (1.24), so sanitise by hand:
+
+```go
+// Force-root, then re-join. This works precisely because of the Join semantics
+// above: the leading "/" is absorbed as a separator.
+clean := filepath.Clean("/" + userPath)   // "../../etc/passwd" -> "/etc/passwd"
+f, err := os.Open(filepath.Join(baseDir, clean))
+```
+
+This is lexical only and does not resolve symlinks. If untrusted users can
+create symlinks under `baseDir`, resolve with `filepath.EvalSymlinks` and
+re-verify containment against the resolved `baseDir`.
+
 ##### Open / Close with defer
 
 ```go

@@ -1532,6 +1532,46 @@ if id, ok := ctx.Value(requestIDKey).(string); ok {
 
 #### File I/O & Streaming
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+**Containing a user-supplied path** — pick by target Go version:
+
+```go
+// 1.24+ — enforced by the OS, blocks symlink escapes too:
+root, err := os.OpenRoot(baseDir)
+defer root.Close()
+f, err := root.Open(userPath)
+
+// 1.23+ — lexical validation of a slash-separated path:
+rel, err := filepath.Localize(userPath) // error if it escapes
+
+// 1.20+ — lexical check only:
+if !filepath.IsLocal(userPath) { return errors.New("invalid path") }
+f, err := os.Open(filepath.Join(baseDir, userPath))
+
+// Any version — force-root, then re-join. This works precisely because of the
+// Join semantics above: the leading "/" is absorbed as a separator.
+clean := filepath.Clean("/" + userPath)   // "../../etc/passwd" -> "/etc/passwd"
+f, err := os.Open(filepath.Join(baseDir, clean))
+```
+
+`Clean`, `IsLocal` and `Localize` are lexical only — none of them resolve
+symlinks. Only `os.Root` (1.24+) closes that hole.
+
 ##### Open / Close with defer
 
 ```go

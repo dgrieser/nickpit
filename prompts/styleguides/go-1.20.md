@@ -1532,6 +1532,39 @@ if id, ok := ctx.Value(requestIDKey).(string); ok {
 
 #### File I/O & Streaming
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+**Containing a user-supplied path** — `os.Root` does not exist until 1.24:
+
+```go
+// 1.20+ — lexical check only:
+if !filepath.IsLocal(userPath) { return errors.New("invalid path") }
+f, err := os.Open(filepath.Join(baseDir, userPath))
+
+// Or force-root, then re-join. This works precisely because of the Join
+// semantics above: the leading "/" is absorbed as a separator.
+clean := filepath.Clean("/" + userPath)   // "../../etc/passwd" -> "/etc/passwd"
+f, err := os.Open(filepath.Join(baseDir, clean))
+```
+
+Both are lexical only — `IsLocal` inspects the string and does not resolve
+symlinks. Under an untrusted `baseDir`, resolve with `filepath.EvalSymlinks` and
+re-verify containment.
+
 ##### Open / Close with defer
 
 ```go

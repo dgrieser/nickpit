@@ -951,6 +951,25 @@ fmt.Printf("shutting down due to: %v\n", cause)
 
 #### File I/O & Filesystem
 
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+For containment, use `os.Root` (1.24+) rather than any lexical check. `Clean`,
+`IsLocal` and `Localize` never resolve symlinks; `os.Root` does.
+
 ##### Standard I/O
 
 ```go
