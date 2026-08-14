@@ -908,6 +908,21 @@ after, found := strings.CutPrefix("Gopher", "Go")
 before, found := strings.CutSuffix("Gopher", "er")
 ```
 
+##### Trim cutsets and empty Split
+
+`Trim`/`TrimLeft`/`TrimRight` take a **set of runes**, not a prefix or suffix.
+`Split` never returns an empty slice, so `len(parts) > 0` is always true (the
+same holds for the first yield of `SplitSeq`).
+
+```go
+strings.Trim("gogolang.go", ".go")       // "lan" — every '.', 'g', 'o' stripped
+strings.TrimLeft("gogolang.go", "go")    // "lang.go"
+strings.TrimSuffix("gogolang.go", ".go") // "gogolang" — what was probably meant
+strings.TrimPrefix("gogolang.go", "go")  // "golang.go"
+
+strings.Split("", ",")                   // [""] — length 1, not 0
+```
+
 ---
 
 #### Error Handling
@@ -1248,6 +1263,83 @@ stop         := context.AfterFunc(ctx, cleanup)                     // 1.21+
 ---
 
 #### File I/O & Filesystem
+
+##### Path joining — `filepath.Join` never resets on an absolute element
+
+`filepath.Join` glues every element together with a separator and then runs
+`filepath.Clean` over the result. A leading `/` on a later element is treated as
+a separator, not as a new root.
+
+```go
+filepath.Join("/target/mount", "/etc/passwd") // "/target/mount/etc/passwd"
+path.Join("/target/mount", "/etc/passwd")     // "/target/mount/etc/passwd"
+```
+
+```go
+filepath.Join("/target/mount", "../../etc/passwd") // "/etc/passwd"
+filepath.Join("/target/mount", "/../etc/passwd")   // "/target/etc/passwd"
+```
+
+For containment, use `os.Root` [NEW in 1.24] (see the `os.Root` subsection
+below) rather than any lexical check. `Clean`, `IsLocal` and `Localize` never
+resolve symlinks; `os.Root` does.
+
+##### Path containment checks
+
+`strings.HasPrefix` is not a containment check, and `filepath.Rel` does not
+report an escape as an error — it returns a `..` path with `err == nil`.
+
+```go
+strings.HasPrefix(filepath.Clean("/baseball/x"), "/base") // true — not contained
+filepath.Rel("/base", "/etc/passwd")                      // "../etc/passwd", nil
+filepath.Rel("/base", "/baseball/x")                      // "../baseball/x", nil
+
+// Inspect the returned path, not the error:
+rel, err := filepath.Rel(base, target)
+ok := err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+```
+
+`filepath.EvalSymlinks` requires every element to exist, so it cannot validate a
+not-yet-created file, and resolve-then-open is TOCTOU-racy. `os.Root` has
+neither problem: it resolves at the OS level and the boundary holds for every
+operation on the handle.
+
+##### Path decomposition and empty inputs
+
+Nothing here errors — empty or degenerate input silently becomes `"."` or the
+base directory. Reject an empty path before joining it.
+
+```go
+filepath.Clean("")        // "."
+filepath.Base("")         // "."     Base("/") // "/"
+filepath.Dir("a")         // "."
+filepath.Join("base", "") // "base" — an empty user path yields the base dir
+filepath.IsLocal("")      // false   IsLocal(".") // true
+
+// Ext: suffix after the FINAL dot, dot included, last path element only
+filepath.Ext("archive.tar.gz") // ".gz" — not ".tar.gz"
+filepath.Ext("Makefile")       // ""
+filepath.Ext(".bashrc")        // ".bashrc"
+filepath.Ext("dir.d/file")     // ""
+```
+
+##### path vs path/filepath, and glob matching
+
+`path` always uses `/`; `path/filepath` uses the OS separator. Use `path` for
+`io/fs`, `embed.FS`, `os.DirFS`, `net/url` paths and `tar`/`zip` entry names; use
+`path/filepath` for names on the local filesystem.
+
+```go
+filepath.IsAbs("/foo")   // true on Unix, false on Windows (no volume name)
+filepath.IsAbs(`C:\foo`) // false on Unix, true on Windows
+
+// No ** in Match/Glob — a ** component is just a *, matching a single level:
+filepath.Match("a/*", "a/b/c")     // false, nil
+filepath.Match("*.go", "sub/x.go") // false, nil
+filepath.Glob("**/*.go")           // same result as "*/*.go"
+```
+
+Recursive matching needs `filepath.WalkDir` plus `Match` on each entry.
 
 ##### Standard I/O patterns
 
@@ -1824,6 +1916,8 @@ type Better struct { B int64; A bool; C bool } // 16 bytes
 | Closing channel from receiver | Panic | Sender closes |
 | String `+` in loops | O(n^2) | `strings.Builder` |
 | Storing context in struct | Anti-pattern | First parameter |
+| `strings.HasPrefix(path, base)` as a containment check | `/base` also prefixes `/baseball` | `filepath.Rel` + reject a `..` result |
+| `strings.Trim(s, ".ext")` to drop a suffix | Cutset — strips any of those runes from both ends | `strings.TrimSuffix` |
 
 ##### Reachability and domain bounds
 
@@ -1855,6 +1949,20 @@ ordinary maintenance behavior.
 - Report content-addressed storage issues when untrusted data can be accepted
   under the wrong digest, when corruption is silently trusted as valid content,
   or when the repair order can lose the only valid copy.
+
+Before reporting a path traversal, check what the joined path is actually
+exposed to.
+
+- `filepath.Join(base, userPath)` does not escape `base` when `userPath` is
+  absolute — only `..` elements escape. Do not report the absolute-element case.
+- `http.ServeFile` and `http.ServeFileFS` reject any request whose `r.URL.Path`
+  contains a `..` element, so a `Join` fed from `r.URL.Path` or `r.PathValue` is
+  already guarded. That guard does not extend to query parameters, headers, form
+  fields, or to `http.ServeContent`.
+- Report traversal when a `..`-bearing path from an unguarded source reaches the
+  filesystem, when containment is checked with `strings.HasPrefix` instead of
+  `filepath.Rel`, or when a lexical check stands in for symlink resolution on a
+  directory an attacker can write to.
 
 ##### Naming conventions
 
