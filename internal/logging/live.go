@@ -388,10 +388,10 @@ func (r *LiveRenderer) Finish(ok bool, findings int, elapsed time.Duration) {
 	if findings < kept {
 		r.findings.Filtered += kept - findings
 	}
-	mark := "✓"
+	mark := output.GlyphCorrect
 	word := "Review complete"
 	if !ok {
-		mark, word = "✗", "Review stopped"
+		mark, word = output.GlyphIncorrect, "Review stopped"
 	}
 	r.final = []string{
 		r.finalHeaderLocked(mark, word, elapsed, findings, true),
@@ -426,7 +426,7 @@ func (r *LiveRenderer) Close() {
 		return
 	}
 	elapsed := r.now().Sub(r.started)
-	r.final = []string{r.finalHeaderLocked("✗", "Review stopped", elapsed, 0, false), r.findingLineLocked()}
+	r.final = []string{r.finalHeaderLocked(output.GlyphIncorrect, "Review stopped", elapsed, 0, false), r.findingLineLocked()}
 	r.closed = true
 	r.mu.Unlock()
 	defer r.showCursor()
@@ -434,11 +434,12 @@ func (r *LiveRenderer) Close() {
 	<-r.done
 }
 
-// finalHeaderLocked renders the frozen snapshot's headline: a green ✓ (or red ✗
-// on abort), the status word in bold white (distinct from the turquoise elapsed
-// time), the build version, grey middle dots, and — when shown — the findings
-// count in green. The version is repeated here because this line, not the live
-// header, is what stays in the scrollback.
+// finalHeaderLocked renders the frozen snapshot's headline: a bold green ✓ (or a
+// bold red "x" on abort — the same glyphs the verdict badges use), the status
+// word in bold white (distinct from the turquoise elapsed time), the build
+// version, grey middle dots, and — when shown — the findings count in green. The
+// version is repeated here because this line, not the live header, is what stays
+// in the scrollback.
 func (r *LiveRenderer) finalHeaderLocked(mark, word string, elapsed time.Duration, findings int, showFindings bool) string {
 	if !r.useANSI {
 		if r.plan.Version != "" {
@@ -450,11 +451,11 @@ func (r *LiveRenderer) finalHeaderLocked(mark, word string, elapsed time.Duratio
 		return fmt.Sprintf("%s %s · %s", mark, word, shortDuration(elapsed))
 	}
 	markColor := progressColorNumberGreen
-	if mark == "✗" {
+	if mark == output.GlyphIncorrect {
 		markColor = progressColorErrorRed
 	}
 	sep := progressGrey(" · ")
-	line := progressStyle(markColor, mark) + " " +
+	line := progressStyle(progressColorBold+";"+markColor, mark) + " " +
 		progressStyle(progressColorBold+";"+progressColorWhite, word)
 	if r.plan.Version != "" {
 		line += " " + progressGrey(r.plan.Version)
@@ -606,6 +607,11 @@ var nickPitGradients = [][][3]int{
 	{{72, 210, 130}, {192, 240, 120}, {110, 224, 200}}, // green → lime → teal
 	{{255, 150, 66}, {255, 214, 96}, {255, 118, 176}},  // orange → gold → magenta
 	{{150, 96, 255}, {198, 120, 255}, {255, 122, 214}}, // indigo → violet → magenta
+	{{40, 200, 190}, {120, 235, 170}, {210, 245, 120}}, // teal → mint → chartreuse
+	{{255, 80, 90}, {255, 150, 60}, {255, 215, 100}},   // crimson → amber → gold
+	{{255, 100, 200}, {170, 100, 255}, {80, 150, 255}}, // magenta → purple → azure
+	{{120, 255, 215}, {80, 185, 255}, {190, 150, 255}}, // aqua → sky → lilac
+	{{255, 205, 90}, {175, 230, 90}, {70, 210, 175}},   // gold → lime → jade
 }
 
 const (
@@ -1046,11 +1052,13 @@ var liveAgentPastelRGB = [][3]int{
 	{177, 185, 249}, // periwinkle
 	{166, 209, 137}, // green
 	{244, 184, 228}, // pink
-	{239, 159, 118}, // peach
 	{129, 200, 190}, // teal
 	{198, 160, 246}, // lavender
 	{238, 212, 159}, // yellow
 	{138, 173, 244}, // blue
+	{250, 157, 169}, // rose
+	{121, 247, 199}, // mint
+	{100, 208, 250}, // sky
 }
 
 func liveAgentPastelColor(index int) [3]int {
@@ -1177,7 +1185,9 @@ func styleLiveLines(useANSI bool, lines []string, final bool) []string {
 		}
 		code := progressColorLightGrey
 		if i == 0 {
-			code = "1;38;5;81"
+			// The header row borrows the Model stage colour, so both follow the
+			// stage palette from one place.
+			code = progressStageStyles[StageModel]
 		} else if i == len(lines)-1 {
 			code = progressColorNumberGreen
 		} else if !final && i == 1 {

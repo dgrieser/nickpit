@@ -155,10 +155,10 @@ func TestPriorityBadge(t *testing.T) {
 }
 
 func TestCorrectnessBadge(t *testing.T) {
-	if got, want := correctnessBadge("patch is correct", true), "\x1b[48;2;0;255;13m\x1b[38;2;0;0;0m      CORRECT ✓ \x1b[0m"; got != want {
+	if got, want := correctnessBadge("patch is correct", true), "\x1b[48;2;0;255;13m\x1b[38;2;0;0;0m      CORRECT \x1b[1m✓\x1b[22m \x1b[0m"; got != want {
 		t.Errorf("correct ANSI badge = %q, want %q", got, want)
 	}
-	if got, want := correctnessBadge("patch is incorrect", true), "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m    INCORRECT ✗ \x1b[0m"; got != want {
+	if got, want := correctnessBadge("patch is incorrect", true), "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m    INCORRECT \x1b[1mx\x1b[22m \x1b[0m"; got != want {
 		t.Errorf("incorrect ANSI badge = %q, want %q", got, want)
 	}
 	if got := correctnessBadge("Patch is INCORRECT because", false); got != "[INCORRECT]" {

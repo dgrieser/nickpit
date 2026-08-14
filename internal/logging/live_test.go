@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dgrieser/nickpit/internal/output"
 )
 
 func testLiveRenderer(now time.Time) *LiveRenderer {
@@ -305,10 +307,10 @@ func TestStyleModelWithAliasLightensAlias(t *testing.T) {
 
 func TestFinalHeaderColours(t *testing.T) {
 	r := &LiveRenderer{useANSI: true}
-	// Abort: red ✗, bold-white word, turquoise time, grey dot.
-	stop := r.finalHeaderLocked("✗", "Review stopped", 65*time.Second, 0, false)
-	if !strings.Contains(stop, progressStyle(progressColorErrorRed, "✗")) {
-		t.Fatalf("✗ should be red: %q", stop)
+	// Abort: bold red "x", bold-white word, turquoise time, grey dot.
+	stop := r.finalHeaderLocked(output.GlyphIncorrect, "Review stopped", 65*time.Second, 0, false)
+	if !strings.Contains(stop, progressStyle(progressColorBold+";"+progressColorErrorRed, output.GlyphIncorrect)) {
+		t.Fatalf("failure mark should be bold red: %q", stop)
 	}
 	if !strings.Contains(stop, progressStyle(progressColorBold+";"+progressColorWhite, "Review stopped")) {
 		t.Fatalf("status word should be bold white: %q", stop)
@@ -319,10 +321,10 @@ func TestFinalHeaderColours(t *testing.T) {
 	if !strings.Contains(stop, progressGrey(" · ")) {
 		t.Fatalf("middle dot should be grey: %q", stop)
 	}
-	// Success: green ✓.
-	done := r.finalHeaderLocked("✓", "Review complete", time.Second, 4, true)
-	if !strings.Contains(done, progressStyle(progressColorNumberGreen, "✓")) {
-		t.Fatalf("✓ should be green: %q", done)
+	// Success: bold green ✓.
+	done := r.finalHeaderLocked(output.GlyphCorrect, "Review complete", time.Second, 4, true)
+	if !strings.Contains(done, progressStyle(progressColorBold+";"+progressColorNumberGreen, output.GlyphCorrect)) {
+		t.Fatalf("success mark should be bold green: %q", done)
 	}
 }
 
