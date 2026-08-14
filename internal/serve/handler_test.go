@@ -274,6 +274,7 @@ func TestHandlerCommandReviewWithoutBotIDDoesNotAcknowledge(t *testing.T) {
 	env.dispatcher.mu.Unlock()
 	if state == nil {
 		t.Fatal("review must still queue")
+		return
 	}
 	if len(state.latest.AckNoteIDs) != 0 || len(state.latest.AckEmojis) != 0 {
 		t.Fatalf("tracked ack = notes %v emojis %v, want none", state.latest.AckNoteIDs, state.latest.AckEmojis)

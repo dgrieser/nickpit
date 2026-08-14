@@ -371,6 +371,7 @@ func TestCarrierNotesReassemble(t *testing.T) {
 	got := byID["rev-c"]
 	if got == nil {
 		t.Fatalf("carrier notes did not reassemble: %v", byID)
+		return
 	}
 	if got.OverallExplanation != "carrier note test" || len(got.Findings) != 2 {
 		t.Fatalf("carrier reassembly incomplete: %+v", got)

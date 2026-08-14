@@ -1053,6 +1053,7 @@ func TestTestingDuplicateFileValidatorRejectsSameFile(t *testing.T) {
 	invalid := validateTestingDuplicateFileResponse(nil, resp)
 	if invalid == nil {
 		t.Fatal("validator accepted duplicate Testing findings for same file")
+		return
 	}
 	if got := invalid.Error(); strings.Contains(got, "invalid JSON") || strings.Contains(got, "missing or invalid fields") {
 		t.Fatalf("validator error = %q, want semantic validation wording", got)
@@ -1092,6 +1093,7 @@ func TestTestingDuplicateFileValidatorRejectsExistingSessionFile(t *testing.T) {
 	invalid := validateTestingDuplicateFileResponse(existing, resp)
 	if invalid == nil {
 		t.Fatal("validator accepted nudge finding for existing file")
+		return
 	}
 	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
 	if err != nil {
@@ -3497,6 +3499,7 @@ func TestMergeRetryGuidanceListsAllowedUnknownAndDroppedIDs(t *testing.T) {
 	)
 	if invalid == nil {
 		t.Fatal("want invalid response")
+		return
 	}
 	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
 	if err != nil {
@@ -3936,6 +3939,7 @@ func TestDedupeRetryGuidanceListsAllowedAndUnknownIDs(t *testing.T) {
 	)
 	if invalid == nil {
 		t.Fatal("want invalid response")
+		return
 	}
 	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
 	if err != nil {
@@ -3966,6 +3970,7 @@ func TestDedupeValidationRejectsTooMuchDrop(t *testing.T) {
 
 	if invalid == nil {
 		t.Fatal("expected count_too_low, got nil")
+		return
 	}
 	if !strings.Contains(invalid.Reason, "count_too_low") {
 		t.Fatalf("dedupe reason = %q, want count_too_low", invalid.Reason)
@@ -3993,6 +3998,7 @@ func TestDedupeValidationRejectsDuplicateOutputIDs(t *testing.T) {
 
 	if invalid == nil {
 		t.Fatal("expected duplicate_ids, got nil")
+		return
 	}
 	if !strings.Contains(invalid.Reason, "duplicate_ids") {
 		t.Fatalf("dedupe reason = %q, want duplicate_ids", invalid.Reason)

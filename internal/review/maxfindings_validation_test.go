@@ -35,6 +35,7 @@ func TestMaxFindingsValidatorRejectsOnceThenPasses(t *testing.T) {
 	invalid := validate(nil, resp)
 	if invalid == nil {
 		t.Fatal("validator accepted response over the finding limit")
+		return
 	}
 	if !strings.Contains(invalid.Reason, "max_findings_exceeded limit=2") {
 		t.Fatalf("reason = %q, want max_findings_exceeded", invalid.Reason)
@@ -71,6 +72,7 @@ func TestMaxFindingsValidatorCountsOnlyAppendableFindings(t *testing.T) {
 	invalid := validate(existing, nudgeReviewResponse("over", 1, maxFindingsTestFinding("New", 0, 0.9), maxFindingsTestFinding("Extra", 2, 0.4)))
 	if invalid == nil {
 		t.Fatal("validator accepted response exceeding the remaining budget")
+		return
 	}
 	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
 	if err != nil {

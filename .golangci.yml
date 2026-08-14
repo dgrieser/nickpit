@@ -3,6 +3,12 @@ version: "2"
 # Standard linter set: errcheck, govet, ineffassign, staticcheck, unused.
 linters:
   default: standard
+  enable:
+    # gopls modernize analyzers (range-over-int, slices/maps helpers, min/max,
+    # etc.) — not part of the standard set, so enable them explicitly. Keeping
+    # them here rather than in a separate tool means `golangci-lint run` alone
+    # reproduces exactly what CI checks.
+    - modernize
 
 formatters:
   enable:

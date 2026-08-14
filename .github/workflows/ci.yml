@@ -14,12 +14,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      # The modernize analyzers run as part of this too — they are enabled in
+      # .golangci.yml, so `make lint` locally checks exactly what CI checks.
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
-      # gopls modernize analyzers (range-over-int, slices/maps helpers, min/max,
-      # etc.) — not part of golangci-lint's standard set, so gate them here.
-      - run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0 ./...
 
   test:
     runs-on: ubuntu-latest
