@@ -152,6 +152,9 @@ type Handler struct {
 	chatLocks keyedMutex
 	// chatSeen drops webhook redeliveries of a note already answered.
 	chatSeen *noteDedup
+	// chatTimeout bounds one admitted chat event. Kept as a field so deadline
+	// policy races can be tested without waiting for the production timeout.
+	chatTimeout time.Duration
 	// chatRetryDelay spaces in-process retry attempts of a failed chat reply.
 	chatRetryDelay time.Duration
 }
@@ -174,6 +177,7 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		chatCtx:              chatCtx,
 		chatCancel:           chatCancel,
 		chatSeen:             newNoteDedup(chatSeenCap),
+		chatTimeout:          chatEventTimeout,
 		chatRetryDelay:       defaultChatRetryDelay,
 		ackUncertaintyWindow: reactionUncertaintyWindow,
 		ackRequestTimeout:    ackTimeout,
@@ -647,7 +651,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 	// ONE deadline covers the whole admitted event — semaphore waits, the gate,
 	// the child, and every retry — so a hung event can never pin its admission
 	// slot beyond chatEventTimeout.
-	ctx, cancel := context.WithTimeout(h.chatCtx, chatEventTimeout)
+	ctx, cancel := context.WithTimeout(h.chatCtx, h.chatTimeout)
 	defer cancel()
 	// abandon clears the dedup mark so a manual redelivery (after the daemon
 	// restarts, or once the backlog clears) is not discarded as a duplicate.
@@ -669,7 +673,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 		}
 		h.log.Error("chat abandoned: event deadline exceeded", "iid", decision.IID, "discussion", decision.DiscussionID)
 		if gatePassed {
-			h.reply(group, projectID, decision, chatFailureText)
+			h.replyChatFailureIfAllowed(group, projectPath, projectID, decision)
 		}
 	}
 	for attempt := 1; ; attempt++ {
@@ -694,7 +698,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 			}
 			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
 			if gatePassed {
-				h.reply(group, projectID, decision, chatFailureText)
+				h.replyChatFailureIfAllowed(group, projectPath, projectID, decision)
 			}
 			return
 		}
@@ -706,6 +710,26 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 		case <-time.After(h.chatRetryDelay):
 		}
 	}
+}
+
+// replyChatFailureIfAllowed refreshes live response policy immediately before
+// posting a terminal failure note. The admitted event's context may already be
+// expired, so this safety read uses its own bounded context and fails closed.
+func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, projectID int, decision Decision) {
+	if h.responses != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
+		defer cancel()
+		state, err := h.responses.State(ctx, group, projectPath, decision.IID, decision.DiscussionID)
+		if err != nil {
+			h.log.Warn("chat failure reply suppressed: reading response policy failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+			return
+		}
+		if !state.Allows(decision.Requested) {
+			h.log.Debug("chat failure reply suppressed under response policy", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		}
+	}
+	h.reply(group, projectID, decision, chatFailureText)
 }
 
 // chatAttempt runs one chat attempt end to end and reports whether it is worth

@@ -182,6 +182,13 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 // The child self-gates (a thread nickpit did not start is a quiet no-op) and
 // posts its answer back into the thread itself.
 func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {
+	for _, arg := range spec.ExtraArgs {
+		switch arg {
+		case "--", "--help", "-h":
+			return -1, "", fmt.Errorf("chat extra args must not contain %q", arg)
+		}
+	}
+
 	logPath, logFile, err := createChildLog("chat", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
 	if err != nil {
 		return -1, "", err

@@ -145,6 +145,26 @@ func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	}
 }
 
+func TestExecRunnerRejectsChatControlBypassArgs(t *testing.T) {
+	for _, arg := range []string{"--", "--help", "-h"} {
+		t.Run(arg, func(t *testing.T) {
+			runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+			spec := ChatSpec{
+				ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+				ExtraArgs: []string{"--profile", "default", arg}, LogDir: t.TempDir(),
+			}
+
+			exitCode, logPath, err := runner.RunChat(context.Background(), spec)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("must not contain %q", arg)) {
+				t.Fatalf("err = %v, want %q rejection", err, arg)
+			}
+			if exitCode != -1 || logPath != "" {
+				t.Fatalf("result = (%d, %q), want rejection before child launch", exitCode, logPath)
+			}
+		})
+	}
+}
+
 // The child environment must not contain other groups' tokens or any
 // webhook secret, regardless of which env var names carry them.
 func TestExecRunnerScrubsSecretsFromChildEnv(t *testing.T) {

@@ -1187,6 +1187,12 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseCl
 	if err != nil {
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
 	}
+	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
+		return nil
+	}
+	// Read live mute state only after every paginated discussion/note freshness
+	// read has completed. This keeps the policy read as the final GET before the
+	// POST, minimizing the non-atomic check-and-post window GitLab leaves us.
 	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, fresh, botUserID, muteEmoji)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
@@ -1194,7 +1200,7 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseCl
 	if !allowed {
 		return errChatReplySuppressed
 	}
-	return a.postChatReply(ctx, client, project, mrID, discussionID, pending, botUserID, body)
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
 }
 
 // chatNoteClient is the subset of the GitLab client the chat reply path uses:
@@ -1232,8 +1238,14 @@ func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project 
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
+}
+
+// postChatReplyUnchecked performs the POST after its caller has completed all
+// required freshness and policy reads.
+func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string) error {
 	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
-	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
+	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
 	if err == nil {
 		return nil
 	}

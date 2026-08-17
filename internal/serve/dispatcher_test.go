@@ -116,9 +116,10 @@ type recordedPost struct {
 // note, told apart by Path), so tests can assert what the daemon awarded and
 // what it revoked again.
 type recordedAward struct {
-	ID   int
-	Path string
-	Name string
+	ID     int
+	Path   string
+	Name   string
+	UserID int
 }
 
 func (f *fakeGitLab) handler() http.Handler {
@@ -212,7 +213,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			}
 			if name := body["name"]; name != "" {
 				f.nextID++
-				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name})
+				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name, UserID: fakeBotUserID})
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
@@ -233,10 +234,14 @@ func (f *fakeGitLab) handler() http.Handler {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji"):
 			live := make([]map[string]any, 0, len(f.awards))
 			for _, award := range f.awards {
-				if award.Path != r.URL.Path {
+				if award.Path != "" && award.Path != r.URL.Path {
 					continue
 				}
-				live = append(live, map[string]any{"id": award.ID, "name": award.Name, "user": map[string]any{"id": fakeBotUserID}})
+				userID := award.UserID
+				if userID == 0 {
+					userID = fakeBotUserID
+				}
+				live = append(live, map[string]any{"id": award.ID, "name": award.Name, "user": map[string]any{"id": userID}})
 			}
 			_ = json.NewEncoder(w).Encode(live)
 		case r.URL.Path == "/api/v4/projects/42":
@@ -300,7 +305,16 @@ func (f *fakeGitLab) preAward(iid, noteID int, name string) {
 	if noteID != 0 {
 		path = fmt.Sprintf("/api/v4/projects/42/merge_requests/%d/notes/%d/award_emoji", iid, noteID)
 	}
-	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name})
+	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name, UserID: fakeBotUserID})
+}
+
+// preHumanAward seeds a human reaction visible on every awardable. Tests use
+// it when only policy effect matters, independent of project path encoding.
+func (f *fakeGitLab) preHumanAward(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.awards = append(f.awards, recordedAward{ID: f.nextID, Name: name, UserID: fakeBotUserID + 1})
 }
 
 // awardPosted returns the name of every award POST ever made, including awards

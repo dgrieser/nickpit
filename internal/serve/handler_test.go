@@ -667,6 +667,52 @@ func TestHandlerChatPostsFailureNoteAfterExhaustedRetries(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
 }
 
+func TestHandlerChatSuppressesFailureNoteWhenMutedDuringFinalAttempt(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, discardLogger())
+	attempts := 0
+	env.handler.chatRunner = chatRunnerFunc(func(context.Context, ChatSpec) (int, string, error) {
+		attempts++
+		if attempts == chatMaxAttempts {
+			env.gitlab.preHumanAward("mute")
+		}
+		return 1, "chat.log", nil
+	})
+
+	env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{IID: 11, DiscussionID: "disc-306", NoteID: 306})
+	if attempts != chatMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, chatMaxAttempts)
+	}
+	for _, post := range env.gitlab.posted() {
+		if strings.Contains(post.Body["body"], "could not answer") {
+			t.Fatalf("failure reply posted after mute: %+v", post)
+		}
+	}
+}
+
+func TestHandlerChatSuppressesFailureNoteWhenMutedDuringTimeout(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatTimeout = 20 * time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, discardLogger())
+	env.handler.chatRunner = chatRunnerFunc(func(ctx context.Context, _ ChatSpec) (int, string, error) {
+		env.gitlab.preHumanAward("mute")
+		<-ctx.Done()
+		return -1, "chat.log", ctx.Err()
+	})
+
+	env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{IID: 11, DiscussionID: "disc-306", NoteID: 306})
+	for _, post := range env.gitlab.posted() {
+		if strings.Contains(post.Body["body"], "could not answer") {
+			t.Fatalf("failure reply posted after mute: %+v", post)
+		}
+	}
+}
+
 // When the gate NEVER confirmed the thread (its read fails persistently, e.g.
 // a read-scoped 429), the failure note must not be posted: the thread may be
 // anyone's, and injecting bot text there would leak past the ownership gate.

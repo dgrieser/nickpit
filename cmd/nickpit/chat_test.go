@@ -617,25 +617,31 @@ type fakeNoteClient struct {
 	noteErr         error
 	replyBody       string
 	noteBody        string
+	calls           []string
 }
 
 func (f *fakeNoteClient) DiscussionNotes(context.Context, string, int, string) ([]glscm.DiscussionNote, error) {
+	f.calls = append(f.calls, "discussion")
 	return f.discussionNotes, nil
 }
 
 func (f *fakeNoteClient) MRNotes(context.Context, string, int) ([]glscm.MRNote, error) {
+	f.calls = append(f.calls, "mr-notes")
 	return f.mrNotes, nil
 }
 
 func (f *fakeNoteClient) MREmojis(context.Context, string, int) ([]glscm.AwardEmoji, error) {
+	f.calls = append(f.calls, "mr-emojis")
 	return f.mrAwards, nil
 }
 
 func (f *fakeNoteClient) NoteEmojis(context.Context, string, int, int) ([]glscm.AwardEmoji, error) {
+	f.calls = append(f.calls, "note-emojis")
 	return f.noteAwards, nil
 }
 
 func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ int, _ string, body string) error {
+	f.calls = append(f.calls, "reply")
 	f.replyBody = body
 	err := f.replyErr
 	f.replyErr = nil
@@ -643,6 +649,7 @@ func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ 
 }
 
 func (f *fakeNoteClient) CreateMRNotePath(_ context.Context, _ string, _ int, body string) error {
+	f.calls = append(f.calls, "create-note")
 	f.noteBody = body
 	err := f.noteErr
 	f.noteErr = nil
@@ -769,5 +776,23 @@ func TestPostChatReplyWithPolicyReportsSuppressedReply(t *testing.T) {
 	}
 	if c.replyBody != "" || c.noteBody != "" {
 		t.Fatalf("policy-denied reply was posted: reply=%q note=%q", c.replyBody, c.noteBody)
+	}
+}
+
+func TestPostChatReplyWithPolicyChecksPolicyAfterFreshness(t *testing.T) {
+	const botUserID = 5
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7},
+		},
+	}
+
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, "mute", "answer"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "discussion,mr-notes,mr-emojis,note-emojis,reply"
+	if got := strings.Join(c.calls, ","); got != want {
+		t.Fatalf("call order = %q, want %q", got, want)
 	}
 }
