@@ -281,6 +281,7 @@ func LoadServe(path string) (*ServeConfig, error) {
 		cfg.Groups = append(cfg.Groups, fileGroups...)
 	}
 	cfg.normalizeOutcomeDefaults()
+	cfg.normalizeMuteDefault()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
 	}
@@ -334,6 +335,32 @@ func (c *ServeConfig) normalizeOutcomeDefaults() {
 	}
 	if c.FailEmoji == nil && taken(DefaultServeFailEmoji, c.DoneEmojiName()) {
 		disable("fail_emoji", &c.FailEmoji, DefaultServeFailEmoji)
+	}
+}
+
+// normalizeMuteDefault preserves configs written before chat.mute_emoji
+// existed. Such a config may already use "mute" for another reaction; only an
+// absent/defaulted mute emoji is disabled on collision. An explicitly
+// configured mute_emoji still reaches Validate and fails loudly.
+func (c *ServeConfig) normalizeMuteDefault() {
+	if c.Chat.MuteEmoji != nil {
+		return
+	}
+	for _, other := range []string{
+		c.TriggerEmoji,
+		c.StartEmojiName(),
+		c.DoneEmojiName(),
+		c.FailEmojiName(),
+	} {
+		if other != DefaultServeMuteEmoji {
+			continue
+		}
+		disabled := ""
+		c.Chat.MuteEmoji = &disabled
+		c.Notices = append(c.Notices, fmt.Sprintf(
+			"chat.mute_emoji default %q is already used by another configured reaction; chat.mute_emoji is disabled (set chat.mute_emoji explicitly to pick a different one)",
+			DefaultServeMuteEmoji))
+		return
 	}
 }
 

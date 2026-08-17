@@ -104,6 +104,26 @@ func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
 	}
 }
 
+func TestExecRunnerExplicitChatRequestFollowsLatestPendingNote(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := ChatSpec{
+		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+		Requested: true, Token: "group-token", LogDir: t.TempDir(),
+	}
+	_, logPath, err := runner.RunChat(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	if strings.Contains(args, "--reply-note") {
+		t.Fatalf("explicit request pinned to reacted note instead of latest pending turn:\n%s", args)
+	}
+}
+
 func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {

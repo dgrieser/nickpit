@@ -786,6 +786,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 		IID:            decision.IID,
 		DiscussionID:   decision.DiscussionID,
 		NoteID:         decision.NoteID,
+		Requested:      decision.Requested,
 		Token:          group.Token,
 		BaseURL:        h.chatCfg.BaseURL,
 		ConfigPath:     h.chatCfg.ConfigPath,

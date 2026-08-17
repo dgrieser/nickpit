@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,36 @@ groups:
 	}
 	if len(cfg.Notices) != 1 || !strings.Contains(cfg.Notices[0], "done_emoji") {
 		t.Fatalf("notices = %v, want one about done_emoji", cfg.Notices)
+	}
+}
+
+// A config written before chat.mute_emoji existed may use its new default name
+// for any older MR reaction. Preserve startup by disabling only the implicit
+// mute default, even when chat itself is disabled. Explicit collisions remain
+// validation errors.
+func TestLoadServeDefaultedMuteCollisionIsDisabled(t *testing.T) {
+	for _, field := range []string{"trigger_emoji", "start_emoji", "done_emoji", "fail_emoji"} {
+		t.Run(field, func(t *testing.T) {
+			path := writeServeConfig(t, fmt.Sprintf(`
+%s: "mute"
+chat:
+  enabled: false
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`, field))
+			cfg, err := LoadServe(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ChatMuteEmojiName() != "" {
+				t.Fatalf("mute emoji = %q, want the colliding default disabled", cfg.ChatMuteEmojiName())
+			}
+			if len(cfg.Notices) != 1 || !strings.Contains(cfg.Notices[0], "chat.mute_emoji") {
+				t.Fatalf("notices = %v, want one about chat.mute_emoji", cfg.Notices)
+			}
+		})
 	}
 }
 
@@ -512,7 +543,7 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
 		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
 		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
-		{"mute equals trigger", "chat:\n  mute_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "chat.mute_emoji must differ from trigger_emoji"},
+		{"mute equals trigger", "chat:\n  enabled: false\n  mute_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "chat.mute_emoji must differ from trigger_emoji"},
 		{"blank skip phrase", "chat:\n  skip_phrases: [\"  \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must not be blank"},
 		{"duplicate normalized skip phrase", "chat:\n  skip_phrases: [\"No Bot\", \" no   bot \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "duplicates"},
 		{"skip phrase conflicts with command", "chat:\n  skip_phrases: [\"/NICKPIT   resume\"]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "conflicts with response command"},

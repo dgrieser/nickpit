@@ -513,7 +513,7 @@ func TestHandlerChatOptInAllowsLaterRequestOnSameNote(t *testing.T) {
 	postWebhook(t, env.handler, "emoji_award_request_note.json", "legacy-secret")
 	select {
 	case spec := <-env.chat.calls:
-		if spec.NoteID != 306 || spec.DiscussionID != "disc-306" {
+		if spec.NoteID != 306 || spec.DiscussionID != "disc-306" || !spec.Requested {
 			t.Fatalf("chat spec = %+v", spec)
 		}
 	case <-time.After(2 * time.Second):
