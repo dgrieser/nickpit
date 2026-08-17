@@ -789,7 +789,7 @@ func (a *app) chatEnsureCheckout(ctx context.Context, source model.ReviewSource,
 // so the retrieval tools can read from it for the rest of the invocation — the
 // caller releases it — but its path never leaks into the returned context,
 // which may be persisted.
-func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout) (*model.ReviewContext, error) {
+func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout, controls ...chatMessageControls) (*model.ReviewContext, error) {
 	maxToolCalls := req.MaxToolCalls
 	if maxToolCalls == 0 {
 		maxToolCalls = profile.MaxToolCalls
@@ -814,6 +814,7 @@ func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, sou
 	if tempCheckout {
 		reviewCtx.CheckoutRoot = ""
 	}
+	stripChatControlsFromReviewComments(reviewCtx, resolveChatMessageControls(controls))
 	return reviewCtx, nil
 }
 
@@ -1056,7 +1057,14 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if opts.replyNote > 0 && pending != opts.replyNote {
 		return nil
 	}
-	history := chatThreadToMessages(notes, botUserID, chatMessageControls{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases})
+	controls := resolveChatMessageControls([]chatMessageControls{{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases}})
+	// The webhook body was checked before this child was queued, but the live
+	// note can be edited meanwhile. Do not let a now control-only target select
+	// an older prompt that remains in the thread history.
+	if opts.replyNote > 0 && !chatNoteHasPrompt(notes, opts.replyNote, controls) {
+		return nil
+	}
+	history := chatThreadToMessages(notes, botUserID, controls)
 	if len(history) == 0 {
 		return nil
 	}
@@ -1087,7 +1095,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// disabled.
 	var co chatCheckout
 	defer co.release()
-	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co)
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co, controls)
 	if err != nil {
 		// A context-preparation failure (often a remote checkout that could not
 		// be cloned, or content filters/toolchain capture that could not read
@@ -1353,22 +1361,54 @@ type chatMessageControls struct {
 	skipPhrases []string
 }
 
-func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
-	keyword := "nickpit"
-	var skipPhrases []string
-	if len(controls) > 0 {
-		if controls[0].keyword != "" {
-			keyword = controls[0].keyword
-		}
-		skipPhrases = controls[0].skipPhrases
+func resolveChatMessageControls(controls []chatMessageControls) chatMessageControls {
+	resolved := chatMessageControls{keyword: "nickpit"}
+	if len(controls) == 0 {
+		return resolved
 	}
+	if controls[0].keyword != "" {
+		resolved.keyword = controls[0].keyword
+	}
+	resolved.skipPhrases = controls[0].skipPhrases
+	return resolved
+}
+
+func stripChatMessageControls(body string, controls chatMessageControls) string {
+	body = reviewmd.StripMarkers(body)
+	return serve.ParseChatDirectives(body, controls.keyword, controls.skipPhrases).Remaining
+}
+
+func stripChatControlsFromReviewComments(reviewCtx *model.ReviewContext, controls chatMessageControls) {
+	if reviewCtx == nil {
+		return
+	}
+	comments := reviewCtx.Comments[:0]
+	for _, comment := range reviewCtx.Comments {
+		comment.Body = stripChatMessageControls(comment.Body, controls)
+		if comment.Body != "" {
+			comments = append(comments, comment)
+		}
+	}
+	reviewCtx.Comments = comments
+}
+
+func chatNoteHasPrompt(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) bool {
+	for _, note := range notes {
+		if note.ID == noteID {
+			return stripChatMessageControls(note.Body, controls) != ""
+		}
+	}
+	return false
+}
+
+func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
+	resolvedControls := resolveChatMessageControls(controls)
 	var msgs []llm.Message
 	for i, note := range notes {
 		if i == 0 || note.System {
 			continue
 		}
-		body := reviewmd.StripMarkers(note.Body)
-		body = serve.ParseChatDirectives(body, keyword, skipPhrases).Remaining
+		body := stripChatMessageControls(note.Body, resolvedControls)
 		if body == "" {
 			continue
 		}

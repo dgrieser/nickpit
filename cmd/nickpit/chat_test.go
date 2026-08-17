@@ -307,6 +307,47 @@ func TestChatThreadToMessagesStripsResponseControls(t *testing.T) {
 	}
 }
 
+func TestStripChatControlsFromReviewComments(t *testing.T) {
+	reviewCtx := &model.ReviewContext{Comments: []model.Comment{
+		{Author: "alice", Body: "question\n/custom resume"},
+		{Author: "bob", Body: "  DO NOT ANSWER  "},
+		{Author: "nickpit", Body: reviewmd.UpsertResponseFooter("answer", reviewmd.ResponseStatus{Enabled: true})},
+	}}
+	controls := chatMessageControls{keyword: "custom", skipPhrases: []string{"do not answer"}}
+
+	stripChatControlsFromReviewComments(reviewCtx, controls)
+
+	if len(reviewCtx.Comments) != 2 {
+		t.Fatalf("comments = %+v, want control-only comment removed", reviewCtx.Comments)
+	}
+	if reviewCtx.Comments[0].Body != "question" || reviewCtx.Comments[1].Body != "answer" {
+		t.Fatalf("response controls leaked into prepared comments: %+v", reviewCtx.Comments)
+	}
+}
+
+func TestChatNoteHasPromptUsesLiveTargetBody(t *testing.T) {
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"do not answer"}}
+	notes := []glscm.DiscussionNote{
+		{ID: 1, Body: "root", AuthorID: 5},
+		{ID: 2, Body: "older question", AuthorID: 10},
+		{ID: 3, Body: "answer", AuthorID: 5},
+		// Webhook originally carried a question, but live note was edited before
+		// the queued child read the discussion.
+		{ID: 4, Body: "/nickpit resume\ndo not answer", AuthorID: 10},
+	}
+
+	if chatNoteHasPrompt(notes, 4, controls) {
+		t.Fatal("control-only live target must not trigger a reply to older history")
+	}
+	notes[3].Body = "/nickpit resume\nstill answer this"
+	if !chatNoteHasPrompt(notes, 4, controls) {
+		t.Fatal("live target with prompt text must remain eligible")
+	}
+	if chatNoteHasPrompt(notes, 99, controls) {
+		t.Fatal("missing target note must not remain eligible")
+	}
+}
+
 func TestLatestPendingNote(t *testing.T) {
 	notes := []glscm.DiscussionNote{
 		{ID: 1, Body: "root", AuthorID: 5},
@@ -366,6 +407,7 @@ type fakeRemoteSource struct {
 	spec          *model.CheckoutSpec
 	resolveErr    error
 	checkoutCalls int
+	comments      []model.Comment
 }
 
 func (s *fakeRemoteSource) ResolveContext(_ context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
@@ -374,6 +416,7 @@ func (s *fakeRemoteSource) ResolveContext(_ context.Context, req model.ReviewReq
 		Title:        "t",
 		ChangedFiles: []model.ChangedFile{{Path: "a.go"}},
 		Diff:         "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n",
+		Comments:     append([]model.Comment(nil), s.comments...),
 	}, nil
 }
 
@@ -485,7 +528,10 @@ func TestChatEnsureCheckout(t *testing.T) {
 func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	ctx := context.Background()
 	spec := &model.CheckoutSpec{Provider: model.ModeGitLab, Repo: "g/p", CloneURL: "https://x/y.git", HeadSHA: "abc"}
-	src := &fakeRemoteSource{spec: spec}
+	src := &fakeRemoteSource{spec: spec, comments: []model.Comment{
+		{Author: "alice", Body: "question\n/custom resume"},
+		{Author: "bob", Body: "do not answer"},
+	}}
 	root := t.TempDir()
 	prepares, cleanups := 0, 0
 	a := &app{prepareCheckout: func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
@@ -498,7 +544,9 @@ func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	profile := config.Profile{} // MaxToolCalls 0 = unlimited: tools enabled
 	req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "g/p", Identifier: 1}
 	var co chatCheckout
-	reviewCtx, err := a.chatPrepareContext(ctx, engine, src, profile, req, &co)
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, src, profile, req, &co, chatMessageControls{
+		keyword: "custom", skipPhrases: []string{"do not answer"},
+	})
 	if err != nil {
 		t.Fatalf("chatPrepareContext: %v", err)
 	}
@@ -510,6 +558,9 @@ func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	}
 	if reviewCtx.CheckoutRoot != "" {
 		t.Fatalf("CheckoutRoot = %q leaked into the (persistable) context", reviewCtx.CheckoutRoot)
+	}
+	if len(reviewCtx.Comments) != 1 || reviewCtx.Comments[0].Body != "question" {
+		t.Fatalf("response controls leaked into prepared comments: %+v", reviewCtx.Comments)
 	}
 	// The tools path reuses the same clone instead of preparing a second one.
 	if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err != nil {
