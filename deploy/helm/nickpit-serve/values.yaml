@@ -274,6 +274,23 @@ serve:
     # Empty = children use the binary's default profile (openrouter; needs
     # OPENROUTER_API_KEY in the Secret).
     extraArgs: []
+  # Discussion-agent replies in bot-authored NickPit review threads.
+  chat:
+    enabled: true
+    # false preserves current automatic replies. true requires `/nickpit
+    # respond` on its own line in the question, or a triggerEmoji reaction on
+    # that question comment.
+    optIn: false
+    # Reaction on a NickPit review root mutes that thread; reaction on the MR
+    # mutes every NickPit thread. Removing the last matching human reaction
+    # re-enables it. "" disables reaction-based muting.
+    muteEmoji: "mute"
+    # Full-line, case-insensitive response suppressors. Surrounding whitespace
+    # is trimmed and internal whitespace collapsed. Empty by default.
+    skipPhrases: []
+    maxConcurrent: 4
+    # null inherits review.extraArgs. A list, including [], replaces them.
+    extraArgs: null
   # Optional: stream each review's output live to Grafana Loki (in addition to
   # the on-disk log_dir file), so logs survive pod restarts and are queryable
   # in Grafana. Enabled only when `url` is set. The daemon needs egress to the

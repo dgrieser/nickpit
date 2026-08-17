@@ -998,7 +998,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 		Long: "Run an HTTP daemon receiving GitLab group webhooks (merge request + emoji + comment events). " +
 			"MR activity triggers reviews on projects carrying the opt-in topic; awarding the trigger " +
 			"emoji on an MR requests a review explicitly, revoking it aborts. MR comments starting with " +
-			"the command keyword control the daemon: /nickpit review|abort|status|help. Each review runs " +
+			"the command keyword control the daemon: /nickpit review|abort|status|help. Review-thread " +
+			"comments also support mute/resume/respond controls and configured emoji/skip-line policy. Each review runs " +
 			"as a separate nickpit child process.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.LoadServe(serveConfigPath)
@@ -1137,6 +1138,15 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:    childArgs,
 				LogDir:       cfg.LogDir,
 			}, log)
+			responseController := serve.NewResponseController(serve.ResponseConfig{
+				Enabled:        cfg.ChatEnabled(),
+				OptIn:          cfg.Chat.OptIn,
+				MuteEmoji:      cfg.ChatMuteEmojiName(),
+				RequestEmoji:   cfg.TriggerEmoji,
+				CommandKeyword: cfg.CommandKeyword,
+				SkipPhrases:    append([]string(nil), cfg.Chat.SkipPhrases...),
+			}, log)
+			dispatcher.SetResponseController(responseController)
 			if resumed := dispatcher.Restore(groups); resumed > 0 {
 				log.Info("resumed journaled review jobs", "count", resumed, "dir", cfg.StateDir)
 			}
@@ -1170,6 +1180,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AbortEmoji:     cfg.AbortEmojiName(),
+				Responses:      responseController,
 			}, chatRunner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)

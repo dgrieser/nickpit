@@ -82,6 +82,9 @@ type HandlerConfig struct {
 	// AbortEmoji is awarded on an abort command note to acknowledge it; ""
 	// disables.
 	AbortEmoji string
+	// Responses owns GitLab-backed per-thread response policy. Nil preserves
+	// legacy automatic chat gating for direct tests/callers.
+	Responses *ResponseController
 }
 
 // ChatConfig carries the static invocation details a spawned chat child needs
@@ -111,6 +114,7 @@ type Handler struct {
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
 	log        *slog.Logger
+	responses  *ResponseController
 	// ackUncertaintyWindow keeps settlement state alive after an acknowledgement
 	// request times out. Cancelling the client wait does not prove GitLab
 	// cancelled the server-side award, so a late award needs a later sweep.
@@ -162,6 +166,7 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		groups:               groups,
 		dispatcher:           dispatcher,
 		cfg:                  cfg,
+		responses:            cfg.Responses,
 		chatRunner:           chatRunner,
 		chatCfg:              chatCfg,
 		chatSem:              make(chan struct{}, limit),
@@ -327,7 +332,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decision := Decide(event, h.cfg.TriggerEmoji, h.cfg.CommandKeyword, h.groups.BotIDs())
+	muteEmoji := ""
+	var skipPhrases []string
+	if h.responses != nil {
+		responseCfg := h.responses.Config()
+		muteEmoji = responseCfg.MuteEmoji
+		skipPhrases = responseCfg.SkipPhrases
+	}
+	decision := Decide(event, h.cfg.TriggerEmoji, muteEmoji, h.cfg.CommandKeyword, skipPhrases, h.groups.BotIDs())
+	if decision.Response != ResponseNone {
+		if !h.handleResponseAction(event, group, &decision) {
+			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "response state unavailable"})
+			return
+		}
+		if decision.Command != CommandChat {
+			writeJSON(w, map[string]string{"status": "response-mode"})
+			return
+		}
+	}
 	switch {
 	case decision.Command == CommandChat:
 		if h.chatRunner == nil {
@@ -382,6 +404,65 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.log.Info("event received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "queued"})
+	}
+}
+
+func (h *Handler) handleResponseAction(event *WebhookEvent, group *Group, decision *Decision) bool {
+	if h.responses == nil {
+		return true
+	}
+	project := event.Project.PathWithNamespace
+	switch decision.Response {
+	case ResponseMuteThread, ResponseResumeThread:
+		ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
+		defer cancel()
+		state, err := h.responses.SetCommandMuted(ctx, group, project, decision.IID, decision.DiscussionID, decision.Response == ResponseMuteThread)
+		if err != nil {
+			h.log.Warn("updating response mode failed", "project", project, "iid", decision.IID, "error", err)
+			return false
+		}
+		if !state.Ours {
+			decision.Command = CommandNone
+			return true
+		}
+		if decision.Command == CommandChat && !state.Allows(true) {
+			decision.Command = CommandNone
+		}
+		return true
+	case ResponseSyncThread:
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
+			defer cancel()
+			ours, err := h.responses.SyncReactedRoot(ctx, group, project, decision.IID, decision.DiscussionID, decision.NoteID)
+			if err != nil {
+				h.log.Warn("syncing response footer failed", "project", project, "iid", decision.IID, "error", err)
+			} else if !ours {
+				h.log.Debug("ignoring mute reaction on non-root note", "project", project, "iid", decision.IID, "note", decision.NoteID)
+			}
+		}()
+		return true
+	case ResponseSyncMR:
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
+			defer cancel()
+			if err := h.responses.SyncMR(ctx, group, project, decision.IID); err != nil {
+				h.log.Warn("syncing MR response footers failed", "project", project, "iid", decision.IID, "error", err)
+			}
+		}()
+		return true
+	default:
+		return true
+	}
+}
+
+func (h *Handler) syncResponseThread(group *Group, project string, iid int, discussionID string) {
+	if h.responses == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
+	defer cancel()
+	if err := h.responses.SyncThread(ctx, group, project, iid, discussionID); err != nil {
+		h.log.Warn("syncing response footer failed", "project", project, "iid", iid, "error", err)
 	}
 }
 
@@ -563,10 +644,6 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 		h.log.Warn("skipping chat: bot user id unresolved", "group", group.Path, "iid", decision.IID)
 		return
 	}
-	if !h.chatSeen.markNew(decision.NoteID) {
-		h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
-		return
-	}
 	// ONE deadline covers the whole admitted event — semaphore waits, the gate,
 	// the child, and every retry — so a hung event can never pin its admission
 	// slot beyond chatEventTimeout.
@@ -579,8 +656,11 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 	// the daemon could not verify — e.g. when the gate's read fails persistently
 	// (a read-scoped 429) while posts would succeed, the thread may be anyone's.
 	gatePassed := false
+	dedupMarked := false
 	abandon := func() {
-		h.chatSeen.forget(decision.NoteID)
+		if dedupMarked {
+			h.chatSeen.forget(decision.NoteID)
+		}
 		if h.chatCtx.Err() != nil {
 			// Shutting down: no reliable way to post, and the redelivery after
 			// restart will answer.
@@ -593,7 +673,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 		}
 	}
 	for attempt := 1; ; attempt++ {
-		retryable, gateConfirmed := h.chatAttempt(ctx, group, projectPath, decision)
+		retryable, gateConfirmed := h.chatAttempt(ctx, group, projectPath, decision, &dedupMarked)
 		gatePassed = gatePassed || gateConfirmed
 		if !retryable {
 			return
@@ -609,7 +689,9 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 			// confirmed ours. The failure note marks the thread answered, so
 			// re-asking (as the note says) is the recovery, never a surprise
 			// double-answer.
-			h.chatSeen.forget(decision.NoteID)
+			if dedupMarked {
+				h.chatSeen.forget(decision.NoteID)
+			}
 			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
 			if gatePassed {
 				h.reply(group, projectID, decision, chatFailureText)
@@ -633,7 +715,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 // final; gate read failures, spawn failures, and non-zero child exits are
 // retryable. ctx is the admitted event's shared deadline (see handleChat) —
 // every blocking step here runs under it.
-func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision) (retryable, gateConfirmed bool) {
+func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision, dedupMarked *bool) (retryable, gateConfirmed bool) {
 	// Serialize replies within a discussion BEFORE competing for a global slot.
 	// The reverse order would let queued replies to one busy discussion each sit
 	// on a global slot while blocked on that discussion's lock, starving chats
@@ -652,29 +734,62 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	}
 	defer func() { <-h.chatSem }()
 
-	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
-	// A genuinely foreign thread is final (a retry would re-gate identically); a
-	// read failure is transient and retried.
-	ours, err := h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
-	if err != nil {
-		h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
-		return true, false
+	// Gate on both provenance and current response policy. A genuinely foreign
+	// or muted thread is final; a read failure is transient and retried.
+	ours := false
+	if h.responses != nil {
+		state, err := h.responses.State(ctx, group, projectPath, decision.IID, decision.DiscussionID)
+		if err != nil {
+			h.log.Warn("chat gate: reading response policy failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+			return true, false
+		}
+		ours = state.Ours
+		if decision.Requested && decision.NoteID == state.Root.ID {
+			return false, ours
+		}
+		if !state.Allows(decision.Requested) {
+			h.log.Debug("ignoring chat under response policy", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return false, ours
+		}
+		// Reconcile lazily too, so config changes become visible on the next
+		// relevant comment even when no reaction or command changed.
+		go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
+	} else {
+		var err error
+		ours, err = h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
+		if err != nil {
+			h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+			return true, false
+		}
 	}
 	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
 		return false, false
 	}
+	// Do not consume a denied opt-in/muted event. A later explicit request on
+	// the same note must still be able to run. Once policy admits the note, the
+	// mark covers all child retries and concurrent webhook deliveries.
+	if !*dedupMarked {
+		if !h.chatSeen.markNew(decision.NoteID) {
+			h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
+			return false, true
+		}
+		*dedupMarked = true
+	}
 
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
-		ProjectPath:  projectPath,
-		IID:          decision.IID,
-		DiscussionID: decision.DiscussionID,
-		NoteID:       decision.NoteID,
-		Token:        group.Token,
-		BaseURL:      h.chatCfg.BaseURL,
-		ConfigPath:   h.chatCfg.ConfigPath,
-		ExtraArgs:    h.chatCfg.ExtraArgs,
-		LogDir:       h.chatCfg.LogDir,
+		ProjectPath:    projectPath,
+		IID:            decision.IID,
+		DiscussionID:   decision.DiscussionID,
+		NoteID:         decision.NoteID,
+		Token:          group.Token,
+		BaseURL:        h.chatCfg.BaseURL,
+		ConfigPath:     h.chatCfg.ConfigPath,
+		ExtraArgs:      h.chatCfg.ExtraArgs,
+		LogDir:         h.chatCfg.LogDir,
+		MuteEmoji:      responseMuteEmoji(h.responses),
+		CommandKeyword: h.cfg.CommandKeyword,
+		SkipPhrases:    responseSkipPhrases(h.responses),
 	})
 	switch {
 	case err != nil:
@@ -690,6 +805,20 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
 		return false, true
 	}
+}
+
+func responseMuteEmoji(controller *ResponseController) string {
+	if controller == nil {
+		return ""
+	}
+	return controller.Config().MuteEmoji
+}
+
+func responseSkipPhrases(controller *ResponseController) []string {
+	if controller == nil {
+		return nil
+	}
+	return controller.Config().SkipPhrases
 }
 
 // isNickpitThread reports whether the discussion's root note carries a nickpit

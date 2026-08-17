@@ -294,6 +294,19 @@ func TestChatThreadToMessages(t *testing.T) {
 	}
 }
 
+func TestChatThreadToMessagesStripsResponseControls(t *testing.T) {
+	notes := []glscm.DiscussionNote{
+		{Body: "root", AuthorID: 5},
+		{Body: "question\n/nickpit resume", AuthorID: 10},
+		{Body: reviewmd.UpsertResponseFooter("answer", reviewmd.ResponseStatus{Enabled: true}), AuthorID: 5},
+		{Body: "  NICKPIT   SKIP  ", AuthorID: 10},
+	}
+	msgs := chatThreadToMessages(notes, 5, chatMessageControls{keyword: "nickpit", skipPhrases: []string{"nickpit skip"}})
+	if len(msgs) != 2 || msgs[0].Content != "question" || msgs[1].Content != "answer" {
+		t.Fatalf("control metadata leaked into history: %+v", msgs)
+	}
+}
+
 func TestLatestPendingNote(t *testing.T) {
 	notes := []glscm.DiscussionNote{
 		{ID: 1, Body: "root", AuthorID: 5},

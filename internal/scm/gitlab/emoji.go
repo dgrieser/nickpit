@@ -29,6 +29,27 @@ func (c *Client) AwardNoteEmoji(ctx context.Context, projectID, iid, noteID int,
 	return c.awardEmoji(ctx, noteEmojiPath(projectID, iid, noteID), name)
 }
 
+// MREmojis lists all reactions currently present on a merge request. project
+// accepts either a numeric id or group/name path.
+func (c *Client) MREmojis(ctx context.Context, project string, iid int) ([]AwardEmoji, error) {
+	var awards []AwardEmoji
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/award_emoji", escapeProject(project), iid)
+	if err := c.GetPaginated(ctx, path, &awards); err != nil {
+		return nil, err
+	}
+	return awards, nil
+}
+
+// NoteEmojis lists all reactions currently present on one merge-request note.
+func (c *Client) NoteEmojis(ctx context.Context, project string, iid, noteID int) ([]AwardEmoji, error) {
+	var awards []AwardEmoji
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%d/award_emoji", escapeProject(project), iid, noteID)
+	if err := c.GetPaginated(ctx, path, &awards); err != nil {
+		return nil, err
+	}
+	return awards, nil
+}
+
 // ReplaceMREmoji awards add on a merge request and revokes every remove name the
 // client's own user awarded there, so a reaction can be flipped to a new one
 // (e.g. the in-progress marker to the review outcome). An empty add only

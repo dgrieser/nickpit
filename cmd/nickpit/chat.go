@@ -22,6 +22,7 @@ import (
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/textsan"
@@ -29,17 +30,20 @@ import (
 )
 
 type chatOptions struct {
-	sessionID       string
-	findingID       string
-	fromJSON        string
-	gitlab          bool
-	rawURL          string
-	repo            string
-	mrID            int
-	reviewID        string
-	repoRoot        string
-	replyDiscussion string
-	replyNote       int
+	sessionID           string
+	findingID           string
+	fromJSON            string
+	gitlab              bool
+	rawURL              string
+	repo                string
+	mrID                int
+	reviewID            string
+	repoRoot            string
+	replyDiscussion     string
+	replyNote           int
+	replyMuteEmoji      string
+	replyCommandKeyword string
+	replySkipPhrases    []string
 }
 
 func (a *app) newChatCmd() *cobra.Command {
@@ -69,6 +73,12 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
+	cmd.Flags().StringVar(&opts.replyMuteEmoji, "reply-mute-emoji", "", "Internal serve setting: reaction that mutes discussion replies")
+	cmd.Flags().StringVar(&opts.replyCommandKeyword, "reply-command-keyword", "nickpit", "Internal serve setting: response-control command keyword")
+	cmd.Flags().StringArrayVar(&opts.replySkipPhrases, "reply-skip-phrase", nil, "Internal serve setting: full-line response skip phrase")
+	_ = cmd.Flags().MarkHidden("reply-mute-emoji")
+	_ = cmd.Flags().MarkHidden("reply-command-keyword")
+	_ = cmd.Flags().MarkHidden("reply-skip-phrase")
 	_ = cmd.MarkFlagFilename("from-json", "json")
 	_ = cmd.MarkFlagDirname("repo-root")
 	_ = cmd.RegisterFlagCompletionFunc("session", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
@@ -993,6 +1003,13 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if !ok {
 		return nil
 	}
+	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, notes, botUserID, opts.replyMuteEmoji)
+	if err != nil {
+		return fmt.Errorf("chat: checking response policy: %w", err)
+	}
+	if !allowed {
+		return nil
+	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
 	if err != nil {
 		return fmt.Errorf("chat: reading MR reviews: %w", err)
@@ -1034,7 +1051,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if opts.replyNote > 0 && pending != opts.replyNote {
 		return nil
 	}
-	history := chatThreadToMessages(notes, botUserID)
+	history := chatThreadToMessages(notes, botUserID, chatMessageControls{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases})
 	if len(history) == 0 {
 		return nil
 	}
@@ -1079,7 +1096,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// transport error when posting itself failed (the daemon retries the
 		// whole turn).
 		a.logf(ctx, "chat: resolving MR context failed: %v", err)
-		return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, chatFailureReplyBody(err))
+		return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyMuteEmoji, chatFailureReplyBody(err))
 	}
 	toolRoot := opts.repoRoot
 	if toolRoot == "" && profile.MaxToolCalls >= 0 {
@@ -1113,7 +1130,52 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, reply)
+	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyMuteEmoji, reply)
+}
+
+func gitLabThreadResponsesAllowed(ctx context.Context, client *glscm.Client, project string, mrID int, notes []glscm.DiscussionNote, botUserID int, muteEmoji string) (bool, error) {
+	if len(notes) == 0 || reviewmd.ThreadCommandMuted(notes[0].Body) {
+		return false, nil
+	}
+	if muteEmoji == "" {
+		return true, nil
+	}
+	mrAwards, err := client.MREmojis(ctx, project, mrID)
+	if err != nil {
+		return false, err
+	}
+	if hasResponseMute(mrAwards, muteEmoji, botUserID) {
+		return false, nil
+	}
+	noteAwards, err := client.NoteEmojis(ctx, project, mrID, notes[0].ID)
+	if err != nil {
+		return false, err
+	}
+	return !hasResponseMute(noteAwards, muteEmoji, botUserID), nil
+}
+
+func hasResponseMute(awards []glscm.AwardEmoji, name string, botUserID int) bool {
+	for _, award := range awards {
+		if award.Name == name && award.User.ID != botUserID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client *glscm.Client, project string, mrID int, discussionID string, pending, botUserID int, muteEmoji, body string) error {
+	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
+	if err != nil {
+		return fmt.Errorf("chat: rechecking response policy: %w", err)
+	}
+	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, fresh, botUserID, muteEmoji)
+	if err != nil {
+		return fmt.Errorf("chat: rechecking response policy: %w", err)
+	}
+	if !allowed {
+		return nil
+	}
+	return a.postChatReply(ctx, client, project, mrID, discussionID, pending, botUserID, body)
 }
 
 // chatNoteClient is the subset of the GitLab client the chat reply path uses:
@@ -1275,13 +1337,27 @@ func findingExists(result *model.ReviewResult, findingID string) bool {
 // skipped — it is the review context, represented by the agent's own opener. The
 // bot's own prior replies (author == botUserID) become assistant turns; everyone
 // else's notes become user turns. System notes are dropped.
-func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Message {
+type chatMessageControls struct {
+	keyword     string
+	skipPhrases []string
+}
+
+func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
+	keyword := "nickpit"
+	var skipPhrases []string
+	if len(controls) > 0 {
+		if controls[0].keyword != "" {
+			keyword = controls[0].keyword
+		}
+		skipPhrases = controls[0].skipPhrases
+	}
 	var msgs []llm.Message
 	for i, note := range notes {
 		if i == 0 || note.System {
 			continue
 		}
-		body := strings.TrimSpace(note.Body)
+		body := reviewmd.StripMarkers(note.Body)
+		body = serve.ParseChatDirectives(body, keyword, skipPhrases).Remaining
 		if body == "" {
 			continue
 		}

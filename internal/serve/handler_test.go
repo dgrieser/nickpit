@@ -494,6 +494,33 @@ func TestHandlerChatSpawnsChild(t *testing.T) {
 	}
 }
 
+func TestHandlerChatOptInAllowsLaterRequestOnSameNote(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, OptIn: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("opt-in thread answered without a request")
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The denied delivery must not consume the note's dedup key: reacting to
+	// that same question later is an explicit request and must answer it.
+	postWebhook(t, env.handler, "emoji_award_request_note.json", "legacy-secret")
+	select {
+	case spec := <-env.chat.calls:
+		if spec.NoteID != 306 || spec.DiscussionID != "disc-306" {
+			t.Fatalf("chat spec = %+v", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request reaction on previously denied note did not spawn chat")
+	}
+}
+
 // A reply in a non-nickpit thread (root note has no marker) is not answered.
 func TestHandlerChatSkipsForeignThread(t *testing.T) {
 	env := newHandlerEnv(t)

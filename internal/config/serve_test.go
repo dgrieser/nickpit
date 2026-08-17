@@ -115,6 +115,9 @@ groups:
 	if !cfg.ChatEnabled() || cfg.Chat.MaxConcurrent != 0 || cfg.Chat.ExtraArgs != nil {
 		t.Fatalf("chat defaults = %+v", cfg.Chat)
 	}
+	if cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "mute" || len(cfg.Chat.SkipPhrases) != 0 {
+		t.Fatalf("chat response defaults = %+v / %q", cfg.Chat, cfg.ChatMuteEmojiName())
+	}
 	path = writeServeConfig(t, `
 groups:
   - path: "platform"
@@ -122,6 +125,9 @@ groups:
     webhook_secret: "sec"
 chat:
   enabled: false
+  opt_in: true
+  mute_emoji: "no_bell"
+  skip_phrases: ["nickpit skip", "NO BOT"]
   max_concurrent: 2
   extra_args: []
 `)
@@ -134,6 +140,9 @@ chat:
 	}
 	if cfg.Chat.MaxConcurrent != 2 {
 		t.Fatalf("max_concurrent = %d", cfg.Chat.MaxConcurrent)
+	}
+	if !cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "no_bell" || len(cfg.Chat.SkipPhrases) != 2 {
+		t.Fatalf("chat response config = %+v", cfg.Chat)
 	}
 	// An explicit empty list is non-nil: it REPLACES review.extra_args.
 	if cfg.Chat.ExtraArgs == nil || len(cfg.Chat.ExtraArgs) != 0 {
@@ -503,6 +512,10 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
 		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
 		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
+		{"mute equals trigger", "chat:\n  mute_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "chat.mute_emoji must differ from trigger_emoji"},
+		{"blank skip phrase", "chat:\n  skip_phrases: [\"  \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must not be blank"},
+		{"duplicate normalized skip phrase", "chat:\n  skip_phrases: [\"No Bot\", \" no   bot \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "duplicates"},
+		{"skip phrase conflicts with command", "chat:\n  skip_phrases: [\"/NICKPIT   resume\"]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "conflicts with response command"},
 		{"loki bad scheme", "loki:\n  url: \"ftp://loki:3100\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.url must be an http(s) URL"},
 		{"loki bad batch_wait", "loki:\n  url: \"http://loki:3100\"\n  batch_wait: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.batch_wait"},
 		{"loki half auth", "loki:\n  url: \"http://loki:3100\"\n  basic_auth_user: u\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must be set together"},

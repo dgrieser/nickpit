@@ -537,6 +537,7 @@ func UniqueFindingsByID(findings []model.Finding) []model.Finding {
 // model as opaque comment text; the raw bodies remain available separately for
 // carrier reassembly.
 func StripMarkers(s string) string {
+	s = StripResponseFooter(s)
 	if !strings.Contains(s, MarkerOpen) {
 		// Trim like the marker path below does, so "was this body only
 		// markers/whitespace?" checks behave identically on both paths.

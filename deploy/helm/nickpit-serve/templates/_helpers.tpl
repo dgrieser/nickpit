@@ -120,6 +120,15 @@ groups:
 {{- end }}
 review:
   extra_args: {{ toYaml .Values.serve.review.extraArgs | nindent 4 }}
+chat:
+  enabled: {{ .Values.serve.chat.enabled }}
+  opt_in: {{ .Values.serve.chat.optIn }}
+  mute_emoji: {{ .Values.serve.chat.muteEmoji | quote }}
+  skip_phrases: {{ toYaml .Values.serve.chat.skipPhrases | nindent 4 }}
+  max_concurrent: {{ .Values.serve.chat.maxConcurrent }}
+  {{- if ne .Values.serve.chat.extraArgs nil }}
+  extra_args: {{ toYaml .Values.serve.chat.extraArgs | nindent 4 }}
+  {{- end }}
 {{- if .Values.serve.loki.url }}
 loki:
   url: {{ .Values.serve.loki.url | quote }}

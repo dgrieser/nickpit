@@ -1,0 +1,21 @@
+{
+  "object_kind": "emoji",
+  "event_type": "award",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool"},
+  "object_attributes": {
+    "action": "award",
+    "name": "nickpit",
+    "awardable_type": "Note",
+    "awardable_id": 306
+  },
+  "note": {
+    "id": 306,
+    "author_id": 10,
+    "note": "Why is this unsafe?",
+    "noteable_type": "MergeRequest",
+    "discussion_id": "disc-306",
+    "type": "DiscussionNote"
+  },
+  "merge_request": {"iid": 11, "last_commit": {"id": "sha-note-1"}}
+}

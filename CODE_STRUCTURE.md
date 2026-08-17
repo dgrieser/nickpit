@@ -106,17 +106,19 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/client.go`: GitLab API client.
 - `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).
 - `internal/scm/gitlab/project.go`: Project lookup (topics), current-user lookup, and award-emoji posting.
-- `internal/scm/gitlab/notes.go`: Note-level operations used by the serve daemon: note award-emoji, plain MR notes, and threaded discussion replies.
+- `internal/scm/gitlab/notes.go`: Note/discussion operations used by the serve daemon: plain MR notes, threaded replies, discussion listing, and root-note updates.
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
+- `internal/scm/reviewmd/response.go`: Visible GitLab response-mode footers and hidden persistent thread-mute metadata, with stripping before LLM context assembly.
 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 
 - `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
 - `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue, and command routing (ack emoji and replies posted async).
 - `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs chat vs ignore); a plain reply in a discussion thread becomes a `CommandChat` candidate.
-- `internal/serve/command.go`: `/keyword` note-command parsing and the help/status/abort reply texts.
+- `internal/serve/command.go`: `/keyword` note-command parsing, full-line response/skip directives, and help/status/abort reply texts.
+- `internal/serve/response.go`: Live GitLab response policy from config, MR/root reactions, and persistent command state; reconciles status footers on review roots.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.

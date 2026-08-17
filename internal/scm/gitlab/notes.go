@@ -37,6 +37,54 @@ func (c *Client) ReplyToMRDiscussionPath(ctx context.Context, project string, ii
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// UpdateMRDiscussionNote replaces one discussion note body. It works for both
+// inline threads and individual-note discussions, covering every visible
+// nickpit review root through one endpoint.
+func (c *Client) UpdateMRDiscussionNote(ctx context.Context, project string, iid int, discussionID string, noteID int, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s/notes/%d", escapeProject(project), iid, url.PathEscape(discussionID), noteID)
+	return c.Put(ctx, path, map[string]string{"body": body}, nil)
+}
+
+// MRDiscussion is one merge-request discussion with notes ordered oldest first.
+type MRDiscussion struct {
+	ID    string
+	Notes []DiscussionNote
+}
+
+// MRDiscussions lists every merge-request discussion with note ids, bodies,
+// and authors. It is used to find bot-authored visible review roots.
+func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]MRDiscussion, error) {
+	type noteJSON struct {
+		ID     int    `json:"id"`
+		Body   string `json:"body"`
+		System bool   `json:"system"`
+		Author struct {
+			Username string `json:"username"`
+			ID       int    `json:"id"`
+		} `json:"author"`
+	}
+	var raw []struct {
+		ID    string     `json:"id"`
+		Notes []noteJSON `json:"notes"`
+	}
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escapeProject(project), iid)
+	if err := c.GetPaginated(ctx, path, &raw); err != nil {
+		return nil, fmt.Errorf("gitlab: listing MR discussions: %w", err)
+	}
+	out := make([]MRDiscussion, 0, len(raw))
+	for _, discussion := range raw {
+		item := MRDiscussion{ID: discussion.ID, Notes: make([]DiscussionNote, 0, len(discussion.Notes))}
+		for _, note := range discussion.Notes {
+			item.Notes = append(item.Notes, DiscussionNote{
+				ID: note.ID, Body: note.Body, System: note.System,
+				AuthorName: note.Author.Username, AuthorID: note.Author.ID,
+			})
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 // MRNote is one merge-request note body plus its author, so callers can verify
 // carrier provenance before trusting embedded markers.
 type MRNote struct {

@@ -75,6 +75,35 @@ func TestExecRunnerInvocation(t *testing.T) {
 	}
 }
 
+func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := ChatSpec{
+		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+		Token: "group-token", BaseURL: "https://gitlab.example.com", LogDir: t.TempDir(),
+		ExtraArgs: []string{"--reply-mute-emoji", "operator-value"}, MuteEmoji: "mute",
+		CommandKeyword: "nickpit", SkipPhrases: []string{"no bot", "quiet"},
+	}
+	_, logPath, err := runner.RunChat(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	for _, want := range []string{
+		"chat --gitlab --repo platform/api --id 7 --reply-discussion disc-1 --reply-note 42",
+		"--reply-mute-emoji operator-value --reply-mute-emoji mute",
+		"--reply-command-keyword nickpit",
+		"--reply-skip-phrase no bot --reply-skip-phrase quiet",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("argv missing %q:\n%s", want, args)
+		}
+	}
+}
+
 func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {

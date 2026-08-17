@@ -51,12 +51,15 @@ type ChatSpec struct {
 	DiscussionID string
 	// NoteID is the triggering note; the child answers only when this note is
 	// still the latest reply, so racing/redelivered replies do not double-answer.
-	NoteID     int
-	Token      string
-	BaseURL    string
-	ConfigPath string
-	ExtraArgs  []string
-	LogDir     string
+	NoteID         int
+	Token          string
+	BaseURL        string
+	ConfigPath     string
+	ExtraArgs      []string
+	LogDir         string
+	MuteEmoji      string
+	CommandKeyword string
+	SkipPhrases    []string
 }
 
 // ChatRunner executes one discussion-thread reply in a child process.
@@ -189,6 +192,15 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 		args = append(args, "--config", spec.ConfigPath)
 	}
 	args = append(args, spec.ExtraArgs...)
+	if spec.MuteEmoji != "" {
+		args = append(args, "--reply-mute-emoji", spec.MuteEmoji)
+	}
+	if spec.CommandKeyword != "" {
+		args = append(args, "--reply-command-keyword", spec.CommandKeyword)
+	}
+	for _, phrase := range spec.SkipPhrases {
+		args = append(args, "--reply-skip-phrase", phrase)
+	}
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

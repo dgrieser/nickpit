@@ -45,6 +45,32 @@ func TestParseCommand(t *testing.T) {
 	}
 }
 
+func TestParseChatDirectives(t *testing.T) {
+	cases := []struct {
+		name                  string
+		body                  string
+		wantMute, wantResume  bool
+		wantRequest, wantSkip bool
+		wantRemaining         string
+	}{
+		{"mute alias anywhere", "please stop\n /NickPit   SHUTUP \nthanks", true, false, false, false, "please stop\nthanks"},
+		{"positive requests same comment", "Why?\n/nickpit resume", false, true, true, false, "Why?"},
+		{"positive only has no prompt", "/nickpit comment", false, true, true, false, ""},
+		{"skip normalized", "question\n NO    BOT ", false, false, false, true, "question"},
+		{"substring does not match", "prefix no bot suffix", false, false, false, false, "prefix no bot suffix"},
+		{"arguments reject command", "/nickpit mute now", false, false, false, false, "/nickpit mute now"},
+		{"mute wins conflict", "/nickpit respond\nquestion\n/nickpit ignore", true, false, false, false, "question"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseChatDirectives(tc.body, "nickpit", []string{"no bot"})
+			if got.Mute != tc.wantMute || got.Resume != tc.wantResume || got.Request != tc.wantRequest || got.Skip != tc.wantSkip || got.Remaining != tc.wantRemaining {
+				t.Fatalf("directives = %+v", got)
+			}
+		})
+	}
+}
+
 // Replies must never start with the command prefix, or the daemon's own notes
 // could read as commands.
 func TestReplyTextsNeverStartWithSlash(t *testing.T) {
@@ -104,7 +130,7 @@ func TestAbortText(t *testing.T) {
 
 func TestHelpTextListsAllCommands(t *testing.T) {
 	text := helpText("mybot")
-	for _, want := range []string{"/mybot review", "/mybot abort", "/mybot status", "/mybot help"} {
+	for _, want := range []string{"/mybot review", "/mybot abort", "/mybot status", "/mybot help", "/mybot mute", "/mybot respond", "resume"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help text missing %q:\n%s", want, text)
 		}

@@ -3,7 +3,7 @@ name: nickpit-serve
 description: NickPit GitLab webhook review daemon (`nickpit gitlab serve`)
 type: application
 # Chart version. Bump on template changes.
-version: 0.5.1
+version: 0.6.0
 # No appVersion on purpose: image.tag is required at install time, so the
 # running version is pinned in exactly one place (the deploy repo) and the
 # chart can never silently fall back to a stale default.
