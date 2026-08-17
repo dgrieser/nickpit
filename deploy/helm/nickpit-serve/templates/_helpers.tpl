@@ -123,7 +123,9 @@ review:
 chat:
   enabled: {{ .Values.serve.chat.enabled }}
   opt_in: {{ .Values.serve.chat.optIn }}
+  {{- if ne .Values.serve.chat.muteEmoji "mute" }}
   mute_emoji: {{ .Values.serve.chat.muteEmoji | quote }}
+  {{- end }}
   skip_phrases: {{ toYaml .Values.serve.chat.skipPhrases | nindent 4 }}
   max_concurrent: {{ .Values.serve.chat.maxConcurrent }}
   {{- if ne .Values.serve.chat.extraArgs nil }}

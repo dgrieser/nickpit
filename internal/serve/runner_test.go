@@ -93,8 +93,10 @@ func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
 	}
 	args := string(data)
 	for _, want := range []string{
-		"chat --gitlab --repo platform/api --id 7 --reply-discussion disc-1 --reply-note 42",
-		"--reply-mute-emoji operator-value --reply-mute-emoji mute",
+		"chat --gitlab --repo platform/api --id 7 --reply-discussion disc-1",
+		"--reply-mute-emoji operator-value",
+		"--reply-note 42",
+		"--reply-note 42 --reply-mute-emoji mute",
 		"--reply-command-keyword nickpit",
 		"--reply-skip-phrase no bot --reply-skip-phrase quiet",
 	} {
@@ -104,11 +106,12 @@ func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
 	}
 }
 
-func TestExecRunnerExplicitChatRequestFollowsLatestPendingNote(t *testing.T) {
+func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
 	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
 	spec := ChatSpec{
 		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
 		Requested: true, Token: "group-token", LogDir: t.TempDir(),
+		ExtraArgs: []string{"--reply-note", "99"},
 	}
 	_, logPath, err := runner.RunChat(context.Background(), spec)
 	if err != nil {
@@ -119,8 +122,8 @@ func TestExecRunnerExplicitChatRequestFollowsLatestPendingNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := string(data)
-	if strings.Contains(args, "--reply-note") {
-		t.Fatalf("explicit request pinned to reacted note instead of latest pending turn:\n%s", args)
+	if !strings.Contains(args, "--reply-note 99 --reply-note 42") {
+		t.Fatalf("explicit request not authoritatively pinned to reacted note:\n%s", args)
 	}
 }
 

@@ -283,7 +283,9 @@ serve:
     optIn: false
     # Reaction on a NickPit review root mutes that thread; reaction on the MR
     # mutes every NickPit thread. Removing the last matching human reaction
-    # re-enables it. "" disables reaction-based muting.
+    # re-enables it. "" disables reaction-based muting. The built-in value is
+    # omitted from rendered server.yaml so legacy reaction settings that
+    # collide with the new default remain upgradeable.
     muteEmoji: "mute"
     # Full-line, case-insensitive response suppressors. Surrounding whitespace
     # is trimmed and internal whitespace collapsed. Empty by default.

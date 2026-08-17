@@ -56,12 +56,10 @@ type ChatSpec struct {
 	IID          int
 	DiscussionID string
 	// NoteID is the triggering note; the child answers only when this note is
-	// still the latest reply, unless Requested transfers an explicit request to
-	// the thread's latest pending user turn.
+	// still the latest pending user reply.
 	NoteID int
-	// Requested means a human explicitly requested a response. The child then
-	// answers the latest pending user turn instead of requiring NoteID to remain
-	// latest; this preserves requests made on older notes in opt-in threads.
+	// Requested means a human explicitly requested a response. It affects the
+	// parent's policy gate but never transfers the request to another note.
 	Requested      bool
 	Token          string
 	BaseURL        string
@@ -196,13 +194,15 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 		"--id", strconv.Itoa(spec.IID),
 		"--reply-discussion", spec.DiscussionID,
 	}
-	if spec.NoteID > 0 && !spec.Requested {
-		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
-	}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
 	}
 	args = append(args, spec.ExtraArgs...)
+	// Keep the target after operator-provided arguments so an extra --reply-note
+	// cannot transfer this per-comment admission to another pending question.
+	if spec.NoteID > 0 {
+		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
+	}
 	if spec.MuteEmoji != "" {
 		args = append(args, "--reply-mute-emoji", spec.MuteEmoji)
 	}
