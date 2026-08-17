@@ -948,6 +948,151 @@ func TestReviewStepInternalOverridesRouteSubagentModels(t *testing.T) {
 	}
 }
 
+// smallEndpointRoutingProfile builds a profile whose small model differs from the
+// primary in the given way, plus the spec that routes the reviewer to the primary
+// model and mine_reasoning/compile_findings/nudge to "@small".
+func smallEndpointRoutingSpec() workflow.Spec {
+	alias := workflow.SmallModelAlias
+	nudgeCount := 1
+	return workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{{
+			Type: workflow.StepReviewPrefix + "security",
+			Config: &workflow.StepOverride{
+				NudgeCount:      &nudgeCount,
+				MineReasoning:   &workflow.AgentOverride{Model: &alias},
+				CompileFindings: &workflow.AgentOverride{Model: &alias},
+				Nudge:           &workflow.AgentOverride{Model: &alias},
+			},
+		}},
+	}
+}
+
+// runSmallEndpointRouting runs the routing spec against two distinct fake clients
+// and returns them, so a test can assert which endpoint served which agent.
+func runSmallEndpointRouting(t *testing.T, profile config.Profile) (primary, small *reasoningExtractLLM) {
+	t.Helper()
+	newFake := func() *reasoningExtractLLM {
+		return &reasoningExtractLLM{
+			reviewerReasoning: []string{"initial reasoning"},
+			collectOutputs:    []string{"collected issue"},
+			updateOutputs:     []string{"delta issue"},
+		}
+	}
+	primary, small = newFake(), newFake()
+	engine := NewEngine(stubSource{}, primary, stubRetrieval{}, profile)
+	engine.SetSmallClient(small, config.EffectiveSmallProfile(profile))
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	pipeline, err := engine.BuildPipeline(smallEndpointRoutingSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:                model.ModeLocal,
+		ModelEmitsReasoning: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return primary, small
+}
+
+func assertSmallEndpointRouting(t *testing.T, primary, small *reasoningExtractLLM) {
+	t.Helper()
+	primary.mu.Lock()
+	primaryReviewer := strings.Join(primary.reviewerModels, ",")
+	primaryCollect := strings.Join(primary.collectModels, ",")
+	primaryUpdate := strings.Join(primary.updateModels, ",")
+	primary.mu.Unlock()
+	small.mu.Lock()
+	smallReviewer := strings.Join(small.reviewerModels, ",")
+	smallCollect := strings.Join(small.collectModels, ",")
+	smallUpdate := strings.Join(small.updateModels, ",")
+	small.mu.Unlock()
+
+	// The initial review runs on the primary endpoint; the "@small" nudge and both
+	// internal agents run on the small one.
+	if primaryReviewer != "large-model" {
+		t.Fatalf("primary endpoint reviewer models = %q, want large-model", primaryReviewer)
+	}
+	if primaryCollect != "" || primaryUpdate != "" {
+		t.Fatalf("primary endpoint served internal agents: collect=%q update=%q", primaryCollect, primaryUpdate)
+	}
+	if smallReviewer != "small-model" {
+		t.Fatalf("small endpoint reviewer models = %q, want small-model (the @small nudge)", smallReviewer)
+	}
+	if smallCollect != "small-model" {
+		t.Fatalf("small endpoint mine reasoning models = %q, want small-model", smallCollect)
+	}
+	if smallUpdate != "small-model" {
+		t.Fatalf("small endpoint compile findings models = %q, want small-model", smallUpdate)
+	}
+}
+
+func TestSmallModelOnOwnBaseURLRoutesToItsClient(t *testing.T) {
+	primary, small := runSmallEndpointRouting(t, config.Profile{
+		Model:           "large-model",
+		BaseURL:         "http://primary.invalid/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "high",
+		Small: config.SmallModelConfig{
+			Model:           "small-model",
+			BaseURL:         "http://small.invalid/v1",
+			APIKey:          "small-key",
+			ReasoningEffort: "low",
+		},
+	})
+	assertSmallEndpointRouting(t, primary, small)
+}
+
+// An api_key-only difference is still a distinct endpoint: the credential is baked
+// into the client, so the small steps must not reuse the primary one.
+func TestSmallModelOnOwnAPIKeyRoutesToItsClient(t *testing.T) {
+	primary, small := runSmallEndpointRouting(t, config.Profile{
+		Model:           "large-model",
+		BaseURL:         "http://primary.invalid/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "high",
+		Small: config.SmallModelConfig{
+			Model:           "small-model",
+			APIKey:          "small-key",
+			ReasoningEffort: "low",
+		},
+	})
+	assertSmallEndpointRouting(t, primary, small)
+}
+
+// A trailing slash is not a second endpoint, so the small steps stay on the
+// primary client instead of silently splitting into two connections.
+func TestSmallModelSameEndpointIgnoresRegisteredClient(t *testing.T) {
+	primary, small := runSmallEndpointRouting(t, config.Profile{
+		Model:           "large-model",
+		BaseURL:         "http://primary.invalid/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "high",
+		Small: config.SmallModelConfig{
+			Model:           "small-model",
+			BaseURL:         "http://primary.invalid/v1/",
+			ReasoningEffort: "low",
+		},
+	})
+	small.mu.Lock()
+	served := len(small.reviewerModels) + len(small.collectModels) + len(small.updateModels)
+	small.mu.Unlock()
+	if served != 0 {
+		t.Fatalf("registered client served %d calls for the primary endpoint, want 0", served)
+	}
+	primary.mu.Lock()
+	reviewer := strings.Join(primary.reviewerModels, ",")
+	collect := strings.Join(primary.collectModels, ",")
+	primary.mu.Unlock()
+	if reviewer != "large-model,small-model" {
+		t.Fatalf("primary reviewer models = %q, want large-model,small-model", reviewer)
+	}
+	if collect != "small-model" {
+		t.Fatalf("primary mine reasoning models = %q, want small-model", collect)
+	}
+}
+
 // --- lane pipeline tests ---
 
 // laneSpec builds collect-context → parallel lanes (review→verify→dedupe per

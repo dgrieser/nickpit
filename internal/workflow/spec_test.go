@@ -1087,6 +1087,32 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 	}
 }
 
+// The alias also carries the small endpoint, which is what routes the step to the
+// second LLM client.
+func TestStepOverrideResolveSmallModelAliasCarriesEndpoint(t *testing.T) {
+	alias := SmallModelAlias
+	base := config.Profile{
+		Model:   "primary",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		Small: config.SmallModelConfig{
+			Model:   "small",
+			BaseURL: "https://llm.example/v1",
+			APIKey:  "small-key",
+		},
+	}
+	got, _ := (&StepOverride{Model: &alias}).Resolve(base, model.ReviewRequest{})
+	if got.BaseURL != "https://llm.example/v1" || got.APIKey != "small-key" {
+		t.Fatalf("resolved endpoint = %q/%q, want the small endpoint", got.BaseURL, got.APIKey)
+	}
+	// A step without the alias stays on the primary endpoint.
+	primaryModel := "other"
+	got, _ = (&StepOverride{Model: &primaryModel}).Resolve(base, model.ReviewRequest{})
+	if got.BaseURL != "http://localhost:10000/v1" || got.APIKey != "primary-key" {
+		t.Fatalf("non-alias step endpoint = %q/%q, want the primary endpoint", got.BaseURL, got.APIKey)
+	}
+}
+
 func TestAgentOverrideResolveSmallModelAlias(t *testing.T) {
 	alias := SmallModelAlias
 	effort := "none"
@@ -1101,6 +1127,24 @@ func TestAgentOverrideResolveSmallModelAlias(t *testing.T) {
 	}
 	if gotProfile.MaxOutputRetries != 2 || gotReq.MaxOutputRetries != 2 {
 		t.Fatalf("max_output_retries = profile %d req %d, want 2/2", gotProfile.MaxOutputRetries, gotReq.MaxOutputRetries)
+	}
+}
+
+func TestAgentOverrideResolveSmallModelAliasCarriesEndpoint(t *testing.T) {
+	alias := SmallModelAlias
+	base := config.Profile{
+		Model:   "primary",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		Small: config.SmallModelConfig{
+			Model:   "small",
+			BaseURL: "https://llm.example/v1",
+			APIKey:  "small-key",
+		},
+	}
+	got, _ := (&AgentOverride{Model: &alias}).Resolve(base, model.ReviewRequest{})
+	if got.BaseURL != "https://llm.example/v1" || got.APIKey != "small-key" {
+		t.Fatalf("resolved endpoint = %q/%q, want the small endpoint", got.BaseURL, got.APIKey)
 	}
 }
 

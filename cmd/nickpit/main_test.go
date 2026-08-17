@@ -2332,3 +2332,137 @@ func TestInspectHistoryAnchorsAtTheRepositoryRoot(t *testing.T) {
 		t.Fatalf("repo root = %q, want the current directory %q", gotOutside, wantOutside)
 	}
 }
+
+func TestLoadProfileAppliesSmallEndpointCLIOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      model: file-small-model
+      base_url: https://file.example/v1
+      api_key: file-small-key
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:      "default",
+		configPath:   path,
+		smallBaseURL: "https://cli.example/v1",
+		smallAPIKey:  "cli-small-key",
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.BaseURL != "https://cli.example/v1" {
+		t.Fatalf("small base url = %q", profile.Small.BaseURL)
+	}
+	if profile.Small.APIKey != "cli-small-key" {
+		t.Fatalf("small api key = %q", profile.Small.APIKey)
+	}
+	if profile.BaseURL != "http://localhost:10000/v1" || profile.APIKey != "primary-key" {
+		t.Fatalf("primary endpoint = %q/%q, want it untouched", profile.BaseURL, profile.APIKey)
+	}
+}
+
+// A small block that only moves the model to another host produces an identical
+// request-settings signature, so the endpoint has to be compared on its own or the
+// foreign serving stack would never be probed.
+func TestSmallModelConfiguredForEndpointOnlyDifference(t *testing.T) {
+	profile := config.Profile{
+		Model:           "same-model",
+		BaseURL:         "http://localhost:10000/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "low",
+		Small: config.SmallModelConfig{
+			BaseURL: "https://llm.example/v1",
+			APIKey:  "small-key",
+		},
+	}
+	if !smallModelConfigured(profile) {
+		t.Fatal("expected a small model on another endpoint to require its own check")
+	}
+}
+
+// The same base URL with another credential is the same serving stack: it needs its
+// own client, but not a second probe.
+func TestSmallModelConfiguredIgnoresAPIKeyOnlyDifference(t *testing.T) {
+	profile := config.Profile{
+		Model:           "same-model",
+		BaseURL:         "http://localhost:10000/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "low",
+		Small:           config.SmallModelConfig{APIKey: "small-key"},
+	}
+	if smallModelConfigured(profile) {
+		t.Fatal("expected an api_key-only difference to reuse the primary capability check")
+	}
+	if !smallEndpointDistinct(profile, config.EffectiveSmallProfile(profile)) {
+		t.Fatal("expected an api_key-only difference to still need its own client")
+	}
+}
+
+func TestSmallModelDistinctTargetCoversEndpointAndModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		small config.SmallModelConfig
+		want  bool
+	}{
+		{name: "inherits everything"},
+		{name: "sampling only", small: config.SmallModelConfig{Temperature: ptrToTest(0.1)}},
+		{name: "other model", small: config.SmallModelConfig{Model: "small-model"}, want: true},
+		{
+			name:  "other endpoint, same model",
+			small: config.SmallModelConfig{BaseURL: "https://llm.example/v1", APIKey: "small-key"},
+			want:  true,
+		},
+		{
+			name:  "same endpoint spelled with a trailing slash",
+			small: config.SmallModelConfig{BaseURL: "http://localhost:10000/v1/"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := config.Profile{
+				Model:   "primary-model",
+				BaseURL: "http://localhost:10000/v1",
+				APIKey:  "primary-key",
+				Small:   tc.small,
+			}
+			if got := smallModelDistinctTarget(profile, config.EffectiveSmallProfile(profile)); got != tc.want {
+				t.Fatalf("smallModelDistinctTarget = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func ptrToTest[T any](v T) *T { return &v }
+
+// A profile-declared capability describes the primary serving stack and is matched
+// by model name only, so it must not answer for a foreign small endpoint: the small
+// probe has to run instead.
+func TestSmallProfileIgnoresPrimarySupportedModelsOnOtherEndpoint(t *testing.T) {
+	profile := config.Profile{
+		Model:   "shared-model-name",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		SupportedModels: []config.ModelCapabilities{
+			{Model: "shared-model-name", Compatible: true, Response: true, Tools: true},
+		},
+		Small: config.SmallModelConfig{BaseURL: "https://llm.example/v1", APIKey: "small-key"},
+	}
+	small := config.EffectiveSmallProfile(profile)
+	if _, ok := modelcheck.FindProfileCapabilityFor(small, small.Model); ok {
+		t.Fatal("primary supported_models answered for a foreign small endpoint")
+	}
+	if _, ok := modelcheck.FindProfileCapabilityFor(profile, profile.Model); !ok {
+		t.Fatal("primary supported_models must still answer for the primary endpoint")
+	}
+}

@@ -94,6 +94,8 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 func smallModelNode(small SmallModelConfig) *yaml.Node {
 	return yamlMapping(
 		yamlEntry("model", yamlScalar(small.Model)),
+		yamlEntry("base_url", yamlScalar(small.BaseURL)),
+		yamlEntry("api_key", yamlScalar(small.APIKey)),
 		yamlEntry("max_tokens", optionalIntNode(small.MaxTokens)),
 		yamlEntry("temperature", optionalFloatNode(small.Temperature)),
 		yamlEntry("top_p", optionalFloatNode(small.TopP)),
@@ -200,6 +202,7 @@ func anyNode(value any) *yaml.Node {
 func exampleProfile(profile Profile) Profile {
 	profile = cloneProfile(profile)
 	profile.APIKey = canonicalEnvRef(profile.APIKey)
+	profile.Small.APIKey = canonicalEnvRef(profile.Small.APIKey)
 	profile = applyProfileDefaults(profile)
 	if profile.GitHubToken == "" {
 		profile.GitHubToken = DefaultGitHubTokenRef

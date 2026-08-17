@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/git"
@@ -900,8 +899,7 @@ func (a *app) chatSource(profile config.Profile, src session.Source, trustedHost
 // differences (surrounding whitespace, trailing slash). Two empty values both
 // mean the client default and match.
 func sameLLMEndpoint(a, b string) bool {
-	norm := func(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }
-	return norm(a) == norm(b)
+	return model.SameEndpoint(a, b)
 }
 
 // chatToolset returns the discussion agent's tool set for a session: all reviewer
@@ -930,10 +928,10 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	if err != nil {
 		return nil, err
 	}
-	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-	client.SetLogger(logger)
-	client.SetMaxRequestBytes(profile.MaxRequestBytes)
-	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
+	// No small client here on purpose: the discussion agent always runs the
+	// primary model (there is no workflow spec and therefore no "@small" step),
+	// so a second endpoint would be dead weight.
+	client := newLLMClient(profile, logger)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)

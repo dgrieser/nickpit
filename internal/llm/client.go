@@ -387,7 +387,7 @@ func (t *reasoningTimeoutController) Expired() bool {
 	return t.expired
 }
 
-func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
+func NewOpenAIClient(baseURL, apiKey, modelName string) *OpenAIClient {
 	// Clone the default transport and bound the time to receive response
 	// headers. The default already bounds dial (30s) and TLS handshake (10s),
 	// but leaves ResponseHeaderTimeout unset, so a server that accepts the
@@ -410,13 +410,13 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	}
 
 	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = strings.TrimRight(baseURL, "/")
+	config.BaseURL = model.NormalizeBaseURL(baseURL)
 	config.HTTPClient = httpClient
 	config.EmptyMessagesLimit = 100000
 
 	return &OpenAIClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		model:      model,
+		baseURL:    model.NormalizeBaseURL(baseURL),
+		model:      modelName,
 		httpClient: httpClient,
 		sdkClient:  openai.NewClientWithConfig(config),
 		retrier:    NewRetrier(),

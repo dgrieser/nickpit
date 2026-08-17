@@ -317,10 +317,18 @@ steps:
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
-# Unset = inherit from the active profile / CLI flags. (base_url / api_key are
-# profile-level only — the LLM client is created once per run.)
+# Unset = inherit from the active profile / CLI flags. (base_url / api_key stay
+# profile-level: a step cannot point itself at an endpoint.)
 # Use `model: "@small"` to select profile.small, with unset small fields
-# falling back to the primary profile config.
+# falling back to the primary profile config. profile.small may carry its own
+# base_url / api_key, in which case every "@small" step runs against that second
+# endpoint (its own client, its own rate-limit backoff, its own model check).
+# Two caveats when the endpoints are different providers: the json_schema
+# response format is a single run-wide request setting, so a small model that
+# cannot do json_schema degrades the primary model to the prompt-embedded schema
+# too; and a `nudge:<vector>` / `reasoning-extract:<vector>` step on "@small"
+# replays the primary reviewer's transcript (assistant turns, reasoning, tool
+# call ids) to the other provider, which may reject it.
 #
 # steps:
 #   - type: collect-context

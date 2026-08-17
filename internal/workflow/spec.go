@@ -26,7 +26,10 @@ import (
 const SpecVersion = 1
 
 // SmallModelAlias selects profile.small for a step. Unset small fields
-// intentionally fall back to the profile's primary model config.
+// intentionally fall back to the profile's primary model config. That includes
+// the endpoint: a profile.small carrying its own base_url/api_key routes the
+// step's requests to a second LLM endpoint, while a step's own config: block
+// still cannot set an endpoint (see StepOverride).
 const SmallModelAlias = "@small"
 
 // Step type identifiers. Steps that operate on a single reviewer vector are
@@ -174,8 +177,11 @@ func (s StepEntry) LaneSteps() []StepEntry {
 // CLI/config/profile value, exactly as a normal review does.
 //
 // Only parameters that take effect per step are exposed. base_url, api_key and
-// the rate-limit delay are intentionally omitted: the LLM client is constructed
-// once per run from the active profile, so those cannot vary per step.
+// the rate-limit delay are intentionally omitted: clients are constructed once
+// per run from the profile, so those cannot vary per step. The one way to reach
+// a second endpoint is model: "@small" with a profile.small that carries its own
+// base_url/api_key — an endpoint the run knows about up front, not a new one per
+// step.
 type StepOverride struct {
 	// Model parameters (apply to the step's engine clone).
 	Model           *string        `yaml:"model"`

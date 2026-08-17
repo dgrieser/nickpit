@@ -34,8 +34,16 @@ import (
 )
 
 type Engine struct {
-	source                 model.ReviewSource
-	llm                    llm.Client
+	source model.ReviewSource
+	// llm is the client for THIS engine's profile. Clones made by withConfig
+	// re-resolve it from clients, so the client and the model parameters of a
+	// step always come from the same profile.
+	llm llm.Client
+	// clients resolves a profile's endpoint to its client. It holds the primary
+	// endpoint and, when the profile's small model lives elsewhere, the small one.
+	// Written once before the pipeline runs and read-only afterwards, like
+	// additionalStyleGuides below.
+	clients                *llm.ClientSet
 	retrieval              retrieval.Engine
 	history                git.History
 	config                 config.Profile
@@ -169,8 +177,12 @@ func (s *toolRoundState) releaseToolCall(toolCallID string) {
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
-		source:    source,
-		llm:       llmClient,
+		source: source,
+		llm:    llmClient,
+		// The profile names the endpoint this client talks to, so the resolver can
+		// be built here; SetSmallClient adds a second endpoint when the profile's
+		// small model lives on another host.
+		clients:   llm.NewClientSet(llmClient, llm.NewEndpoint(profile.BaseURL, profile.APIKey)),
 		retrieval: retrievalEngine,
 		// The history tools read the same checkout the retrieval engine reads,
 		// but through git; the profile tokens let a shallow remote checkout be
@@ -184,6 +196,18 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
 	}
+}
+
+// SetSmallClient registers the client for the profile's small model endpoint, so
+// steps resolved to model: "@small" run against it instead of the primary one.
+// Pass the small profile that EffectiveSmallProfile produced: its base URL and
+// api_key identify the endpoint. Registering an endpoint identical to the primary
+// one is a no-op, so callers need not check first.
+//
+// Must be called before the pipeline runs: the resolver is read-only once
+// concurrent steps start.
+func (e *Engine) SetSmallClient(client llm.Client, smallProfile config.Profile) {
+	e.clients = e.clients.With(llm.NewEndpoint(smallProfile.BaseURL, smallProfile.APIKey), client)
 }
 
 // SetHistory overrides the commit-history provider. Intended for tests;
@@ -605,13 +629,22 @@ func reviewVectorByID(id string) (reviewVector, bool) {
 func intPtr(v int) *int { return &v }
 
 // withConfig returns a shallow copy of the engine whose profile is replaced.
-// All reference fields (llm client, retrieval, logger, source, trimmer) are
-// shared; only the value-type config differs. Used to apply per-step model
-// parameter overrides without mutating the shared engine or racing concurrent
-// steps, since the clone's config is read-only for the lifetime of a step.
+// All reference fields (retrieval, logger, source, trimmer, the endpoint→client
+// resolver) are shared; only the value-type config and the client resolved from
+// it differ. Used to apply per-step model parameter overrides without mutating
+// the shared engine or racing concurrent steps, since the clone's config is
+// read-only for the lifetime of a step.
+//
+// Resolving the client here — rather than at the call site — is what keeps a
+// step's client and its model parameters in sync: both come from this clone's
+// profile, so a step routed to model: "@small" cannot end up sending the small
+// model's name to the primary endpoint. Profiles whose endpoint is not
+// registered (every profile in a single-endpoint run) resolve to the primary
+// client, so there is one code path either way.
 func (e *Engine) withConfig(profile config.Profile) *Engine {
 	clone := *e
 	clone.config = profile
+	clone.llm = e.clients.For(llm.NewEndpoint(profile.BaseURL, profile.APIKey))
 	return &clone
 }
 

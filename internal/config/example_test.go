@@ -138,3 +138,29 @@ func TestSupportedModelsNodeCoversAllCapabilityKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestSmallModelNodeCoversAllSmallKeys guards the nested small block the same way:
+// a new SmallModelConfig field that smallModelNode forgets would silently vanish
+// from the generated example.
+func TestSmallModelNodeCoversAllSmallKeys(t *testing.T) {
+	keys := mappingKeys(t, smallModelNode(SmallModelConfig{}))
+	for _, name := range yamlTagNames(t, reflect.TypeFor[SmallModelConfig]()) {
+		if !keys[name] {
+			t.Errorf("example small block omits yaml key %q", name)
+		}
+	}
+}
+
+// The generated example must show an env reference for the small key, never a
+// resolved secret.
+func TestExampleSmallAPIKeyStaysAnEnvReference(t *testing.T) {
+	t.Setenv("SMALL_ENDPOINT_KEY", "resolved-small-key")
+	profile := exampleProfile(Profile{
+		Model:   "primary-model",
+		BaseURL: "http://localhost:10000/v1",
+		Small:   SmallModelConfig{APIKey: "$SMALL_ENDPOINT_KEY"},
+	})
+	if profile.Small.APIKey != "${SMALL_ENDPOINT_KEY}" {
+		t.Fatalf("example small api key = %q, want ${SMALL_ENDPOINT_KEY}", profile.Small.APIKey)
+	}
+}

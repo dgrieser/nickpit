@@ -195,6 +195,9 @@ affinity: {}
 existingSecret: ""
 secrets:
   MITTWALD_LLM_API_KEY: ""
+  # Only needed when the profile's small model runs on a second LLM endpoint
+  # (config.nickpitYaml below): that endpoint requires its own key.
+  # NICKPIT_SMALL_API_KEY: ""
   # Group inventory (see serve.groupsSecretKey). Shape per entry: path = group
   # full path (longest-prefix matched at '/' boundaries), token = group access
   # token, and exactly one of signing_token (whsec_... from GitLab's "Generate
@@ -304,6 +307,12 @@ serve:
 #         base_url: https://other-endpoint.example/v1
 #         api_key: ${MY_LLM_API_KEY}
 #         model: some-model
+#         # Optional: run the "@small" steps on a second endpoint. A base_url
+#         # differing from the one above requires its own api_key.
+#         small:
+#           base_url: https://llm.aihosting.mittwald.de/v1
+#           api_key: ${MITTWALD_LLM_API_KEY}
+#           model: some-small-model
 # ---------------------------------------------------------------------------
 config:
   nickpitYaml: ""
