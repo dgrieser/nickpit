@@ -711,10 +711,11 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 // chatAttempt runs one chat attempt end to end and reports whether it is worth
 // retrying, plus whether the thread gate CONFIRMED the thread as nickpit's own
 // during this attempt (handleChat posts the failure note only into confirmed
-// threads). Successful replies, foreign threads, and superseded notes are
-// final; gate read failures, spawn failures, and non-zero child exits are
-// retryable. ctx is the admitted event's shared deadline (see handleChat) —
-// every blocking step here runs under it.
+// threads). Successful replies, foreign threads, superseded notes, and a child
+// suppressed by newly changed response policy are final; gate read failures,
+// spawn failures, and other non-zero child exits are retryable. ctx is the
+// admitted event's shared deadline (see handleChat) — every blocking step here
+// runs under it.
 func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision, dedupMarked *bool) (retryable, gateConfirmed bool) {
 	// Serialize replies within a discussion BEFORE competing for a global slot.
 	// The reverse order would let queued replies to one busy discussion each sit
@@ -744,6 +745,12 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 			return true, false
 		}
 		ours = state.Ours
+		// Reconcile lazily once ownership is confirmed, even when current policy
+		// denies this comment. Otherwise a restart with changed response config
+		// can leave the root's visible instructions stale indefinitely.
+		if ours {
+			go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
+		}
 		if decision.Requested && decision.NoteID == state.Root.ID {
 			return false, ours
 		}
@@ -751,9 +758,6 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 			h.log.Debug("ignoring chat under response policy", "iid", decision.IID, "discussion", decision.DiscussionID)
 			return false, ours
 		}
-		// Reconcile lazily too, so config changes become visible on the next
-		// relevant comment even when no reaction or command changed.
-		go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
 	} else {
 		var err error
 		ours, err = h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
@@ -795,6 +799,16 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	case err != nil:
 		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
 		return true, true
+	case exitCode == ChatNoPostExitCode:
+		// Policy changed after the parent gate admitted the event. Retrying while
+		// muted would waste work, but retaining the mark would suppress a later
+		// explicit request on this note after the thread is unmuted.
+		if *dedupMarked {
+			h.chatSeen.forget(decision.NoteID)
+			*dedupMarked = false
+		}
+		h.log.Info("chat reply suppressed after response policy changed", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return false, true
 	case exitCode != 0:
 		// Includes empty-completion failures: the child exits non-zero without
 		// posting, and a superseded note exits zero, so retrying here never

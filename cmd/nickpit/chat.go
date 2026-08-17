@@ -46,6 +46,11 @@ type chatOptions struct {
 	replySkipPhrases    []string
 }
 
+// errChatReplySuppressed crosses the chat command boundary as
+// serve.ChatNoPostExitCode. It is distinct from both success (a reply was
+// posted or became superseded) and failure (the daemon should retry).
+var errChatReplySuppressed = errors.New("chat: reply suppressed by current response policy")
+
 func (a *app) newChatCmd() *cobra.Command {
 	var opts chatOptions
 	cmd := &cobra.Command{
@@ -1008,7 +1013,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return fmt.Errorf("chat: checking response policy: %w", err)
 	}
 	if !allowed {
-		return nil
+		return errChatReplySuppressed
 	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
 	if err != nil {
@@ -1133,7 +1138,13 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyMuteEmoji, reply)
 }
 
-func gitLabThreadResponsesAllowed(ctx context.Context, client *glscm.Client, project string, mrID int, notes []glscm.DiscussionNote, botUserID int, muteEmoji string) (bool, error) {
+type chatResponseClient interface {
+	chatNoteClient
+	MREmojis(ctx context.Context, project string, iid int) ([]glscm.AwardEmoji, error)
+	NoteEmojis(ctx context.Context, project string, iid, noteID int) ([]glscm.AwardEmoji, error)
+}
+
+func gitLabThreadResponsesAllowed(ctx context.Context, client chatResponseClient, project string, mrID int, notes []glscm.DiscussionNote, botUserID int, muteEmoji string) (bool, error) {
 	if len(notes) == 0 || reviewmd.ThreadCommandMuted(notes[0].Body) {
 		return false, nil
 	}
@@ -1163,7 +1174,7 @@ func hasResponseMute(awards []glscm.AwardEmoji, name string, botUserID int) bool
 	return false
 }
 
-func (a *app) postChatReplyWithPolicy(ctx context.Context, client *glscm.Client, project string, mrID int, discussionID string, pending, botUserID int, muteEmoji, body string) error {
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, muteEmoji, body string) error {
 	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
@@ -1173,7 +1184,7 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client *glscm.Client,
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
 	}
 	if !allowed {
-		return nil
+		return errChatReplySuppressed
 	}
 	return a.postChatReply(ctx, client, project, mrID, discussionID, pending, botUserID, body)
 }

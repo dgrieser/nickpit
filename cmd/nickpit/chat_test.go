@@ -560,6 +560,8 @@ func TestChatPrepareContextSkipsCheckoutWhenNothingNeedsOne(t *testing.T) {
 type fakeNoteClient struct {
 	discussionNotes []glscm.DiscussionNote
 	mrNotes         []glscm.MRNote
+	mrAwards        []glscm.AwardEmoji
+	noteAwards      []glscm.AwardEmoji
 	replyErr        error
 	noteErr         error
 	replyBody       string
@@ -572,6 +574,14 @@ func (f *fakeNoteClient) DiscussionNotes(context.Context, string, int, string) (
 
 func (f *fakeNoteClient) MRNotes(context.Context, string, int) ([]glscm.MRNote, error) {
 	return f.mrNotes, nil
+}
+
+func (f *fakeNoteClient) MREmojis(context.Context, string, int) ([]glscm.AwardEmoji, error) {
+	return f.mrAwards, nil
+}
+
+func (f *fakeNoteClient) NoteEmojis(context.Context, string, int, int) ([]glscm.AwardEmoji, error) {
+	return f.noteAwards, nil
 }
 
 func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ int, _ string, body string) error {
@@ -688,4 +698,25 @@ func TestPostChatReply(t *testing.T) {
 			t.Errorf("no reply expected when a newer note superseded the pending one: reply=%q note=%q", c.replyBody, c.noteBody)
 		}
 	})
+}
+
+func TestPostChatReplyWithPolicyReportsSuppressedReply(t *testing.T) {
+	const botUserID = 5
+	award := glscm.AwardEmoji{Name: "mute"}
+	award.User.ID = 7
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7},
+		},
+		noteAwards: []glscm.AwardEmoji{award},
+	}
+
+	err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, "mute", "answer")
+	if !errors.Is(err, errChatReplySuppressed) {
+		t.Fatalf("error = %v, want suppressed-reply outcome", err)
+	}
+	if c.replyBody != "" || c.noteBody != "" {
+		t.Fatalf("policy-denied reply was posted: reply=%q note=%q", c.replyBody, c.noteBody)
+	}
 }

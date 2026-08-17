@@ -14,7 +14,9 @@ var (
 // ChatDirectives are full-line controls embedded in a discussion comment.
 // Remaining is the comment with recognized controls removed, ready for prompt
 // history. Mute wins if a malformed comment contains both directions; Skip
-// always suppresses the response but does not change persistent thread state.
+// suppresses the comment's initial response but does not change persistent
+// thread state. A later request reaction may explicitly override Skip when the
+// comment also contains a non-control prompt.
 type ChatDirectives struct {
 	Mute      bool
 	Resume    bool

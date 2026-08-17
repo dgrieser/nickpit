@@ -260,15 +260,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
-		// A user abort (Ctrl-C / SIGTERM) cancels the context; the resulting error
-		// is expected, not a failure, so exit quietly with the conventional
-		// interrupt code instead of printing an ERROR.
-		if isUserAbort(ctx, err) {
-			os.Exit(130)
+		if code, quiet := quietExitCode(ctx, err); quiet {
+			os.Exit(code)
 		}
 		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
+}
+
+// quietExitCode recognizes expected outcomes that should not be rendered as
+// CLI failures. A user abort gets the conventional interrupt code. A
+// serve-spawned chat can pass the daemon's gate and then observe a newly muted
+// thread immediately before posting; its dedicated code tells the daemon to
+// release the note's dedup mark.
+func quietExitCode(ctx context.Context, err error) (int, bool) {
+	if isUserAbort(ctx, err) {
+		return 130, true
+	}
+	if errors.Is(err, errChatReplySuppressed) {
+		return serve.ChatNoPostExitCode, true
+	}
+	return 0, false
 }
 
 // isUserAbort reports whether a failed run was a user abort (Ctrl-C / SIGTERM)

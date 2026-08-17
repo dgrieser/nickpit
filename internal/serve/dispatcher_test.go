@@ -100,7 +100,13 @@ func (f *fakeGitLab) gateReads() int {
 	return f.discussionGETs
 }
 
-// recordedPost is one captured POST request.
+func (f *fakeGitLab) discussionBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discussionRoot
+}
+
+// recordedPost is one captured write request.
 type recordedPost struct {
 	Path string
 	Body map[string]string
@@ -181,6 +187,14 @@ func (f *fakeGitLab) handler() http.Handler {
 			return
 		}
 		switch {
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/discussions/"):
+			var body map[string]string
+			data, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(data, &body)
+			f.discussionRoot = body["body"]
+			f.posts = append(f.posts, recordedPost{Path: r.URL.Path, Body: body})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodPost:
 			var body map[string]string
 			data, _ := io.ReadAll(r.Body)
@@ -237,7 +251,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"notes": []map[string]any{
-					{"body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
+					{"id": 900, "body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
 				},
 			})
 		default:

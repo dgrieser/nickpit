@@ -93,7 +93,8 @@ chat:
   # Empty disables reaction-based muting.
   mute_emoji: "mute"
   # Full-line suppressors, matched case-insensitively after whitespace
-  # normalization. No suppressors are configured by default.
+  # normalization. A later trigger_emoji reaction overrides suppression when
+  # the comment contains other text. No suppressors are configured by default.
   skip_phrases: []
   max_concurrent: 4   # concurrent chat child processes (<=0 uses the default 4)
   # extra_args replaces review.extra_args for chat children when present.

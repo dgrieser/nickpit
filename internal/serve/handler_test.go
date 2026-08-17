@@ -521,6 +521,60 @@ func TestHandlerChatOptInAllowsLaterRequestOnSameNote(t *testing.T) {
 	}
 }
 
+func TestHandlerChatPolicySuppressionAllowsLaterRequestOnSameNote(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+	env.chat.exitCodes = []int{ChatNoPostExitCode, 0}
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial chat child was not spawned")
+	}
+	// Dedicated no-post outcome is final but releases the note. Wait for the
+	// child result to be processed before delivering a later request reaction.
+	waitFor(t, 2*time.Second, func() bool {
+		env.handler.chatSeen.mu.Lock()
+		defer env.handler.chatSeen.mu.Unlock()
+		_, seen := env.handler.chatSeen.seen[306]
+		return !seen
+	})
+
+	postWebhook(t, env.handler, "emoji_award_request_note.json", "legacy-secret")
+	select {
+	case spec := <-env.chat.calls:
+		if spec.NoteID != 306 {
+			t.Fatalf("chat spec = %+v", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("later request was discarded as a duplicate")
+	}
+}
+
+func TestHandlerChatDeniedPolicyStillSyncsResponseFooter(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, OptIn: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("opt-in thread answered without a request")
+	case <-time.After(100 * time.Millisecond):
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return strings.Contains(env.gitlab.discussionBody(), "responds only when requested")
+	})
+}
+
 // A reply in a non-nickpit thread (root note has no marker) is not answered.
 func TestHandlerChatSkipsForeignThread(t *testing.T) {
 	env := newHandlerEnv(t)

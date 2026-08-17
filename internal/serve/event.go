@@ -172,7 +172,7 @@ func Decide(event *WebhookEvent, triggerEmoji, muteEmoji, commandKeyword string,
 	case "merge_request":
 		return decideMR(event)
 	case "emoji":
-		return decideEmoji(event, triggerEmoji, muteEmoji, botIDs)
+		return decideEmoji(event, triggerEmoji, muteEmoji, commandKeyword, skipPhrases, botIDs)
 	case "note":
 		return decideNote(event, commandKeyword, skipPhrases, botIDs)
 	default:
@@ -219,7 +219,7 @@ func readyTransition(changes eventChanges) bool {
 	return changes.Draft != nil && changes.Draft.Previous && !changes.Draft.Current
 }
 
-func decideEmoji(event *WebhookEvent, triggerEmoji, muteEmoji string, botIDs map[int]bool) Decision {
+func decideEmoji(event *WebhookEvent, triggerEmoji, muteEmoji, commandKeyword string, skipPhrases []string, botIDs map[int]bool) Decision {
 	attrs := event.ObjectAttributes
 	if attrs.Name != triggerEmoji && (muteEmoji == "" || attrs.Name != muteEmoji) {
 		return Decision{Kind: TriggerNone, Reason: "emoji name " + attrs.Name}
@@ -257,10 +257,19 @@ func decideEmoji(event *WebhookEvent, triggerEmoji, muteEmoji string, botIDs map
 		if event.Note.AuthorID <= 0 || botIDs[event.Note.AuthorID] {
 			return Decision{Kind: TriggerNone, Reason: "request emoji on bot or unknown note author"}
 		}
+		// A later request reaction deliberately overrides a skip phrase in the
+		// target comment, regardless of who awarded it. Strip every control line
+		// first, though: a comment containing only controls has no question to
+		// answer, and launching it would let older history provoke an unrelated
+		// reply to the empty target.
+		directives := ParseChatDirectives(event.Note.Note, commandKeyword, skipPhrases)
+		if directives.Remaining == "" {
+			return Decision{Kind: TriggerNone, Reason: "request emoji on empty prompt"}
+		}
 		return Decision{
 			Command: CommandChat, Requested: true, Reason: "chat request emoji " + triggerEmoji,
 			IID: event.MergeRequest.IID, NoteID: event.Note.ID,
-			DiscussionID: event.Note.DiscussionID, PromptBody: event.Note.Note,
+			DiscussionID: event.Note.DiscussionID, PromptBody: directives.Remaining,
 		}
 	}
 	if attrs.AwardableType != "MergeRequest" {

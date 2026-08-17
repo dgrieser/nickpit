@@ -89,6 +89,20 @@ func TestDecideResponseControls(t *testing.T) {
 	if request.Command != CommandChat || !request.Requested || request.PromptBody != "Why is this unsafe?" {
 		t.Fatalf("request emoji = %+v", request)
 	}
+	requestWithSkip := loadEvent(t, "emoji_award_request_note.json")
+	requestWithSkip.User.ID = 11 // any human may override the comment author's skip
+	requestWithSkip.Note.Note = "Why is this unsafe?\n NO   BOT "
+	overriddenSkip := Decide(requestWithSkip, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if overriddenSkip.Command != CommandChat || !overriddenSkip.Requested || overriddenSkip.PromptBody != "Why is this unsafe?" {
+		t.Fatalf("request emoji did not override skip phrase: %+v", overriddenSkip)
+	}
+	skipOnly := loadEvent(t, "emoji_award_request_note.json")
+	skipOnly.User.ID = 11
+	skipOnly.Note.Note = " NO   BOT "
+	emptyRequest := Decide(skipOnly, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if emptyRequest.Command != CommandNone || emptyRequest.Reason != "request emoji on empty prompt" {
+		t.Fatalf("request emoji on skip-only comment = %+v", emptyRequest)
+	}
 	botTarget := loadEvent(t, "emoji_award_request_note.json")
 	botTarget.Note.AuthorID = 77
 	ignoredRequest := Decide(botTarget, "nickpit", "mute", "nickpit", nil, map[int]bool{77: true})

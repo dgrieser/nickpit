@@ -20,6 +20,12 @@ import (
 // grandchild.
 const logDrainGrace = 2 * time.Second
 
+// ChatNoPostExitCode is returned by a chat child when live response policy
+// changed after the daemon admitted the note and the child deliberately posted
+// nothing. The daemon must release the note's dedup mark without retrying: a
+// later explicit request on that same note must remain eligible.
+const ChatNoPostExitCode = 3
+
 // ReviewSpec describes one review to execute in a child process.
 type ReviewSpec struct {
 	ProjectPath string

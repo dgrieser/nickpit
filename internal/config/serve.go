@@ -217,8 +217,9 @@ type ServeChat struct {
 	// explicit "" disables reaction-based muting.
 	MuteEmoji *string `yaml:"mute_emoji"`
 	// SkipPhrases are operator-defined full-line directives that suppress a
-	// response to the containing comment. Matching is case-insensitive after
-	// trimming and collapsing whitespace.
+	// response to the containing comment. A later request reaction overrides the
+	// suppression when non-control text remains. Matching is case-insensitive
+	// after trimming and collapsing whitespace.
 	SkipPhrases []string `yaml:"skip_phrases"`
 	// MaxConcurrent caps concurrent chat child processes; <=0 uses the built-in
 	// default (4).
