@@ -1093,6 +1093,77 @@ func TestSmallModelSameEndpointIgnoresRegisteredClient(t *testing.T) {
 	}
 }
 
+// A nested override that names a concrete model inherits the step's endpoint: only
+// "@small" selects one. So inside an "@small" step the named model goes to the small
+// client, matching how the capability requirements classify it (agentUsesSmall).
+func TestConcreteNestedModelInSmallStepStaysOnSmallEndpoint(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	concrete := "concrete-small-model"
+	// Reasoning mining only runs when the reviewer has nudge rounds to feed.
+	nudgeCount := 1
+	newFake := func() *reasoningExtractLLM {
+		return &reasoningExtractLLM{
+			reviewerReasoning: []string{"initial reasoning"},
+			collectOutputs:    []string{"collected issue"},
+			updateOutputs:     []string{"delta issue"},
+		}
+	}
+	primary, small := newFake(), newFake()
+	profile := config.Profile{
+		Model:           "large-model",
+		BaseURL:         "http://primary.invalid/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "high",
+		Small: config.SmallModelConfig{
+			Model:   "small-model",
+			BaseURL: "http://small.invalid/v1",
+			APIKey:  "small-key",
+		},
+	}
+	engine := NewEngine(stubSource{}, primary, stubRetrieval{}, profile)
+	engine.SetSmallClient(small, config.EffectiveSmallProfile(profile))
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	pipeline, err := engine.BuildPipeline(workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{{
+			Type: workflow.StepReviewPrefix + "security",
+			Config: &workflow.StepOverride{
+				Model:         &alias,
+				NudgeCount:    &nudgeCount,
+				MineReasoning: &workflow.AgentOverride{Model: &concrete},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:                model.ModeLocal,
+		ModelEmitsReasoning: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	small.mu.Lock()
+	smallReviewer := strings.Join(small.reviewerModels, ",")
+	smallCollect := strings.Join(small.collectModels, ",")
+	small.mu.Unlock()
+	primary.mu.Lock()
+	primaryCalls := len(primary.reviewerModels) + len(primary.collectModels)
+	primary.mu.Unlock()
+
+	// The reviewer and its nudge both stay on the step's "@small" model.
+	if smallReviewer != "small-model,small-model" {
+		t.Fatalf("small endpoint reviewer models = %q, want small-model,small-model", smallReviewer)
+	}
+	if smallCollect != concrete {
+		t.Fatalf("small endpoint mine reasoning models = %q, want %q", smallCollect, concrete)
+	}
+	if primaryCalls != 0 {
+		t.Fatalf("primary endpoint served %d calls, want 0", primaryCalls)
+	}
+}
+
 // --- lane pipeline tests ---
 
 // laneSpec builds collect-context → parallel lanes (review→verify→dedupe per

@@ -540,6 +540,13 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 	return p, req
 }
 
+// resolveModelAlias applies a step's or internal agent's `model:` value to the
+// profile in effect. "@small" flattens the small config onto it, endpoint
+// included; any other value replaces only the model name and therefore keeps the
+// endpoint it inherited. Inside an "@small" step that means a named model is sent
+// to the small endpoint — the same rule the capability requirements classify by
+// (see agentUsesSmall) — so a model that only the primary provider serves needs a
+// step of its own rather than a nested override.
 func resolveModelAlias(p config.Profile, model string) config.Profile {
 	if strings.TrimSpace(model) == SmallModelAlias {
 		return config.EffectiveSmallProfile(p)

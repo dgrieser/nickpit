@@ -2466,3 +2466,57 @@ func TestSmallProfileIgnoresPrimarySupportedModelsOnOtherEndpoint(t *testing.T) 
 		t.Fatal("primary supported_models must still answer for the primary endpoint")
 	}
 }
+
+// A nested override naming a concrete model inherits the step's endpoint, so
+// inside an "@small" step it must be classified as a small-endpoint agent — the
+// same endpoint the engine routes it to.
+func TestAgentUsesSmallFollowsStepEndpoint(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	concrete := "concrete-model"
+	tests := []struct {
+		name          string
+		stepUsesSmall bool
+		override      *workflow.AgentOverride
+		want          bool
+	}{
+		{name: "primary step, no override"},
+		{name: "primary step, concrete model", override: &workflow.AgentOverride{Model: &concrete}},
+		{name: "primary step, alias override", override: &workflow.AgentOverride{Model: &alias}, want: true},
+		{name: "small step, no override", stepUsesSmall: true, want: true},
+		{name: "small step, nil model", stepUsesSmall: true, override: &workflow.AgentOverride{}, want: true},
+		{name: "small step, concrete model", stepUsesSmall: true, override: &workflow.AgentOverride{Model: &concrete}, want: true},
+		{name: "small step, alias override", stepUsesSmall: true, override: &workflow.AgentOverride{Model: &alias}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentUsesSmall(tc.stepUsesSmall, tc.override); got != tc.want {
+				t.Fatalf("agentUsesSmall = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The requirements of a concrete nested model inside an "@small" step belong to the
+// small model check, not the primary one: that is the endpoint the request reaches.
+func TestConcreteNestedModelInSmallStepValidatesSmallEndpoint(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	concrete := "concrete-model"
+	disableSchema := true
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type: workflow.StepVerifyPrefix + "security",
+		Config: &workflow.StepOverride{
+			Model: &alias,
+			// Plain JSON output rather than json_schema, so the requirement is
+			// distinguishable from the primary model's baseline.
+			Categorize: &workflow.AgentOverride{Model: &concrete, DisableJSONResponseFormat: &disableSchema},
+		},
+	}}}
+	req := model.ReviewRequest{}
+	small := smallModelRequirementsForSpec(spec, req)
+	if !small.JSONOutput {
+		t.Fatalf("small requirements = %+v, want the categorize plain-JSON requirement", small)
+	}
+	if primary := modelRequirementsForSpec(spec, req, false); primary.Uses() {
+		t.Fatalf("primary requirements = %+v, want nothing from an @small step", primary)
+	}
+}

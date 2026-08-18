@@ -2316,11 +2316,18 @@ func agentModel(override *workflow.AgentOverride) *string {
 	return override.Model
 }
 
+// agentUsesSmall reports whether a review/verify step's internal agent runs on
+// the small profile. That single answer decides both which endpoint its requests
+// go to and which probe its capabilities are validated against, so the two can
+// never disagree.
+//
+// A nested override naming a concrete model does NOT move the agent back to the
+// primary endpoint: workflow.AgentOverride.Resolve changes only the model and
+// leaves everything else inherited from the step, so inside an "@small" step that
+// model is sent to the small endpoint. Classifying it as primary would validate
+// the wrong provider's capabilities for that request.
 func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
-	if override == nil || override.Model == nil {
-		return stepUsesSmall
-	}
-	return usesSmallAlias(agentModel(override))
+	return stepUsesSmall || usesSmallAlias(agentModel(override))
 }
 
 func textModelRequirements() modelCapabilityRequirements {

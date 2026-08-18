@@ -334,6 +334,7 @@ Three things to know when the two endpoints are different providers:
 - The `json_schema` response format is a single run-wide request setting. A small model that cannot do API-enforced `json_schema` degrades the primary model to the prompt-embedded schema as well.
 - The profile's `supported_models` describes the primary serving stack and is matched by model name only, so it is ignored for a differing small endpoint — that model is probed instead. Declare a second profile if you want pre-declared capabilities for it.
 - `--concurrency` remains one shared cap across both endpoints; only the rate-limit backoff is per endpoint.
+- Only `model: "@small"` selects the second endpoint. A nested `mine_reasoning:` / `compile_findings:` / `nudge:` / `categorize:` override that names a concrete model inherits its step's endpoint like every other unset value, so inside an `@small` step that model is sent to the small provider — give it its own step if only the primary provider serves it.
 
 The primary `max_tokens` output cap (max completion tokens the model may generate) can also be set with `--max-output-tokens`. This is the output side; the separate `--max-context-tokens` is the input budget used to trim the prompt before sending. Both default to unset for `max_tokens` (provider default) and `240000` for the context budget.
 

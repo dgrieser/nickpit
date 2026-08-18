@@ -323,6 +323,9 @@ steps:
 # falling back to the primary profile config. profile.small may carry its own
 # base_url / api_key, in which case every "@small" step runs against that second
 # endpoint (its own client, its own rate-limit backoff, its own model check).
+# A nested mine_reasoning / compile_findings / nudge / categorize override that
+# names a concrete model stays on its step's endpoint — only "@small" selects one —
+# so a model that just one of the two providers serves needs its own step.
 # Two caveats when the endpoints are different providers: the json_schema
 # response format is a single run-wide request setting, so a small model that
 # cannot do json_schema degrades the primary model to the prompt-embedded schema
