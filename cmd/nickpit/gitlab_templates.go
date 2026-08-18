@@ -120,6 +120,9 @@ func (a *app) resolveTemplateTargets(flags templateFlags) ([]templateTarget, err
 		if keyword == "" {
 			keyword = config.DefaultServeCommandKeyword
 		}
+		if err := validateTemplateKeyword(keyword); err != nil {
+			return nil, err
+		}
 		for _, group := range cfg.Groups {
 			targets = append(targets, templateTarget{
 				scope:   glscm.GroupSavedReplyScope(strings.Trim(group.Path, "/")),
@@ -144,6 +147,9 @@ func (a *app) resolveTemplateTargets(flags templateFlags) ([]templateTarget, err
 		if keyword == "" {
 			keyword = config.DefaultServeCommandKeyword
 		}
+		if err := validateTemplateKeyword(keyword); err != nil {
+			return nil, err
+		}
 		if flags.user {
 			targets = append(targets, templateTarget{scope: glscm.UserSavedReplyScope(), client: client, keyword: keyword})
 		}
@@ -159,6 +165,18 @@ func (a *app) resolveTemplateTargets(flags templateFlags) ([]templateTarget, err
 		return nil, fmt.Errorf("no scope selected: pass --user, --group, --project, or --serve-config")
 	}
 	return targets, nil
+}
+
+// validateTemplateKeyword rejects a keyword the daemon could never parse. The
+// templates are seeded from it, so "/bot" or "nick pit" would otherwise create
+// bodies ("//bot review", "/nick pit review") that no daemon configuration
+// accepts — the serve config validates the same way, but --keyword bypasses it
+// and a serve config is only validated by the daemon itself.
+func validateTemplateKeyword(keyword string) error {
+	if err := config.ValidateCommandKeyword(keyword); err != nil {
+		return fmt.Errorf("command keyword %w", err)
+	}
+	return nil
 }
 
 func syncCommandTemplates(ctx context.Context, w io.Writer, targets []templateTarget, prune, dryRun bool) error {

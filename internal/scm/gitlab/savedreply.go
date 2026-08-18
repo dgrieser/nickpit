@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // GitLab's own validation for a saved reply (SavedReplyConcern): name and
 // content are required, name is at most 255 characters and unique per owner,
-// content is at most 10000. Checking locally turns a server-side 422 into a
-// message naming the offending template.
+// content is at most 10000. Rails counts characters, not bytes, so the local
+// check counts runes — a CJK name well inside the limit must not be rejected
+// here. Checking locally turns a server-side 422 into a message naming the
+// offending template.
 const (
 	savedReplyNameMaxLength    = 255
 	savedReplyContentMaxLength = 10000
@@ -301,9 +304,9 @@ func validateDesiredSavedReplies(desired []SavedReply) error {
 			return fmt.Errorf("gitlab: saved reply name must not be empty")
 		case strings.TrimSpace(reply.Content) == "":
 			return fmt.Errorf("gitlab: saved reply %q has empty content", reply.Name)
-		case len(reply.Name) > savedReplyNameMaxLength:
+		case utf8.RuneCountInString(reply.Name) > savedReplyNameMaxLength:
 			return fmt.Errorf("gitlab: saved reply name %q exceeds %d characters", reply.Name, savedReplyNameMaxLength)
-		case len(reply.Content) > savedReplyContentMaxLength:
+		case utf8.RuneCountInString(reply.Content) > savedReplyContentMaxLength:
 			return fmt.Errorf("gitlab: saved reply %q content exceeds %d characters", reply.Name, savedReplyContentMaxLength)
 		case seen[reply.Name]:
 			return fmt.Errorf("gitlab: duplicate saved reply name %q", reply.Name)

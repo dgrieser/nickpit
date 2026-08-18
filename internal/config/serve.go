@@ -161,6 +161,24 @@ func (l LokiConfig) BufferLinesOrDefault() int {
 // credential verifying its webhooks: a GitLab signing token (recommended,
 // HMAC-SHA256) or the legacy plaintext secret token. Exactly one is required;
 // SigningToken takes precedence when both are set.
+// ValidateCommandKeyword reports whether a note-command keyword is usable. The
+// daemon parses commands as "/<keyword> <command>", so a leading slash would
+// double it and whitespace would split the keyword across fields — either way
+// no comment could ever address the daemon. Exported so every path that can
+// choose a keyword (serve config, the comment-template sync's --keyword) rejects
+// the same inputs.
+func ValidateCommandKeyword(keyword string) error {
+	switch {
+	case keyword == "":
+		return errors.New("must not be empty")
+	case strings.HasPrefix(keyword, "/"):
+		return fmt.Errorf("must not start with '/' (got %q): the slash is implied", keyword)
+	case strings.ContainsFunc(keyword, unicode.IsSpace):
+		return fmt.Errorf("must not contain whitespace (got %q)", keyword)
+	}
+	return nil
+}
+
 type ServeGroup struct {
 	Path          string `yaml:"path"`
 	Token         string `yaml:"token"`
@@ -487,13 +505,8 @@ func (c *ServeConfig) Validate() error {
 	if c.TriggerEmoji == "" {
 		errs = append(errs, errors.New("trigger_emoji must not be empty"))
 	}
-	switch {
-	case c.CommandKeyword == "":
-		errs = append(errs, errors.New("command_keyword must not be empty"))
-	case strings.HasPrefix(c.CommandKeyword, "/"):
-		errs = append(errs, fmt.Errorf("command_keyword must not start with '/' (got %q): the slash is implied", c.CommandKeyword))
-	case strings.ContainsFunc(c.CommandKeyword, unicode.IsSpace):
-		errs = append(errs, fmt.Errorf("command_keyword must not contain whitespace (got %q)", c.CommandKeyword))
+	if err := ValidateCommandKeyword(c.CommandKeyword); err != nil {
+		errs = append(errs, fmt.Errorf("command_keyword %w", err))
 	}
 	if c.LogDir == "" {
 		errs = append(errs, errors.New("log_dir must not be empty"))

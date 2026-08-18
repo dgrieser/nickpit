@@ -332,6 +332,7 @@ func TestValidateDesiredSavedReplies(t *testing.T) {
 		{"empty name", []SavedReply{{Content: "x"}}, "name must not be empty"},
 		{"empty content", []SavedReply{{Name: "a"}}, "empty content"},
 		{"long name", []SavedReply{{Name: strings.Repeat("a", 256), Content: "x"}}, "exceeds 255"},
+		{"long multibyte name", []SavedReply{{Name: strings.Repeat("ク", 256), Content: "x"}}, "exceeds 255"},
 		{"long content", []SavedReply{{Name: "a", Content: strings.Repeat("x", 10001)}}, "exceeds 10000"},
 		{"duplicate", []SavedReply{{Name: "a", Content: "x"}, {Name: "a", Content: "y"}}, "duplicate saved reply name"},
 	}
@@ -368,4 +369,16 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// GitLab counts characters, not bytes: a multibyte name or body inside the
+// limit must reach the API instead of being rejected locally.
+func TestValidateDesiredSavedRepliesCountsRunes(t *testing.T) {
+	desired := []SavedReply{{
+		Name:    strings.Repeat("ク", savedReplyNameMaxLength),
+		Content: strings.Repeat("ク", savedReplyContentMaxLength),
+	}}
+	if err := validateDesiredSavedReplies(desired); err != nil {
+		t.Fatalf("multibyte template within the character limits rejected: %v", err)
+	}
 }

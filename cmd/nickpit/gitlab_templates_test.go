@@ -146,3 +146,44 @@ func TestResolveTemplateTargetsRequiresToken(t *testing.T) {
 		t.Fatalf("error = %v, want a missing-token error", err)
 	}
 }
+
+// A keyword the daemon could never parse must be rejected before anything is
+// seeded: templates built from it would hold bodies no configuration accepts.
+func TestResolveTemplateTargetsRejectsUnusableKeyword(t *testing.T) {
+	path := writeTemplateServeConfig(t, `
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cases := map[string]string{
+		"leading slash": "/bot",
+		"whitespace":    "nick pit",
+	}
+	for name, keyword := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := &app{}
+			_, err := a.resolveTemplateTargets(templateFlags{serveConfigPath: path, keyword: keyword})
+			if err == nil || !strings.Contains(err.Error(), "command keyword") {
+				t.Fatalf("error = %v, want a keyword rejection", err)
+			}
+		})
+	}
+}
+
+// A malformed command_keyword in the file is rejected by LoadServe itself, so
+// no target is ever built from it.
+func TestResolveTemplateTargetsRejectsUnusableConfigKeyword(t *testing.T) {
+	path := writeTemplateServeConfig(t, `
+command_keyword: "/bot"
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	a := &app{}
+	_, err := a.resolveTemplateTargets(templateFlags{serveConfigPath: path})
+	if err == nil || !strings.Contains(err.Error(), "command_keyword must not start with") {
+		t.Fatalf("error = %v, want a keyword rejection", err)
+	}
+}

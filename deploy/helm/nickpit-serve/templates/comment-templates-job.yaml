@@ -18,6 +18,14 @@ spec:
   backoffLimit: {{ .Values.commentTemplates.backoffLimit }}
   template:
     metadata:
+      {{- with .Values.podAnnotations }}
+      # Same pod annotations as the daemon: a cluster that steers workloads
+      # through them (e.g. sidecar.istio.io/inject, so the Job's pod can
+      # terminate) must reach the hook pod too, or the hook hangs and fails the
+      # release.
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "nickpit-serve.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
