@@ -6,6 +6,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `cmd/nickpit/main.go`: Main CLI entry point. Defines commands, flags, profile loading, workflow execution, local review modes, SCM review modes, output selection, publishing, seed-finding handling, and post-review chat-session persistence.
 - `cmd/nickpit/chat.go`: `nickpit chat` command. Starts or resumes a discussion session (from a saved review JSON, a GitLab MR's markers, or the latest/last session), prefers the session's cached prepared context and recreates the diff through the review pipeline when the MR gained commits, and drives the discussion agent interactively (REPL) or one-shot. `--reply-discussion` is the non-interactive GitLab thread-reply mode (read a thread, gate on its root marker, answer only the latest note, post the reply back) that the serve daemon spawns and the terminal can run directly.
+- `cmd/nickpit/gitlab_templates.go`: `nickpit gitlab templates sync|list`. Resolves comment-template scopes (user, group, project, or every group in a serve config with its own token) and converges them on the command templates.
 - `cmd/nickpit-config-example/main.go`: Generator binary that prints the example config from `internal/config`.
 - `cmd/nickpit-workflow-example/main.go`: Generator binary that prints the embedded example workflow.
 
@@ -107,6 +108,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).
 - `internal/scm/gitlab/project.go`: Project lookup (topics), current-user lookup, and award-emoji posting.
 - `internal/scm/gitlab/notes.go`: Note/discussion operations used by the serve daemon: plain MR notes, threaded replies, discussion listing, and root-note updates.
+- `internal/scm/gitlab/graphql.go`: GraphQL transport (endpoint derivation from the REST base URL, `errors`-array handling) for the parts of GitLab that have no REST API.
+- `internal/scm/gitlab/savedreply.go`: Comment templates ("saved replies") per scope — user, project, or group: listing and prefix-scoped idempotent sync (create/update/prune, dry run).
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
@@ -119,6 +122,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs chat vs ignore); a plain reply in a discussion thread becomes a `CommandChat` candidate.
 - `internal/serve/command.go`: `/keyword` note-command parsing, full-line response/skip directives, and help/status/abort reply texts.
 - `internal/serve/response.go`: Live GitLab response policy from config, MR/root reactions, and persistent command state; reconciles status footers on review roots.
+- `internal/serve/templates.go`: The note commands expressed as GitLab comment templates (names, bodies, prune prefix) so the comment box's template picker can offer them.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.

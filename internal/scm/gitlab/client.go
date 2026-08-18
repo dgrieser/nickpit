@@ -153,7 +153,14 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, *http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	return c.doRequestURL(ctx, method, c.baseURL+path, body, contentType)
+}
+
+// doRequestURL is doRequest against a fully-built URL. The GraphQL endpoint is
+// a sibling of the versioned REST root rather than a path below it, so it
+// cannot be expressed as a doRequest path.
+func (c *Client) doRequestURL(ctx context.Context, method, requestURL string, body io.Reader, contentType string) ([]byte, *http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, nil, err
 	}

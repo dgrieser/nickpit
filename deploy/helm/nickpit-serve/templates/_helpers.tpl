@@ -64,6 +64,45 @@ the wrong GitLab.
 {{- end -}}
 
 {{/*
+Renders the `config` volume shared by the daemon Deployment and the
+comment-template hook Job, so both read the same server.yaml. With
+groupsSecretKey the directory is projected from the ConfigMap plus the Secret's
+group inventory, so server.yaml's groups_file sits next to it at
+/etc/nickpit/groups.yaml.
+*/}}
+{{- define "nickpit-serve.configVolume" -}}
+- name: config
+  {{- if .Values.serve.groupsSecretKey }}
+  projected:
+    sources:
+      - configMap:
+          name: {{ include "nickpit-serve.fullname" . }}
+          items:
+            {{- if .Values.config.nickpitYaml }}
+            - key: nickpit.yaml
+              path: nickpit.yaml
+            {{- end }}
+            - key: server.yaml
+              path: server.yaml
+      - secret:
+          name: {{ include "nickpit-serve.secretName" . }}
+          items:
+            - key: {{ .Values.serve.groupsSecretKey }}
+              path: groups.yaml
+  {{- else }}
+  configMap:
+    name: {{ include "nickpit-serve.fullname" . }}
+    items:
+      {{- if .Values.config.nickpitYaml }}
+      - key: nickpit.yaml
+        path: nickpit.yaml
+      {{- end }}
+      - key: server.yaml
+        path: server.yaml
+  {{- end }}
+{{- end -}}
+
+{{/*
 Renders server.yaml (the serve daemon config). Groups come from the Secret key
 serve.groupsSecretKey, mounted at /etc/nickpit/groups.yaml and referenced via
 groups_file (default), and/or from inline serve.groups entries whose

@@ -14,6 +14,7 @@ LLM code review for each qualifying MR as an isolated child process.
 | ConfigMap | `server.yaml` (rendered from `serve.*`); plus `nickpit.yaml` only if `config.nickpitYaml` overrides the binary's built-in LLM profiles. Secrets stay as `${VAR}`. |
 | Secret | LLM API key + the group inventory (`groups.yaml` key: paths, access tokens, signing tokens) — unless `existingSecret` is used. |
 | ServiceAccount | No RBAC; token not mounted (daemon never calls the k8s API). |
+| Job (hook, optional) | `commentTemplates.enabled` seeds the `/nickpit …` commands as GitLab comment templates in every configured group, as a `post-install,post-upgrade` hook. |
 
 ## Prerequisites
 
@@ -111,6 +112,7 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `serve.stateDir` | `/work/state` | Journal path (PVC parent mount when persistence is enabled; journal uses its private `journal/` child), resumed after a restart. Must be absolute with persistence enabled; `""` disables. |
 | `persistence.enabled` | `false` | Mount a small PVC (`persistence.size`, default `1Gi`) at `serve.stateDir`; a private `journal/` child stores state across pod replacement (upgrades, reschedules). |
 | `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
+| `commentTemplates.enabled` | `false` | Hook Job seeding the note commands as group comment templates (`dryRun`, `prune`, `backoffLimit` alongside). |
 
 ## Notes / caveats
 
@@ -130,6 +132,16 @@ To keep groups in chart values instead (rendered into the ConfigMap with
   `groups.yaml` once at startup. The chart-managed Secret is covered by a
   checksum annotation (rollout on `helm upgrade`), but edits to an external
   Secret require `kubectl rollout restart deployment/nickpit-serve`.
+- **Comment-template seeding is a release-gating hook.** With
+  `commentTemplates.enabled: true` a `post-install,post-upgrade` Job runs
+  `nickpit gitlab templates sync --serve-config /etc/nickpit/server.yaml` with
+  the same config and group tokens as the daemon, so the `/nickpit …` commands
+  show up in the comment box's template picker (GitLab cannot register real
+  quick actions). A failing hook marks the Helm release failed and the Job is
+  kept for `kubectl logs`. Group-level templates need GitLab Premium or
+  Ultimate and a group token allowed to manage them — deploy once with
+  `commentTemplates.dryRun: true` to confirm before writing. `prune: true`
+  deletes only templates carrying the `"<serve.commandKeyword>: "` name prefix.
 - **No NetworkPolicy shipped.** The daemon needs egress to GitLab and the LLM
   endpoint (and to Loki when `serve.loki.url` is set); add a policy if the
   namespace is default-deny.

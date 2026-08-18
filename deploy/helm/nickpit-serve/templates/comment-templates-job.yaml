@@ -1,0 +1,103 @@
+{{- if .Values.commentTemplates.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nickpit-serve.fullname" . }}-comment-templates
+  labels:
+    {{- include "nickpit-serve.labels" . | nindent 4 }}
+  annotations:
+    # Runs after the release is applied, so the Job reads the ConfigMap and
+    # Secret of the version being deployed. Seeding is deployment plumbing, not
+    # request-path work: the daemon itself never writes comment templates.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    # Delete a succeeded Job (and any leftover from the previous release before
+    # creating this one); keep a failed Job so its log can be inspected.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.commentTemplates.backoffLimit }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      # Same pod annotations as the daemon: a cluster that steers workloads
+      # through them (e.g. sidecar.istio.io/inject, so the Job's pod can
+      # terminate) must reach the hook pod too, or the hook hangs and fails the
+      # release.
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "nickpit-serve.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nickpit-serve.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: comment-templates
+          image: {{ include "nickpit-serve.imageRef" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - gitlab
+            - templates
+            - sync
+            - --serve-config
+            - /etc/nickpit/server.yaml
+            {{- if .Values.commentTemplates.dryRun }}
+            # Reports the plan in the Job log and writes nothing — use it to
+            # check group-token permissions before enabling the real sync.
+            - --dry-run
+            {{- end }}
+            {{- if .Values.commentTemplates.prune }}
+            # Deletes templates carrying the "<commandKeyword>: " name prefix
+            # that this version no longer defines. Hand-written templates in the
+            # same group are never touched.
+            - --prune
+            {{- end }}
+          env:
+            - name: NICKPIT_GITLAB_BASE_URL
+              value: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
+          envFrom:
+            # Group tokens: server.yaml references them as ${ENV}, and the sync
+            # talks to GitLab with each group's own token.
+            - secretRef:
+                name: {{ include "nickpit-serve.secretName" . }}
+          resources:
+            {{- toYaml .Values.commentTemplates.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nickpit
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/nonroot
+      volumes:
+        {{- include "nickpit-serve.configVolume" . | nindent 8 }}
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

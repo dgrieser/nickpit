@@ -994,6 +994,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	cmd.AddCommand(mrCmd)
 	cmd.AddCommand(a.newGitLabServeCmd())
+	cmd.AddCommand(a.newGitLabTemplatesCmd())
 	return cmd
 }
 
