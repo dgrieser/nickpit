@@ -714,13 +714,20 @@ func TestHandlerChatSuppressesFailureNoteWhenMutedDuringTimeout(t *testing.T) {
 }
 
 func TestHandlerChatFailureNoteHonorsLiveSkipPhrase(t *testing.T) {
+	const question = "Why is this unsafe?\nNO BOT"
 	for _, tc := range []struct {
 		name      string
+		live      string
 		requested bool
 		wantPost  bool
 	}{
-		{name: "automatic reply suppressed"},
-		{name: "explicit request overrides skip", requested: true, wantPost: true},
+		{name: "automatic reply suppressed", live: question},
+		{name: "explicit request overrides skip", live: question, requested: true, wantPost: true},
+		// A request overrides a skip phrase, never a target edited down to
+		// controls only: there is no question left to answer.
+		{name: "explicit request on control-only target", live: "no bot", requested: true},
+		// ... and never a mute command on that same target.
+		{name: "explicit request on muted target", live: "/nickpit mute\n" + question, requested: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newHandlerEnv(t)
@@ -732,7 +739,7 @@ func TestHandlerChatFailureNoteHonorsLiveSkipPhrase(t *testing.T) {
 			}, discardLogger())
 			env.handler.chatRunner = chatRunnerFunc(func(context.Context, ChatSpec) (int, string, error) {
 				env.gitlab.mu.Lock()
-				env.gitlab.discussionReply = "Why is this unsafe?\nNO BOT"
+				env.gitlab.discussionReply = tc.live
 				env.gitlab.mu.Unlock()
 				return 1, "chat.log", nil
 			})

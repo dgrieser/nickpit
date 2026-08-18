@@ -784,7 +784,7 @@ func TestPostChatReplyWithPolicyChecksPolicyAfterFreshness(t *testing.T) {
 	c := &fakeNoteClient{
 		discussionNotes: []glscm.DiscussionNote{
 			{ID: 1, AuthorID: botUserID},
-			{ID: 10, AuthorID: 7},
+			{ID: 10, AuthorID: 7, Body: "question"},
 		},
 	}
 
@@ -827,4 +827,34 @@ func TestPostChatReplyWithPolicyHonorsLiveSkipPhrase(t *testing.T) {
 			t.Fatal("explicitly requested reply was not posted")
 		}
 	})
+}
+
+// A request reaction overrides a skip phrase only while non-control text
+// remains. An edit landing while the model ran can leave the target muted or
+// with nothing left to answer; both must suppress the finished reply.
+func TestPostChatReplyWithPolicyRevalidatesRequestedTarget(t *testing.T) {
+	const botUserID = 5
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"no bot"}}
+	for _, tc := range []struct {
+		name string
+		live string
+	}{
+		{name: "edited down to a skip phrase", live: "NO BOT"},
+		{name: "edited to a mute command", live: "/nickpit mute\nquestion"},
+		{name: "edited to controls only", live: " /NickPit Mute "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+				{ID: 1, AuthorID: botUserID},
+				{ID: 10, AuthorID: 7, Body: tc.live},
+			}}
+			err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, true, "", controls, "answer")
+			if !errors.Is(err, errChatReplySuppressed) {
+				t.Fatalf("error = %v, want suppressed-reply outcome", err)
+			}
+			if c.replyBody != "" || c.noteBody != "" {
+				t.Fatalf("reply posted to a suppressed target: reply=%q note=%q", c.replyBody, c.noteBody)
+			}
+		})
+	}
 }

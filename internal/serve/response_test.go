@@ -122,3 +122,103 @@ func TestResponseControllerIgnoresMuteReactionOnReply(t *testing.T) {
 		t.Fatal("reaction on a reply was treated as a root reaction")
 	}
 }
+
+// A publish must reconcile only the roots it just added. Re-reading reactions
+// for every root the MR ever accumulated makes post-publish work grow with all
+// historical findings; SyncMR stays the full scan for MR-wide state changes.
+func TestSyncNewRootsSkipsAlreadyStampedRoots(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	stamped := reviewmd.UpsertResponseFooter(
+		reviewFindingBody(model.Finding{ID: "old", Title: "Old", Body: "Details"}),
+		reviewmd.ResponseStatus{Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit"})
+	fresh := reviewFindingBody(model.Finding{ID: "new", Title: "New", Body: "Details"})
+	noteEmojiReads := map[string]int{}
+	updated := map[int]string{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/discussions"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "disc-old", "notes": []map[string]any{{
+					"id": 100, "body": stamped, "author": map[string]any{"id": 77},
+				}}},
+				{"id": "disc-new", "notes": []map[string]any{{
+					"id": 200, "body": fresh, "author": map[string]any{"id": 77},
+				}}},
+				// A human thread is never a nickpit review root.
+				{"id": "disc-human", "notes": []map[string]any{{
+					"id": 300, "body": "unrelated", "author": map[string]any{"id": 88},
+				}}},
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji"):
+			if i := strings.Index(r.URL.Path, "/notes/"); i >= 0 {
+				noteEmojiReads[strings.TrimSuffix(r.URL.Path[i+len("/notes/"):], "/award_emoji")]++
+			}
+			_ = json.NewEncoder(w).Encode([]any{})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/discussions/"):
+			var payload map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			if strings.HasSuffix(r.URL.Path, "/notes/200") {
+				updated[200] = payload["body"]
+			} else {
+				updated[100] = payload["body"]
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	controller := NewResponseController(ResponseConfig{
+		Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit",
+	}, slog.Default())
+
+	if err := controller.SyncNewRoots(context.Background(), group, "42", 9); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if _, ok := updated[100]; ok {
+		t.Fatal("already-stamped root was rewritten after publish")
+	}
+	if !reviewmd.HasResponseFooter(updated[200]) {
+		t.Fatalf("newly published root was not stamped: %q", updated[200])
+	}
+	if noteEmojiReads["100"] != 0 {
+		t.Fatalf("reactions were read for an already-stamped root: %d", noteEmojiReads["100"])
+	}
+	if noteEmojiReads["200"] != 1 {
+		t.Fatalf("new root reaction reads = %d, want 1", noteEmojiReads["200"])
+	}
+}
+
+// With nothing new to stamp, a publish must not read MR reactions at all.
+func TestSyncNewRootsSkipsMREmojisWhenNothingMissing(t *testing.T) {
+	t.Parallel()
+	stamped := reviewmd.UpsertResponseFooter(
+		reviewFindingBody(model.Finding{ID: "old", Title: "Old", Body: "Details"}),
+		reviewmd.ResponseStatus{Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/discussions") {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "disc-old", "notes": []map[string]any{{
+				"id": 100, "body": stamped, "author": map[string]any{"id": 77},
+			}}}})
+			return
+		}
+		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	controller := NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, slog.Default())
+	if err := controller.SyncNewRoots(context.Background(), group, "42", 9); err != nil {
+		t.Fatalf("nothing-to-do sync made unexpected calls: %v", err)
+	}
+}

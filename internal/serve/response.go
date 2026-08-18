@@ -169,23 +169,35 @@ func (c *ResponseController) SyncReactedRoot(ctx context.Context, group *Group, 
 }
 
 // SyncMR refreshes every visible bot-authored nickpit review root on an MR.
-// Hidden carrier notes and ordinary bot replies are excluded.
+// Hidden carrier notes and ordinary bot replies are excluded. Use it for
+// MR-wide state changes (a mute reaction on the MR itself), where every root's
+// rendered status can have changed.
 func (c *ResponseController) SyncMR(ctx context.Context, group *Group, project string, iid int) error {
+	return c.syncMR(ctx, group, project, iid, false)
+}
+
+// SyncNewRoots stamps only roots that carry no response footer yet. A review
+// publishes new discussions and never rewrites older roots, so after a publish
+// this costs one reaction read per NEW root instead of one per root the MR has
+// ever accumulated — the full scan stays reserved for MR-wide state changes.
+// A root left unstamped by a failed read is retried by the next publish,
+// because a missing footer is exactly the selection criterion.
+func (c *ResponseController) SyncNewRoots(ctx context.Context, group *Group, project string, iid int) error {
+	return c.syncMR(ctx, group, project, iid, true)
+}
+
+func (c *ResponseController) syncMR(ctx context.Context, group *Group, project string, iid int, onlyMissingFooter bool) error {
 	unlock := c.locks.lock(c.lockKey(project, iid))
 	defer unlock()
 	discussions, err := group.Client.MRDiscussions(ctx, project, iid)
 	if err != nil {
 		return err
 	}
-	mrMuted := false
-	if c.cfg.MuteEmoji != "" {
-		awards, err := group.Client.MREmojis(ctx, project, iid)
-		if err != nil {
-			return err
-		}
-		mrMuted = hasHumanEmoji(awards, c.cfg.MuteEmoji, group.BotUserID)
+	type reviewRoot struct {
+		discussionID string
+		note         gitlab.DiscussionNote
 	}
-	var errs []error
+	var roots []reviewRoot
 	for _, discussion := range discussions {
 		if len(discussion.Notes) == 0 {
 			continue
@@ -197,25 +209,43 @@ func (c *ResponseController) SyncMR(ctx context.Context, group *Group, project s
 		if _, _, ok := reviewmd.DetectThreadReview(root.Body); !ok {
 			continue
 		}
+		if onlyMissingFooter && reviewmd.HasResponseFooter(root.Body) {
+			continue
+		}
+		roots = append(roots, reviewRoot{discussionID: discussion.ID, note: root})
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	mrMuted := false
+	if c.cfg.MuteEmoji != "" {
+		awards, err := group.Client.MREmojis(ctx, project, iid)
+		if err != nil {
+			return err
+		}
+		mrMuted = hasHumanEmoji(awards, c.cfg.MuteEmoji, group.BotUserID)
+	}
+	var errs []error
+	for _, root := range roots {
 		status := reviewmd.ResponseStatus{
 			Enabled: c.cfg.Enabled, OptIn: c.cfg.OptIn,
-			CommandMuted: reviewmd.ThreadCommandMuted(root.Body), MRMuted: mrMuted,
+			CommandMuted: reviewmd.ThreadCommandMuted(root.note.Body), MRMuted: mrMuted,
 			MuteEmoji: c.cfg.MuteEmoji, RequestEmoji: c.cfg.RequestEmoji,
 			CommandKeyword: c.cfg.CommandKeyword,
 		}
 		if c.cfg.MuteEmoji != "" {
-			awards, emojiErr := group.Client.NoteEmojis(ctx, project, iid, root.ID)
+			awards, emojiErr := group.Client.NoteEmojis(ctx, project, iid, root.note.ID)
 			if emojiErr != nil {
 				errs = append(errs, emojiErr)
 				continue
 			}
 			status.ThreadMuted = hasHumanEmoji(awards, c.cfg.MuteEmoji, group.BotUserID)
 		}
-		updated := reviewmd.UpsertResponseFooter(root.Body, status)
-		if updated == root.Body {
+		updated := reviewmd.UpsertResponseFooter(root.note.Body, status)
+		if updated == root.note.Body {
 			continue
 		}
-		if err := group.Client.UpdateMRDiscussionNote(ctx, project, iid, discussion.ID, root.ID, updated); err != nil {
+		if err := group.Client.UpdateMRDiscussionNote(ctx, project, iid, root.discussionID, root.note.ID, updated); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -31,6 +31,13 @@ func ThreadCommandMuted(body string) bool {
 	return strings.Contains(body, responseCommandMuted)
 }
 
+// HasResponseFooter reports whether a body already carries a rendered response
+// section. Callers use it to reconcile only roots that have never been
+// stamped, instead of re-reading reactions for every root on a merge request.
+func HasResponseFooter(body string) bool {
+	return strings.Contains(body, responseFooterStart)
+}
+
 // StripResponseFooter removes the complete visible response-mode section and
 // its hidden state markers. Callers use it before any comment reaches an LLM.
 func StripResponseFooter(body string) string {

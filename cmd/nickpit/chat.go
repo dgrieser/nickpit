@@ -1193,10 +1193,11 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseCl
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
-	// Skip phrases are per-comment controls, so an automatic reply must honor
-	// edits made while the model was running. An explicit request reaction or
-	// resume command deliberately overrides the phrase on this same note.
-	if !requested && chatNoteDirectives(fresh, pending, controls).Skip {
+	// Per-comment controls must honor edits made while the model was running.
+	// An explicit request reaction or resume command overrides a skip phrase on
+	// this same note, but never a mute command and never a target edited down to
+	// controls only: there is no longer a question to answer.
+	if !chatNoteDirectives(fresh, pending, controls).AllowsReply(requested) {
 		return errChatReplySuppressed
 	}
 	// Read live mute state only after every paginated discussion/note freshness

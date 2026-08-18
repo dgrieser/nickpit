@@ -65,6 +65,18 @@ func ParseChatDirectives(body, keyword string, skipPhrases []string) ChatDirecti
 	return out
 }
 
+// AllowsReply reports whether the comment these directives were parsed from
+// still permits a reply. An explicit request overrides a skip phrase only —
+// never a mute command, and never a comment left with no question to answer.
+// The live body is re-parsed immediately before posting, so an edit made while
+// the model ran is honored even for a previously requested note.
+func (d ChatDirectives) AllowsReply(requested bool) bool {
+	if d.Mute || d.Remaining == "" {
+		return false
+	}
+	return requested || !d.Skip
+}
+
 func normalizeControlLine(line string) string {
 	return strings.ToLower(strings.Join(strings.Fields(line), " "))
 }

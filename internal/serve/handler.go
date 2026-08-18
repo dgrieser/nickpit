@@ -741,8 +741,8 @@ func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, pr
 				continue
 			}
 			found = true
-			directives := ParseChatDirectives(note.Body, cfg.CommandKeyword, cfg.SkipPhrases)
-			if directives.Skip && !decision.Requested {
+			directives := ParseChatDirectives(reviewmd.StripMarkers(note.Body), cfg.CommandKeyword, cfg.SkipPhrases)
+			if !directives.AllowsReply(decision.Requested) {
 				h.log.Debug("chat failure reply suppressed by target note", "iid", decision.IID, "discussion", decision.DiscussionID, "note", decision.NoteID)
 				return
 			}
