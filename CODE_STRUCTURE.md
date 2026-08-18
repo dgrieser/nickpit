@@ -110,7 +110,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
-- `internal/scm/reviewmd/response.go`: Visible GitLab response-mode footers and hidden persistent thread-mute metadata, with stripping before LLM context assembly.
+- `internal/scm/reviewmd/response.go`: Visible GitLab response-mode footers plus hidden persistent thread-mute metadata and a rendered-policy fingerprint (so footers stamped under earlier settings are detectable), with stripping before LLM context assembly.
 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 

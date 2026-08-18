@@ -799,6 +799,33 @@ func TestHandlerChatDisabled(t *testing.T) {
 	}
 }
 
+// Switching chat off is the one policy change no other event reconciles: the
+// lazy footer refresh lives behind the child spawn, so a root would keep
+// advertising controls the daemon no longer honors until its MR is reviewed
+// again.
+func TestHandlerChatDisabledStillSyncsResponseFooter(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRunner = nil
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: false, MuteEmoji: "mute", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ignored") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		for _, post := range env.gitlab.posted() {
+			if strings.Contains(post.Body["body"], "disabled by server configuration") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 // chatRunnerFunc adapts a function to the ChatRunner interface for tests.
 type chatRunnerFunc func(ctx context.Context, spec ChatSpec) (int, string, error)
 

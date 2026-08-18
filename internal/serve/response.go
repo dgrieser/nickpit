@@ -50,6 +50,18 @@ func NewResponseController(cfg ResponseConfig, log *slog.Logger) *ResponseContro
 
 func (c *ResponseController) Config() ResponseConfig { return c.cfg }
 
+// policyStatus is the configuration half of a rendered footer, before any live
+// per-thread state is layered on.
+func (c *ResponseController) policyStatus() reviewmd.ResponseStatus {
+	return reviewmd.ResponseStatus{
+		Enabled:        c.cfg.Enabled,
+		OptIn:          c.cfg.OptIn,
+		MuteEmoji:      c.cfg.MuteEmoji,
+		RequestEmoji:   c.cfg.RequestEmoji,
+		CommandKeyword: c.cfg.CommandKeyword,
+	}
+}
+
 func (c *ResponseController) lockKey(project string, iid int) string {
 	return fmt.Sprintf("%s!%d", project, iid)
 }
@@ -79,14 +91,8 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 	state.Ours = true
 	state.Root = notes[0]
 	state.DiscussionID = discussionID
-	state.Status = reviewmd.ResponseStatus{
-		Enabled:        c.cfg.Enabled,
-		OptIn:          c.cfg.OptIn,
-		CommandMuted:   reviewmd.ThreadCommandMuted(notes[0].Body),
-		MuteEmoji:      c.cfg.MuteEmoji,
-		RequestEmoji:   c.cfg.RequestEmoji,
-		CommandKeyword: c.cfg.CommandKeyword,
-	}
+	state.Status = c.policyStatus()
+	state.Status.CommandMuted = reviewmd.ThreadCommandMuted(notes[0].Body)
 	if c.cfg.MuteEmoji == "" {
 		return state, nil
 	}
@@ -176,12 +182,16 @@ func (c *ResponseController) SyncMR(ctx context.Context, group *Group, project s
 	return c.syncMR(ctx, group, project, iid, false)
 }
 
-// SyncNewRoots stamps only roots that carry no response footer yet. A review
-// publishes new discussions and never rewrites older roots, so after a publish
-// this costs one reaction read per NEW root instead of one per root the MR has
-// ever accumulated — the full scan stays reserved for MR-wide state changes.
-// A root left unstamped by a failed read is retried by the next publish,
-// because a missing footer is exactly the selection criterion.
+// SyncNewRoots stamps only roots whose footer does not already match the
+// current response CONFIGURATION. A review publishes new discussions and never
+// rewrites older roots, so after a publish this normally costs one reaction
+// read per NEW root instead of one per root the MR has ever accumulated — the
+// full scan stays reserved for MR-wide state changes. A settings change (a
+// renamed mute emoji, chat switched off) changes the stamped fingerprint, so
+// roots advertising controls the daemon no longer honors are re-stamped
+// instead of skipped forever. A root left unstamped by a failed read is
+// retried by the next publish, because a non-matching footer is exactly the
+// selection criterion.
 func (c *ResponseController) SyncNewRoots(ctx context.Context, group *Group, project string, iid int) error {
 	return c.syncMR(ctx, group, project, iid, true)
 }
@@ -197,6 +207,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		discussionID string
 		note         gitlab.DiscussionNote
 	}
+	policy := c.policyStatus()
 	var roots []reviewRoot
 	for _, discussion := range discussions {
 		if len(discussion.Notes) == 0 {
@@ -209,7 +220,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		if _, _, ok := reviewmd.DetectThreadReview(root.Body); !ok {
 			continue
 		}
-		if onlyMissingFooter && reviewmd.HasResponseFooter(root.Body) {
+		if onlyMissingFooter && reviewmd.FooterMatchesPolicy(root.Body, policy) {
 			continue
 		}
 		roots = append(roots, reviewRoot{discussionID: discussion.ID, note: root})
@@ -227,12 +238,9 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 	}
 	var errs []error
 	for _, root := range roots {
-		status := reviewmd.ResponseStatus{
-			Enabled: c.cfg.Enabled, OptIn: c.cfg.OptIn,
-			CommandMuted: reviewmd.ThreadCommandMuted(root.note.Body), MRMuted: mrMuted,
-			MuteEmoji: c.cfg.MuteEmoji, RequestEmoji: c.cfg.RequestEmoji,
-			CommandKeyword: c.cfg.CommandKeyword,
-		}
+		status := policy
+		status.CommandMuted = reviewmd.ThreadCommandMuted(root.note.Body)
+		status.MRMuted = mrMuted
 		if c.cfg.MuteEmoji != "" {
 			awards, emojiErr := group.Client.NoteEmojis(ctx, project, iid, root.note.ID)
 			if emojiErr != nil {

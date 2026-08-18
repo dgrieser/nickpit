@@ -1,7 +1,10 @@
 package reviewmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -9,6 +12,7 @@ const (
 	responseFooterStart  = MarkerOpen + "response-footer:start -->"
 	responseFooterEnd    = MarkerOpen + "response-footer:end -->"
 	responseCommandMuted = MarkerOpen + "response-command-muted -->"
+	responsePolicyPrefix = MarkerOpen + "response-policy:"
 )
 
 // ResponseStatus describes the effective discussion-response mode rendered on
@@ -36,6 +40,34 @@ func ThreadCommandMuted(body string) bool {
 // stamped, instead of re-reading reactions for every root on a merge request.
 func HasResponseFooter(body string) bool {
 	return strings.Contains(body, responseFooterStart)
+}
+
+// PolicyFingerprint identifies the CONFIGURATION inputs that shape a rendered
+// footer's instructions. Live per-thread state (mute reactions, the command
+// marker) is deliberately excluded: those change through their own events,
+// which reconcile the affected root directly.
+func (s ResponseStatus) PolicyFingerprint() string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strconv.FormatBool(s.Enabled),
+		strconv.FormatBool(s.OptIn),
+		s.MuteEmoji,
+		s.RequestEmoji,
+		s.CommandKeyword,
+	}, "\x00")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// FooterMatchesPolicy reports whether a body carries a footer that was
+// rendered from this configuration. A footer stamped under earlier settings —
+// a renamed mute emoji, a different keyword, chat switched off — advertises
+// controls the daemon no longer honors, so callers that skip already-stamped
+// roots must re-stamp those.
+func FooterMatchesPolicy(body string, status ResponseStatus) bool {
+	return strings.Contains(body, responsePolicyMarker(status.PolicyFingerprint()))
+}
+
+func responsePolicyMarker(fingerprint string) string {
+	return responsePolicyPrefix + fingerprint + " -->"
 }
 
 // StripResponseFooter removes the complete visible response-mode section and
@@ -66,6 +98,8 @@ func UpsertResponseFooter(body string, status ResponseStatus) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(responseFooterStart)
+	b.WriteString("\n")
+	b.WriteString(responsePolicyMarker(status.PolicyFingerprint()))
 	b.WriteString("\n")
 	if status.CommandMuted {
 		b.WriteString(responseCommandMuted)

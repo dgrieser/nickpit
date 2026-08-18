@@ -358,6 +358,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case decision.Command == CommandChat:
 		if h.chatRunner == nil {
 			h.log.Debug("ignoring chat reply (chat disabled)", "project", event.Project.PathWithNamespace, "iid", decision.IID)
+			// Chat being off is the one policy change no other event reconciles:
+			// the gate that lazily refreshes a root's footer lives behind the
+			// child spawn. Without this, a root keeps advertising controls the
+			// daemon no longer honors until its MR is reviewed again.
+			project := event.Project.PathWithNamespace
+			go h.syncResponseThread(group, project, decision.IID, decision.DiscussionID)
 			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
 			return
 		}

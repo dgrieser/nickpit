@@ -217,8 +217,59 @@ func TestSyncNewRootsSkipsMREmojisWhenNothingMissing(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
-	controller := NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, slog.Default())
+	controller := NewResponseController(ResponseConfig{
+		Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit",
+	}, slog.Default())
 	if err := controller.SyncNewRoots(context.Background(), group, "42", 9); err != nil {
 		t.Fatalf("nothing-to-do sync made unexpected calls: %v", err)
+	}
+}
+
+// A footer stamped under earlier settings advertises controls the daemon no
+// longer honors — a renamed mute emoji is never decoded by Decide, so no other
+// event ever reconciles that root. The stamped policy fingerprint makes the
+// next publish pick it up instead of skipping it forever.
+func TestSyncNewRootsRestampsAfterPolicyChange(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	body := reviewmd.UpsertResponseFooter(
+		reviewFindingBody(model.Finding{ID: "old", Title: "Old", Body: "Details"}),
+		reviewmd.ResponseStatus{Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/discussions"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "disc-old", "notes": []map[string]any{{
+				"id": 100, "body": body, "author": map[string]any{"id": 77},
+			}}}})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case r.Method == http.MethodPut:
+			var payload map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			body = payload["body"]
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	renamed := ResponseConfig{Enabled: true, MuteEmoji: "no_bell", CommandKeyword: "nickpit"}
+	if err := NewResponseController(renamed, slog.Default()).SyncNewRoots(context.Background(), group, "42", 9); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(body, ":mute:") || !strings.Contains(body, ":no_bell:") {
+		t.Fatalf("footer still advertises the former mute emoji: %q", body)
+	}
+	if !reviewmd.FooterMatchesPolicy(body, reviewmd.ResponseStatus{
+		Enabled: true, MuteEmoji: "no_bell", CommandKeyword: "nickpit",
+	}) {
+		t.Fatalf("re-stamped footer does not carry the current policy: %q", body)
 	}
 }

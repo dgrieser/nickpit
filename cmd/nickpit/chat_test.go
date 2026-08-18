@@ -618,6 +618,9 @@ type fakeNoteClient struct {
 	replyBody       string
 	noteBody        string
 	calls           []string
+	// onNoteEmojis runs during the reaction lookups, simulating thread activity
+	// that lands after the first freshness read.
+	onNoteEmojis func()
 }
 
 func (f *fakeNoteClient) DiscussionNotes(context.Context, string, int, string) ([]glscm.DiscussionNote, error) {
@@ -637,6 +640,9 @@ func (f *fakeNoteClient) MREmojis(context.Context, string, int) ([]glscm.AwardEm
 
 func (f *fakeNoteClient) NoteEmojis(context.Context, string, int, int) ([]glscm.AwardEmoji, error) {
 	f.calls = append(f.calls, "note-emojis")
+	if f.onNoteEmojis != nil {
+		f.onNoteEmojis()
+	}
 	return f.noteAwards, nil
 }
 
@@ -779,7 +785,11 @@ func TestPostChatReplyWithPolicyReportsSuppressedReply(t *testing.T) {
 	}
 }
 
-func TestPostChatReplyWithPolicyChecksPolicyAfterFreshness(t *testing.T) {
+// Reaction lookups are extra round trips during which a newer question can
+// land, so thread ordering must be re-read AFTER them and immediately before
+// the POST: answering a superseded question makes the newer one's own child
+// see this reply as the latest note and drop it permanently.
+func TestPostChatReplyWithPolicyRechecksFreshnessAfterReactions(t *testing.T) {
 	const botUserID = 5
 	c := &fakeNoteClient{
 		discussionNotes: []glscm.DiscussionNote{
@@ -791,9 +801,43 @@ func TestPostChatReplyWithPolicyChecksPolicyAfterFreshness(t *testing.T) {
 	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "discussion,mr-notes,mr-emojis,note-emojis,reply"
+	want := "discussion,mr-notes,mr-emojis,note-emojis,discussion,mr-notes,reply"
 	if got := strings.Join(c.calls, ","); got != want {
 		t.Fatalf("call order = %q, want %q", got, want)
+	}
+
+	// Without reaction muting there are no lookups to go stale, so the single
+	// freshness read stays the last GET before the POST.
+	c = &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+		{ID: 1, AuthorID: botUserID},
+		{ID: 10, AuthorID: 7, Body: "question"},
+	}}
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "", chatMessageControls{}, "answer"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join(c.calls, ","), "discussion,mr-notes,reply"; got != want {
+		t.Fatalf("call order without mute emoji = %q, want %q", got, want)
+	}
+}
+
+// A question arriving while the reaction lookups run must abort the reply.
+func TestPostChatReplyWithPolicyYieldsToNoteArrivingDuringReactionReads(t *testing.T) {
+	const botUserID = 5
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7, Body: "question"},
+		},
+	}
+	c.onNoteEmojis = func() {
+		c.discussionNotes = append(c.discussionNotes, glscm.DiscussionNote{ID: 11, AuthorID: 7, Body: "and this?"})
+	}
+
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer"); err != nil {
+		t.Fatalf("superseded reply must bow out quietly, got: %v", err)
+	}
+	if c.replyBody != "" || c.noteBody != "" {
+		t.Fatalf("reply posted against stale thread state: reply=%q note=%q", c.replyBody, c.noteBody)
 	}
 }
 

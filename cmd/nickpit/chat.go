@@ -1063,9 +1063,12 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	controls := resolveChatMessageControls([]chatMessageControls{{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases}})
 	// The webhook body was checked before this child was queued, but the live
 	// note can be edited meanwhile. Do not let a now control-only target select
-	// an older prompt that remains in the thread history.
+	// an older prompt that remains in the thread history. This is a suppression,
+	// not a completed turn: the parent must release the note's dedup mark so
+	// restoring the question and requesting a response on that same note is not
+	// discarded as a duplicate.
 	if opts.replyNote > 0 && !chatNoteHasPrompt(notes, opts.replyNote, controls) {
-		return nil
+		return errChatReplySuppressed
 	}
 	history := chatThreadToMessages(notes, botUserID, controls)
 	if len(history) == 0 {
@@ -1185,30 +1188,62 @@ func hasResponseMute(awards []glscm.AwardEmoji, name string, botUserID int) bool
 	return false
 }
 
-func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
+// errChatReplySuperseded is internal to the reply path: a newer note (or the
+// bot's own answer) arrived, so this turn quietly yields to the newer note's
+// own handling instead of answering out of order.
+var errChatReplySuperseded = errors.New("chat: reply superseded by a newer note")
+
+// chatFreshTarget re-reads the thread and verifies that pending is still the
+// note to answer under the target's CURRENT per-comment controls. It reports
+// errChatReplySuperseded when a newer note arrived and errChatReplySuppressed
+// when the live target no longer permits a reply.
+func chatFreshTarget(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, controls chatMessageControls) ([]glscm.DiscussionNote, error) {
 	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
 	if err != nil {
-		return fmt.Errorf("chat: rechecking response policy: %w", err)
+		return nil, fmt.Errorf("chat: rechecking response policy: %w", err)
 	}
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
-		return nil
+		return nil, errChatReplySuperseded
 	}
 	// Per-comment controls must honor edits made while the model was running.
 	// An explicit request reaction or resume command overrides a skip phrase on
 	// this same note, but never a mute command and never a target edited down to
 	// controls only: there is no longer a question to answer.
 	if !chatNoteDirectives(fresh, pending, controls).AllowsReply(requested) {
-		return errChatReplySuppressed
+		return nil, errChatReplySuppressed
 	}
-	// Read live mute state only after every paginated discussion/note freshness
-	// read has completed. This keeps the policy read as the final GET before the
-	// POST, minimizing the non-atomic check-and-post window GitLab leaves us.
+	return fresh, nil
+}
+
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
+	fresh, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls)
+	if errors.Is(err, errChatReplySuperseded) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, fresh, botUserID, muteEmoji)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
 	}
 	if !allowed {
 		return errChatReplySuppressed
+	}
+	// The reaction lookups are extra round trips, and a question arriving during
+	// them would leave the freshness result above stale. Answering anyway is the
+	// more damaging failure: the newer question's own child would see this reply
+	// as the latest note and drop it permanently. So re-verify ordering and the
+	// target's controls LAST, immediately before the POST. Both reads are
+	// non-atomic against the POST either way — GitLab offers no check-and-post —
+	// and a mute landing in the remaining window only costs one extra reply.
+	if muteEmoji != "" {
+		if _, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls); err != nil {
+			if errors.Is(err, errChatReplySuperseded) {
+				return nil
+			}
+			return err
+		}
 	}
 	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
 }
