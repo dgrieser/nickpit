@@ -59,7 +59,8 @@ type ChatSpec struct {
 	// still the latest pending user reply.
 	NoteID int
 	// Requested means a human explicitly requested a response. It affects the
-	// parent's policy gate but never transfers the request to another note.
+	// parent's policy gate and lets the child override a skip phrase on this same
+	// note, but never transfers the request to another note.
 	Requested      bool
 	Token          string
 	BaseURL        string
@@ -209,6 +210,9 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 	// cannot transfer this per-comment admission to another pending question.
 	if spec.NoteID > 0 {
 		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
+	}
+	if spec.Requested {
+		args = append(args, "--reply-requested")
 	}
 	if spec.MuteEmoji != "" {
 		args = append(args, "--reply-mute-emoji", spec.MuteEmoji)

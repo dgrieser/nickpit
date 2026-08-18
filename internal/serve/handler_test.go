@@ -70,7 +70,7 @@ func (r *fakeChatRunner) RunChat(_ context.Context, spec ChatSpec) (int, string,
 // observable too.
 func newHandlerEnv(t *testing.T) *handlerEnv {
 	t.Helper()
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", discussionReply: "Why is this unsafe?"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	// The bot user id resolves to fakeBotUserID so ack revokes pass the
@@ -710,6 +710,44 @@ func TestHandlerChatSuppressesFailureNoteWhenMutedDuringTimeout(t *testing.T) {
 		if strings.Contains(post.Body["body"], "could not answer") {
 			t.Fatalf("failure reply posted after mute: %+v", post)
 		}
+	}
+}
+
+func TestHandlerChatFailureNoteHonorsLiveSkipPhrase(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requested bool
+		wantPost  bool
+	}{
+		{name: "automatic reply suppressed"},
+		{name: "explicit request overrides skip", requested: true, wantPost: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newHandlerEnv(t)
+			env.handler.chatRetryDelay = time.Millisecond
+			env.group.BotUserID = 5
+			env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+			env.handler.responses = NewResponseController(ResponseConfig{
+				Enabled: true, CommandKeyword: "nickpit", SkipPhrases: []string{"no bot"},
+			}, discardLogger())
+			env.handler.chatRunner = chatRunnerFunc(func(context.Context, ChatSpec) (int, string, error) {
+				env.gitlab.mu.Lock()
+				env.gitlab.discussionReply = "Why is this unsafe?\nNO BOT"
+				env.gitlab.mu.Unlock()
+				return 1, "chat.log", nil
+			})
+
+			env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{
+				IID: 11, DiscussionID: "disc-306", NoteID: 306, Requested: tc.requested,
+			})
+			postedFailure := false
+			for _, post := range env.gitlab.posted() {
+				postedFailure = postedFailure || strings.Contains(post.Body["body"], "could not answer")
+			}
+			if postedFailure != tc.wantPost {
+				t.Fatalf("failure reply posted = %t, want %t", postedFailure, tc.wantPost)
+			}
+		})
 	}
 }
 

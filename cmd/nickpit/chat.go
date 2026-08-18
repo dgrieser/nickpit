@@ -41,6 +41,7 @@ type chatOptions struct {
 	repoRoot            string
 	replyDiscussion     string
 	replyNote           int
+	replyRequested      bool
 	replyMuteEmoji      string
 	replyCommandKeyword string
 	replySkipPhrases    []string
@@ -78,10 +79,12 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
+	cmd.Flags().BoolVar(&opts.replyRequested, "reply-requested", false, "Internal serve setting: triggering note was explicitly requested")
 	cmd.Flags().StringVar(&opts.replyMuteEmoji, "reply-mute-emoji", "", "Internal serve setting: reaction that mutes discussion replies")
 	cmd.Flags().StringVar(&opts.replyCommandKeyword, "reply-command-keyword", "nickpit", "Internal serve setting: response-control command keyword")
 	cmd.Flags().StringArrayVar(&opts.replySkipPhrases, "reply-skip-phrase", nil, "Internal serve setting: full-line response skip phrase")
 	_ = cmd.Flags().MarkHidden("reply-mute-emoji")
+	_ = cmd.Flags().MarkHidden("reply-requested")
 	_ = cmd.Flags().MarkHidden("reply-command-keyword")
 	_ = cmd.Flags().MarkHidden("reply-skip-phrase")
 	_ = cmd.MarkFlagFilename("from-json", "json")
@@ -1109,7 +1112,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// transport error when posting itself failed (the daemon retries the
 		// whole turn).
 		a.logf(ctx, "chat: resolving MR context failed: %v", err)
-		return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyMuteEmoji, chatFailureReplyBody(err))
+		return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, chatFailureReplyBody(err))
 	}
 	toolRoot := opts.repoRoot
 	if toolRoot == "" && profile.MaxToolCalls >= 0 {
@@ -1143,7 +1146,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyMuteEmoji, reply)
+	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply)
 }
 
 type chatResponseClient interface {
@@ -1182,13 +1185,19 @@ func hasResponseMute(awards []glscm.AwardEmoji, name string, botUserID int) bool
 	return false
 }
 
-func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, muteEmoji, body string) error {
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
 	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking response policy: %w", err)
 	}
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
+	}
+	// Skip phrases are per-comment controls, so an automatic reply must honor
+	// edits made while the model was running. An explicit request reaction or
+	// resume command deliberately overrides the phrase on this same note.
+	if !requested && chatNoteDirectives(fresh, pending, controls).Skip {
+		return errChatReplySuppressed
 	}
 	// Read live mute state only after every paginated discussion/note freshness
 	// read has completed. This keeps the policy read as the final GET before the
@@ -1405,12 +1414,16 @@ func stripChatControlsFromReviewComments(reviewCtx *model.ReviewContext, control
 }
 
 func chatNoteHasPrompt(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) bool {
+	return chatNoteDirectives(notes, noteID, controls).Remaining != ""
+}
+
+func chatNoteDirectives(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) serve.ChatDirectives {
 	for _, note := range notes {
 		if note.ID == noteID {
-			return stripChatMessageControls(note.Body, controls) != ""
+			return serve.ParseChatDirectives(reviewmd.StripMarkers(note.Body), controls.keyword, controls.skipPhrases)
 		}
 	}
-	return false
+	return serve.ChatDirectives{}
 }
 
 func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {

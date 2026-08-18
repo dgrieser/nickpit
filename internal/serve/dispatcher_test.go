@@ -43,9 +43,11 @@ type fakeGitLab struct {
 	// failDiscussions makes discussion-reply POSTs 404 to exercise the
 	// plain-note fallback.
 	failDiscussions bool
-	// discussionRoot, when set, is returned as the single root note of a
-	// discussion GET, so the chat thread gate can be exercised.
+	// discussionRoot, when set, is returned as the root note of a discussion
+	// GET, so the chat thread gate can be exercised.
 	discussionRoot string
+	// discussionReply is the live triggering user note returned after the root.
+	discussionReply string
 	// failDiscussionGET makes the chat thread gate's discussion GET fail with a
 	// 429, exercising the unconfirmed-gate paths. discussionGETs counts the
 	// gate's read attempts.
@@ -254,11 +256,13 @@ func (f *fakeGitLab) handler() http.Handler {
 				w.WriteHeader(http.StatusTooManyRequests)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"notes": []map[string]any{
-					{"id": 900, "body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
-				},
-			})
+			notes := []map[string]any{
+				{"id": 900, "body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
+			}
+			if f.discussionReply != "" {
+				notes = append(notes, map[string]any{"id": 306, "body": f.discussionReply, "system": false, "author": map[string]any{"id": 9, "username": "reviewer"}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"notes": notes})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": f.state, "draft": f.draft, "sha": f.headSHA})
 		}

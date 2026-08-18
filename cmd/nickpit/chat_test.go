@@ -770,7 +770,7 @@ func TestPostChatReplyWithPolicyReportsSuppressedReply(t *testing.T) {
 		noteAwards: []glscm.AwardEmoji{award},
 	}
 
-	err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, "mute", "answer")
+	err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer")
 	if !errors.Is(err, errChatReplySuppressed) {
 		t.Fatalf("error = %v, want suppressed-reply outcome", err)
 	}
@@ -788,11 +788,43 @@ func TestPostChatReplyWithPolicyChecksPolicyAfterFreshness(t *testing.T) {
 		},
 	}
 
-	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, "mute", "answer"); err != nil {
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := "discussion,mr-notes,mr-emojis,note-emojis,reply"
 	if got := strings.Join(c.calls, ","); got != want {
 		t.Fatalf("call order = %q, want %q", got, want)
 	}
+}
+
+func TestPostChatReplyWithPolicyHonorsLiveSkipPhrase(t *testing.T) {
+	const botUserID = 5
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"no bot"}}
+	newClient := func() *fakeNoteClient {
+		return &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7, Body: "question\nNO BOT"},
+		}}
+	}
+
+	t.Run("automatic reply suppressed", func(t *testing.T) {
+		c := newClient()
+		err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "", controls, "answer")
+		if !errors.Is(err, errChatReplySuppressed) {
+			t.Fatalf("error = %v, want suppressed-reply outcome", err)
+		}
+		if c.replyBody != "" || c.noteBody != "" {
+			t.Fatalf("skip-suppressed reply was posted: reply=%q note=%q", c.replyBody, c.noteBody)
+		}
+	})
+
+	t.Run("explicit request overrides skip", func(t *testing.T) {
+		c := newClient()
+		if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, true, "", controls, "answer"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.replyBody == "" {
+			t.Fatal("explicitly requested reply was not posted")
+		}
+	})
 }

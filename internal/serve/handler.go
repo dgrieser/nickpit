@@ -712,9 +712,10 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 	}
 }
 
-// replyChatFailureIfAllowed refreshes live response policy immediately before
-// posting a terminal failure note. The admitted event's context may already be
-// expired, so this safety read uses its own bounded context and fails closed.
+// replyChatFailureIfAllowed refreshes live thread policy and the target note's
+// per-comment controls immediately before posting a terminal failure note. The
+// admitted event's context may already be expired, so these safety reads use
+// their own bounded context and fail closed.
 func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, projectID int, decision Decision) {
 	if h.responses != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
@@ -726,6 +727,29 @@ func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, pr
 		}
 		if !state.Allows(decision.Requested) {
 			h.log.Debug("chat failure reply suppressed under response policy", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		}
+		notes, err := group.Client.DiscussionNotes(ctx, projectPath, decision.IID, decision.DiscussionID)
+		if err != nil {
+			h.log.Warn("chat failure reply suppressed: reading target note failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+			return
+		}
+		found := false
+		cfg := h.responses.Config()
+		for _, note := range notes {
+			if note.ID != decision.NoteID {
+				continue
+			}
+			found = true
+			directives := ParseChatDirectives(note.Body, cfg.CommandKeyword, cfg.SkipPhrases)
+			if directives.Skip && !decision.Requested {
+				h.log.Debug("chat failure reply suppressed by target note", "iid", decision.IID, "discussion", decision.DiscussionID, "note", decision.NoteID)
+				return
+			}
+			break
+		}
+		if !found {
+			h.log.Debug("chat failure reply suppressed: target note no longer exists", "iid", decision.IID, "discussion", decision.DiscussionID, "note", decision.NoteID)
 			return
 		}
 	}

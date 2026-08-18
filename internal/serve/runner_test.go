@@ -122,7 +122,7 @@ func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := string(data)
-	if !strings.Contains(args, "--reply-note 99 --reply-note 42") {
+	if !strings.Contains(args, "--reply-note 99 --reply-note 42 --reply-requested") {
 		t.Fatalf("explicit request not authoritatively pinned to reacted note:\n%s", args)
 	}
 }
