@@ -333,5 +333,33 @@ serve:
 #           api_key: ${MITTWALD_LLM_API_KEY}
 #           model: some-small-model
 # ---------------------------------------------------------------------------
+# Seed the note commands (/nickpit review|abort|status|help) as GitLab comment
+# templates in every group configured under `serve` — GitLab has no way to
+# register a real quick action, so a template picked from the comment box's
+# toolbar is the closest supported path to discoverability.
+#
+# Runs as a post-install/post-upgrade Helm hook Job with the same config and
+# group tokens as the daemon. A failing hook marks the Helm release failed, and
+# creating group-level templates needs a group token allowed to manage them
+# (GitLab Premium or Ultimate) — verify with dryRun first, hence the safe
+# default of off.
+commentTemplates:
+  enabled: false
+  # Log the plan without writing anything (still fails on missing permissions,
+  # because listing a group's templates is itself denied then).
+  dryRun: false
+  # Delete templates carrying the "<serve.commandKeyword>: " prefix that this
+  # version no longer defines. Hand-written templates are never touched.
+  prune: false
+  # One attempt: a permission or configuration error will not fix itself on a
+  # retry, and a transient GitLab outage is recovered by the next deploy.
+  backoffLimit: 0
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 config:
   nickpitYaml: ""
