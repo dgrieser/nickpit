@@ -45,6 +45,13 @@ type changesResponse struct {
 		Deleted bool   `json:"deleted_file"`
 		Renamed bool   `json:"renamed_file"`
 		Diff    string `json:"diff"`
+		// AMode and BMode are the pre- and post-change git file modes ("100644",
+		// "120000" for a symlink, "0" for a side that does not exist). GitLab's
+		// per-change `diff` starts at the first hunk header and carries no mode
+		// line, so without these the fact that a blob is a symlink — whose
+		// content is a link target, not text — would be invisible to reviewers.
+		AMode string `json:"a_mode"`
+		BMode string `json:"b_mode"`
 	} `json:"changes"`
 	// Overflow is set by GitLab when the MR exceeds the diff size/file-count
 	// limits and the returned change set is truncated.
@@ -130,14 +137,16 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 			path = change.OldPath
 		}
 		changedFiles = append(changedFiles, model.ChangedFile{
-			Path:   path,
-			Status: status,
+			Path:    path,
+			Status:  status,
+			Symlink: git.SymlinkFromModes(change.AMode, change.BMode),
 		})
 		diff.WriteString("diff --git a/")
 		diff.WriteString(path)
 		diff.WriteString(" b/")
 		diff.WriteString(path)
 		diff.WriteByte('\n')
+		diff.WriteString(symlinkModeHeader(change.AMode, change.BMode, change.NewFile, change.Deleted))
 		diff.WriteString(change.Diff)
 		diff.WriteByte('\n')
 	}
@@ -170,6 +179,31 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		DiffBaseSHA: mr.DiffRefs.BaseSHA,
 		DiffHeadSHA: mr.SHA,
 	}, nil
+}
+
+// symlinkModeHeader renders the git mode header lines for a change where either
+// side is a symlink, so the synthesized "diff --git" framing carries the same
+// mode signal a real git diff would. It returns "" for every other change, both
+// to keep the common diff shape untouched and because GitLab reports no blob
+// SHAs, so git's own "index <old>..<new> <mode>" line cannot be reproduced.
+// For a changed symlink target the "old mode"/"new mode" pair states the true
+// modes of both sides; git omits it there only because the mode is unchanged.
+func symlinkModeHeader(aMode, bMode string, newFile, deleted bool) string {
+	// Normalize first: GitLab spells the missing side of an add or delete "0".
+	aMode = git.NormalizeFileMode(aMode)
+	bMode = git.NormalizeFileMode(bMode)
+	if aMode != git.SymlinkFileMode && bMode != git.SymlinkFileMode {
+		return ""
+	}
+	switch {
+	case newFile && bMode != "":
+		return "new file mode " + bMode + "\n"
+	case deleted && aMode != "":
+		return "deleted file mode " + aMode + "\n"
+	case aMode != "" && bMode != "":
+		return "old mode " + aMode + "\nnew mode " + bMode + "\n"
+	}
+	return ""
 }
 
 func (c *Client) FetchMRCheckout(ctx context.Context, project string, iid int) (*model.CheckoutSpec, error) {

@@ -283,6 +283,11 @@ type ChangedFile struct {
 	Additions int        `json:"additions"`
 	Deletions int        `json:"deletions"`
 	Generated bool       `json:"generated,omitempty"`
+	// Symlink marks an entry whose blob is a symlink (git mode 120000): the
+	// "content" is the link target path, not file text. Reviewers must not
+	// judge it as text — a trailing newline, formatting, or content edit would
+	// change or break the link target.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type DiffFile struct {
@@ -290,6 +295,8 @@ type DiffFile struct {
 	Language  string `json:"language,omitempty"`
 	Content   string `json:"content"`
 	Generated bool   `json:"generated,omitempty"`
+	// Symlink mirrors ChangedFile.Symlink for the raw per-file diff text.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type DiffHunk struct {

@@ -59,10 +59,21 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 		case strings.HasPrefix(line, "new file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileAdded
+				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
 			}
 		case strings.HasPrefix(line, "deleted file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileDeleted
+				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
+			}
+		case strings.HasPrefix(line, "new mode "), strings.HasPrefix(line, "index "):
+			// Mode-only change into a symlink ("new mode 120000") and a changed
+			// symlink target ("index <old>..<new> 120000") carry the mode here
+			// instead of on a new/deleted-file line. Both appear in the header
+			// block before the first hunk, so they cannot collide with body
+			// lines (those always carry a ' ', '+', '-', or '\' prefix).
+			if currentEntry != nil && diffHeaderMarksSymlink(line) {
+				currentEntry.Symlink = true
 			}
 		case strings.HasPrefix(line, "rename to "):
 			if currentEntry != nil {
@@ -150,6 +161,7 @@ func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
 			Language:  classification.Language,
 			Content:   section.text,
 			Generated: classification.Generated,
+			Symlink:   diffSectionMarksSymlink(section.text),
 		})
 	}
 	return files
@@ -203,6 +215,73 @@ func splitUnifiedDiff(diff string) []diffSection {
 	}
 	flush()
 	return sections
+}
+
+// SymlinkFileMode is the git blob mode of a symlink: its content is the link
+// target path, never file text.
+const SymlinkFileMode = "120000"
+
+// SymlinkFromModes reports whether the reviewed side of a change is a symlink,
+// given the pre- and post-change git file modes as an SCM API reports them
+// ("100644", "120000", and "0" or "" for a side that does not exist). The
+// post-change side decides; for a deletion the pre-change side does. This is
+// the same rule diffHeaderMarksSymlink applies to raw git diff headers, so both
+// diff sources classify a symlink identically.
+func SymlinkFromModes(oldMode, newMode string) bool {
+	if mode := NormalizeFileMode(newMode); mode != "" {
+		return mode == SymlinkFileMode
+	}
+	return NormalizeFileMode(oldMode) == SymlinkFileMode
+}
+
+// NormalizeFileMode trims an SCM-reported file mode and maps the "absent side"
+// spellings ("" and "0") to the empty string.
+func NormalizeFileMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "0" {
+		return ""
+	}
+	return mode
+}
+
+// diffHeaderMarksSymlink reports whether one per-file diff header line says the
+// reviewed side of the file is a symlink. Git spells the mode four ways:
+//
+//	new file mode 120000            symlink added
+//	deleted file mode 120000        symlink removed
+//	new mode 120000                 mode-only change into a symlink
+//	index 1de5659..27fa349 120000   symlink target changed
+//
+// "old mode 120000" is deliberately not matched: with a regular "new mode" the
+// post-change side is real text and must be reviewed as such.
+// Pass header lines only; hunk body lines are not header lines but always carry
+// a prefix character, so they cannot match these forms.
+func diffHeaderMarksSymlink(line string) bool {
+	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)) == SymlinkFileMode
+		}
+	}
+	if strings.HasPrefix(line, "index ") {
+		fields := strings.Fields(line)
+		return len(fields) == 3 && fields[2] == SymlinkFileMode
+	}
+	return false
+}
+
+// diffSectionMarksSymlink reports whether a per-file diff section's header block
+// marks the file as a symlink. Only lines before the first hunk header are
+// inspected so body content can never be mistaken for a mode line.
+func diffSectionMarksSymlink(section string) bool {
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "@@") {
+			return false
+		}
+		if diffHeaderMarksSymlink(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseDiffGitPath(line string) string {

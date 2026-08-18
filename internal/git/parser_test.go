@@ -328,3 +328,153 @@ func TestParseUnifiedDiffFormatsSkipsCombinedHunkUnderGitHeader(t *testing.T) {
 		t.Fatalf("combined body lines were counted: %d/%d", files[0].Additions, files[0].Deletions)
 	}
 }
+
+// A symlink blob's content is the link target path, not file text. Every git
+// spelling of mode 120000 must mark the entry so reviewers do not judge the
+// target as text — a "missing trailing newline" fix there rewrites the link.
+func TestParseUnifiedDiffFormatsMarksSymlinkModes(t *testing.T) {
+	tests := []struct {
+		name string
+		diff []string
+		want bool
+	}{
+		{
+			name: "added symlink",
+			diff: []string{
+				"diff --git a/link b/link",
+				"new file mode 120000",
+				"index 0000000..27fa349",
+				"--- /dev/null",
+				"+++ b/link",
+				"@@ -0,0 +1 @@",
+				"+other",
+				"\\ No newline at end of file",
+				"",
+			},
+			want: true,
+		},
+		{
+			name: "changed symlink target",
+			diff: []string{
+				"diff --git a/link b/link",
+				"index 1de5659..27fa349 120000",
+				"--- a/link",
+				"+++ b/link",
+				"@@ -1 +1 @@",
+				"-target",
+				"\\ No newline at end of file",
+				"+other",
+				"\\ No newline at end of file",
+				"",
+			},
+			want: true,
+		},
+		{
+			name: "deleted symlink",
+			diff: []string{
+				"diff --git a/link b/link",
+				"deleted file mode 120000",
+				"index 1de5659..0000000",
+				"--- a/link",
+				"+++ /dev/null",
+				"@@ -1 +0,0 @@",
+				"-target",
+				"\\ No newline at end of file",
+				"",
+			},
+			want: true,
+		},
+		{
+			name: "mode change into symlink",
+			diff: []string{
+				"diff --git a/link b/link",
+				"old mode 100644",
+				"new mode 120000",
+				"",
+			},
+			want: true,
+		},
+		{
+			// The post-change side is real text, so it must be reviewed as text.
+			name: "symlink replaced by regular file",
+			diff: []string{
+				"diff --git a/link b/link",
+				"old mode 120000",
+				"new mode 100644",
+				"",
+			},
+			want: false,
+		},
+		{
+			name: "regular file",
+			diff: []string{
+				"diff --git a/main.go b/main.go",
+				"index 1111111..2222222 100644",
+				"--- a/main.go",
+				"+++ b/main.go",
+				"@@ -1 +1 @@",
+				"-old",
+				"+new",
+				"",
+			},
+			want: false,
+		},
+		{
+			// A hunk body line quoting a mode header must not be mistaken for one.
+			name: "mode line inside hunk body",
+			diff: []string{
+				"diff --git a/notes.txt b/notes.txt",
+				"index 1111111..2222222 100644",
+				"--- a/notes.txt",
+				"+++ b/notes.txt",
+				"@@ -0,0 +1 @@",
+				"+new file mode 120000",
+				"",
+			},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diffFiles, _, files, err := ParseUnifiedDiffFormats(strings.Join(tc.diff, "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(files) != 1 {
+				t.Fatalf("files = %#v, want one entry", files)
+			}
+			if files[0].Symlink != tc.want {
+				t.Fatalf("ChangedFile.Symlink = %v, want %v", files[0].Symlink, tc.want)
+			}
+			if len(diffFiles) != 1 {
+				t.Fatalf("diff files = %#v, want one entry", diffFiles)
+			}
+			if diffFiles[0].Symlink != tc.want {
+				t.Fatalf("DiffFile.Symlink = %v, want %v", diffFiles[0].Symlink, tc.want)
+			}
+		})
+	}
+}
+
+func TestSymlinkFromModes(t *testing.T) {
+	tests := []struct {
+		name    string
+		oldMode string
+		newMode string
+		want    bool
+	}{
+		{name: "added symlink", oldMode: "0", newMode: "120000", want: true},
+		{name: "deleted symlink", oldMode: "120000", newMode: "0", want: true},
+		{name: "changed symlink", oldMode: "120000", newMode: "120000", want: true},
+		{name: "symlink turned into file", oldMode: "120000", newMode: "100644", want: false},
+		{name: "regular file", oldMode: "100644", newMode: "100644", want: false},
+		{name: "missing modes", oldMode: "", newMode: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SymlinkFromModes(tc.oldMode, tc.newMode); got != tc.want {
+				t.Fatalf("SymlinkFromModes(%q, %q) = %v, want %v", tc.oldMode, tc.newMode, got, tc.want)
+			}
+		})
+	}
+}

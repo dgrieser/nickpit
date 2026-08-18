@@ -33,6 +33,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
+- `internal/review/classify.go`: Stamps generated-file and symlink marks across the changed-file and diff-file views, including the checkout `lstat` fallback for SCM sources that report no git file mode.
 - `internal/review/limiter.go`: Global concurrency limiter used around agent calls.
 - `internal/review/time_budget.go`: Hierarchical time budgets, local caps, weights, speedup thresholds, and context deadlines.
 - `internal/review/tool_exec.go`: Tool-call dispatcher for retrieval tools exposed to review agents.

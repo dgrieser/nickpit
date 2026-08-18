@@ -84,7 +84,11 @@ When evaluating the finding:
       - do not confirm when the title says behavior is missing but the body says it is always present, or vice versa
       - do not confirm a regex, escaping, parsing, or language-semantics claim from prose alone; evaluate the actual
         runtime/toolchain interpretation of the exact cited syntax
-    e. MATERIAL:
+    e. FIX IS APPLICABLE:
+      - check the finding's own recommendation against the cited `code_location.content`
+      - do NOT confirm when applying that recommendation as written would break the cited code, contradict what the
+        cited content actually is, or undo what the patch deliberately does
+    f. MATERIAL:
       - for performance findings, require a concrete hot path plus evidence that the alleged work can materially
         affect supported workloads; operation counts alone do not prove meaningful overhead
       - for compatibility findings, identify a supported provider, format, version, or documented contract that fails;
@@ -107,6 +111,7 @@ When evaluating the finding:
     - the submitted `code_location.content` contains the delimiter, guard, flag, or operation the finding says is
       missing
     - the finding misreads language, regex-engine, escaping, or parser semantics
+    - the recommended fix would break the cited code and the finding names no defect that survives without it
     - the title and body make materially opposite claims about the same behavior
     - the code the finding describes is not present in the changed lines;
       it was removed by this patch, or never appears in the diff
