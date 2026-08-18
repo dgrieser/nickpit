@@ -43,9 +43,11 @@ type fakeGitLab struct {
 	// failDiscussions makes discussion-reply POSTs 404 to exercise the
 	// plain-note fallback.
 	failDiscussions bool
-	// discussionRoot, when set, is returned as the single root note of a
-	// discussion GET, so the chat thread gate can be exercised.
+	// discussionRoot, when set, is returned as the root note of a discussion
+	// GET, so the chat thread gate can be exercised.
 	discussionRoot string
+	// discussionReply is the live triggering user note returned after the root.
+	discussionReply string
 	// failDiscussionGET makes the chat thread gate's discussion GET fail with a
 	// 429, exercising the unconfirmed-gate paths. discussionGETs counts the
 	// gate's read attempts.
@@ -100,7 +102,13 @@ func (f *fakeGitLab) gateReads() int {
 	return f.discussionGETs
 }
 
-// recordedPost is one captured POST request.
+func (f *fakeGitLab) discussionBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discussionRoot
+}
+
+// recordedPost is one captured write request.
 type recordedPost struct {
 	Path string
 	Body map[string]string
@@ -110,9 +118,10 @@ type recordedPost struct {
 // note, told apart by Path), so tests can assert what the daemon awarded and
 // what it revoked again.
 type recordedAward struct {
-	ID   int
-	Path string
-	Name string
+	ID     int
+	Path   string
+	Name   string
+	UserID int
 }
 
 func (f *fakeGitLab) handler() http.Handler {
@@ -181,6 +190,14 @@ func (f *fakeGitLab) handler() http.Handler {
 			return
 		}
 		switch {
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/discussions/"):
+			var body map[string]string
+			data, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(data, &body)
+			f.discussionRoot = body["body"]
+			f.posts = append(f.posts, recordedPost{Path: r.URL.Path, Body: body})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodPost:
 			var body map[string]string
 			data, _ := io.ReadAll(r.Body)
@@ -198,7 +215,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			}
 			if name := body["name"]; name != "" {
 				f.nextID++
-				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name})
+				f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: r.URL.Path, Name: name, UserID: fakeBotUserID})
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
@@ -219,10 +236,14 @@ func (f *fakeGitLab) handler() http.Handler {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/award_emoji"):
 			live := make([]map[string]any, 0, len(f.awards))
 			for _, award := range f.awards {
-				if award.Path != r.URL.Path {
+				if award.Path != "" && award.Path != r.URL.Path {
 					continue
 				}
-				live = append(live, map[string]any{"id": award.ID, "name": award.Name, "user": map[string]any{"id": fakeBotUserID}})
+				userID := award.UserID
+				if userID == 0 {
+					userID = fakeBotUserID
+				}
+				live = append(live, map[string]any{"id": award.ID, "name": award.Name, "user": map[string]any{"id": userID}})
 			}
 			_ = json.NewEncoder(w).Encode(live)
 		case r.URL.Path == "/api/v4/projects/42":
@@ -235,11 +256,13 @@ func (f *fakeGitLab) handler() http.Handler {
 				w.WriteHeader(http.StatusTooManyRequests)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"notes": []map[string]any{
-					{"body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
-				},
-			})
+			notes := []map[string]any{
+				{"id": 900, "body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
+			}
+			if f.discussionReply != "" {
+				notes = append(notes, map[string]any{"id": 306, "body": f.discussionReply, "system": false, "author": map[string]any{"id": 9, "username": "reviewer"}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"notes": notes})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": f.state, "draft": f.draft, "sha": f.headSHA})
 		}
@@ -286,7 +309,16 @@ func (f *fakeGitLab) preAward(iid, noteID int, name string) {
 	if noteID != 0 {
 		path = fmt.Sprintf("/api/v4/projects/42/merge_requests/%d/notes/%d/award_emoji", iid, noteID)
 	}
-	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name})
+	f.awards = append(f.awards, recordedAward{ID: f.nextID, Path: path, Name: name, UserID: fakeBotUserID})
+}
+
+// preHumanAward seeds a human reaction visible on every awardable. Tests use
+// it when only policy effect matters, independent of project path encoding.
+func (f *fakeGitLab) preHumanAward(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.awards = append(f.awards, recordedAward{ID: f.nextID, Name: name, UserID: fakeBotUserID + 1})
 }
 
 // awardPosted returns the name of every award POST ever made, including awards

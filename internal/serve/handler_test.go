@@ -70,7 +70,7 @@ func (r *fakeChatRunner) RunChat(_ context.Context, spec ChatSpec) (int, string,
 // observable too.
 func newHandlerEnv(t *testing.T) *handlerEnv {
 	t.Helper()
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", discussionReply: "Why is this unsafe?"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	// The bot user id resolves to fakeBotUserID so ack revokes pass the
@@ -494,6 +494,87 @@ func TestHandlerChatSpawnsChild(t *testing.T) {
 	}
 }
 
+func TestHandlerChatOptInAllowsLaterRequestOnSameNote(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, OptIn: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("opt-in thread answered without a request")
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The denied delivery must not consume the note's dedup key: reacting to
+	// that same question later is an explicit request and must answer it.
+	postWebhook(t, env.handler, "emoji_award_request_note.json", "legacy-secret")
+	select {
+	case spec := <-env.chat.calls:
+		if spec.NoteID != 306 || spec.DiscussionID != "disc-306" || !spec.Requested {
+			t.Fatalf("chat spec = %+v", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request reaction on previously denied note did not spawn chat")
+	}
+}
+
+func TestHandlerChatPolicySuppressionAllowsLaterRequestOnSameNote(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+	env.chat.exitCodes = []int{ChatNoPostExitCode, 0}
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial chat child was not spawned")
+	}
+	// Dedicated no-post outcome is final but releases the note. Wait for the
+	// child result to be processed before delivering a later request reaction.
+	waitFor(t, 2*time.Second, func() bool {
+		env.handler.chatSeen.mu.Lock()
+		defer env.handler.chatSeen.mu.Unlock()
+		_, seen := env.handler.chatSeen.seen[306]
+		return !seen
+	})
+
+	postWebhook(t, env.handler, "emoji_award_request_note.json", "legacy-secret")
+	select {
+	case spec := <-env.chat.calls:
+		if spec.NoteID != 306 {
+			t.Fatalf("chat spec = %+v", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("later request was discarded as a duplicate")
+	}
+}
+
+func TestHandlerChatDeniedPolicyStillSyncsResponseFooter(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: true, OptIn: true, RequestEmoji: "nickpit", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("opt-in thread answered without a request")
+	case <-time.After(100 * time.Millisecond):
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return strings.Contains(env.gitlab.discussionBody(), "responds only when requested")
+	})
+}
+
 // A reply in a non-nickpit thread (root note has no marker) is not answered.
 func TestHandlerChatSkipsForeignThread(t *testing.T) {
 	env := newHandlerEnv(t)
@@ -586,6 +667,97 @@ func TestHandlerChatPostsFailureNoteAfterExhaustedRetries(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
 }
 
+func TestHandlerChatSuppressesFailureNoteWhenMutedDuringFinalAttempt(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, discardLogger())
+	attempts := 0
+	env.handler.chatRunner = chatRunnerFunc(func(context.Context, ChatSpec) (int, string, error) {
+		attempts++
+		if attempts == chatMaxAttempts {
+			env.gitlab.preHumanAward("mute")
+		}
+		return 1, "chat.log", nil
+	})
+
+	env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{IID: 11, DiscussionID: "disc-306", NoteID: 306})
+	if attempts != chatMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, chatMaxAttempts)
+	}
+	for _, post := range env.gitlab.posted() {
+		if strings.Contains(post.Body["body"], "could not answer") {
+			t.Fatalf("failure reply posted after mute: %+v", post)
+		}
+	}
+}
+
+func TestHandlerChatSuppressesFailureNoteWhenMutedDuringTimeout(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatTimeout = 20 * time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, discardLogger())
+	env.handler.chatRunner = chatRunnerFunc(func(ctx context.Context, _ ChatSpec) (int, string, error) {
+		env.gitlab.preHumanAward("mute")
+		<-ctx.Done()
+		return -1, "chat.log", ctx.Err()
+	})
+
+	env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{IID: 11, DiscussionID: "disc-306", NoteID: 306})
+	for _, post := range env.gitlab.posted() {
+		if strings.Contains(post.Body["body"], "could not answer") {
+			t.Fatalf("failure reply posted after mute: %+v", post)
+		}
+	}
+}
+
+func TestHandlerChatFailureNoteHonorsLiveSkipPhrase(t *testing.T) {
+	const question = "Why is this unsafe?\nNO BOT"
+	for _, tc := range []struct {
+		name      string
+		live      string
+		requested bool
+		wantPost  bool
+	}{
+		{name: "automatic reply suppressed", live: question},
+		{name: "explicit request overrides skip", live: question, requested: true, wantPost: true},
+		// A request overrides a skip phrase, never a target edited down to
+		// controls only: there is no question left to answer.
+		{name: "explicit request on control-only target", live: "no bot", requested: true},
+		// ... and never a mute command on that same target.
+		{name: "explicit request on muted target", live: "/nickpit mute\n" + question, requested: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newHandlerEnv(t)
+			env.handler.chatRetryDelay = time.Millisecond
+			env.group.BotUserID = 5
+			env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+			env.handler.responses = NewResponseController(ResponseConfig{
+				Enabled: true, CommandKeyword: "nickpit", SkipPhrases: []string{"no bot"},
+			}, discardLogger())
+			env.handler.chatRunner = chatRunnerFunc(func(context.Context, ChatSpec) (int, string, error) {
+				env.gitlab.mu.Lock()
+				env.gitlab.discussionReply = tc.live
+				env.gitlab.mu.Unlock()
+				return 1, "chat.log", nil
+			})
+
+			env.handler.handleChat(env.group, "platform/legacy/tool", 43, Decision{
+				IID: 11, DiscussionID: "disc-306", NoteID: 306, Requested: tc.requested,
+			})
+			postedFailure := false
+			for _, post := range env.gitlab.posted() {
+				postedFailure = postedFailure || strings.Contains(post.Body["body"], "could not answer")
+			}
+			if postedFailure != tc.wantPost {
+				t.Fatalf("failure reply posted = %t, want %t", postedFailure, tc.wantPost)
+			}
+		})
+	}
+}
+
 // When the gate NEVER confirmed the thread (its read fails persistently, e.g.
 // a read-scoped 429), the failure note must not be posted: the thread may be
 // anyone's, and injecting bot text there would leak past the ownership gate.
@@ -625,6 +797,33 @@ func TestHandlerChatDisabled(t *testing.T) {
 		t.Fatal("chat child spawned while disabled")
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+// Switching chat off is the one policy change no other event reconciles: the
+// lazy footer refresh lives behind the child spawn, so a root would keep
+// advertising controls the daemon no longer honors until its MR is reviewed
+// again.
+func TestHandlerChatDisabledStillSyncsResponseFooter(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRunner = nil
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
+	env.handler.responses = NewResponseController(ResponseConfig{
+		Enabled: false, MuteEmoji: "mute", CommandKeyword: "nickpit",
+	}, discardLogger())
+
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ignored") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		for _, post := range env.gitlab.posted() {
+			if strings.Contains(post.Body["body"], "disabled by server configuration") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // chatRunnerFunc adapts a function to the ChatRunner interface for tests.

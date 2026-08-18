@@ -33,6 +33,7 @@ const (
 	DefaultServeAbortEmoji        = "stop_button"
 	DefaultServeDoneEmoji         = "white_check_mark"
 	DefaultServeFailEmoji         = "x"
+	DefaultServeMuteEmoji         = "mute"
 )
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
@@ -207,6 +208,19 @@ type ServeChat struct {
 	// reviews (opt-in per project topic), any commenter in a nickpit thread can
 	// trigger a paid chat turn, so operators get an explicit opt-out.
 	Enabled *bool `yaml:"enabled"`
+	// OptIn requires each question to carry an explicit response request. When
+	// false (the default), ordinary replies in nickpit review threads are
+	// answered automatically.
+	OptIn bool `yaml:"opt_in"`
+	// MuteEmoji disables replies for an MR or one nickpit review thread while a
+	// human's matching reaction is present. Nil uses the built-in default;
+	// explicit "" disables reaction-based muting.
+	MuteEmoji *string `yaml:"mute_emoji"`
+	// SkipPhrases are operator-defined full-line directives that suppress a
+	// response to the containing comment. A later request reaction overrides the
+	// suppression when non-control text remains. Matching is case-insensitive
+	// after trimming and collapsing whitespace.
+	SkipPhrases []string `yaml:"skip_phrases"`
 	// MaxConcurrent caps concurrent chat child processes; <=0 uses the built-in
 	// default (4).
 	MaxConcurrent int `yaml:"max_concurrent"`
@@ -222,6 +236,12 @@ type ServeChat struct {
 // true when unset).
 func (c *ServeConfig) ChatEnabled() bool {
 	return c.Chat.Enabled == nil || *c.Chat.Enabled
+}
+
+// ChatMuteEmojiName returns the emoji that mutes discussion replies; empty
+// disables reaction-based muting.
+func (c *ServeConfig) ChatMuteEmojiName() string {
+	return emojiOrDefault(c.Chat.MuteEmoji, DefaultServeMuteEmoji)
 }
 
 // LoadServe reads and validates a serve config file. Like the main config,
@@ -261,6 +281,7 @@ func LoadServe(path string) (*ServeConfig, error) {
 		cfg.Groups = append(cfg.Groups, fileGroups...)
 	}
 	cfg.normalizeOutcomeDefaults()
+	cfg.normalizeMuteDefault()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
 	}
@@ -314,6 +335,32 @@ func (c *ServeConfig) normalizeOutcomeDefaults() {
 	}
 	if c.FailEmoji == nil && taken(DefaultServeFailEmoji, c.DoneEmojiName()) {
 		disable("fail_emoji", &c.FailEmoji, DefaultServeFailEmoji)
+	}
+}
+
+// normalizeMuteDefault preserves configs written before chat.mute_emoji
+// existed. Such a config may already use "mute" for another reaction; only an
+// absent/defaulted mute emoji is disabled on collision. An explicitly
+// configured mute_emoji still reaches Validate and fails loudly.
+func (c *ServeConfig) normalizeMuteDefault() {
+	if c.Chat.MuteEmoji != nil {
+		return
+	}
+	for _, other := range []string{
+		c.TriggerEmoji,
+		c.StartEmojiName(),
+		c.DoneEmojiName(),
+		c.FailEmojiName(),
+	} {
+		if other != DefaultServeMuteEmoji {
+			continue
+		}
+		disabled := ""
+		c.Chat.MuteEmoji = &disabled
+		c.Notices = append(c.Notices, fmt.Sprintf(
+			"chat.mute_emoji default %q is already used by another configured reaction; chat.mute_emoji is disabled (set chat.mute_emoji explicitly to pick a different one)",
+			DefaultServeMuteEmoji))
+		return
 	}
 }
 
@@ -411,6 +458,26 @@ func (c *ServeConfig) Validate() error {
 	if c.Chat.MaxConcurrent < 0 {
 		errs = append(errs, fmt.Errorf("chat.max_concurrent must be >= 0, got %d", c.Chat.MaxConcurrent))
 	}
+	normalizedPhrases := make(map[string]int, len(c.Chat.SkipPhrases))
+	chatCommands := map[string]bool{}
+	for _, alias := range []string{"shutup", "mute", "skip", "ignore", "respond", "comment", "unmute", "resume"} {
+		chatCommands[strings.ToLower("/"+c.CommandKeyword+" "+alias)] = true
+	}
+	for i, phrase := range c.Chat.SkipPhrases {
+		normalized := strings.ToLower(strings.Join(strings.Fields(phrase), " "))
+		if normalized == "" {
+			errs = append(errs, fmt.Errorf("chat.skip_phrases[%d] must not be blank", i))
+			continue
+		}
+		if first, ok := normalizedPhrases[normalized]; ok {
+			errs = append(errs, fmt.Errorf("chat.skip_phrases[%d] duplicates chat.skip_phrases[%d] after normalization", i, first))
+		} else {
+			normalizedPhrases[normalized] = i
+		}
+		if chatCommands[normalized] {
+			errs = append(errs, fmt.Errorf("chat.skip_phrases[%d] conflicts with response command %q", i, normalized))
+		}
+	}
 	if _, err := time.ParseDuration(c.ShutdownGrace); err != nil {
 		errs = append(errs, fmt.Errorf("shutdown_grace: %w", err))
 	}
@@ -441,6 +508,18 @@ func (c *ServeConfig) Validate() error {
 	} {
 		if mrEmoji.name != "" && mrEmoji.name == c.TriggerEmoji {
 			errs = append(errs, fmt.Errorf("%s must differ from trigger_emoji (%q): the daemon's own award would trigger another review", mrEmoji.key, c.TriggerEmoji))
+		}
+	}
+	if mute := c.ChatMuteEmojiName(); mute != "" {
+		for _, other := range []struct{ key, name string }{
+			{"trigger_emoji", c.TriggerEmoji},
+			{"start_emoji", c.StartEmojiName()},
+			{"done_emoji", c.DoneEmojiName()},
+			{"fail_emoji", c.FailEmojiName()},
+		} {
+			if mute == other.name {
+				errs = append(errs, fmt.Errorf("chat.mute_emoji must differ from %s (%q)", other.key, mute))
+			}
 		}
 	}
 	// The outcome emoji REPLACES the in-progress one, so an outcome equal to the

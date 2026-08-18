@@ -1,0 +1,13 @@
+{
+  "object_kind": "emoji",
+  "event_type": "award",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool"},
+  "object_attributes": {
+    "action": "award",
+    "name": "mute",
+    "awardable_type": "MergeRequest",
+    "awardable_id": 1234
+  },
+  "merge_request": {"iid": 11, "last_commit": {"id": "sha-note-1"}}
+}

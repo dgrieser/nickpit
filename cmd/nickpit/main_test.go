@@ -24,6 +24,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
+	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
@@ -2146,6 +2147,15 @@ func TestIsUserAbort(t *testing.T) {
 	}
 	if isUserAbort(context.Background(), context.DeadlineExceeded) {
 		t.Fatal("a deadline/timeout is not a user abort")
+	}
+}
+
+func TestQuietExitCode(t *testing.T) {
+	if code, quiet := quietExitCode(context.Background(), errChatReplySuppressed); !quiet || code != serve.ChatNoPostExitCode {
+		t.Fatalf("suppressed chat exit = (%d, %v), want (%d, true)", code, quiet, serve.ChatNoPostExitCode)
+	}
+	if code, quiet := quietExitCode(context.Background(), errors.New("failure")); quiet || code != 0 {
+		t.Fatalf("ordinary failure exit = (%d, %v), want (0, false)", code, quiet)
 	}
 }
 

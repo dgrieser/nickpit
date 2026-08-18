@@ -43,6 +43,7 @@ type WebhookEvent struct {
 	ObjectAttributes eventAttributes `json:"object_attributes"`
 	Changes          eventChanges    `json:"changes"`
 	MergeRequest     *eventMR        `json:"merge_request"`
+	Note             *eventNote      `json:"note"`
 }
 
 type eventUser struct {
@@ -100,6 +101,28 @@ type eventMR struct {
 	} `json:"last_commit"`
 }
 
+// eventNote is the target note embedded in Emoji Hook payloads.
+type eventNote struct {
+	ID           int    `json:"id"`
+	Note         string `json:"note"`
+	NoteableType string `json:"noteable_type"`
+	AuthorID     int    `json:"author_id"`
+	DiscussionID string `json:"discussion_id"`
+	Type         string `json:"type"`
+	System       bool   `json:"system"`
+}
+
+// ResponseAction changes or refreshes discussion-response state.
+type ResponseAction int
+
+const (
+	ResponseNone ResponseAction = iota
+	ResponseMuteThread
+	ResponseResumeThread
+	ResponseSyncThread
+	ResponseSyncMR
+)
+
 // ParseEvent decodes a webhook body into the envelope. It does not validate
 // semantics; Decide does.
 func ParseEvent(body []byte) (*WebhookEvent, error) {
@@ -130,6 +153,13 @@ type Decision struct {
 	DiscussionID string
 	// UnknownArg is the raw subcommand for CommandUnknown replies.
 	UnknownArg string
+	// Requested marks an explicit opt-in request (positive command or trigger
+	// emoji on the question note).
+	Requested bool
+	// PromptBody is the triggering comment with control/skip lines removed.
+	PromptBody string
+	// Response requests a persistent thread change or footer reconciliation.
+	Response ResponseAction
 }
 
 // Decide classifies a webhook event. Pure function — no I/O — so the trigger
@@ -137,14 +167,14 @@ type Decision struct {
 // requesting a manual review; commandKeyword is the "/<keyword> <command>"
 // note-command keyword; botIDs are the daemon's own user IDs whose emoji and
 // note events are ignored to prevent reaction loops.
-func Decide(event *WebhookEvent, triggerEmoji, commandKeyword string, botIDs map[int]bool) Decision {
+func Decide(event *WebhookEvent, triggerEmoji, muteEmoji, commandKeyword string, skipPhrases []string, botIDs map[int]bool) Decision {
 	switch event.ObjectKind {
 	case "merge_request":
 		return decideMR(event)
 	case "emoji":
-		return decideEmoji(event, triggerEmoji, botIDs)
+		return decideEmoji(event, triggerEmoji, muteEmoji, commandKeyword, skipPhrases, botIDs)
 	case "note":
-		return decideNote(event, commandKeyword, botIDs)
+		return decideNote(event, commandKeyword, skipPhrases, botIDs)
 	default:
 		return Decision{Kind: TriggerNone, Reason: "object_kind " + event.ObjectKind}
 	}
@@ -189,19 +219,61 @@ func readyTransition(changes eventChanges) bool {
 	return changes.Draft != nil && changes.Draft.Previous && !changes.Draft.Current
 }
 
-func decideEmoji(event *WebhookEvent, triggerEmoji string, botIDs map[int]bool) Decision {
+func decideEmoji(event *WebhookEvent, triggerEmoji, muteEmoji, commandKeyword string, skipPhrases []string, botIDs map[int]bool) Decision {
 	attrs := event.ObjectAttributes
-	if attrs.Name != triggerEmoji {
+	if attrs.Name != triggerEmoji && (muteEmoji == "" || attrs.Name != muteEmoji) {
 		return Decision{Kind: TriggerNone, Reason: "emoji name " + attrs.Name}
-	}
-	if attrs.AwardableType != "MergeRequest" {
-		return Decision{Kind: TriggerNone, Reason: "awardable " + attrs.AwardableType}
 	}
 	if botIDs[event.User.ID] {
 		return Decision{Kind: TriggerNone, Reason: "own " + attrs.Action}
 	}
 	if event.MergeRequest == nil {
 		return Decision{Kind: TriggerNone, Reason: "emoji event without merge_request"}
+	}
+	if attrs.Name == muteEmoji {
+		switch attrs.AwardableType {
+		case "MergeRequest":
+			return Decision{Reason: "MR response emoji " + attrs.Action, IID: event.MergeRequest.IID, Response: ResponseSyncMR}
+		case "Note":
+			if event.Note == nil || event.Note.NoteableType != "MergeRequest" || event.Note.DiscussionID == "" {
+				return Decision{Kind: TriggerNone, Reason: "mute emoji without MR note"}
+			}
+			return Decision{
+				Reason: "thread response emoji " + attrs.Action, IID: event.MergeRequest.IID,
+				NoteID: event.Note.ID, DiscussionID: event.Note.DiscussionID,
+				Response: ResponseSyncThread,
+			}
+		default:
+			return Decision{Kind: TriggerNone, Reason: "awardable " + attrs.AwardableType}
+		}
+	}
+	if attrs.AwardableType == "Note" {
+		if attrs.Action != "award" || event.Note == nil || event.Note.NoteableType != "MergeRequest" || event.Note.DiscussionID == "" {
+			return Decision{Kind: TriggerNone, Reason: "request emoji on unsupported note"}
+		}
+		// A request reaction is only meaningful on a human question. In
+		// particular, reacting to a nickpit root or one of its replies must not
+		// recursively invoke another response.
+		if event.Note.AuthorID <= 0 || botIDs[event.Note.AuthorID] {
+			return Decision{Kind: TriggerNone, Reason: "request emoji on bot or unknown note author"}
+		}
+		// A later request reaction deliberately overrides a skip phrase in the
+		// target comment, regardless of who awarded it. Strip every control line
+		// first, though: a comment containing only controls has no question to
+		// answer, and launching it would let older history provoke an unrelated
+		// reply to the empty target.
+		directives := ParseChatDirectives(event.Note.Note, commandKeyword, skipPhrases)
+		if directives.Remaining == "" {
+			return Decision{Kind: TriggerNone, Reason: "request emoji on empty prompt"}
+		}
+		return Decision{
+			Command: CommandChat, Requested: true, Reason: "chat request emoji " + triggerEmoji,
+			IID: event.MergeRequest.IID, NoteID: event.Note.ID,
+			DiscussionID: event.Note.DiscussionID, PromptBody: directives.Remaining,
+		}
+	}
+	if attrs.AwardableType != "MergeRequest" {
+		return Decision{Kind: TriggerNone, Reason: "awardable " + attrs.AwardableType}
 	}
 	switch attrs.Action {
 	case "award":
@@ -228,7 +300,7 @@ func decideEmoji(event *WebhookEvent, triggerEmoji string, botIDs map[int]bool) 
 
 // decideNote classifies comment (Note Hook) events: new MR comments whose
 // first line is "/<keyword> <command>" control the daemon.
-func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool) Decision {
+func decideNote(event *WebhookEvent, commandKeyword string, skipPhrases []string, botIDs map[int]bool) Decision {
 	attrs := event.ObjectAttributes
 	if attrs.NoteableType != "MergeRequest" {
 		return Decision{Kind: TriggerNone, Reason: "noteable " + attrs.NoteableType}
@@ -251,6 +323,30 @@ func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool)
 	if event.MergeRequest == nil {
 		return Decision{Kind: TriggerNone, Reason: "note event without merge_request"}
 	}
+	threaded := attrs.DiscussionID != "" && (attrs.NoteType == "DiscussionNote" || attrs.NoteType == "DiffNote")
+	if threaded && (command == CommandNone || command == CommandUnknown) {
+		directives := ParseChatDirectives(attrs.Note, commandKeyword, skipPhrases)
+		if directives.Mute {
+			return Decision{
+				Reason: "command mute", IID: event.MergeRequest.IID, NoteID: attrs.ID,
+				DiscussionID: attrs.DiscussionID, Response: ResponseMuteThread,
+			}
+		}
+		if directives.Resume {
+			decision := Decision{
+				Reason: "command resume", IID: event.MergeRequest.IID, NoteID: attrs.ID,
+				DiscussionID: attrs.DiscussionID, Response: ResponseResumeThread,
+				Requested: true, PromptBody: directives.Remaining,
+			}
+			if !directives.Skip && directives.Remaining != "" {
+				decision.Command = CommandChat
+			}
+			return decision
+		}
+		if directives.Skip {
+			return Decision{Kind: TriggerNone, Reason: "chat skip phrase"}
+		}
+	}
 	if command == CommandNone {
 		// A plain reply inside a discussion thread is a discussion-agent
 		// candidate. Thread membership is decided by the note TYPE
@@ -262,13 +358,14 @@ func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool)
 		// thread's root note to carry a bot-authored nickpit review marker
 		// before answering, so unrelated thread replies are dropped without a
 		// reply.
-		if attrs.DiscussionID != "" && (attrs.NoteType == "DiscussionNote" || attrs.NoteType == "DiffNote") {
+		if threaded {
 			return Decision{
 				Command:      CommandChat,
 				Reason:       "chat reply",
 				IID:          event.MergeRequest.IID,
 				NoteID:       attrs.ID,
 				DiscussionID: attrs.DiscussionID,
+				PromptBody:   attrs.Note,
 			}
 		}
 		return Decision{Kind: TriggerNone, Reason: "no command"}

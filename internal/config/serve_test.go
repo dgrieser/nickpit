@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,36 @@ groups:
 	}
 }
 
+// A config written before chat.mute_emoji existed may use its new default name
+// for any older MR reaction. Preserve startup by disabling only the implicit
+// mute default, even when chat itself is disabled. Explicit collisions remain
+// validation errors.
+func TestLoadServeDefaultedMuteCollisionIsDisabled(t *testing.T) {
+	for _, field := range []string{"trigger_emoji", "start_emoji", "done_emoji", "fail_emoji"} {
+		t.Run(field, func(t *testing.T) {
+			path := writeServeConfig(t, fmt.Sprintf(`
+%s: "mute"
+chat:
+  enabled: false
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`, field))
+			cfg, err := LoadServe(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ChatMuteEmojiName() != "" {
+				t.Fatalf("mute emoji = %q, want the colliding default disabled", cfg.ChatMuteEmojiName())
+			}
+			if len(cfg.Notices) != 1 || !strings.Contains(cfg.Notices[0], "chat.mute_emoji") {
+				t.Fatalf("notices = %v, want one about chat.mute_emoji", cfg.Notices)
+			}
+		})
+	}
+}
+
 func TestLoadServeStateDir(t *testing.T) {
 	path := writeServeConfig(t, `
 state_dir: "/var/lib/nickpit/state"
@@ -115,6 +146,9 @@ groups:
 	if !cfg.ChatEnabled() || cfg.Chat.MaxConcurrent != 0 || cfg.Chat.ExtraArgs != nil {
 		t.Fatalf("chat defaults = %+v", cfg.Chat)
 	}
+	if cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "mute" || len(cfg.Chat.SkipPhrases) != 0 {
+		t.Fatalf("chat response defaults = %+v / %q", cfg.Chat, cfg.ChatMuteEmojiName())
+	}
 	path = writeServeConfig(t, `
 groups:
   - path: "platform"
@@ -122,6 +156,9 @@ groups:
     webhook_secret: "sec"
 chat:
   enabled: false
+  opt_in: true
+  mute_emoji: "no_bell"
+  skip_phrases: ["nickpit skip", "NO BOT"]
   max_concurrent: 2
   extra_args: []
 `)
@@ -134,6 +171,9 @@ chat:
 	}
 	if cfg.Chat.MaxConcurrent != 2 {
 		t.Fatalf("max_concurrent = %d", cfg.Chat.MaxConcurrent)
+	}
+	if !cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "no_bell" || len(cfg.Chat.SkipPhrases) != 2 {
+		t.Fatalf("chat response config = %+v", cfg.Chat)
 	}
 	// An explicit empty list is non-nil: it REPLACES review.extra_args.
 	if cfg.Chat.ExtraArgs == nil || len(cfg.Chat.ExtraArgs) != 0 {
@@ -503,6 +543,10 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
 		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
 		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
+		{"mute equals trigger", "chat:\n  enabled: false\n  mute_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "chat.mute_emoji must differ from trigger_emoji"},
+		{"blank skip phrase", "chat:\n  skip_phrases: [\"  \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must not be blank"},
+		{"duplicate normalized skip phrase", "chat:\n  skip_phrases: [\"No Bot\", \" no   bot \" ]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "duplicates"},
+		{"skip phrase conflicts with command", "chat:\n  skip_phrases: [\"/NICKPIT   resume\"]\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "conflicts with response command"},
 		{"loki bad scheme", "loki:\n  url: \"ftp://loki:3100\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.url must be an http(s) URL"},
 		{"loki bad batch_wait", "loki:\n  url: \"http://loki:3100\"\n  batch_wait: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.batch_wait"},
 		{"loki half auth", "loki:\n  url: \"http://loki:3100\"\n  basic_auth_user: u\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must be set together"},

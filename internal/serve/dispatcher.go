@@ -146,8 +146,9 @@ type Dispatcher struct {
 	// journal persists accepted-but-unfinished jobs across restarts; nil
 	// disables journaling (queued jobs then release their ack reactions at
 	// shutdown instead of resuming).
-	journal *Journal
-	log     *slog.Logger
+	journal   *Journal
+	log       *slog.Logger
+	responses *ResponseController
 
 	workers sync.WaitGroup
 	// Ack cleanup runs outside the review workers, but its queue and worker
@@ -182,6 +183,12 @@ type Dispatcher struct {
 	// shutdown until the grace period expires.
 	jobCtx    context.Context
 	jobCancel context.CancelFunc
+}
+
+// SetResponseController enables review-root footer reconciliation after a
+// successful publish. It is set during daemon startup before workers start.
+func (d *Dispatcher) SetResponseController(controller *ResponseController) {
+	d.responses = controller
 }
 
 func NewDispatcher(runner ReviewRunner, lookup TopicLookup, journal *Journal, cfg WorkerConfig, log *slog.Logger) *Dispatcher {

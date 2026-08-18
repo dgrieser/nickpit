@@ -41,6 +41,9 @@ func TestDecide(t *testing.T) {
 		{"emoji_award_eyes.json", TriggerNone, CommandNone, 0, ""},
 		{"emoji_award_bot.json", TriggerNone, CommandNone, 0, ""},
 		{"emoji_award_note.json", TriggerNone, CommandNone, 0, ""},
+		{"emoji_award_request_note.json", TriggerNone, CommandChat, 11, ""},
+		{"emoji_award_mute_mr.json", TriggerNone, CommandNone, 11, ""},
+		{"emoji_revoke_mute_note.json", TriggerNone, CommandNone, 11, ""},
 		// A review command is a manual trigger, exactly like the emoji.
 		{"note_command_review.json", TriggerManual, CommandReview, 11, "sha-note-1"},
 		{"note_command_abort.json", TriggerNone, CommandAbort, 11, ""},
@@ -59,7 +62,7 @@ func TestDecide(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
-			decision := Decide(loadEvent(t, tc.fixture), "nickpit", "nickpit", botIDs)
+			decision := Decide(loadEvent(t, tc.fixture), "nickpit", "mute", "nickpit", nil, botIDs)
 			if decision.Kind != tc.wantKind || decision.Command != tc.wantCommand {
 				t.Fatalf("kind = %v, command = %v (%s), want kind=%v command=%v", decision.Kind, decision.Command, decision.Reason, tc.wantKind, tc.wantCommand)
 			}
@@ -73,10 +76,67 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+func TestDecideResponseControls(t *testing.T) {
+	mrMute := Decide(loadEvent(t, "emoji_award_mute_mr.json"), "nickpit", "mute", "nickpit", nil, nil)
+	if mrMute.Response != ResponseSyncMR {
+		t.Fatalf("MR mute = %+v", mrMute)
+	}
+	noteMute := Decide(loadEvent(t, "emoji_revoke_mute_note.json"), "nickpit", "mute", "nickpit", nil, nil)
+	if noteMute.Response != ResponseSyncThread || noteMute.NoteID != 900 || noteMute.DiscussionID != "disc-900" {
+		t.Fatalf("note mute = %+v", noteMute)
+	}
+	request := Decide(loadEvent(t, "emoji_award_request_note.json"), "nickpit", "mute", "nickpit", nil, nil)
+	if request.Command != CommandChat || !request.Requested || request.PromptBody != "Why is this unsafe?" {
+		t.Fatalf("request emoji = %+v", request)
+	}
+	requestWithSkip := loadEvent(t, "emoji_award_request_note.json")
+	requestWithSkip.User.ID = 11 // any human may override the comment author's skip
+	requestWithSkip.Note.Note = "Why is this unsafe?\n NO   BOT "
+	overriddenSkip := Decide(requestWithSkip, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if overriddenSkip.Command != CommandChat || !overriddenSkip.Requested || overriddenSkip.PromptBody != "Why is this unsafe?" {
+		t.Fatalf("request emoji did not override skip phrase: %+v", overriddenSkip)
+	}
+	skipOnly := loadEvent(t, "emoji_award_request_note.json")
+	skipOnly.User.ID = 11
+	skipOnly.Note.Note = " NO   BOT "
+	emptyRequest := Decide(skipOnly, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if emptyRequest.Command != CommandNone || emptyRequest.Reason != "request emoji on empty prompt" {
+		t.Fatalf("request emoji on skip-only comment = %+v", emptyRequest)
+	}
+	botTarget := loadEvent(t, "emoji_award_request_note.json")
+	botTarget.Note.AuthorID = 77
+	ignoredRequest := Decide(botTarget, "nickpit", "mute", "nickpit", nil, map[int]bool{77: true})
+	if ignoredRequest.Command != CommandNone {
+		t.Fatalf("request emoji on bot note = %+v", ignoredRequest)
+	}
+
+	event := loadEvent(t, "note_plain.json")
+	event.ObjectAttributes.Note = "question\n/NickPit   resume"
+	resume := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
+	if resume.Response != ResponseResumeThread || resume.Command != CommandChat || !resume.Requested || resume.PromptBody != "question" {
+		t.Fatalf("resume = %+v", resume)
+	}
+	event.ObjectAttributes.Note = "question\n/nickpit ignore"
+	mute := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
+	if mute.Response != ResponseMuteThread || mute.Command != CommandNone {
+		t.Fatalf("mute = %+v", mute)
+	}
+	event.ObjectAttributes.Note = "question\n NO   BOT "
+	skipped := Decide(event, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if skipped.Command != CommandNone || skipped.Reason != "chat skip phrase" {
+		t.Fatalf("skip = %+v", skipped)
+	}
+	event.ObjectAttributes.Note = "/nickpit mute\nNO BOT"
+	muteAndSkip := Decide(event, "nickpit", "mute", "nickpit", []string{"no bot"}, nil)
+	if muteAndSkip.Response != ResponseMuteThread {
+		t.Fatalf("persistent mute must win over one-comment skip: %+v", muteAndSkip)
+	}
+}
+
 // Note commands must carry the note id and discussion id so the handler can
 // acknowledge and reply threaded.
 func TestDecideNoteCarriesReplyContext(t *testing.T) {
-	decision := Decide(loadEvent(t, "note_command_status.json"), "nickpit", "nickpit", nil)
+	decision := Decide(loadEvent(t, "note_command_status.json"), "nickpit", "mute", "nickpit", nil, nil)
 	if decision.NoteID != 303 || decision.DiscussionID != "disc-303" {
 		t.Fatalf("decision = %+v, want note id 303, discussion disc-303", decision)
 	}
@@ -85,7 +145,7 @@ func TestDecideNoteCarriesReplyContext(t *testing.T) {
 // A plain thread reply carries the note and discussion ids so the handler can
 // dedupe, serialize, and hand the triggering note to the chat child.
 func TestDecideNoteChatCarriesReplyContext(t *testing.T) {
-	decision := Decide(loadEvent(t, "note_plain.json"), "nickpit", "nickpit", nil)
+	decision := Decide(loadEvent(t, "note_plain.json"), "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Command != CommandChat {
 		t.Fatalf("expected chat command, got %v", decision.Command)
 	}
@@ -97,14 +157,14 @@ func TestDecideNoteChatCarriesReplyContext(t *testing.T) {
 // The daemon's own thread replies must not be treated as chat (loop guard).
 func TestDecideNoteChatBotIgnored(t *testing.T) {
 	event := loadEvent(t, "note_plain.json")
-	decision := Decide(event, "nickpit", "nickpit", map[int]bool{event.User.ID: true})
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, map[int]bool{event.User.ID: true})
 	if decision.Command != CommandNone || decision.Kind != TriggerNone {
 		t.Fatalf("bot thread reply should be ignored, got %+v", decision)
 	}
 }
 
 func TestDecideNoteUnknownCarriesArg(t *testing.T) {
-	decision := Decide(loadEvent(t, "note_command_unknown.json"), "nickpit", "nickpit", nil)
+	decision := Decide(loadEvent(t, "note_command_unknown.json"), "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Command != CommandUnknown || decision.UnknownArg != "frobnicate" {
 		t.Fatalf("decision = %+v", decision)
 	}
@@ -114,7 +174,7 @@ func TestDecideNoteUnknownCarriesArg(t *testing.T) {
 func TestDecideNoteEditIgnored(t *testing.T) {
 	event := loadEvent(t, "note_command_review.json")
 	event.ObjectAttributes.Action = "update"
-	decision := Decide(event, "nickpit", "nickpit", nil)
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Kind != TriggerNone || decision.Command != CommandNone {
 		t.Fatalf("decision = %+v", decision)
 	}
@@ -124,7 +184,7 @@ func TestDecideNoteEditIgnored(t *testing.T) {
 func TestDecideNoteWithoutActionAccepted(t *testing.T) {
 	event := loadEvent(t, "note_command_review.json")
 	event.ObjectAttributes.Action = ""
-	decision := Decide(event, "nickpit", "nickpit", nil)
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Command != CommandReview {
 		t.Fatalf("decision = %+v", decision)
 	}
@@ -134,14 +194,14 @@ func TestDecideNoteWithoutActionAccepted(t *testing.T) {
 func TestDecideBotRevokeIgnored(t *testing.T) {
 	event := loadEvent(t, "emoji_revoke.json")
 	event.User.ID = 999
-	decision := Decide(event, "nickpit", "nickpit", map[int]bool{999: true})
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, map[int]bool{999: true})
 	if decision.Command != CommandNone {
 		t.Fatalf("decision = %+v", decision)
 	}
 }
 
 func TestDecideUnknownObjectKind(t *testing.T) {
-	decision := Decide(&WebhookEvent{ObjectKind: "pipeline"}, "nickpit", "nickpit", nil)
+	decision := Decide(&WebhookEvent{ObjectKind: "pipeline"}, "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Kind != TriggerNone {
 		t.Fatalf("kind = %v", decision.Kind)
 	}
@@ -152,7 +212,7 @@ func TestDecideUnknownObjectKind(t *testing.T) {
 func TestDecideDraftPushIgnored(t *testing.T) {
 	event := loadEvent(t, "mr_update_oldrev.json")
 	event.ObjectAttributes.Draft = true
-	decision := Decide(event, "nickpit", "nickpit", nil)
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Kind != TriggerNone || decision.Reason != "draft" {
 		t.Fatalf("decision = %+v", decision)
 	}
@@ -164,7 +224,7 @@ func TestDecideReadyTransitionWithoutOldrev(t *testing.T) {
 	if event.ObjectAttributes.OldRev != "" {
 		t.Fatal("fixture must not carry oldrev")
 	}
-	decision := Decide(event, "nickpit", "nickpit", nil)
+	decision := Decide(event, "nickpit", "mute", "nickpit", nil, nil)
 	if decision.Kind != TriggerAuto {
 		t.Fatalf("decision = %+v", decision)
 	}

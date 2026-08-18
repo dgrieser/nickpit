@@ -70,6 +70,15 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 // into it. GitLab returns the created note/discussion JSON; callers that do not
 // need it pass out=nil.
 func (c *Client) Post(ctx context.Context, path string, body any, out any) error {
+	return c.writeJSON(ctx, http.MethodPost, path, body, out)
+}
+
+// Put sends a JSON update to path and optionally decodes the response.
+func (c *Client) Put(ctx context.Context, path string, body any, out any) error {
+	return c.writeJSON(ctx, http.MethodPut, path, body, out)
+}
+
+func (c *Client) writeJSON(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -78,7 +87,7 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 		}
 		reader = bytes.NewReader(data)
 	}
-	respBody, _, err := c.doRequest(ctx, http.MethodPost, path, reader, "application/json")
+	respBody, _, err := c.doRequest(ctx, method, path, reader, "application/json")
 	if err != nil {
 		return err
 	}

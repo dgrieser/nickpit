@@ -101,6 +101,11 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
 | `existingSecret` | `""` | Reference a pre-made Secret instead of the chart's. |
 | `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
+| `serve.chat.enabled` / `serve.chat.optIn` | `true` / `false` | Enable review-thread replies; optionally require each question to request a response. |
+| `serve.chat.muteEmoji` | `mute` | Reaction on a review root mutes that thread; reaction on the MR mutes all NickPit threads. `""` disables reaction muting. |
+| `serve.chat.skipPhrases` | `[]` | Full-line, case-insensitive directives that suppress a response to that comment. |
+| `serve.chat.maxConcurrent` | `4` | Maximum concurrent discussion-agent children. |
+| `serve.chat.extraArgs` | `null` | `null` inherits review args; a list, including `[]`, replaces them for chat children. |
 | `maxSessions` | `50` | `--max-sessions` for every review child. Sessions live on the `home` emptyDir; `0` (the CLI default) grows one full review context per MR until the pod is evicted. |
 | `serve.loki.url` | `""` | Set to stream review logs live to Grafana Loki (durable, queryable). Empty = disabled. Auth/tenant come from Secret keys via `serve.loki.{tenantIdEnv,basicAuthUserEnv,basicAuthPassEnv}`. |
 | `serve.stateDir` | `/work/state` | Journal path (PVC parent mount when persistence is enabled; journal uses its private `journal/` child), resumed after a restart. Must be absolute with persistence enabled; `""` disables. |
@@ -128,6 +133,12 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 - **No NetworkPolicy shipped.** The daemon needs egress to GitLab and the LLM
   endpoint (and to Loki when `serve.loki.url` is set); add a policy if the
   namespace is default-deny.
+- **Response controls.** In a NickPit review thread, `/nickpit mute` (aliases:
+  `shutup`, `skip`, `ignore`) stops replies. `/nickpit respond` (aliases:
+  `comment`, `unmute`, `resume`) clears command mute and requests an answer to
+  other text in the same comment. Commands must occupy their own line. In
+  opt-in mode, reacting with `serve.triggerEmoji` on a question also requests
+  one answer. Review-root footers show current mode and never enter LLM context.
 - **Storage is ephemeral.** `/work` clones, per-review logs and the chat
   sessions under `/home/nonroot/.cache/nickpit/sessions` vanish on restart. Set `serve.loki.url` to stream each review's output live to Grafana
   Loki as well — those logs are durable (survive restarts) and queryable in

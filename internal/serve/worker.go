@@ -184,6 +184,16 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 	// again after restart.
 	case err == nil && exitCode == 0:
 		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
+		if d.responses != nil {
+			syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandReplyTimeout)
+			// Only roots this publish added lack a footer, so post-publish work
+			// stays proportional to NEW findings instead of every root the MR has
+			// accumulated. MR-wide state changes still trigger a full SyncMR.
+			if syncErr := d.responses.SyncNewRoots(syncCtx, event.Group, event.ProjectPath, event.IID); syncErr != nil {
+				log.Warn("syncing review response footers failed", "error", syncErr)
+			}
+			cancel()
+		}
 		log.Info("review finished", "duration", duration, "log", logPath)
 		return outcomeDone
 	// Root shutdown cancellation preserves accepted work for journal resume.

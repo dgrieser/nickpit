@@ -26,6 +26,8 @@ nickpit-serve deployed as {{ include "nickpit-serve.fullname" . }} (namespace {{
 
 4. Opt a project in by adding the topic "{{ .Values.serve.topic }}", or award the
    :{{ .Values.serve.triggerEmoji }}: emoji on an MR for a one-off review.
+   Review-thread replies are {{ if .Values.serve.chat.optIn }}opt-in{{ else }}automatic{{ end }}. Use /{{ .Values.serve.commandKeyword }} mute on its own line or
+   react :{{ .Values.serve.chat.muteEmoji }}: on a review post/MR to mute them.
 
 {{- if not .Values.existingSecret }}
 

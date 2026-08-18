@@ -6,6 +6,81 @@ import (
 	"time"
 )
 
+var (
+	chatMuteAliases   = map[string]bool{"shutup": true, "mute": true, "skip": true, "ignore": true}
+	chatResumeAliases = map[string]bool{"respond": true, "comment": true, "unmute": true, "resume": true}
+)
+
+// ChatDirectives are full-line controls embedded in a discussion comment.
+// Remaining is the comment with recognized controls removed, ready for prompt
+// history. Mute wins if a malformed comment contains both directions; Skip
+// suppresses the comment's initial response but does not change persistent
+// thread state. A later request reaction may explicitly override Skip when the
+// comment also contains a non-control prompt.
+type ChatDirectives struct {
+	Mute      bool
+	Resume    bool
+	Request   bool
+	Skip      bool
+	Remaining string
+}
+
+// ParseChatDirectives scans every line for response commands and configured
+// skip phrases. Matching is case-insensitive after whitespace normalization;
+// commands must occupy the complete line and take no arguments.
+func ParseChatDirectives(body, keyword string, skipPhrases []string) ChatDirectives {
+	skip := make(map[string]bool, len(skipPhrases))
+	for _, phrase := range skipPhrases {
+		if normalized := normalizeControlLine(phrase); normalized != "" {
+			skip[normalized] = true
+		}
+	}
+	var out ChatDirectives
+	var kept []string
+	for line := range strings.SplitSeq(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		normalized := normalizeControlLine(line)
+		fields := strings.Fields(normalized)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "/"+keyword) {
+			switch {
+			case chatMuteAliases[fields[1]]:
+				out.Mute = true
+				continue
+			case chatResumeAliases[fields[1]]:
+				out.Resume = true
+				out.Request = true
+				continue
+			}
+		}
+		if skip[normalized] {
+			out.Skip = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if out.Mute {
+		out.Resume = false
+		out.Request = false
+	}
+	out.Remaining = strings.TrimSpace(strings.Join(kept, "\n"))
+	return out
+}
+
+// AllowsReply reports whether the comment these directives were parsed from
+// still permits a reply. An explicit request overrides a skip phrase only —
+// never a mute command, and never a comment left with no question to answer.
+// The live body is re-parsed immediately before posting, so an edit made while
+// the model ran is honored even for a previously requested note.
+func (d ChatDirectives) AllowsReply(requested bool) bool {
+	if d.Mute || d.Remaining == "" {
+		return false
+	}
+	return requested || !d.Skip
+}
+
+func normalizeControlLine(line string) string {
+	return strings.ToLower(strings.Join(strings.Fields(line), " "))
+}
+
 // CommandKind classifies a "/<keyword> <command>" note command (and the
 // trigger-emoji revoke, which maps to CommandAbort).
 type CommandKind int
@@ -105,7 +180,12 @@ func helpText(keyword string) string {
 - `+"`/%s review`"+` — request a review (works on drafts and non-opted-in projects)
 - `+"`/%s abort`"+` — cancel the queued or running review for this merge request
 - `+"`/%s status`"+` — show the review state for this merge request
-- `+"`/%s help`"+` — show this help`, keyword, keyword, keyword, keyword)
+- `+"`/%s help`"+` — show this help
+
+NickPit review-thread response controls (command must be on its own line):
+
+- `+"`/%s mute`"+` — stop responses in this review thread (`+"`shutup`"+`, `+"`skip`"+`, `+"`ignore`"+` are aliases)
+- `+"`/%s respond`"+` — re-enable and request a response to text in the same comment (`+"`comment`"+`, `+"`unmute`"+`, `+"`resume`"+` are aliases)`, keyword, keyword, keyword, keyword, keyword, keyword)
 }
 
 func unknownText(keyword, arg string) string {

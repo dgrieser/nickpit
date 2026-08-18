@@ -1,0 +1,21 @@
+{
+  "object_kind": "emoji",
+  "event_type": "revoke",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool"},
+  "object_attributes": {
+    "action": "revoke",
+    "name": "mute",
+    "awardable_type": "Note",
+    "awardable_id": 900
+  },
+  "note": {
+    "id": 900,
+    "author_id": 7,
+    "note": "review root",
+    "noteable_type": "MergeRequest",
+    "discussion_id": "disc-900",
+    "type": "DiffNote"
+  },
+  "merge_request": {"iid": 11, "last_commit": {"id": "sha-note-1"}}
+}

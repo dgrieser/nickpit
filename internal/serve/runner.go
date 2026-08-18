@@ -20,6 +20,12 @@ import (
 // grandchild.
 const logDrainGrace = 2 * time.Second
 
+// ChatNoPostExitCode is returned by a chat child when live response policy
+// changed after the daemon admitted the note and the child deliberately posted
+// nothing. The daemon must release the note's dedup mark without retrying: a
+// later explicit request on that same note must remain eligible.
+const ChatNoPostExitCode = 3
+
 // ReviewSpec describes one review to execute in a child process.
 type ReviewSpec struct {
 	ProjectPath string
@@ -50,13 +56,20 @@ type ChatSpec struct {
 	IID          int
 	DiscussionID string
 	// NoteID is the triggering note; the child answers only when this note is
-	// still the latest reply, so racing/redelivered replies do not double-answer.
-	NoteID     int
-	Token      string
-	BaseURL    string
-	ConfigPath string
-	ExtraArgs  []string
-	LogDir     string
+	// still the latest pending user reply.
+	NoteID int
+	// Requested means a human explicitly requested a response. It affects the
+	// parent's policy gate and lets the child override a skip phrase on this same
+	// note, but never transfers the request to another note.
+	Requested      bool
+	Token          string
+	BaseURL        string
+	ConfigPath     string
+	ExtraArgs      []string
+	LogDir         string
+	MuteEmoji      string
+	CommandKeyword string
+	SkipPhrases    []string
 }
 
 // ChatRunner executes one discussion-thread reply in a child process.
@@ -170,6 +183,13 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 // The child self-gates (a thread nickpit did not start is a quiet no-op) and
 // posts its answer back into the thread itself.
 func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {
+	for _, arg := range spec.ExtraArgs {
+		switch arg {
+		case "--", "--help", "-h":
+			return -1, "", fmt.Errorf("chat extra args must not contain %q", arg)
+		}
+	}
+
 	logPath, logFile, err := createChildLog("chat", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
 	if err != nil {
 		return -1, "", err
@@ -182,13 +202,27 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 		"--id", strconv.Itoa(spec.IID),
 		"--reply-discussion", spec.DiscussionID,
 	}
-	if spec.NoteID > 0 {
-		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
-	}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
 	}
 	args = append(args, spec.ExtraArgs...)
+	// Keep the target after operator-provided arguments so an extra --reply-note
+	// cannot transfer this per-comment admission to another pending question.
+	if spec.NoteID > 0 {
+		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
+	}
+	if spec.Requested {
+		args = append(args, "--reply-requested")
+	}
+	if spec.MuteEmoji != "" {
+		args = append(args, "--reply-mute-emoji", spec.MuteEmoji)
+	}
+	if spec.CommandKeyword != "" {
+		args = append(args, "--reply-command-keyword", spec.CommandKeyword)
+	}
+	for _, phrase := range spec.SkipPhrases {
+		args = append(args, "--reply-skip-phrase", phrase)
+	}
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

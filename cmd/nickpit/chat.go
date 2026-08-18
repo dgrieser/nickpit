@@ -22,6 +22,7 @@ import (
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/textsan"
@@ -29,18 +30,27 @@ import (
 )
 
 type chatOptions struct {
-	sessionID       string
-	findingID       string
-	fromJSON        string
-	gitlab          bool
-	rawURL          string
-	repo            string
-	mrID            int
-	reviewID        string
-	repoRoot        string
-	replyDiscussion string
-	replyNote       int
+	sessionID           string
+	findingID           string
+	fromJSON            string
+	gitlab              bool
+	rawURL              string
+	repo                string
+	mrID                int
+	reviewID            string
+	repoRoot            string
+	replyDiscussion     string
+	replyNote           int
+	replyRequested      bool
+	replyMuteEmoji      string
+	replyCommandKeyword string
+	replySkipPhrases    []string
 }
+
+// errChatReplySuppressed crosses the chat command boundary as
+// serve.ChatNoPostExitCode. It is distinct from both success (a reply was
+// posted or became superseded) and failure (the daemon should retry).
+var errChatReplySuppressed = errors.New("chat: reply suppressed by current response policy")
 
 func (a *app) newChatCmd() *cobra.Command {
 	var opts chatOptions
@@ -69,6 +79,14 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
+	cmd.Flags().BoolVar(&opts.replyRequested, "reply-requested", false, "Internal serve setting: triggering note was explicitly requested")
+	cmd.Flags().StringVar(&opts.replyMuteEmoji, "reply-mute-emoji", "", "Internal serve setting: reaction that mutes discussion replies")
+	cmd.Flags().StringVar(&opts.replyCommandKeyword, "reply-command-keyword", "nickpit", "Internal serve setting: response-control command keyword")
+	cmd.Flags().StringArrayVar(&opts.replySkipPhrases, "reply-skip-phrase", nil, "Internal serve setting: full-line response skip phrase")
+	_ = cmd.Flags().MarkHidden("reply-mute-emoji")
+	_ = cmd.Flags().MarkHidden("reply-requested")
+	_ = cmd.Flags().MarkHidden("reply-command-keyword")
+	_ = cmd.Flags().MarkHidden("reply-skip-phrase")
 	_ = cmd.MarkFlagFilename("from-json", "json")
 	_ = cmd.MarkFlagDirname("repo-root")
 	_ = cmd.RegisterFlagCompletionFunc("session", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
@@ -774,7 +792,7 @@ func (a *app) chatEnsureCheckout(ctx context.Context, source model.ReviewSource,
 // so the retrieval tools can read from it for the rest of the invocation — the
 // caller releases it — but its path never leaks into the returned context,
 // which may be persisted.
-func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout) (*model.ReviewContext, error) {
+func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout, controls ...chatMessageControls) (*model.ReviewContext, error) {
 	maxToolCalls := req.MaxToolCalls
 	if maxToolCalls == 0 {
 		maxToolCalls = profile.MaxToolCalls
@@ -799,6 +817,7 @@ func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, sou
 	if tempCheckout {
 		reviewCtx.CheckoutRoot = ""
 	}
+	stripChatControlsFromReviewComments(reviewCtx, resolveChatMessageControls(controls))
 	return reviewCtx, nil
 }
 
@@ -993,6 +1012,13 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if !ok {
 		return nil
 	}
+	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, notes, botUserID, opts.replyMuteEmoji)
+	if err != nil {
+		return fmt.Errorf("chat: checking response policy: %w", err)
+	}
+	if !allowed {
+		return errChatReplySuppressed
+	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
 	if err != nil {
 		return fmt.Errorf("chat: reading MR reviews: %w", err)
@@ -1034,7 +1060,20 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if opts.replyNote > 0 && pending != opts.replyNote {
 		return nil
 	}
-	history := chatThreadToMessages(notes, botUserID)
+	controls := resolveChatMessageControls([]chatMessageControls{{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases}})
+	// The webhook body was checked before this child was queued, but the live
+	// note can be edited meanwhile: a skip phrase or mute command added beside
+	// the question suppresses this turn, and a target edited down to controls
+	// only must not select an older prompt still sitting in the thread history.
+	// Enforce that HERE — before the engine is built and the LLM turn is paid
+	// for — not only at the final pre-post check. This is a suppression, not a
+	// completed turn: the parent must release the note's dedup mark so restoring
+	// the question and requesting a response on that same note is not discarded
+	// as a duplicate.
+	if opts.replyNote > 0 && !chatNoteDirectives(notes, opts.replyNote, controls).AllowsReply(opts.replyRequested) {
+		return errChatReplySuppressed
+	}
+	history := chatThreadToMessages(notes, botUserID, controls)
 	if len(history) == 0 {
 		return nil
 	}
@@ -1065,7 +1104,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// disabled.
 	var co chatCheckout
 	defer co.release()
-	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co)
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co, controls)
 	if err != nil {
 		// A context-preparation failure (often a remote checkout that could not
 		// be cloned, or content filters/toolchain capture that could not read
@@ -1079,7 +1118,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// transport error when posting itself failed (the daemon retries the
 		// whole turn).
 		a.logf(ctx, "chat: resolving MR context failed: %v", err)
-		return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, chatFailureReplyBody(err))
+		return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, chatFailureReplyBody(err))
 	}
 	toolRoot := opts.repoRoot
 	if toolRoot == "" && profile.MaxToolCalls >= 0 {
@@ -1113,7 +1152,103 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, reply)
+	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply)
+}
+
+type chatResponseClient interface {
+	chatNoteClient
+	MREmojis(ctx context.Context, project string, iid int) ([]glscm.AwardEmoji, error)
+	NoteEmojis(ctx context.Context, project string, iid, noteID int) ([]glscm.AwardEmoji, error)
+}
+
+func gitLabThreadResponsesAllowed(ctx context.Context, client chatResponseClient, project string, mrID int, notes []glscm.DiscussionNote, botUserID int, muteEmoji string) (bool, error) {
+	if len(notes) == 0 || reviewmd.ThreadCommandMuted(notes[0].Body) {
+		return false, nil
+	}
+	if muteEmoji == "" {
+		return true, nil
+	}
+	mrAwards, err := client.MREmojis(ctx, project, mrID)
+	if err != nil {
+		return false, err
+	}
+	if hasResponseMute(mrAwards, muteEmoji, botUserID) {
+		return false, nil
+	}
+	noteAwards, err := client.NoteEmojis(ctx, project, mrID, notes[0].ID)
+	if err != nil {
+		return false, err
+	}
+	return !hasResponseMute(noteAwards, muteEmoji, botUserID), nil
+}
+
+func hasResponseMute(awards []glscm.AwardEmoji, name string, botUserID int) bool {
+	for _, award := range awards {
+		if award.Name == name && award.User.ID != botUserID {
+			return true
+		}
+	}
+	return false
+}
+
+// errChatReplySuperseded is internal to the reply path: a newer note (or the
+// bot's own answer) arrived, so this turn quietly yields to the newer note's
+// own handling instead of answering out of order.
+var errChatReplySuperseded = errors.New("chat: reply superseded by a newer note")
+
+// chatFreshTarget re-reads the thread and verifies that pending is still the
+// note to answer under the target's CURRENT per-comment controls. It reports
+// errChatReplySuperseded when a newer note arrived and errChatReplySuppressed
+// when the live target no longer permits a reply.
+func chatFreshTarget(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, controls chatMessageControls) ([]glscm.DiscussionNote, error) {
+	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
+	if err != nil {
+		return nil, fmt.Errorf("chat: rechecking response policy: %w", err)
+	}
+	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
+		return nil, errChatReplySuperseded
+	}
+	// Per-comment controls must honor edits made while the model was running.
+	// An explicit request reaction or resume command overrides a skip phrase on
+	// this same note, but never a mute command and never a target edited down to
+	// controls only: there is no longer a question to answer.
+	if !chatNoteDirectives(fresh, pending, controls).AllowsReply(requested) {
+		return nil, errChatReplySuppressed
+	}
+	return fresh, nil
+}
+
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
+	fresh, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls)
+	if errors.Is(err, errChatReplySuperseded) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, fresh, botUserID, muteEmoji)
+	if err != nil {
+		return fmt.Errorf("chat: rechecking response policy: %w", err)
+	}
+	if !allowed {
+		return errChatReplySuppressed
+	}
+	// The reaction lookups are extra round trips, and a question arriving during
+	// them would leave the freshness result above stale. Answering anyway is the
+	// more damaging failure: the newer question's own child would see this reply
+	// as the latest note and drop it permanently. So re-verify ordering and the
+	// target's controls LAST, immediately before the POST. Both reads are
+	// non-atomic against the POST either way — GitLab offers no check-and-post —
+	// and a mute landing in the remaining window only costs one extra reply.
+	if muteEmoji != "" {
+		if _, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls); err != nil {
+			if errors.Is(err, errChatReplySuperseded) {
+				return nil
+			}
+			return err
+		}
+	}
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
 }
 
 // chatNoteClient is the subset of the GitLab client the chat reply path uses:
@@ -1151,8 +1286,14 @@ func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project 
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
+}
+
+// postChatReplyUnchecked performs the POST after its caller has completed all
+// required freshness and policy reads.
+func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string) error {
 	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
-	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
+	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
 	if err == nil {
 		return nil
 	}
@@ -1275,13 +1416,62 @@ func findingExists(result *model.ReviewResult, findingID string) bool {
 // skipped — it is the review context, represented by the agent's own opener. The
 // bot's own prior replies (author == botUserID) become assistant turns; everyone
 // else's notes become user turns. System notes are dropped.
-func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Message {
+type chatMessageControls struct {
+	keyword     string
+	skipPhrases []string
+}
+
+func resolveChatMessageControls(controls []chatMessageControls) chatMessageControls {
+	resolved := chatMessageControls{keyword: "nickpit"}
+	if len(controls) == 0 {
+		return resolved
+	}
+	if controls[0].keyword != "" {
+		resolved.keyword = controls[0].keyword
+	}
+	resolved.skipPhrases = controls[0].skipPhrases
+	return resolved
+}
+
+func stripChatMessageControls(body string, controls chatMessageControls) string {
+	body = reviewmd.StripMarkers(body)
+	return serve.ParseChatDirectives(body, controls.keyword, controls.skipPhrases).Remaining
+}
+
+func stripChatControlsFromReviewComments(reviewCtx *model.ReviewContext, controls chatMessageControls) {
+	if reviewCtx == nil {
+		return
+	}
+	comments := reviewCtx.Comments[:0]
+	for _, comment := range reviewCtx.Comments {
+		comment.Body = stripChatMessageControls(comment.Body, controls)
+		if comment.Body != "" {
+			comments = append(comments, comment)
+		}
+	}
+	reviewCtx.Comments = comments
+}
+
+// chatNoteDirectives parses one note's LIVE controls. A note that has vanished
+// yields the zero value, whose empty Remaining fails AllowsReply — the safe
+// direction when the target can no longer be read.
+func chatNoteDirectives(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) serve.ChatDirectives {
+	for _, note := range notes {
+		if note.ID == noteID {
+			return serve.ParseChatDirectives(reviewmd.StripMarkers(note.Body), controls.keyword, controls.skipPhrases)
+		}
+	}
+	return serve.ChatDirectives{}
+}
+
+func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
+	resolvedControls := resolveChatMessageControls(controls)
 	var msgs []llm.Message
 	for i, note := range notes {
 		if i == 0 || note.System {
 			continue
 		}
-		body := strings.TrimSpace(note.Body)
+		body := stripChatMessageControls(note.Body, resolvedControls)
 		if body == "" {
 			continue
 		}

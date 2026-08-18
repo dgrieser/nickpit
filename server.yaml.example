@@ -34,7 +34,9 @@ trigger_emoji: "nickpit"
 # Emoji the daemon awards on the MR while a review runs ("" disables).
 start_emoji: "eyes"
 
-# Keyword for MR comment commands: /<keyword> review|abort|status|help.
+# Keyword for MR comment commands. Review controls are review|abort|status|help;
+# thread-response controls are mute|shutup|skip|ignore and
+# respond|comment|unmute|resume.
 command_keyword: "nickpit"
 
 # Emoji the daemon awards on a command comment to acknowledge it ("" disables).
@@ -83,6 +85,17 @@ review:
 # chat can be switched off entirely and its concurrency capped.
 chat:
   enabled: true       # false acknowledges and drops chat replies; no LLM turn runs
+  # true requires an explicit request in each question: a /nickpit respond
+  # command on its own line, or the trigger_emoji reaction on that question.
+  opt_in: false
+  # Reaction on a nickpit review post mutes that thread; reaction on the MR
+  # mutes all nickpit threads. Removing the last matching reaction re-enables.
+  # Empty disables reaction-based muting.
+  mute_emoji: "mute"
+  # Full-line suppressors, matched case-insensitively after whitespace
+  # normalization. A later trigger_emoji reaction overrides suppression when
+  # the comment contains other text. No suppressors are configured by default.
+  skip_phrases: []
   max_concurrent: 4   # concurrent chat child processes (<=0 uses the default 4)
   # extra_args replaces review.extra_args for chat children when present.
   # Absent (commented out) chat children inherit review.extra_args; an

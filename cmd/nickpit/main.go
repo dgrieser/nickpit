@@ -260,15 +260,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
-		// A user abort (Ctrl-C / SIGTERM) cancels the context; the resulting error
-		// is expected, not a failure, so exit quietly with the conventional
-		// interrupt code instead of printing an ERROR.
-		if isUserAbort(ctx, err) {
-			os.Exit(130)
+		if code, quiet := quietExitCode(ctx, err); quiet {
+			os.Exit(code)
 		}
 		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
+}
+
+// quietExitCode recognizes expected outcomes that should not be rendered as
+// CLI failures. A user abort gets the conventional interrupt code. A
+// serve-spawned chat can pass the daemon's gate and then observe a newly muted
+// thread immediately before posting; its dedicated code tells the daemon to
+// release the note's dedup mark.
+func quietExitCode(ctx context.Context, err error) (int, bool) {
+	if isUserAbort(ctx, err) {
+		return 130, true
+	}
+	if errors.Is(err, errChatReplySuppressed) {
+		return serve.ChatNoPostExitCode, true
+	}
+	return 0, false
 }
 
 // isUserAbort reports whether a failed run was a user abort (Ctrl-C / SIGTERM)
@@ -998,7 +1010,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 		Long: "Run an HTTP daemon receiving GitLab group webhooks (merge request + emoji + comment events). " +
 			"MR activity triggers reviews on projects carrying the opt-in topic; awarding the trigger " +
 			"emoji on an MR requests a review explicitly, revoking it aborts. MR comments starting with " +
-			"the command keyword control the daemon: /nickpit review|abort|status|help. Each review runs " +
+			"the command keyword control the daemon: /nickpit review|abort|status|help. Review-thread " +
+			"comments also support mute/resume/respond controls and configured emoji/skip-line policy. Each review runs " +
 			"as a separate nickpit child process.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.LoadServe(serveConfigPath)
@@ -1137,6 +1150,15 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:    childArgs,
 				LogDir:       cfg.LogDir,
 			}, log)
+			responseController := serve.NewResponseController(serve.ResponseConfig{
+				Enabled:        cfg.ChatEnabled(),
+				OptIn:          cfg.Chat.OptIn,
+				MuteEmoji:      cfg.ChatMuteEmojiName(),
+				RequestEmoji:   cfg.TriggerEmoji,
+				CommandKeyword: cfg.CommandKeyword,
+				SkipPhrases:    append([]string(nil), cfg.Chat.SkipPhrases...),
+			}, log)
+			dispatcher.SetResponseController(responseController)
 			if resumed := dispatcher.Restore(groups); resumed > 0 {
 				log.Info("resumed journaled review jobs", "count", resumed, "dir", cfg.StateDir)
 			}
@@ -1170,6 +1192,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AbortEmoji:     cfg.AbortEmojiName(),
+				Responses:      responseController,
 			}, chatRunner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)

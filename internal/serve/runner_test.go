@@ -75,6 +75,58 @@ func TestExecRunnerInvocation(t *testing.T) {
 	}
 }
 
+func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := ChatSpec{
+		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+		Token: "group-token", BaseURL: "https://gitlab.example.com", LogDir: t.TempDir(),
+		ExtraArgs: []string{"--reply-mute-emoji", "operator-value"}, MuteEmoji: "mute",
+		CommandKeyword: "nickpit", SkipPhrases: []string{"no bot", "quiet"},
+	}
+	_, logPath, err := runner.RunChat(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	for _, want := range []string{
+		"chat --gitlab --repo platform/api --id 7 --reply-discussion disc-1",
+		"--reply-mute-emoji operator-value",
+		"--reply-note 42",
+		"--reply-note 42 --reply-mute-emoji mute",
+		"--reply-command-keyword nickpit",
+		"--reply-skip-phrase no bot --reply-skip-phrase quiet",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("argv missing %q:\n%s", want, args)
+		}
+	}
+}
+
+func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := ChatSpec{
+		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+		Requested: true, Token: "group-token", LogDir: t.TempDir(),
+		ExtraArgs: []string{"--reply-note", "99"},
+	}
+	_, logPath, err := runner.RunChat(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	if !strings.Contains(args, "--reply-note 99 --reply-note 42 --reply-requested") {
+		t.Fatalf("explicit request not authoritatively pinned to reacted note:\n%s", args)
+	}
+}
+
 func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {
@@ -83,6 +135,26 @@ func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 			spec.ExtraArgs = []string{"--profile", "default", arg}
 
 			exitCode, logPath, err := runner.Run(context.Background(), spec)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("must not contain %q", arg)) {
+				t.Fatalf("err = %v, want %q rejection", err, arg)
+			}
+			if exitCode != -1 || logPath != "" {
+				t.Fatalf("result = (%d, %q), want rejection before child launch", exitCode, logPath)
+			}
+		})
+	}
+}
+
+func TestExecRunnerRejectsChatControlBypassArgs(t *testing.T) {
+	for _, arg := range []string{"--", "--help", "-h"} {
+		t.Run(arg, func(t *testing.T) {
+			runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+			spec := ChatSpec{
+				ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
+				ExtraArgs: []string{"--profile", "default", arg}, LogDir: t.TempDir(),
+			}
+
+			exitCode, logPath, err := runner.RunChat(context.Background(), spec)
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("must not contain %q", arg)) {
 				t.Fatalf("err = %v, want %q rejection", err, arg)
 			}

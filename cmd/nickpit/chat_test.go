@@ -294,6 +294,80 @@ func TestChatThreadToMessages(t *testing.T) {
 	}
 }
 
+func TestChatThreadToMessagesStripsResponseControls(t *testing.T) {
+	notes := []glscm.DiscussionNote{
+		{Body: "root", AuthorID: 5},
+		{Body: "question\n/nickpit resume", AuthorID: 10},
+		{Body: reviewmd.UpsertResponseFooter("answer", reviewmd.ResponseStatus{Enabled: true}), AuthorID: 5},
+		{Body: "  NICKPIT   SKIP  ", AuthorID: 10},
+	}
+	msgs := chatThreadToMessages(notes, 5, chatMessageControls{keyword: "nickpit", skipPhrases: []string{"nickpit skip"}})
+	if len(msgs) != 2 || msgs[0].Content != "question" || msgs[1].Content != "answer" {
+		t.Fatalf("control metadata leaked into history: %+v", msgs)
+	}
+}
+
+func TestStripChatControlsFromReviewComments(t *testing.T) {
+	reviewCtx := &model.ReviewContext{Comments: []model.Comment{
+		{Author: "alice", Body: "question\n/custom resume"},
+		{Author: "bob", Body: "  DO NOT ANSWER  "},
+		{Author: "nickpit", Body: reviewmd.UpsertResponseFooter("answer", reviewmd.ResponseStatus{Enabled: true})},
+	}}
+	controls := chatMessageControls{keyword: "custom", skipPhrases: []string{"do not answer"}}
+
+	stripChatControlsFromReviewComments(reviewCtx, controls)
+
+	if len(reviewCtx.Comments) != 2 {
+		t.Fatalf("comments = %+v, want control-only comment removed", reviewCtx.Comments)
+	}
+	if reviewCtx.Comments[0].Body != "question" || reviewCtx.Comments[1].Body != "answer" {
+		t.Fatalf("response controls leaked into prepared comments: %+v", reviewCtx.Comments)
+	}
+}
+
+// The gate that runs BEFORE the engine is built uses the live target body, so
+// an edit landing between webhook admission and the child's read suppresses the
+// turn instead of paying for an LLM call that the pre-post check would discard.
+func TestChatNoteDirectivesGateUsesLiveTargetBody(t *testing.T) {
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"do not answer"}}
+	notes := []glscm.DiscussionNote{
+		{ID: 1, Body: "root", AuthorID: 5},
+		{ID: 2, Body: "older question", AuthorID: 10},
+		{ID: 3, Body: "answer", AuthorID: 5},
+		// Webhook originally carried a question, but live note was edited before
+		// the queued child read the discussion.
+		{ID: 4, Body: "/nickpit resume\ndo not answer", AuthorID: 10},
+	}
+	allows := func(noteID int, requested bool) bool {
+		return chatNoteDirectives(notes, noteID, controls).AllowsReply(requested)
+	}
+
+	if allows(4, true) {
+		t.Fatal("control-only live target must not trigger a reply to older history")
+	}
+	// A skip phrase added beside the question suppresses the turn; only an
+	// explicit request overrides it, and only while a question remains.
+	notes[3].Body = "still answer this\ndo not answer"
+	if allows(4, false) {
+		t.Fatal("live skip phrase must suppress the turn before the LLM runs")
+	}
+	if !allows(4, true) {
+		t.Fatal("explicit request must still override a live skip phrase")
+	}
+	// A mute command is never overridden.
+	notes[3].Body = "/nickpit mute\nstill answer this"
+	if allows(4, true) {
+		t.Fatal("live mute command must suppress even an explicitly requested turn")
+	}
+	notes[3].Body = "/nickpit resume\nstill answer this"
+	if !allows(4, false) {
+		t.Fatal("live target with prompt text must remain eligible")
+	}
+	if allows(99, false) {
+		t.Fatal("missing target note must not remain eligible")
+	}
+}
+
 func TestLatestPendingNote(t *testing.T) {
 	notes := []glscm.DiscussionNote{
 		{ID: 1, Body: "root", AuthorID: 5},
@@ -353,6 +427,7 @@ type fakeRemoteSource struct {
 	spec          *model.CheckoutSpec
 	resolveErr    error
 	checkoutCalls int
+	comments      []model.Comment
 }
 
 func (s *fakeRemoteSource) ResolveContext(_ context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
@@ -361,6 +436,7 @@ func (s *fakeRemoteSource) ResolveContext(_ context.Context, req model.ReviewReq
 		Title:        "t",
 		ChangedFiles: []model.ChangedFile{{Path: "a.go"}},
 		Diff:         "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n",
+		Comments:     append([]model.Comment(nil), s.comments...),
 	}, nil
 }
 
@@ -472,7 +548,10 @@ func TestChatEnsureCheckout(t *testing.T) {
 func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	ctx := context.Background()
 	spec := &model.CheckoutSpec{Provider: model.ModeGitLab, Repo: "g/p", CloneURL: "https://x/y.git", HeadSHA: "abc"}
-	src := &fakeRemoteSource{spec: spec}
+	src := &fakeRemoteSource{spec: spec, comments: []model.Comment{
+		{Author: "alice", Body: "question\n/custom resume"},
+		{Author: "bob", Body: "do not answer"},
+	}}
 	root := t.TempDir()
 	prepares, cleanups := 0, 0
 	a := &app{prepareCheckout: func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
@@ -485,7 +564,9 @@ func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	profile := config.Profile{} // MaxToolCalls 0 = unlimited: tools enabled
 	req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "g/p", Identifier: 1}
 	var co chatCheckout
-	reviewCtx, err := a.chatPrepareContext(ctx, engine, src, profile, req, &co)
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, src, profile, req, &co, chatMessageControls{
+		keyword: "custom", skipPhrases: []string{"do not answer"},
+	})
 	if err != nil {
 		t.Fatalf("chatPrepareContext: %v", err)
 	}
@@ -497,6 +578,9 @@ func TestChatPrepareContextSharedCheckout(t *testing.T) {
 	}
 	if reviewCtx.CheckoutRoot != "" {
 		t.Fatalf("CheckoutRoot = %q leaked into the (persistable) context", reviewCtx.CheckoutRoot)
+	}
+	if len(reviewCtx.Comments) != 1 || reviewCtx.Comments[0].Body != "question" {
+		t.Fatalf("response controls leaked into prepared comments: %+v", reviewCtx.Comments)
 	}
 	// The tools path reuses the same clone instead of preparing a second one.
 	if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err != nil {
@@ -547,21 +631,43 @@ func TestChatPrepareContextSkipsCheckoutWhenNothingNeedsOne(t *testing.T) {
 type fakeNoteClient struct {
 	discussionNotes []glscm.DiscussionNote
 	mrNotes         []glscm.MRNote
+	mrAwards        []glscm.AwardEmoji
+	noteAwards      []glscm.AwardEmoji
 	replyErr        error
 	noteErr         error
 	replyBody       string
 	noteBody        string
+	calls           []string
+	// onNoteEmojis runs during the reaction lookups, simulating thread activity
+	// that lands after the first freshness read.
+	onNoteEmojis func()
 }
 
 func (f *fakeNoteClient) DiscussionNotes(context.Context, string, int, string) ([]glscm.DiscussionNote, error) {
+	f.calls = append(f.calls, "discussion")
 	return f.discussionNotes, nil
 }
 
 func (f *fakeNoteClient) MRNotes(context.Context, string, int) ([]glscm.MRNote, error) {
+	f.calls = append(f.calls, "mr-notes")
 	return f.mrNotes, nil
 }
 
+func (f *fakeNoteClient) MREmojis(context.Context, string, int) ([]glscm.AwardEmoji, error) {
+	f.calls = append(f.calls, "mr-emojis")
+	return f.mrAwards, nil
+}
+
+func (f *fakeNoteClient) NoteEmojis(context.Context, string, int, int) ([]glscm.AwardEmoji, error) {
+	f.calls = append(f.calls, "note-emojis")
+	if f.onNoteEmojis != nil {
+		f.onNoteEmojis()
+	}
+	return f.noteAwards, nil
+}
+
 func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ int, _ string, body string) error {
+	f.calls = append(f.calls, "reply")
 	f.replyBody = body
 	err := f.replyErr
 	f.replyErr = nil
@@ -569,6 +675,7 @@ func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ 
 }
 
 func (f *fakeNoteClient) CreateMRNotePath(_ context.Context, _ string, _ int, body string) error {
+	f.calls = append(f.calls, "create-note")
 	f.noteBody = body
 	err := f.noteErr
 	f.noteErr = nil
@@ -675,4 +782,143 @@ func TestPostChatReply(t *testing.T) {
 			t.Errorf("no reply expected when a newer note superseded the pending one: reply=%q note=%q", c.replyBody, c.noteBody)
 		}
 	})
+}
+
+func TestPostChatReplyWithPolicyReportsSuppressedReply(t *testing.T) {
+	const botUserID = 5
+	award := glscm.AwardEmoji{Name: "mute"}
+	award.User.ID = 7
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7},
+		},
+		noteAwards: []glscm.AwardEmoji{award},
+	}
+
+	err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer")
+	if !errors.Is(err, errChatReplySuppressed) {
+		t.Fatalf("error = %v, want suppressed-reply outcome", err)
+	}
+	if c.replyBody != "" || c.noteBody != "" {
+		t.Fatalf("policy-denied reply was posted: reply=%q note=%q", c.replyBody, c.noteBody)
+	}
+}
+
+// Reaction lookups are extra round trips during which a newer question can
+// land, so thread ordering must be re-read AFTER them and immediately before
+// the POST: answering a superseded question makes the newer one's own child
+// see this reply as the latest note and drop it permanently.
+func TestPostChatReplyWithPolicyRechecksFreshnessAfterReactions(t *testing.T) {
+	const botUserID = 5
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7, Body: "question"},
+		},
+	}
+
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "discussion,mr-notes,mr-emojis,note-emojis,discussion,mr-notes,reply"
+	if got := strings.Join(c.calls, ","); got != want {
+		t.Fatalf("call order = %q, want %q", got, want)
+	}
+
+	// Without reaction muting there are no lookups to go stale, so the single
+	// freshness read stays the last GET before the POST.
+	c = &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+		{ID: 1, AuthorID: botUserID},
+		{ID: 10, AuthorID: 7, Body: "question"},
+	}}
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "", chatMessageControls{}, "answer"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join(c.calls, ","), "discussion,mr-notes,reply"; got != want {
+		t.Fatalf("call order without mute emoji = %q, want %q", got, want)
+	}
+}
+
+// A question arriving while the reaction lookups run must abort the reply.
+func TestPostChatReplyWithPolicyYieldsToNoteArrivingDuringReactionReads(t *testing.T) {
+	const botUserID = 5
+	c := &fakeNoteClient{
+		discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7, Body: "question"},
+		},
+	}
+	c.onNoteEmojis = func() {
+		c.discussionNotes = append(c.discussionNotes, glscm.DiscussionNote{ID: 11, AuthorID: 7, Body: "and this?"})
+	}
+
+	if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "mute", chatMessageControls{}, "answer"); err != nil {
+		t.Fatalf("superseded reply must bow out quietly, got: %v", err)
+	}
+	if c.replyBody != "" || c.noteBody != "" {
+		t.Fatalf("reply posted against stale thread state: reply=%q note=%q", c.replyBody, c.noteBody)
+	}
+}
+
+func TestPostChatReplyWithPolicyHonorsLiveSkipPhrase(t *testing.T) {
+	const botUserID = 5
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"no bot"}}
+	newClient := func() *fakeNoteClient {
+		return &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+			{ID: 1, AuthorID: botUserID},
+			{ID: 10, AuthorID: 7, Body: "question\nNO BOT"},
+		}}
+	}
+
+	t.Run("automatic reply suppressed", func(t *testing.T) {
+		c := newClient()
+		err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, false, "", controls, "answer")
+		if !errors.Is(err, errChatReplySuppressed) {
+			t.Fatalf("error = %v, want suppressed-reply outcome", err)
+		}
+		if c.replyBody != "" || c.noteBody != "" {
+			t.Fatalf("skip-suppressed reply was posted: reply=%q note=%q", c.replyBody, c.noteBody)
+		}
+	})
+
+	t.Run("explicit request overrides skip", func(t *testing.T) {
+		c := newClient()
+		if err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, true, "", controls, "answer"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.replyBody == "" {
+			t.Fatal("explicitly requested reply was not posted")
+		}
+	})
+}
+
+// A request reaction overrides a skip phrase only while non-control text
+// remains. An edit landing while the model ran can leave the target muted or
+// with nothing left to answer; both must suppress the finished reply.
+func TestPostChatReplyWithPolicyRevalidatesRequestedTarget(t *testing.T) {
+	const botUserID = 5
+	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"no bot"}}
+	for _, tc := range []struct {
+		name string
+		live string
+	}{
+		{name: "edited down to a skip phrase", live: "NO BOT"},
+		{name: "edited to a mute command", live: "/nickpit mute\nquestion"},
+		{name: "edited to controls only", live: " /NickPit Mute "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &fakeNoteClient{discussionNotes: []glscm.DiscussionNote{
+				{ID: 1, AuthorID: botUserID},
+				{ID: 10, AuthorID: 7, Body: tc.live},
+			}}
+			err := (&app{}).postChatReplyWithPolicy(context.Background(), c, "g/p", 1, "d1", 10, botUserID, true, "", controls, "answer")
+			if !errors.Is(err, errChatReplySuppressed) {
+				t.Fatalf("error = %v, want suppressed-reply outcome", err)
+			}
+			if c.replyBody != "" || c.noteBody != "" {
+				t.Fatalf("reply posted to a suppressed target: reply=%q note=%q", c.replyBody, c.noteBody)
+			}
+		})
+	}
 }
