@@ -93,6 +93,10 @@ type CommitFile struct {
 	Additions int              `json:"additions"`
 	Deletions int              `json:"deletions"`
 	Binary    bool             `json:"binary,omitempty"`
+	// Symlink marks a file stored as a symlink (git mode 120000): its content is
+	// the link target path, not file text. Taken from the raw entry's modes, so
+	// it is present regardless of the requested diff format.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 // CommitEntry is a commit's metadata plus its changed files, without any patch
@@ -977,6 +981,7 @@ func parseFileEntries(tokens []string) ([]CommitFile, int) {
 			}
 			file := upsert(tokens[i+paths])
 			file.Status = fileStatusFromRawStatus(status)
+			file.Symlink = rawEntrySymlink(token)
 			if paths == 2 {
 				file.OldPath = tokens[i+1]
 			}
@@ -1027,6 +1032,25 @@ func rawEntryStatus(token string) string {
 	return fields[len(fields)-1]
 }
 
+// rawEntrySymlink reports whether a raw entry's file is stored as a symlink.
+// An ordinary entry is ":<srcmode> <dstmode> <srcsha> <dstsha> <status>"; a
+// combined (merge) entry repeats the source columns once per parent and marks
+// that with one leading colon per parent, e.g.
+// "::100644 100644 100644 <sha> <sha> <sha> MM". The destination mode therefore
+// sits right after the source modes, and it decides — except for a deletion,
+// where the destination mode is all zeroes and the source side decides.
+func rawEntrySymlink(token string) bool {
+	parents := len(token) - len(strings.TrimLeft(token, ":"))
+	fields := strings.Fields(strings.TrimLeft(token, ":"))
+	// One source mode per parent, one destination mode, the same number of
+	// object names, and one status column. The paths are separate NUL-delimited
+	// tokens, so they are not part of this count.
+	if parents < 1 || len(fields) != 2*(parents+1)+1 {
+		return false
+	}
+	return SymlinkFromModes(fields[0], fields[parents])
+}
+
 func fileStatusFromRawStatus(status string) model.FileStatus {
 	switch status[0] {
 	case 'A', 'C':
@@ -1048,6 +1072,7 @@ func commitFilesFromChanged(changed []model.ChangedFile) []CommitFile {
 			Status:    file.Status,
 			Additions: file.Additions,
 			Deletions: file.Deletions,
+			Symlink:   file.Symlink,
 		})
 	}
 	return files

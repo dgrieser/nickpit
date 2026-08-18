@@ -330,7 +330,7 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
 	stampGeneratedFlags(reviewCtx)
-	stampSymlinkFlags(reviewCtx)
+	stampSymlinkFlags(ctx, reviewCtx, git.ExecRunner{RepoRoot: reviewCtx.CheckoutRoot})
 	if allFiltered, err := e.applyReviewContextFilter(ctx, reviewCtx, req, contextFilter); err != nil {
 		return nil, err
 	} else if allFiltered {

@@ -1,11 +1,11 @@
 package review
 
 import (
-	"os"
+	"context"
 
 	"github.com/dgrieser/nickpit/internal/filetype"
+	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 // stampGeneratedFlags marks generated changed files. DiffFiles carry
@@ -39,38 +39,57 @@ func stampGeneratedFlags(reviewCtx *model.ReviewContext) {
 // from review.
 //
 // GitHub's pull-request files API reports neither a mode field nor a mode line
-// inside `patch`, so there the checkout is the only remaining source of truth.
-// It is a temporary clone of the reviewed head revision, i.e. the post-change
-// side the marks describe. A checkout is not always present, and a deleted
-// symlink cannot be probed at all (the path is gone), so GitHub keeps blind
-// spots; the trade is a missing mark, never a wrong one.
+// inside `patch`, so there the checkout's git index is the only remaining source
+// of truth. The checkout is a temporary clone of the reviewed head revision, i.e.
+// the post-change side the marks describe. A checkout is not always present, and
+// a deleted symlink is not in the index, so GitHub keeps blind spots; the trade
+// is a missing mark, never a wrong one.
 //
 // A symlink's blob content is the link target path, so reviewing it as text
 // produces findings whose fix would rewrite or break the link.
-func stampSymlinkFlags(reviewCtx *model.ReviewContext) {
+func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runner git.Runner) {
 	if reviewCtx == nil || reviewCtx.CheckoutRoot == "" || !sourceOmitsFileModes(reviewCtx.Mode) {
 		return
 	}
-	probed := make(map[string]bool, len(reviewCtx.ChangedFiles))
-	probe := func(path string) bool {
-		key := normalizeReviewPath(path)
-		symlink, ok := probed[key]
-		if !ok {
-			symlink = isCheckoutSymlink(reviewCtx.CheckoutRoot, path)
-			probed[key] = symlink
+	paths := make([]string, 0, len(reviewCtx.ChangedFiles)+len(reviewCtx.DiffFiles))
+	seen := make(map[string]bool, cap(paths))
+	collect := func(path string) {
+		if path == "" || seen[path] {
+			return
 		}
-		return symlink
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	for _, file := range reviewCtx.ChangedFiles {
+		if !file.Symlink {
+			collect(file.Path)
+		}
+	}
+	for _, file := range reviewCtx.DiffFiles {
+		if !file.Symlink {
+			collect(file.FilePath)
+		}
+	}
+	// The error is deliberately dropped: an unreadable index means no marks, and
+	// every caller of this function reviews the change either way.
+	marks, _ := git.SymlinkPaths(ctx, runner, paths)
+	if len(marks) == 0 {
+		return
+	}
+	byPath := make(map[string]bool, len(marks))
+	for path := range marks {
+		byPath[normalizeReviewPath(path)] = true
 	}
 	for i := range reviewCtx.ChangedFiles {
 		file := &reviewCtx.ChangedFiles[i]
 		if !file.Symlink {
-			file.Symlink = probe(file.Path)
+			file.Symlink = byPath[normalizeReviewPath(file.Path)]
 		}
 	}
 	for i := range reviewCtx.DiffFiles {
 		file := &reviewCtx.DiffFiles[i]
 		if !file.Symlink {
-			file.Symlink = probe(file.FilePath)
+			file.Symlink = byPath[normalizeReviewPath(file.FilePath)]
 		}
 	}
 }
@@ -84,23 +103,4 @@ func stampSymlinkFlags(reviewCtx *model.ReviewContext) {
 // symlink and suppress valid text review.
 func sourceOmitsFileModes(mode model.ReviewMode) bool {
 	return mode == model.ModeGitHub
-}
-
-// isCheckoutSymlink reports whether path is a symlink inside the checkout.
-// The path is resolved lexically so an escaping path is rejected, and lstat
-// deliberately does not follow the link: following it would resolve the target
-// and hide exactly the fact being probed.
-func isCheckoutSymlink(root, path string) bool {
-	if root == "" || path == "" {
-		return false
-	}
-	_, fullPath, err := repofs.ResolvePath(root, path)
-	if err != nil || fullPath == "" {
-		return false
-	}
-	info, err := os.Lstat(fullPath)
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeSymlink != 0
 }

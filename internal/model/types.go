@@ -307,6 +307,10 @@ type DiffHunk struct {
 	NewStart int    `json:"new_start"`
 	NewLines int    `json:"new_lines"`
 	Content  string `json:"content"`
+	// Symlink mirrors ChangedFile.Symlink. Hunks carry it because the git-json
+	// diff format drops DiffFiles, so a hunk would otherwise present a link
+	// target as ordinary text.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type StyleGuide struct {

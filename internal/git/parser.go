@@ -103,6 +103,13 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			if err != nil {
 				return nil, nil, nil, err
 			}
+			// The file's mode header lines all precede its first hunk, so the
+			// entry's mark is final here. Copying it per hunk keeps a hunk
+			// self-describing without a path lookup, which could not tell apart
+			// the two same-path entries of a symlink/regular-file replacement.
+			if currentEntry != nil {
+				parsed.Symlink = currentEntry.Symlink
+			}
 			currentHunk = parsed
 		default:
 			if currentHunk != nil {
@@ -234,11 +241,12 @@ func SymlinkFromModes(oldMode, newMode string) bool {
 	return NormalizeFileMode(oldMode) == SymlinkFileMode
 }
 
-// NormalizeFileMode trims an SCM-reported file mode and maps the "absent side"
-// spellings ("" and "0") to the empty string.
+// NormalizeFileMode trims a reported file mode and maps every "absent side"
+// spelling to the empty string: "" and "0" as SCM APIs report it, and the
+// all-zero mode ("000000") git prints in raw diff entries.
 func NormalizeFileMode(mode string) string {
 	mode = strings.TrimSpace(mode)
-	if mode == "0" {
+	if mode == "" || strings.Trim(mode, "0") == "" {
 		return ""
 	}
 	return mode

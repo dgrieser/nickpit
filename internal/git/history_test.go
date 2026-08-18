@@ -1477,3 +1477,87 @@ func TestShowFirstParentFallbackRespectsRemainingBudget(t *testing.T) {
 		t.Fatal("result should report truncation")
 	}
 }
+
+// The raw entry is the only place a commit's file modes appear, and CommitFile
+// metadata rides along with every diff format — including git-json, which drops
+// the per-file patches.
+func TestRawEntrySymlink(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{name: "added symlink", token: ":000000 120000 0000000 32f64f4 A", want: true},
+		{name: "deleted symlink", token: ":120000 000000 32f64f4 0000000 D", want: true},
+		{name: "changed symlink target", token: ":120000 120000 1de5659 32f64f4 M", want: true},
+		{name: "symlink turned into file", token: ":120000 100644 32f64f4 c93cae4 M", want: false},
+		{name: "added regular file", token: ":000000 100644 0000000 45b983b A", want: false},
+		{name: "renamed regular file", token: ":100644 100644 45b983b 45b983b R096", want: false},
+		{name: "merge symlink", token: "::100644 100644 120000 45b983b 45b983b 32f64f4 MM", want: true},
+		{name: "merge regular file", token: "::100644 100644 100644 45b983b c93cae4 45b983b MM", want: false},
+		{name: "not a raw entry", token: "1\t0\tmain.go", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rawEntrySymlink(tc.token); got != tc.want {
+				t.Fatalf("rawEntrySymlink(%q) = %v, want %v", tc.token, got, tc.want)
+			}
+		})
+	}
+}
+
+// git_show must mark a symlink in both diff formats: git-json drops the per-file
+// patches, so the mark has to reach the structured hunks and the changed-file
+// metadata, not only DiffFiles.
+func TestShowMarksSymlinkInBothDiffFormats(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/link b/link",
+		"new file mode 120000",
+		"index 0000000..32f64f4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+config/crd",
+		"\\ No newline at end of file",
+		"",
+	}, "\n")
+	entries := showEntries(":000000 120000 0000000 32f64f4 A", "link", "1\t0\tlink")
+	for _, format := range []model.DiffFormat{model.DiffFormatGit, model.DiffFormatGitJson} {
+		t.Run(string(format), func(t *testing.T) {
+			runner := &stubGitRunner{outputs: map[string]string{}}
+			resolved(runner, "aaa", "aaa111")
+			history := newTestHistory(runner)
+			runner.match = func(args []string) (string, bool) {
+				if args[0] != "show" {
+					return "", false
+				}
+				if args[1] == "--no-patch" {
+					return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
+				}
+				return entries + patch, true
+			}
+
+			result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa", Format: format})
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit := result.Commits[0]
+			if len(commit.Files) != 1 || !commit.Files[0].Symlink {
+				t.Fatalf("changed-file metadata lost the symlink mark: %#v", commit.Files)
+			}
+			switch format {
+			case model.DiffFormatGitJson:
+				if len(commit.DiffFiles) != 0 {
+					t.Fatalf("git-json kept diff files: %#v", commit.DiffFiles)
+				}
+				if len(commit.DiffHunks) != 1 || !commit.DiffHunks[0].Symlink {
+					t.Fatalf("git-json hunk lost the symlink mark: %#v", commit.DiffHunks)
+				}
+			default:
+				if len(commit.DiffFiles) != 1 || !commit.DiffFiles[0].Symlink {
+					t.Fatalf("diff file lost the symlink mark: %#v", commit.DiffFiles)
+				}
+			}
+		})
+	}
+}

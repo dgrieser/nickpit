@@ -517,3 +517,42 @@ func TestParseUnifiedDiffFormatsMarksReplacementEntriesIndependently(t *testing.
 		t.Fatalf("regular-file addition marked as symlink: %#v / %#v", files[1], diffFiles[1])
 	}
 }
+
+// The git-json diff format drops per-file patches, so a hunk has to carry the
+// mark itself. It is taken from the file's own header block, not looked up by
+// path: a symlink/regular-file replacement has two entries under one path whose
+// hunks must stay distinct.
+func TestParseUnifiedDiffFormatsMarksHunks(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/link b/link",
+		"deleted file mode 120000",
+		"index 1de5659..0000000",
+		"--- a/link",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-target",
+		"\\ No newline at end of file",
+		"diff --git a/link b/link",
+		"new file mode 100644",
+		"index 0000000..c93cae4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+real text",
+		"",
+	}, "\n")
+
+	_, hunks, _, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hunks) != 2 {
+		t.Fatalf("hunks = %d, want 2", len(hunks))
+	}
+	if !hunks[0].Symlink {
+		t.Fatalf("symlink hunk lost its mark: %#v", hunks[0])
+	}
+	if hunks[1].Symlink {
+		t.Fatalf("regular-file hunk inherited the symlink mark: %#v", hunks[1])
+	}
+}

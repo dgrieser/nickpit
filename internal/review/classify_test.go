@@ -1,23 +1,40 @@
 package review
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
+
+// symlinkIndexRunner answers "git ls-files --stage -z" from a fixed set of
+// symlink paths, so the stamping tests do not need a real checkout.
+type symlinkIndexRunner struct {
+	symlinks []string
+	calls    int
+}
+
+func (r *symlinkIndexRunner) Run(_ context.Context, args ...string) (string, error) {
+	r.calls++
+	if len(args) == 0 || args[0] != "ls-files" {
+		return "", nil
+	}
+	var out strings.Builder
+	for _, path := range r.symlinks {
+		out.WriteString("120000 32f64f4 0\t" + path + "\x00")
+	}
+	return out.String(), nil
+}
 
 // A symlink replaced by a regular file at the same path arrives as two entries
 // with legitimately different marks. Spreading the deletion's mark over the path
 // would mark the regular-file addition as a symlink, and agents would then skip
 // reviewing its real text.
 func TestStampSymlinkFlagsKeepsReplacementEntriesDistinct(t *testing.T) {
-	root := t.TempDir()
 	reviewCtx := &model.ReviewContext{
 		Mode:         model.ModeLocal,
-		CheckoutRoot: root,
+		CheckoutRoot: "/checkout",
 		ChangedFiles: []model.ChangedFile{
 			{Path: "link", Status: model.FileDeleted, Symlink: true},
 			{Path: "link", Status: model.FileAdded},
@@ -28,7 +45,7 @@ func TestStampSymlinkFlagsKeepsReplacementEntriesDistinct(t *testing.T) {
 		},
 	}
 
-	stampSymlinkFlags(reviewCtx)
+	stampSymlinkFlags(context.Background(), reviewCtx, &symlinkIndexRunner{symlinks: []string{"link"}})
 
 	if !reviewCtx.ChangedFiles[0].Symlink || !reviewCtx.DiffFiles[0].Symlink {
 		t.Fatalf("symlink deletion lost its mark: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
@@ -39,84 +56,72 @@ func TestStampSymlinkFlagsKeepsReplacementEntriesDistinct(t *testing.T) {
 }
 
 // GitHub's files API reports neither a mode nor a mode header line in `patch`,
-// so the checkout — a clone of the reviewed head revision — is the only source
-// of truth left for that provider.
-func TestStampSymlinkFlagsProbesCheckoutForModelessSource(t *testing.T) {
-	root := symlinkCheckout(t)
+// so the checkout's git index — recording the reviewed head revision — is the
+// only source of truth left for that provider.
+func TestStampSymlinkFlagsProbesIndexForModelessSource(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
 		Mode:         model.ModeGitHub,
-		CheckoutRoot: root,
+		CheckoutRoot: "/checkout",
 		ChangedFiles: []model.ChangedFile{{Path: "templates"}, {Path: "main.go"}},
 		DiffFiles:    []model.DiffFile{{FilePath: "templates"}, {FilePath: "main.go"}},
 	}
 
-	stampSymlinkFlags(reviewCtx)
+	runner := &symlinkIndexRunner{symlinks: []string{"templates"}}
+	stampSymlinkFlags(context.Background(), reviewCtx, runner)
 
 	if !reviewCtx.ChangedFiles[0].Symlink || !reviewCtx.DiffFiles[0].Symlink {
-		t.Fatalf("checkout symlink not detected: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
+		t.Fatalf("index symlink not detected: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
 	}
 	if reviewCtx.ChangedFiles[1].Symlink || reviewCtx.DiffFiles[1].Symlink {
 		t.Fatalf("regular file marked as symlink: %#v / %#v", reviewCtx.ChangedFiles[1], reviewCtx.DiffFiles[1])
 	}
+	// Both file views share one index query.
+	if runner.calls != 1 {
+		t.Fatalf("git calls = %d, want a single batched query", runner.calls)
+	}
 }
 
-// The worktree can hold a different revision than the reviewed diff (staged
+// The checkout can hold a different revision than the reviewed diff (staged
 // content, or a base..head range that is not checked out), so a source that does
-// report modes must never be second-guessed by the current checkout.
+// report modes must never be second-guessed by it.
 func TestStampSymlinkFlagsTrustsModesOverCheckout(t *testing.T) {
-	root := symlinkCheckout(t)
 	for _, mode := range []model.ReviewMode{model.ModeLocal, model.ModeGitLab} {
 		t.Run(string(mode), func(t *testing.T) {
 			reviewCtx := &model.ReviewContext{
 				Mode:         mode,
-				CheckoutRoot: root,
+				CheckoutRoot: "/checkout",
 				ChangedFiles: []model.ChangedFile{{Path: "templates"}},
 				DiffFiles:    []model.DiffFile{{FilePath: "templates"}},
 			}
 
-			stampSymlinkFlags(reviewCtx)
+			runner := &symlinkIndexRunner{symlinks: []string{"templates"}}
+			stampSymlinkFlags(context.Background(), reviewCtx, runner)
 
 			if reviewCtx.ChangedFiles[0].Symlink || reviewCtx.DiffFiles[0].Symlink {
-				t.Fatalf("current worktree overrode the diff's mode: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
+				t.Fatalf("the checkout overrode the diff's mode: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
+			}
+			if runner.calls != 0 {
+				t.Fatalf("git calls = %d, want none for a source that reports modes", runner.calls)
 			}
 		})
 	}
 }
 
-// Without a checkout the probe must stay silent instead of guessing, and a path
-// escaping the checkout must never be probed at all.
-func TestIsCheckoutSymlinkRejectsMissingRootAndEscapingPath(t *testing.T) {
-	if isCheckoutSymlink("", "templates") {
-		t.Fatal("probe ran without a checkout root")
+// Without a checkout there is no index to ask, so no git call may be made.
+func TestStampSymlinkFlagsSkipsWithoutCheckout(t *testing.T) {
+	reviewCtx := &model.ReviewContext{
+		Mode:         model.ModeGitHub,
+		ChangedFiles: []model.ChangedFile{{Path: "templates"}},
+		DiffFiles:    []model.DiffFile{{FilePath: "templates"}},
 	}
-	root := t.TempDir()
-	if isCheckoutSymlink(root, "../outside") {
-		t.Fatal("escaping path was probed")
-	}
-	if isCheckoutSymlink(root, "/etc/passwd") {
-		t.Fatal("absolute path was probed")
-	}
-	if isCheckoutSymlink(root, "missing") {
-		t.Fatal("missing path reported as symlink")
-	}
-}
 
-// symlinkCheckout builds a checkout holding one symlink ("templates") and one
-// regular file ("main.go").
-func symlinkCheckout(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs privileges on Windows")
+	runner := &symlinkIndexRunner{symlinks: []string{"templates"}}
+	stampSymlinkFlags(context.Background(), reviewCtx, runner)
+
+	if reviewCtx.ChangedFiles[0].Symlink || reviewCtx.DiffFiles[0].Symlink {
+		t.Fatalf("marked without a checkout: %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0])
 	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "config", "crd"), 0o755); err != nil {
-		t.Fatal(err)
+	if runner.calls != 0 {
+		t.Fatalf("git calls = %d, want none without a checkout", runner.calls)
 	}
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join("config", "crd"), filepath.Join(root, "templates")); err != nil {
-		t.Fatal(err)
-	}
-	return root
 }
