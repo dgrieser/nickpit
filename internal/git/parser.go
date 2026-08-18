@@ -258,8 +258,8 @@ func NormalizeFileMode(mode string) string {
 // a prefix character, so they cannot match these forms.
 func diffHeaderMarksSymlink(line string) bool {
 	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode "} {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix)) == SymlinkFileMode
+		if mode, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(mode) == SymlinkFileMode
 		}
 	}
 	if strings.HasPrefix(line, "index ") {
@@ -273,7 +273,7 @@ func diffHeaderMarksSymlink(line string) bool {
 // marks the file as a symlink. Only lines before the first hunk header are
 // inspected so body content can never be mistaken for a mode line.
 func diffSectionMarksSymlink(section string) bool {
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		if strings.HasPrefix(line, "@@") {
 			return false
 		}
