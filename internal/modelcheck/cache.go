@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
 )
 
 type CachedCapabilities struct {
@@ -39,8 +40,11 @@ func DefaultCachePath() (string, error) {
 	return filepath.Join(dir, "nickpit", "model-capabilities.json"), nil
 }
 
+// NormalizeBaseURL canonicalizes an endpoint for the cache key. It delegates to
+// the shared definition so a cache hit and an "is this the same endpoint?"
+// comparison elsewhere can never disagree.
 func NormalizeBaseURL(baseURL string) string {
-	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return model.NormalizeBaseURL(baseURL)
 }
 
 func NormalizeModel(model string) string {

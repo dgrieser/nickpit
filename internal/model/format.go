@@ -42,3 +42,18 @@ func HumanDuration(d time.Duration) string {
 func RuntimeSeconds(d time.Duration) float64 {
 	return math.Round(d.Seconds()*100) / 100
 }
+
+// NormalizeBaseURL canonicalizes an LLM endpoint URL for comparison and cache
+// keys: surrounding whitespace and a trailing slash carry no meaning, so
+// "https://host/v1/" and " https://host/v1" are the same endpoint. This is the
+// single definition every layer shares — the config validation, the endpoint→
+// client resolution, the capability cache key, and the chat session guard.
+func NormalizeBaseURL(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+}
+
+// SameEndpoint reports whether two LLM endpoint URLs address the same endpoint.
+// Two empty values both mean the client default and match.
+func SameEndpoint(a, b string) bool {
+	return NormalizeBaseURL(a) == NormalizeBaseURL(b)
+}

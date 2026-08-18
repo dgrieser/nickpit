@@ -64,3 +64,40 @@ func TestRuntimeSeconds(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeBaseURL(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"https://host/v1", "https://host/v1"},
+		{"https://host/v1/", "https://host/v1"},
+		{"  https://host/v1//  ", "https://host/v1"},
+		{"http://localhost:10000/v1", "http://localhost:10000/v1"},
+	}
+	for _, tt := range tests {
+		if got := NormalizeBaseURL(tt.in); got != tt.want {
+			t.Errorf("NormalizeBaseURL(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSameEndpoint(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"", "", true},
+		{"https://host/v1", "https://host/v1/", true},
+		{" https://host/v1 ", "https://host/v1", true},
+		{"https://host/v1", "https://host/v2", false},
+		{"http://localhost:10000/v1", "https://llm.example/v1", false},
+		{"", "https://host/v1", false},
+	}
+	for _, tt := range tests {
+		if got := SameEndpoint(tt.a, tt.b); got != tt.want {
+			t.Errorf("SameEndpoint(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}

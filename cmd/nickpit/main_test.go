@@ -2332,3 +2332,191 @@ func TestInspectHistoryAnchorsAtTheRepositoryRoot(t *testing.T) {
 		t.Fatalf("repo root = %q, want the current directory %q", gotOutside, wantOutside)
 	}
 }
+
+func TestLoadProfileAppliesSmallEndpointCLIOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      model: file-small-model
+      base_url: https://file.example/v1
+      api_key: file-small-key
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:      "default",
+		configPath:   path,
+		smallBaseURL: "https://cli.example/v1",
+		smallAPIKey:  "cli-small-key",
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.BaseURL != "https://cli.example/v1" {
+		t.Fatalf("small base url = %q", profile.Small.BaseURL)
+	}
+	if profile.Small.APIKey != "cli-small-key" {
+		t.Fatalf("small api key = %q", profile.Small.APIKey)
+	}
+	if profile.BaseURL != "http://localhost:10000/v1" || profile.APIKey != "primary-key" {
+		t.Fatalf("primary endpoint = %q/%q, want it untouched", profile.BaseURL, profile.APIKey)
+	}
+}
+
+// A small block that only moves the model to another host produces an identical
+// request-settings signature, so the endpoint has to be compared on its own or the
+// foreign serving stack would never be probed.
+func TestSmallModelConfiguredForEndpointOnlyDifference(t *testing.T) {
+	profile := config.Profile{
+		Model:           "same-model",
+		BaseURL:         "http://localhost:10000/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "low",
+		Small: config.SmallModelConfig{
+			BaseURL: "https://llm.example/v1",
+			APIKey:  "small-key",
+		},
+	}
+	if !smallModelConfigured(profile) {
+		t.Fatal("expected a small model on another endpoint to require its own check")
+	}
+}
+
+// The same base URL with another credential is the same serving stack: it needs its
+// own client, but not a second probe.
+func TestSmallModelConfiguredIgnoresAPIKeyOnlyDifference(t *testing.T) {
+	profile := config.Profile{
+		Model:           "same-model",
+		BaseURL:         "http://localhost:10000/v1",
+		APIKey:          "primary-key",
+		ReasoningEffort: "low",
+		Small:           config.SmallModelConfig{APIKey: "small-key"},
+	}
+	if smallModelConfigured(profile) {
+		t.Fatal("expected an api_key-only difference to reuse the primary capability check")
+	}
+	if !smallEndpointDistinct(profile, config.EffectiveSmallProfile(profile)) {
+		t.Fatal("expected an api_key-only difference to still need its own client")
+	}
+}
+
+func TestSmallModelDistinctTargetCoversEndpointAndModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		small config.SmallModelConfig
+		want  bool
+	}{
+		{name: "inherits everything"},
+		{name: "sampling only", small: config.SmallModelConfig{Temperature: ptrToTest(0.1)}},
+		{name: "other model", small: config.SmallModelConfig{Model: "small-model"}, want: true},
+		{
+			name:  "other endpoint, same model",
+			small: config.SmallModelConfig{BaseURL: "https://llm.example/v1", APIKey: "small-key"},
+			want:  true,
+		},
+		{
+			name:  "same endpoint spelled with a trailing slash",
+			small: config.SmallModelConfig{BaseURL: "http://localhost:10000/v1/"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := config.Profile{
+				Model:   "primary-model",
+				BaseURL: "http://localhost:10000/v1",
+				APIKey:  "primary-key",
+				Small:   tc.small,
+			}
+			if got := smallModelDistinctTarget(profile, config.EffectiveSmallProfile(profile)); got != tc.want {
+				t.Fatalf("smallModelDistinctTarget = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func ptrToTest[T any](v T) *T { return &v }
+
+// A profile-declared capability describes the primary serving stack and is matched
+// by model name only, so it must not answer for a foreign small endpoint: the small
+// probe has to run instead.
+func TestSmallProfileIgnoresPrimarySupportedModelsOnOtherEndpoint(t *testing.T) {
+	profile := config.Profile{
+		Model:   "shared-model-name",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		SupportedModels: []config.ModelCapabilities{
+			{Model: "shared-model-name", Compatible: true, Response: true, Tools: true},
+		},
+		Small: config.SmallModelConfig{BaseURL: "https://llm.example/v1", APIKey: "small-key"},
+	}
+	small := config.EffectiveSmallProfile(profile)
+	if _, ok := modelcheck.FindProfileCapabilityFor(small, small.Model); ok {
+		t.Fatal("primary supported_models answered for a foreign small endpoint")
+	}
+	if _, ok := modelcheck.FindProfileCapabilityFor(profile, profile.Model); !ok {
+		t.Fatal("primary supported_models must still answer for the primary endpoint")
+	}
+}
+
+// A nested override naming a concrete model inherits the step's endpoint, so
+// inside an "@small" step it must be classified as a small-endpoint agent — the
+// same endpoint the engine routes it to.
+func TestAgentUsesSmallFollowsStepEndpoint(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	concrete := "concrete-model"
+	tests := []struct {
+		name          string
+		stepUsesSmall bool
+		override      *workflow.AgentOverride
+		want          bool
+	}{
+		{name: "primary step, no override"},
+		{name: "primary step, concrete model", override: &workflow.AgentOverride{Model: &concrete}},
+		{name: "primary step, alias override", override: &workflow.AgentOverride{Model: &alias}, want: true},
+		{name: "small step, no override", stepUsesSmall: true, want: true},
+		{name: "small step, nil model", stepUsesSmall: true, override: &workflow.AgentOverride{}, want: true},
+		{name: "small step, concrete model", stepUsesSmall: true, override: &workflow.AgentOverride{Model: &concrete}, want: true},
+		{name: "small step, alias override", stepUsesSmall: true, override: &workflow.AgentOverride{Model: &alias}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentUsesSmall(tc.stepUsesSmall, tc.override); got != tc.want {
+				t.Fatalf("agentUsesSmall = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The requirements of a concrete nested model inside an "@small" step belong to the
+// small model check, not the primary one: that is the endpoint the request reaches.
+func TestConcreteNestedModelInSmallStepValidatesSmallEndpoint(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	concrete := "concrete-model"
+	disableSchema := true
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type: workflow.StepVerifyPrefix + "security",
+		Config: &workflow.StepOverride{
+			Model: &alias,
+			// Plain JSON output rather than json_schema, so the requirement is
+			// distinguishable from the primary model's baseline.
+			Categorize: &workflow.AgentOverride{Model: &concrete, DisableJSONResponseFormat: &disableSchema},
+		},
+	}}}
+	req := model.ReviewRequest{}
+	small := smallModelRequirementsForSpec(spec, req)
+	if !small.JSONOutput {
+		t.Fatalf("small requirements = %+v, want the categorize plain-JSON requirement", small)
+	}
+	if primary := modelRequirementsForSpec(spec, req, false); primary.Uses() {
+		t.Fatalf("primary requirements = %+v, want nothing from an @small step", primary)
+	}
+}

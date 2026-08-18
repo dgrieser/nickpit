@@ -2077,3 +2077,236 @@ func TestLoadCanonicalizesGitLabBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigUsesConfiguredSmallEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      model: small-model
+      base_url: https://llm.example/v1
+      api_key: small-key
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.BaseURL != "https://llm.example/v1" {
+		t.Fatalf("small base url = %q", profile.Small.BaseURL)
+	}
+	if profile.Small.APIKey != "small-key" {
+		t.Fatalf("small api key = %q", profile.Small.APIKey)
+	}
+	// The primary endpoint must stay untouched: only @small moves.
+	if profile.BaseURL != "http://localhost:10000/v1" || profile.APIKey != "primary-key" {
+		t.Fatalf("primary endpoint = %q/%q", profile.BaseURL, profile.APIKey)
+	}
+}
+
+func TestLoadConfigUsesSmallEndpointEnv(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_BASE_URL", "http://localhost:10000/v1")
+	t.Setenv("NICKPIT_API_KEY", "primary-key")
+	t.Setenv("NICKPIT_SMALL_BASE_URL", "https://llm.example/v1")
+	t.Setenv("NICKPIT_SMALL_API_KEY", "small-key")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.BaseURL != "https://llm.example/v1" {
+		t.Fatalf("small base url = %q", profile.Small.BaseURL)
+	}
+	if profile.Small.APIKey != "small-key" {
+		t.Fatalf("small api key = %q", profile.Small.APIKey)
+	}
+}
+
+// NICKPIT_SMALL_API_KEY is a plain override like every other NICKPIT_SMALL_* var,
+// not the last-resort fallback NICKPIT_API_KEY is for the primary key.
+func TestLoadConfigSmallAPIKeyEnvOverridesConfiguredKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      base_url: https://llm.example/v1
+      api_key: from-file
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NICKPIT_SMALL_API_KEY", "from-env")
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.APIKey != "from-env" {
+		t.Fatalf("small api key = %q, want from-env", profile.Small.APIKey)
+	}
+}
+
+func TestLoadConfigExpandsSmallAPIKeyEnvReferenceFromCLI(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_BASE_URL", "http://localhost:10000/v1")
+	t.Setenv("NICKPIT_API_KEY", "primary-key")
+	t.Setenv("SMALL_ENDPOINT_KEY", "resolved-small-key")
+
+	_, profile, err := Load("", Overrides{Small: SmallModelConfig{
+		BaseURL: "https://llm.example/v1",
+		APIKey:  "${SMALL_ENDPOINT_KEY}",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Small.APIKey != "resolved-small-key" {
+		t.Fatalf("small api key = %q, want resolved-small-key", profile.Small.APIKey)
+	}
+}
+
+func TestLoadConfigRejectsSmallEndpointWithoutOwnKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{
+			name: "different endpoint without small key",
+			yaml: `
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      base_url: https://llm.example/v1
+`,
+			wantErr: true,
+		},
+		{
+			name: "different endpoint with empty small key",
+			yaml: `
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      base_url: https://llm.example/v1
+      api_key: ""
+`,
+			wantErr: true,
+		},
+		{
+			name: "same endpoint inherits the primary key",
+			yaml: `
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      model: small-model
+      base_url: http://localhost:10000/v1/
+`,
+		},
+		{
+			name: "no small endpoint at all",
+			yaml: `
+profiles:
+  default:
+    model: primary-model
+    base_url: http://localhost:10000/v1
+    api_key: primary-key
+    small:
+      model: small-model
+`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := Load(path, Overrides{})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error for a foreign small endpoint without its own key")
+				}
+				if !strings.Contains(err.Error(), "small.api_key") {
+					t.Fatalf("error = %v, want it to name small.api_key", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestEffectiveSmallProfileCarriesEndpoint(t *testing.T) {
+	profile := Profile{
+		Model:   "primary-model",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		SupportedModels: []ModelCapabilities{
+			{Model: "small-model", Compatible: true, Response: true, Tools: true},
+		},
+		Small: SmallModelConfig{
+			Model:   "small-model",
+			BaseURL: "https://llm.example/v1",
+			APIKey:  "small-key",
+		},
+	}
+	small := EffectiveSmallProfile(profile)
+	if small.BaseURL != "https://llm.example/v1" || small.APIKey != "small-key" {
+		t.Fatalf("small endpoint = %q/%q", small.BaseURL, small.APIKey)
+	}
+	// supported_models describes the primary serving stack and is matched by model
+	// name only, so it must not vouch for a foreign endpoint.
+	if small.SupportedModels != nil {
+		t.Fatalf("supported models = %#v, want nil for a foreign small endpoint", small.SupportedModels)
+	}
+	// The input profile must not be mutated.
+	if len(profile.SupportedModels) != 1 {
+		t.Fatalf("profile supported models = %#v, want the original entry", profile.SupportedModels)
+	}
+}
+
+func TestEffectiveSmallProfileKeepsSupportedModelsOnSameEndpoint(t *testing.T) {
+	profile := Profile{
+		Model:   "primary-model",
+		BaseURL: "http://localhost:10000/v1",
+		APIKey:  "primary-key",
+		SupportedModels: []ModelCapabilities{
+			{Model: "small-model", Compatible: true, Response: true, Tools: true},
+		},
+		// Same endpoint, only a trailing slash apart: the declared capabilities of
+		// this stack still apply.
+		Small: SmallModelConfig{Model: "small-model", BaseURL: "http://localhost:10000/v1/"},
+	}
+	small := EffectiveSmallProfile(profile)
+	if len(small.SupportedModels) != 1 {
+		t.Fatalf("supported models = %#v, want the declared entry", small.SupportedModels)
+	}
+	if small.APIKey != "primary-key" {
+		t.Fatalf("small api key = %q, want the inherited primary key", small.APIKey)
+	}
+}

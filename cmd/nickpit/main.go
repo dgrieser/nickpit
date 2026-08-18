@@ -143,6 +143,8 @@ type app struct {
 	smallModel              string
 	baseURL                 string
 	apiKey                  string
+	smallBaseURL            string
+	smallAPIKey             string
 	workDir                 string
 	profile                 string
 	profileSet              bool
@@ -327,6 +329,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.smallModel, "small-model", "", "Small model identifier for workflow steps using model: \"@small\"")
 	root.PersistentFlags().StringVar(&cli.baseURL, "base-url", "", "LLM API base URL")
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
+	root.PersistentFlags().StringVar(&cli.smallBaseURL, "small-base-url", "", "LLM API base URL for workflow steps using model: \"@small\"; requires --small-api-key when it differs from --base-url")
+	root.PersistentFlags().StringVar(&cli.smallAPIKey, "small-api-key", "", "LLM API key for workflow steps using model: \"@small\"")
 	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.temperature, &cli.temperatureSet), "temperature", "Sampling temperature")
@@ -604,6 +608,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		Model:   a.model,
 		Small: config.SmallModelConfig{
 			Model:           a.smallModel,
+			BaseURL:         a.smallBaseURL,
+			APIKey:          a.smallAPIKey,
 			MaxTokens:       smallMaxTokens,
 			Temperature:     smallTemperature,
 			TopP:            smallTopP,
@@ -1487,10 +1493,14 @@ func (a *app) newCheckCmd() *cobra.Command {
 			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
 			a.logSmallModelReady(ctx, profile, checkReq)
 			a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, checkReq))
-			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-			client.SetLogger(logger)
-			client.SetMaxRequestBytes(profile.MaxRequestBytes)
-			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
+			client := newLLMClient(profile, logger)
+			// A small model on its own endpoint must be probed through its own
+			// client, or the probe would report the primary stack's capabilities.
+			smallClient, _, smallHasOwnClient := newSmallLLMClient(profile, logger)
+			smallProbeClient := llm.Client(client)
+			if smallHasOwnClient {
+				smallProbeClient = smallClient
+			}
 			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", a.refreshModelCheck)
 			if err != nil {
 				return err
@@ -1501,7 +1511,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				return err
 			}
 			smallRequirements := smallModelRequirementsForSpec(spec, checkReq)
-			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, a.refreshModelCheck)
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, smallProbeClient, profile, a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
@@ -1592,9 +1602,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		// workflow identity mirrors the --show-progress Agent bracket.
 		wf := workflowProgressInfo(spec, a.specPath, a.stepName)
 		// Models mirror the --show-progress model lines: the primary model, and the
-		// "@small" model when it resolves to a different model.
+		// "@small" model when it resolves to a different model or endpoint.
 		liveModels := []logging.LiveModel{{Name: profile.Model, Effort: profile.ReasoningEffort}}
-		if small := config.EffectiveSmallProfile(profile); small.Model != profile.Model {
+		if small := config.EffectiveSmallProfile(profile); smallModelDistinctTarget(profile, small) {
 			liveModels = append(liveModels, logging.LiveModel{
 				Name:   workflow.SmallModelAlias + " " + small.Model,
 				Effort: small.ReasoningEffort,
@@ -1678,10 +1688,16 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	agentCtx := logging.WithProgressInfo(ctx, workflowProgressInfo(spec, a.specPath, a.stepName))
 	a.logProgress(agentCtx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
-	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-	client.SetLogger(logger)
-	client.SetMaxRequestBytes(profile.MaxRequestBytes)
-	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
+	client := newLLMClient(profile, logger)
+	// When @small lives on another endpoint it gets its own client, wired into the
+	// engine below. Both clients must be fully configured before the pipeline
+	// starts: their settings are read on every request, so a later setter call
+	// would race the concurrent agent loops.
+	smallClient, smallProfile, smallHasOwnClient := newSmallLLMClient(profile, logger)
+	smallProbeClient := llm.Client(client)
+	if smallHasOwnClient {
+		smallProbeClient = smallClient
+	}
 	if !a.disableModelCheck && profile.APIKey != "" {
 		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", false)
 		if err != nil {
@@ -1691,6 +1707,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		// json_schema, degrade the whole run to the prompt-embedded schema rather
 		// than failing: the API response format is a single global request setting,
 		// so a primary OR small model lacking json_schema disables it for both.
+		// That stays true when the small model runs on its own endpoint: the
+		// setting lives on the request, not the client, so a weak small endpoint
+		// still degrades a capable primary. Splitting it per endpoint would mean
+		// threading two JSON modes through the whole request path.
 		// Resolve the fallback fully BEFORE validating, so each model is checked
 		// against exactly the JSON mode its steps will use. This runs for
 		// source-less specs too, so imported-findings merge/finalize/verify/summarize
@@ -1704,7 +1724,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		smallRequirements := smallModelRequirementsForSpec(spec, req)
 		smallResult, smallChecked := modelcheck.Result{}, false
 		if smallRequirements.Uses() {
-			smallResult, smallChecked, err = a.checkSmallModel(ctx, client, profile, false)
+			smallResult, smallChecked, err = a.checkSmallModel(ctx, smallProbeClient, profile, false)
 			if err != nil {
 				return err
 			}
@@ -1735,6 +1755,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			// runs; source-less runs keep the unrestricted default so a probe that
 			// could not run (e.g. offline) never narrows them to an empty set.
 			client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
+			// The small client is restricted by its OWN probe — the primary's passed
+			// efforts describe a different provider. Only when that probe actually
+			// ran and passed something: the setter always installs a non-empty
+			// allowlist, and an empty one means "no effort is allowed", which would
+			// disable the effort fallback entirely.
+			if smallHasOwnClient && smallChecked && len(smallResult.PassedEfforts) > 0 {
+				smallClient.SetAllowedReasoningEfforts(smallResult.PassedEfforts)
+			}
 		}
 	} else {
 		req.ModelEmitsReasoning = true
@@ -1742,6 +1770,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
+	if smallHasOwnClient {
+		engine.SetSmallClient(smallClient, smallProfile)
+	}
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	engine.SetAdditionalStyleGuides(additionalGuides)
@@ -2089,10 +2120,58 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	return result, nil
 }
 
-// smallModelConfigured reports whether @small has distinct request settings and
-// therefore warrants its own capability check.
+// smallModelConfigured reports whether @small has distinct request settings or
+// runs on a different endpoint, and therefore warrants its own capability check.
+// The endpoint is compared separately from the request-settings signature: that
+// signature doubles as the capability-cache fingerprint, and the cache is already
+// keyed on the base URL, so adding the endpoint there would invalidate every
+// stored probe. A small block that only moves the model to another host produces
+// an identical signature, yet a different serving stack must still be probed.
 func smallModelConfigured(profile config.Profile) bool {
-	return !reflect.DeepEqual(modelCheckProfileSignature(profile), modelCheckProfileSignature(config.EffectiveSmallProfile(profile)))
+	small := config.EffectiveSmallProfile(profile)
+	if !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
+		return true
+	}
+	return !reflect.DeepEqual(modelCheckProfileSignature(profile), modelCheckProfileSignature(small))
+}
+
+// smallEndpointDistinct reports whether the small model talks to a different LLM
+// endpoint than the primary one — a different base URL, or the same base URL with
+// a different credential (another tenant or quota). Both need their own client;
+// only a differing base URL needs its own capability probe, which is why the
+// callers differ in which predicate they use.
+func smallEndpointDistinct(profile, small config.Profile) bool {
+	return !model.SameEndpoint(small.BaseURL, profile.BaseURL) || small.APIKey != profile.APIKey
+}
+
+// smallModelDistinctTarget reports whether @small resolves to something a user
+// would want to see as a second model in the progress output: another model name
+// or another endpoint. Sampling-only differences stay hidden, as before.
+func smallModelDistinctTarget(profile, small config.Profile) bool {
+	return small.Model != profile.Model || !model.SameEndpoint(small.BaseURL, profile.BaseURL)
+}
+
+// newLLMClient builds the client for one profile's endpoint. Called once with the
+// active profile and, when @small lives elsewhere, once with the small profile
+// EffectiveSmallProfile produced — which inherits the primary's request-size and
+// rate-limit settings, since those are profile-level and small does not overlay
+// them.
+func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.OpenAIClient {
+	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+	client.SetLogger(logger)
+	client.SetMaxRequestBytes(profile.MaxRequestBytes)
+	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
+	return client
+}
+
+// newSmallLLMClient returns the client for @small, or nil when the small model
+// shares the primary endpoint and the primary client already serves it.
+func newSmallLLMClient(profile config.Profile, logger *logging.Logger) (*llm.OpenAIClient, config.Profile, bool) {
+	small := config.EffectiveSmallProfile(profile)
+	if !smallEndpointDistinct(profile, small) {
+		return nil, small, false
+	}
+	return newLLMClient(small, logger), small, true
 }
 
 type modelCheckProfile struct {
@@ -2237,11 +2316,18 @@ func agentModel(override *workflow.AgentOverride) *string {
 	return override.Model
 }
 
+// agentUsesSmall reports whether a review/verify step's internal agent runs on
+// the small profile. That single answer decides both which endpoint its requests
+// go to and which probe its capabilities are validated against, so the two can
+// never disagree.
+//
+// A nested override naming a concrete model does NOT move the agent back to the
+// primary endpoint: workflow.AgentOverride.Resolve changes only the model and
+// leaves everything else inherited from the step, so inside an "@small" step that
+// model is sent to the small endpoint. Classifying it as primary would validate
+// the wrong provider's capabilities for that request.
 func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
-	if override == nil || override.Model == nil {
-		return stepUsesSmall
-	}
-	return usesSmallAlias(agentModel(override))
+	return stepUsesSmall || usesSmallAlias(agentModel(override))
 }
 
 func textModelRequirements() modelCapabilityRequirements {
@@ -2298,6 +2384,11 @@ func agentDisableJSONResponseFormat(stepReq model.ReviewRequest, override *workf
 // checkSmallModel runs (or loads cached) capabilities for the effective small
 // profile when it differs from the primary model request config, mirroring the
 // primary check. The bool reports whether a check was actually performed.
+//
+// client must be the client for the SMALL endpoint when the small model has its
+// own: probing a foreign endpoint through the primary client would report the
+// wrong stack's capabilities. The cache keys on the base URL, so the two
+// endpoints get separate entries.
 func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, bool, error) {
 	if !smallModelConfigured(profile) {
 		return modelcheck.Result{}, false, nil
@@ -3039,12 +3130,12 @@ func workflowProgressInfo(spec workflow.Spec, specPath, stepName string) logging
 }
 
 // logSmallModelReady prints a Model ready line for the profile's small model
-// when it resolves to a model different from the primary, so --show-progress
-// surfaces the second model in play (the one @small steps run on). When the
-// small config inherits the primary model there is nothing extra to show.
+// when it resolves to a different model or a different endpoint, so
+// --show-progress surfaces the second model in play (the one @small steps run
+// on). When the small config inherits both there is nothing extra to show.
 func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, req model.ReviewRequest) {
 	small := config.EffectiveSmallProfile(profile)
-	if small.Model == profile.Model {
+	if !smallModelDistinctTarget(profile, small) {
 		return
 	}
 	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(small))

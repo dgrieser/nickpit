@@ -99,8 +99,16 @@ type Profile struct {
 	MaxSessionsConfigured              bool                   `yaml:"-"`
 }
 
+// SmallModelConfig holds the model configuration workflow steps select with
+// model: "@small". Unset fields fall back to the profile's primary values —
+// including BaseURL and APIKey, so a small model on the same endpoint needs
+// neither. A BaseURL that differs from the profile's puts the small model on a
+// second LLM endpoint; that case requires its own APIKey (validated in
+// normalizeProfile) so the primary key is never sent to a foreign host.
 type SmallModelConfig struct {
 	Model           string         `yaml:"model"`
+	BaseURL         string         `yaml:"base_url"`
+	APIKey          string         `yaml:"api_key"`
 	MaxTokens       *int           `yaml:"max_tokens"`
 	Temperature     *float64       `yaml:"temperature"`
 	TopP            *float64       `yaml:"top_p"`
@@ -321,6 +329,12 @@ func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
 	if override.Model != "" {
 		base.Model = override.Model
 	}
+	if override.BaseURL != "" {
+		base.BaseURL = override.BaseURL
+	}
+	if override.APIKey != "" {
+		base.APIKey = override.APIKey
+	}
 	if override.MaxTokens != nil {
 		base.MaxTokens = override.MaxTokens
 	}
@@ -345,11 +359,31 @@ func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
 	return base
 }
 
+// EffectiveSmallProfile flattens a profile's small config onto the profile, so
+// every consumer sees one ordinary Profile for the "@small" model. Unset small
+// fields keep the primary value.
+//
+// The small config may carry its own endpoint. When it resolves to a different
+// base URL than the primary, the profile's supported_models is dropped: that
+// list is matched by model name only (modelcheck.FindProfileCapabilityFor) and
+// describes what the PRIMARY serving stack can do, so keeping it would let a
+// declared capability satisfy a probe for a completely different endpoint.
+// Declare a second profile if a foreign small endpoint needs pre-declared
+// capabilities.
 func EffectiveSmallProfile(profile Profile) Profile {
 	profile = cloneProfile(profile)
 	small := profile.Small
 	if small.Model != "" {
 		profile.Model = small.Model
+	}
+	if small.BaseURL != "" && !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
+		profile.SupportedModels = nil
+	}
+	if small.BaseURL != "" {
+		profile.BaseURL = small.BaseURL
+	}
+	if small.APIKey != "" {
+		profile.APIKey = small.APIKey
 	}
 	if small.MaxTokens != nil {
 		profile.MaxTokens = small.MaxTokens
@@ -548,6 +582,15 @@ func applyEnv(cfg *Config, profileName string) error {
 	}
 	if value := os.Getenv("NICKPIT_SMALL_MODEL"); value != "" {
 		profile.Small.Model = value
+	}
+	// Both small endpoint vars are plain overrides, like every other
+	// NICKPIT_SMALL_* var — unlike NICKPIT_API_KEY, which is a last resort that
+	// only fills an unset primary key.
+	if value := os.Getenv("NICKPIT_SMALL_BASE_URL"); value != "" {
+		profile.Small.BaseURL = value
+	}
+	if value := os.Getenv("NICKPIT_SMALL_API_KEY"); value != "" {
+		profile.Small.APIKey = value
 	}
 	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
 		profile.Small.ReasoningEffort = value
@@ -906,6 +949,10 @@ func applyProfileDefaults(profile Profile) Profile {
 
 func normalizeProfile(profile Profile) (Profile, error) {
 	profile.APIKey = expandEnvReference(profile.APIKey)
+	// The small key gets the same treatment as the primary one. The small
+	// base_url deliberately does not: neither does the primary base_url, and a
+	// config file's ${VAR} is already expanded when the file is read.
+	profile.Small.APIKey = expandEnvReference(profile.Small.APIKey)
 	profile.GitHubToken = expandEnvReference(profile.GitHubToken)
 	profile.GitLabToken = expandEnvReference(profile.GitLabToken)
 	profile.GitLabBaseURL = expandEnvReference(profile.GitLabBaseURL)
@@ -967,6 +1014,17 @@ func normalizeProfile(profile Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.DisableStyleGuides = disabledStyleGuides
+	// A small endpoint that differs from the primary one must bring its own key.
+	// Falling back to the primary key would send it to a foreign provider — the
+	// exact disclosure the chat session guard refuses elsewhere — so this is a
+	// hard error rather than a tolerated missing-endpoint condition: it means the
+	// configuration is wrong, not that no LLM is configured. It can only trigger
+	// when a small base_url was written explicitly, so profiles without one (all
+	// built-ins) are unaffected and non-LLM commands keep working.
+	if profile.Small.BaseURL != "" && !model.SameEndpoint(profile.Small.BaseURL, profile.BaseURL) && profile.Small.APIKey == "" {
+		return Profile{}, fmt.Errorf("config: small.base_url %q differs from the profile base_url %q but small.api_key is empty; set small.api_key (or --small-api-key / NICKPIT_SMALL_API_KEY) so the primary key is not sent to another provider",
+			profile.Small.BaseURL, profile.BaseURL)
+	}
 	// The LLM endpoint is validated last, and unlike every check above it
 	// returns the normalized profile alongside the error: a command that never
 	// reaches an LLM still gets usable SCM credentials and a diff format, while
