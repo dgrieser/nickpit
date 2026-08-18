@@ -19,13 +19,37 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 }
 
 func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
+	return ParseUnifiedDiffFormatsWithModes(diff, nil)
+}
+
+// ParseUnifiedDiffFormatsWithModes parses a patch and, for every file section
+// whose header carries no git file mode, takes the mode from modes instead
+// (typically "git diff --raw" output for the same revisions). Sections that do
+// carry a mode header keep it, so the two entries of a symlink/regular-file
+// replacement — which share one path — stay individually correct.
+func ParseUnifiedDiffFormatsWithModes(diff string, modes FileModes) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
 	var (
 		hunks        []model.DiffHunk
 		files        []model.ChangedFile
 		currentFile  string
 		currentHunk  *model.DiffHunk
 		currentEntry *model.ChangedFile
+		// sectionSawMode records whether the current section's header carried a
+		// mode, so the modes fallback only fills sections git left silent.
+		sectionSawMode bool
 	)
+	// applyModeFallback resolves the current section's mode from modes. It runs
+	// once the section's header block is complete — at its first hunk or at its
+	// end — so a rename's final path is already known.
+	applyModeFallback := func() {
+		if sectionSawMode || currentEntry == nil {
+			return
+		}
+		sectionSawMode = true
+		if modes.Symlink(currentEntry.Path) {
+			currentEntry.Symlink = true
+		}
+	}
 
 	scanner := bufio.NewScanner(strings.NewReader(diff))
 	for scanner.Scan() {
@@ -36,11 +60,13 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 				hunks = append(hunks, *currentHunk)
 				currentHunk = nil
 			}
+			applyModeFallback()
 			if currentEntry != nil {
 				files = append(files, *currentEntry)
 			}
 			currentFile = parseDiffGitPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
+			sectionSawMode = false
 		case strings.HasPrefix(line, "diff --cc "), strings.HasPrefix(line, "diff --combined "):
 			// Combined-diff ("merge state") file boundary. Without it the
 			// section's header lines (index, ---/+++ file headers) would bleed
@@ -51,20 +77,24 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 				hunks = append(hunks, *currentHunk)
 				currentHunk = nil
 			}
+			applyModeFallback()
 			if currentEntry != nil {
 				files = append(files, *currentEntry)
 			}
 			currentFile = parseDiffCCPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
+			sectionSawMode = false
 		case strings.HasPrefix(line, "new file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileAdded
 				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
+				sectionSawMode = true
 			}
 		case strings.HasPrefix(line, "deleted file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileDeleted
 				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
+				sectionSawMode = true
 			}
 		case strings.HasPrefix(line, "new mode "), strings.HasPrefix(line, "index "):
 			// Mode-only change into a symlink ("new mode 120000") and a changed
@@ -72,8 +102,16 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			// instead of on a new/deleted-file line. Both appear in the header
 			// block before the first hunk, so they cannot collide with body
 			// lines (those always carry a ' ', '+', '-', or '\' prefix).
-			if currentEntry != nil && diffHeaderMarksSymlink(line) {
-				currentEntry.Symlink = true
+			if currentEntry != nil {
+				// An "index" line carries a mode only when the mode is unchanged
+				// on both sides; when git omits it there is nothing to learn and
+				// the fallback still applies.
+				if fileModeFromDiffHeader(line) != "" {
+					sectionSawMode = true
+				}
+				if diffHeaderMarksSymlink(line) {
+					currentEntry.Symlink = true
+				}
 			}
 		case strings.HasPrefix(line, "rename to "):
 			if currentEntry != nil {
@@ -99,6 +137,7 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			if currentHunk != nil {
 				hunks = append(hunks, *currentHunk)
 			}
+			applyModeFallback()
 			parsed, err := parseHunkHeader(currentFile, line)
 			if err != nil {
 				return nil, nil, nil, err
@@ -137,10 +176,11 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 	if currentHunk != nil {
 		hunks = append(hunks, *currentHunk)
 	}
+	applyModeFallback()
 	if currentEntry != nil {
 		files = append(files, *currentEntry)
 	}
-	diffFiles := DiffFilesFromUnifiedDiff(diff)
+	diffFiles := diffFilesFromUnifiedDiff(diff, modes)
 	// Hunk languages come from path-only detection; refine them with the
 	// content-aware per-file classification.
 	langByPath := make(map[string]string, len(diffFiles))
@@ -156,6 +196,10 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 }
 
 func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
+	return diffFilesFromUnifiedDiff(diff, nil)
+}
+
+func diffFilesFromUnifiedDiff(diff string, modes FileModes) []model.DiffFile {
 	sections := splitUnifiedDiff(diff)
 	files := make([]model.DiffFile, 0, len(sections))
 	for _, section := range sections {
@@ -163,12 +207,16 @@ func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
 			continue
 		}
 		classification := filetype.Classify(section.path, section.text)
+		symlink, sawMode := diffSectionMarksSymlink(section.text)
+		if !sawMode {
+			symlink = modes.Symlink(section.path)
+		}
 		files = append(files, model.DiffFile{
 			FilePath:  section.path,
 			Language:  classification.Language,
 			Content:   section.text,
 			Generated: classification.Generated,
-			Symlink:   diffSectionMarksSymlink(section.text),
+			Symlink:   symlink,
 		})
 	}
 	return files
@@ -265,31 +313,45 @@ func NormalizeFileMode(mode string) string {
 // Pass header lines only; hunk body lines are not header lines but always carry
 // a prefix character, so they cannot match these forms.
 func diffHeaderMarksSymlink(line string) bool {
+	return fileModeFromDiffHeader(line) == SymlinkFileMode
+}
+
+// fileModeFromDiffHeader extracts the mode a header line states for the reviewed
+// side, or "" when the line states none. "old mode" is deliberately ignored: it
+// always comes with a "new mode" that describes the post-change side.
+func fileModeFromDiffHeader(line string) string {
 	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode "} {
 		if mode, ok := strings.CutPrefix(line, prefix); ok {
-			return strings.TrimSpace(mode) == SymlinkFileMode
+			return NormalizeFileMode(mode)
 		}
 	}
 	if strings.HasPrefix(line, "index ") {
 		fields := strings.Fields(line)
-		return len(fields) == 3 && fields[2] == SymlinkFileMode
+		if len(fields) == 3 {
+			return NormalizeFileMode(fields[2])
+		}
 	}
-	return false
+	return ""
 }
 
 // diffSectionMarksSymlink reports whether a per-file diff section's header block
-// marks the file as a symlink. Only lines before the first hunk header are
-// inspected so body content can never be mistaken for a mode line.
-func diffSectionMarksSymlink(section string) bool {
+// marks the file as a symlink, and whether it stated a mode at all — a section
+// that states none (a plain rename, for instance) is the case a caller-supplied
+// mode map has to answer. Only lines before the first hunk header are inspected
+// so body content can never be mistaken for a mode line.
+func diffSectionMarksSymlink(section string) (symlink, sawMode bool) {
 	for line := range strings.SplitSeq(section, "\n") {
 		if strings.HasPrefix(line, "@@") {
-			return false
+			return symlink, sawMode
 		}
-		if diffHeaderMarksSymlink(line) {
-			return true
+		if mode := fileModeFromDiffHeader(line); mode != "" {
+			sawMode = true
+			if mode == SymlinkFileMode {
+				symlink = true
+			}
 		}
 	}
-	return false
+	return symlink, sawMode
 }
 
 func parseDiffGitPath(line string) string {

@@ -77,7 +77,7 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, s.fileModesForRequest(ctx, resolvedReq))
 	if err != nil {
 		return nil, err
 	}
@@ -163,27 +163,59 @@ func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
+// diffRevArgs renders the revision selection of a request: what the patch and
+// the raw listing below must both diff, so their entries describe one comparison.
+func diffRevArgs(req model.ReviewRequest) ([]string, error) {
 	switch req.Submode {
 	case "uncommitted":
-		return s.git.Run(ctx, patchArgs("diff", "HEAD")...)
+		return []string{"HEAD"}, nil
 	case "staged":
-		return s.git.Run(ctx, patchArgs("diff", "--cached")...)
+		return []string{"--cached"}, nil
 	case "unstaged":
-		return s.git.Run(ctx, patchArgs("diff")...)
+		return nil, nil
 	case "commits":
 		if req.BaseRef == "" || req.HeadRef == "" {
-			return "", fmt.Errorf("git: commits mode requires --from and --to")
+			return nil, fmt.Errorf("git: commits mode requires --from and --to")
 		}
-		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+".."+req.HeadRef)...)
+		return []string{req.BaseRef + ".." + req.HeadRef}, nil
 	case "branch":
 		if req.BaseRef == "" || req.HeadRef == "" {
-			return "", fmt.Errorf("git: branch mode requires --base and --head")
+			return nil, fmt.Errorf("git: branch mode requires --base and --head")
 		}
-		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+"..."+req.HeadRef)...)
+		return []string{req.BaseRef + "..." + req.HeadRef}, nil
 	default:
-		return "", fmt.Errorf("git: unknown submode %q", req.Submode)
+		return nil, fmt.Errorf("git: unknown submode %q", req.Submode)
 	}
+}
+
+func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
+	revArgs, err := diffRevArgs(req)
+	if err != nil {
+		return "", err
+	}
+	return s.git.Run(ctx, patchArgs("diff", revArgs...)...)
+}
+
+// fileModesForRequest lists the post-change file mode of every changed path of
+// the same comparison the patch covers. A patch states a mode only when it is
+// new, gone, or changed, so a plain rename of an unchanged symlink carries no
+// 120000 anywhere — and moving a relative symlink is exactly the kind of change
+// whose target can break. The raw listing carries paths and modes but no content,
+// so none of the stableDiffArgs settings can reach it.
+//
+// A failing listing yields no modes rather than a guess: the patch's own mode
+// headers still stand, only the sections git left silent stay unmarked.
+func (s *LocalSource) fileModesForRequest(ctx context.Context, req model.ReviewRequest) FileModes {
+	revArgs, err := diffRevArgs(req)
+	if err != nil {
+		return nil
+	}
+	args := append([]string{"diff", "--raw", "-z"}, revArgs...)
+	out, err := s.git.Run(ctx, args...)
+	if err != nil {
+		return nil
+	}
+	return ParseRawFileModes(out)
 }
 
 func (s *LocalSource) commitSummaries(ctx context.Context, req model.ReviewRequest) ([]model.CommitSummary, error) {

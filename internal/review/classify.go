@@ -30,7 +30,8 @@ func stampGeneratedFlags(reviewCtx *model.ReviewContext) {
 }
 
 // stampSymlinkFlags fills in symlink marks for review sources whose diff carries
-// no git file mode. Local diffs carry mode header lines and GitLab MRs report
+// no git file mode. Local diffs carry mode headers (with a "git diff --raw"
+// fallback for the sections git leaves silent) and GitLab MRs report
 // a_mode/b_mode, so their entries are already marked per entry by the diff parser
 // and the adapter. Those marks stay untouched here, and deliberately are not
 // spread across a path: a symlink replaced by a regular file at the same path
@@ -39,16 +40,19 @@ func stampGeneratedFlags(reviewCtx *model.ReviewContext) {
 // from review.
 //
 // GitHub's pull-request files API reports neither a mode field nor a mode line
-// inside `patch`, so there the checkout's git index is the only remaining source
-// of truth. The checkout is a temporary clone of the reviewed head revision, i.e.
-// the post-change side the marks describe. A checkout is not always present, and
-// a deleted symlink is not in the index, so GitHub keeps blind spots; the trade
-// is a missing mark, never a wrong one.
+// inside `patch`, so there the reviewed head commit's tree is asked. The lookup
+// is addressed by SHA, never "whatever the checkout currently holds": a chat
+// session resumed with --repo-root points at a user-selected working copy that
+// may carry local edits or another revision entirely, and a tree that a checkout
+// does not have simply fails the lookup.
 //
+// A checkout is not always present, and a deleted path is not in the head tree,
+// so GitHub keeps blind spots; the trade is a missing mark, never a wrong one.
 // A symlink's blob content is the link target path, so reviewing it as text
 // produces findings whose fix would rewrite or break the link.
 func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runner git.Runner) {
-	if reviewCtx == nil || reviewCtx.CheckoutRoot == "" || !sourceOmitsFileModes(reviewCtx.Mode) {
+	if reviewCtx == nil || reviewCtx.CheckoutRoot == "" || reviewCtx.DiffHeadSHA == "" ||
+		!sourceOmitsFileModes(reviewCtx.Mode) {
 		return
 	}
 	paths := make([]string, 0, len(reviewCtx.ChangedFiles)+len(reviewCtx.DiffFiles))
@@ -70,9 +74,14 @@ func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runn
 			collect(file.FilePath)
 		}
 	}
-	// The error is deliberately dropped: an unreadable index means no marks, and
-	// every caller of this function reviews the change either way.
-	marks, _ := git.SymlinkPaths(ctx, runner, paths)
+	for _, hunk := range reviewCtx.DiffHunks {
+		if !hunk.Symlink {
+			collect(hunk.FilePath)
+		}
+	}
+	// The error is deliberately dropped: an unreadable tree means no marks, and
+	// the change is reviewed either way.
+	marks, _ := git.SymlinkPathsAtRev(ctx, runner, reviewCtx.DiffHeadSHA, paths)
 	if len(marks) == 0 {
 		return
 	}
@@ -92,15 +101,21 @@ func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runn
 			file.Symlink = byPath[normalizeReviewPath(file.FilePath)]
 		}
 	}
+	// The git-json diff format drops DiffFiles, so an unstamped hunk would carry
+	// a link target with no marker at all.
+	for i := range reviewCtx.DiffHunks {
+		hunk := &reviewCtx.DiffHunks[i]
+		if !hunk.Symlink {
+			hunk.Symlink = byPath[normalizeReviewPath(hunk.FilePath)]
+		}
+	}
 }
 
 // sourceOmitsFileModes reports whether a review source's diff carries no git file
 // mode at all, so a symlink cannot be recognized from the diff alone and the
-// checkout has to be asked. Probing a source that does report modes would be
-// worse than useless: the worktree can hold a different revision than the diff
-// (staged content, or a base..head range that is not checked out), so an
-// authoritative regular mode could be overwritten with an unrelated current
-// symlink and suppress valid text review.
+// reviewed tree has to be asked. Sources that do report modes are never
+// second-guessed: their marks describe the reviewed revision, which a checkout
+// need not match.
 func sourceOmitsFileModes(mode model.ReviewMode) bool {
 	return mode == model.ModeGitHub
 }

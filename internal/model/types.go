@@ -233,7 +233,8 @@ type ReviewContext struct {
 	// slice means scope checking is available but the diff has no line hunks.
 	DiffScopeHunks []DiffHunk `json:"-"`
 	// DiffBaseSHA and DiffHeadSHA identify the exact commits this context's diff
-	// was built between, when the source knows them (GitLab MRs). They are
+	// was built between, when the source knows them (GitLab MRs report both,
+	// GitHub PRs only the head). They are
 	// deliberately NOT copied into prompt payloads; chat sessions persist them so
 	// a cached context's freshness can be checked against the live MR without a
 	// spurious first-resume refresh.

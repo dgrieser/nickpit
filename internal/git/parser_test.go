@@ -556,3 +556,75 @@ func TestParseUnifiedDiffFormatsMarksHunks(t *testing.T) {
 		t.Fatalf("regular-file hunk inherited the symlink mark: %#v", hunks[1])
 	}
 }
+
+// A plain rename carries no mode header at all: git prints one only when the mode
+// is new, gone, or changed. The raw-mode fallback is the only way to see that the
+// moved file is a symlink — and moving a relative symlink can break its target.
+func TestParseUnifiedDiffFormatsWithModesFillsSilentSections(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/dir/sub/link b/dir/link2",
+		"similarity index 100%",
+		"rename from dir/sub/link",
+		"rename to dir/link2",
+		"diff --git a/main.go b/main.go",
+		"index 1111111..2222222 100644",
+		"--- a/main.go",
+		"+++ b/main.go",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\n")
+	modes := FileModes{"dir/link2": "120000", "main.go": "100644"}
+
+	diffFiles, _, files, err := ParseUnifiedDiffFormatsWithModes(diff, modes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].Path != "dir/link2" {
+		t.Fatalf("files = %#v, want the renamed path first", files)
+	}
+	if !files[0].Symlink || !diffFiles[0].Symlink {
+		t.Fatalf("renamed symlink stayed unmarked: %#v / %#v", files[0], diffFiles[0])
+	}
+	if files[1].Symlink || diffFiles[1].Symlink {
+		t.Fatalf("regular file marked as symlink: %#v / %#v", files[1], diffFiles[1])
+	}
+}
+
+// A section that does state a mode is authoritative: the two same-path entries of
+// a symlink/regular-file replacement must not both take the path's raw mode.
+func TestParseUnifiedDiffFormatsWithModesKeepsHeaderModes(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/link b/link",
+		"deleted file mode 120000",
+		"index 1de5659..0000000",
+		"--- a/link",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-target",
+		"\\ No newline at end of file",
+		"diff --git a/link b/link",
+		"new file mode 100644",
+		"index 0000000..c93cae4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+real text",
+		"",
+	}, "\n")
+	// "git diff --raw" reports the replacement as one typechange entry, so the
+	// path's raw mode alone cannot describe both sections.
+	modes := FileModes{"link": "100644"}
+
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, modes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !files[0].Symlink || !diffFiles[0].Symlink || !hunks[0].Symlink {
+		t.Fatalf("header mode was overridden by the raw mode: %#v / %#v / %#v", files[0], diffFiles[0], hunks[0])
+	}
+	if files[1].Symlink || diffFiles[1].Symlink || hunks[1].Symlink {
+		t.Fatalf("regular-file addition marked as symlink: %#v / %#v / %#v", files[1], diffFiles[1], hunks[1])
+	}
+}

@@ -33,7 +33,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
-- `internal/review/classify.go`: Stamps generated-file marks across the changed-file and diff-file views, plus the git-index symlink fallback used only for sources whose diff carries no git file mode (GitHub).
+- `internal/review/classify.go`: Stamps generated-file marks across the changed-file and diff-file views, plus the head-tree symlink fallback (changed files, diff files and hunks) used only for sources whose diff carries no git file mode (GitHub).
 - `internal/review/limiter.go`: Global concurrency limiter used around agent calls.
 - `internal/review/time_budget.go`: Hierarchical time budgets, local caps, weights, speedup thresholds, and context deadlines.
 - `internal/review/tool_exec.go`: Tool-call dispatcher for retrieval tools exposed to review agents.
@@ -97,7 +97,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/git.go`: Git command wrapper and repository helpers.
 - `internal/git/diff.go`: Diff loading and changed-file extraction. Owns `patchArgs`/`stableDiffArgs`, the pinned `-U3` plus configuration-neutralizing flags every patch-emitting git invocation must use.
 - `internal/git/parser.go`: Git diff parser and hunk model.
-- `internal/git/modes.go`: Reads git file modes from a checkout's index (`ls-files --stage`) to tell which paths are stored as symlinks, independent of how the worktree materialized them.
+- `internal/git/modes.go`: Git file-mode lookups: symlink paths in a given commit tree (`ls-tree`, literal pathspecs) and post-change modes from a `--raw` listing, so symlinks are recognized independently of how a worktree materialized them.
 - `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring.

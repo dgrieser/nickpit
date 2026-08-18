@@ -6,26 +6,27 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestSymlinkPathsReadsIndexModes(t *testing.T) {
+func TestSymlinkPathsAtRevReadsTreeModes(t *testing.T) {
 	runner := &stubGitRunner{
 		match: func(args []string) (string, bool) {
-			if args[0] != "ls-files" {
+			if args[0] != "ls-tree" {
 				return "", false
 			}
 			return strings.Join([]string{
-				"120000 32f64f4d836716819dc5fa9a1e09a29b428881df 0\tdeploy/chart/templates\x00",
-				"100644 45b983be36b73c0788dc9cbcb76cbb80fc7bb057 0\tmain.go\x00",
-				"100755 45b983be36b73c0788dc9cbcb76cbb80fc7bb057 0\tscripts/run.sh\x00",
+				"120000 blob 32f64f4d836716819dc5fa9a1e09a29b428881df\tdeploy/chart/templates\x00",
+				"100644 blob 45b983be36b73c0788dc9cbcb76cbb80fc7bb057\tmain.go\x00",
+				"100755 blob 45b983be36b73c0788dc9cbcb76cbb80fc7bb057\tscripts/run.sh\x00",
 			}, ""), true
 		},
 	}
 
-	marks, err := SymlinkPaths(context.Background(), runner, []string{"deploy/chart/templates", "main.go", "scripts/run.sh"})
+	marks, err := SymlinkPathsAtRev(context.Background(), runner, "head111", []string{"deploy/chart/templates", "main.go", "scripts/run.sh"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,40 +36,64 @@ func TestSymlinkPathsReadsIndexModes(t *testing.T) {
 	if marks["main.go"] || marks["scripts/run.sh"] {
 		t.Fatalf("regular files marked as symlinks: %#v", marks)
 	}
+	// The tree is addressed by SHA, not by whatever the checkout holds.
+	if !slices.Contains(runner.calls[0], "head111") {
+		t.Fatalf("ls-tree did not target the reviewed revision: %v", runner.calls[0])
+	}
+}
+
+// The paths come from SCM payloads, where a filename may itself look like
+// pathspec magic. "--" stops option parsing but not magic, so each path has to be
+// passed literally: ":(literal)link" must not be reparsed, and ":!foo" must not
+// become an exclusion that enumerates the rest of the tree.
+func TestSymlinkPathsAtRevPassesLiteralPathspecs(t *testing.T) {
+	runner := &stubGitRunner{}
+	if _, err := SymlinkPathsAtRev(context.Background(), runner, "head111", []string{":(literal)link", ":!foo", "plain.go"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{":(literal):(literal)link", ":(literal):!foo", ":(literal)plain.go"}
+	args := runner.calls[0]
+	sep := slices.Index(args, "--")
+	if sep < 0 {
+		t.Fatalf("no pathspec separator in %v", args)
+	}
+	if got := args[sep+1:]; !slices.Equal(got, want) {
+		t.Fatalf("pathspecs = %v, want %v", got, want)
+	}
 }
 
 // A large change set must not overflow the command line, and one failing chunk
 // must not discard the marks the other chunks produced.
-func TestSymlinkPathsChunksAndSurvivesFailures(t *testing.T) {
-	paths := make([]string, 0, maxLsFilesPaths+1)
-	for i := range maxLsFilesPaths {
+func TestSymlinkPathsAtRevChunksAndSurvivesFailures(t *testing.T) {
+	paths := make([]string, 0, maxTreeQueryPaths+1)
+	for i := range maxTreeQueryPaths {
 		paths = append(paths, "file"+strconv.Itoa(i))
 	}
 	paths = append(paths, "link")
 	runner := &stubGitRunner{}
 	runner.matchErr = func(args []string) error {
-		if args[0] == "ls-files" && len(runner.calls) == 1 {
-			return errors.New("ls-files failed")
+		if args[0] == "ls-tree" && len(runner.calls) == 1 {
+			return errors.New("ls-tree failed")
 		}
 		return nil
 	}
 	runner.match = func(args []string) (string, bool) {
-		if args[0] != "ls-files" {
+		if args[0] != "ls-tree" {
 			return "", false
 		}
-		return "120000 32f64f4 0\tlink\x00", true
+		return "120000 blob 32f64f4\tlink\x00", true
 	}
 
-	marks, err := SymlinkPaths(context.Background(), runner, paths)
+	marks, err := SymlinkPathsAtRev(context.Background(), runner, "head111", paths)
 	if err == nil {
 		t.Fatal("expected the failing chunk to be reported")
 	}
 	if len(runner.calls) != 2 {
-		t.Fatalf("ls-files calls = %d, want one per chunk", len(runner.calls))
+		t.Fatalf("ls-tree calls = %d, want one per chunk", len(runner.calls))
 	}
-	// "ls-files --stage -z --" plus the chunk's pathspecs.
-	if got := len(runner.calls[0]) - 4; got != maxLsFilesPaths {
-		t.Fatalf("first chunk carried %d paths, want %d", got, maxLsFilesPaths)
+	// "ls-tree -z <rev> --" plus the chunk's pathspecs.
+	if got := len(runner.calls[0]) - 4; got != maxTreeQueryPaths {
+		t.Fatalf("first chunk carried %d paths, want %d", got, maxTreeQueryPaths)
 	}
 	if got := len(runner.calls[1]) - 4; got != 1 {
 		t.Fatalf("second chunk carried %d paths, want 1", got)
@@ -78,36 +103,84 @@ func TestSymlinkPathsChunksAndSurvivesFailures(t *testing.T) {
 	}
 }
 
-func TestSymlinkPathsWithoutRunnerOrPaths(t *testing.T) {
-	marks, err := SymlinkPaths(context.Background(), nil, []string{"link"})
+func TestSymlinkPathsAtRevWithoutRunnerRevOrPaths(t *testing.T) {
+	marks, err := SymlinkPathsAtRev(context.Background(), nil, "head111", []string{"link"})
 	if err != nil || marks != nil {
 		t.Fatalf("marks = %#v, err = %v, want no marks without a runner", marks, err)
 	}
-	marks, err = SymlinkPaths(context.Background(), &stubGitRunner{}, nil)
+	runner := &stubGitRunner{}
+	marks, err = SymlinkPathsAtRev(context.Background(), runner, "", []string{"link"})
+	if err != nil || marks != nil {
+		t.Fatalf("marks = %#v, err = %v, want no marks without a revision", marks, err)
+	}
+	marks, err = SymlinkPathsAtRev(context.Background(), runner, "head111", nil)
 	if err != nil || marks != nil {
 		t.Fatalf("marks = %#v, err = %v, want no marks without paths", marks, err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("git ran anyway: %v", runner.calls)
+	}
+}
+
+func TestParseRawFileModes(t *testing.T) {
+	out := strings.Join([]string{
+		":000000 120000 0000000 32f64f4 A\x00link\x00",
+		":100644 100644 45b983b c93cae4 M\x00main.go\x00",
+		":120000 120000 78bc337 78bc337 R100\x00dir/sub/old\x00dir/new\x00",
+		":120000 000000 32f64f4 0000000 D\x00gone\x00",
+		":120000 100644 32f64f4 c93cae4 T\x00swapped\x00",
+	}, "")
+
+	modes := ParseRawFileModes(out)
+
+	if !modes.Symlink("link") {
+		t.Fatalf("added symlink missed: %#v", modes)
+	}
+	if modes.Symlink("main.go") {
+		t.Fatalf("regular file marked: %#v", modes)
+	}
+	// A rename is keyed by its destination, which is the path the patch shows.
+	if !modes.Symlink("dir/new") || modes.Symlink("dir/sub/old") {
+		t.Fatalf("renamed symlink keyed wrong: %#v", modes)
+	}
+	// A deletion has an all-zero destination mode, so the source side describes
+	// what was there.
+	if !modes.Symlink("gone") {
+		t.Fatalf("deleted symlink missed: %#v", modes)
+	}
+	// A symlink replaced by a regular file is text on the reviewed side.
+	if modes.Symlink("swapped") {
+		t.Fatalf("replaced symlink still marked: %#v", modes)
+	}
+	if modes.Symlink("never-seen") {
+		t.Fatalf("unknown path marked: %#v", modes)
+	}
+	if FileModes(nil).Symlink("link") {
+		t.Fatal("nil modes marked a path")
 	}
 }
 
 // With core.symlinks=false — the default on Windows and a valid setting on Unix
 // — git materializes a mode-120000 blob as a regular file holding the target
-// path. The index still records the symlink, which is why it and not the
+// path. The committed tree still records the symlink, which is why it and not the
 // worktree inode is queried.
-func TestSymlinkPathsSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
+func TestSymlinkPathsAtRevSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	checkout := filepath.Join(root, "checkout")
-	runGit := func(dir string, args ...string) {
+	runGit := func(dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
+		return strings.TrimSpace(string(out))
 	}
 	if err := os.MkdirAll(filepath.Join(source, "target"), 0o755); err != nil {
 		t.Fatal(err)
@@ -121,6 +194,7 @@ func TestSymlinkPathsSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
 	}
 	runGit(source, "add", "-A")
 	runGit(source, "-c", "commit.gpgsign=false", "commit", "-qm", "init")
+	head := runGit(source, "rev-parse", "HEAD")
 	runGit(root, "clone", "-q", "-c", "core.symlinks=false", source, checkout)
 
 	info, err := os.Lstat(filepath.Join(checkout, "link"))
@@ -131,14 +205,20 @@ func TestSymlinkPathsSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
 		t.Skip("this git honors symlinks despite core.symlinks=false, so the worktree is not degraded here")
 	}
 
-	marks, err := SymlinkPaths(context.Background(), ExecRunner{RepoRoot: checkout}, []string{"link", "main.go"})
+	marks, err := SymlinkPathsAtRev(context.Background(), ExecRunner{RepoRoot: checkout}, head, []string{"link", "main.go"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !marks["link"] {
-		t.Fatalf("index symlink missed while the worktree holds a regular file: %#v", marks)
+		t.Fatalf("tree symlink missed while the worktree holds a regular file: %#v", marks)
 	}
 	if marks["main.go"] {
 		t.Fatalf("regular file marked as symlink: %#v", marks)
+	}
+
+	// A revision the checkout does not have must fail the lookup rather than
+	// fall back to whatever is on disk.
+	if marks, err := SymlinkPathsAtRev(context.Background(), ExecRunner{RepoRoot: checkout}, "0000000000000000000000000000000000000000", []string{"link"}); err == nil || len(marks) != 0 {
+		t.Fatalf("unknown revision produced marks = %#v, err = %v", marks, err)
 	}
 }

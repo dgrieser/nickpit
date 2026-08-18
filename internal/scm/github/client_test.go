@@ -182,3 +182,36 @@ func TestFetchPRFallsBackToOriginalLineForOutdatedComments(t *testing.T) {
 		t.Fatalf("current comment line = %d, want 3", byBody["current"])
 	}
 }
+
+// The files API reports no file modes, so a symlink can only be recognized by
+// asking the reviewed head tree — which needs that commit's SHA on the context.
+func TestFetchPRCarriesHeadSHA(t *testing.T) {
+	fixtures := map[string][]byte{
+		"/repos/owner/repo/pulls/123":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_metadata.json")),
+		"/repos/owner/repo/pulls/123/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_commits.json")),
+		"/repos/owner/repo/pulls/123/files":   testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_files.json")),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchPR(context.Background(), "owner/repo", 123, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.DiffHeadSHA != "def" {
+		t.Fatalf("diff head SHA = %q, want the PR head", ctx.DiffHeadSHA)
+	}
+	// The files API diffs against the merge base, which it does not report, so a
+	// base SHA must not be invented.
+	if ctx.DiffBaseSHA != "" {
+		t.Fatalf("diff base SHA = %q, want empty", ctx.DiffBaseSHA)
+	}
+}

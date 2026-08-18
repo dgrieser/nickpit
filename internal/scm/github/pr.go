@@ -196,6 +196,11 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		DiffFiles:    diffFiles,
 		DiffHunks:    hunks,
 		Comments:     comments,
+		// The head SHA identifies the post-change side this diff describes. The
+		// files API reports no file modes, so a symlink can only be recognized by
+		// asking that exact tree; a base SHA is deliberately not set, because the
+		// API diffs against the merge base, which it does not report.
+		DiffHeadSHA: pr.Head.SHA,
 	}, nil
 }
 
