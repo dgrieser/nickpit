@@ -478,3 +478,42 @@ func TestSymlinkFromModes(t *testing.T) {
 		})
 	}
 }
+
+// Replacing a tracked symlink with a regular file at the same path produces two
+// sections: a mode-120000 deletion and a mode-100644 addition. Each entry must
+// keep its own mark, or the regular file's real text gets treated as a link
+// target and skipped in review.
+func TestParseUnifiedDiffFormatsMarksReplacementEntriesIndependently(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/link b/link",
+		"deleted file mode 120000",
+		"index 1de5659..0000000",
+		"--- a/link",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-target",
+		"\\ No newline at end of file",
+		"diff --git a/link b/link",
+		"new file mode 100644",
+		"index 0000000..c93cae4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+real text",
+		"",
+	}, "\n")
+
+	diffFiles, _, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || len(diffFiles) != 2 {
+		t.Fatalf("entries = %d changed / %d diff, want two of each", len(files), len(diffFiles))
+	}
+	if !files[0].Symlink || !diffFiles[0].Symlink {
+		t.Fatalf("symlink deletion lost its mark: %#v / %#v", files[0], diffFiles[0])
+	}
+	if files[1].Symlink || diffFiles[1].Symlink {
+		t.Fatalf("regular-file addition marked as symlink: %#v / %#v", files[1], diffFiles[1])
+	}
+}

@@ -29,52 +29,61 @@ func stampGeneratedFlags(reviewCtx *model.ReviewContext) {
 	}
 }
 
-// stampSymlinkFlags propagates symlink marks between the two file views and
-// closes the gap for SCM sources whose diff carries no file mode. Diff-derived
-// flags come from the git mode header (local diffs and, since the modes are
-// plumbed through, GitLab MRs); GitHub's files API reports neither a mode nor a
-// mode line in `patch`, so there a symlink blob is indistinguishable from a
-// one-line text file unless the checkout is asked directly.
+// stampSymlinkFlags fills in symlink marks for review sources whose diff carries
+// no git file mode. Local diffs carry mode header lines and GitLab MRs report
+// a_mode/b_mode, so their entries are already marked per entry by the diff parser
+// and the adapter. Those marks stay untouched here, and deliberately are not
+// spread across a path: a symlink replaced by a regular file at the same path
+// arrives as two entries — a mode-120000 deletion plus a mode-100644 addition —
+// whose marks legitimately differ, and marking the addition would hide real text
+// from review.
+//
+// GitHub's pull-request files API reports neither a mode field nor a mode line
+// inside `patch`, so there the checkout is the only remaining source of truth.
+// It is a temporary clone of the reviewed head revision, i.e. the post-change
+// side the marks describe. A checkout is not always present, and a deleted
+// symlink cannot be probed at all (the path is gone), so GitHub keeps blind
+// spots; the trade is a missing mark, never a wrong one.
 //
 // A symlink's blob content is the link target path, so reviewing it as text
 // produces findings whose fix would rewrite or break the link.
 func stampSymlinkFlags(reviewCtx *model.ReviewContext) {
-	if reviewCtx == nil {
+	if reviewCtx == nil || reviewCtx.CheckoutRoot == "" || !sourceOmitsFileModes(reviewCtx.Mode) {
 		return
 	}
-	symlink := make(map[string]bool, len(reviewCtx.DiffFiles)+len(reviewCtx.ChangedFiles))
-	for _, file := range reviewCtx.DiffFiles {
-		if file.Symlink {
-			symlink[normalizeReviewPath(file.FilePath)] = true
-		}
-	}
-	for _, file := range reviewCtx.ChangedFiles {
-		if file.Symlink {
-			symlink[normalizeReviewPath(file.Path)] = true
-		}
-	}
-	// The checkout probe cannot see a deleted symlink (the path is gone), so
-	// mode-less sources keep missing that case; the diff header covers it
-	// wherever the SCM reports modes.
-	mark := func(path string) bool {
+	probed := make(map[string]bool, len(reviewCtx.ChangedFiles))
+	probe := func(path string) bool {
 		key := normalizeReviewPath(path)
-		if symlink[key] {
-			return true
+		symlink, ok := probed[key]
+		if !ok {
+			symlink = isCheckoutSymlink(reviewCtx.CheckoutRoot, path)
+			probed[key] = symlink
 		}
-		if isCheckoutSymlink(reviewCtx.CheckoutRoot, path) {
-			symlink[key] = true
-			return true
-		}
-		return false
+		return symlink
 	}
 	for i := range reviewCtx.ChangedFiles {
 		file := &reviewCtx.ChangedFiles[i]
-		file.Symlink = mark(file.Path)
+		if !file.Symlink {
+			file.Symlink = probe(file.Path)
+		}
 	}
 	for i := range reviewCtx.DiffFiles {
 		file := &reviewCtx.DiffFiles[i]
-		file.Symlink = mark(file.FilePath)
+		if !file.Symlink {
+			file.Symlink = probe(file.FilePath)
+		}
 	}
+}
+
+// sourceOmitsFileModes reports whether a review source's diff carries no git file
+// mode at all, so a symlink cannot be recognized from the diff alone and the
+// checkout has to be asked. Probing a source that does report modes would be
+// worse than useless: the worktree can hold a different revision than the diff
+// (staged content, or a base..head range that is not checked out), so an
+// authoritative regular mode could be overwritten with an unrelated current
+// symlink and suppress valid text review.
+func sourceOmitsFileModes(mode model.ReviewMode) bool {
+	return mode == model.ModeGitHub
 }
 
 // isCheckoutSymlink reports whether path is a symlink inside the checkout.
