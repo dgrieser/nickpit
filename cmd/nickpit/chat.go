@@ -1062,12 +1062,15 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	controls := resolveChatMessageControls([]chatMessageControls{{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases}})
 	// The webhook body was checked before this child was queued, but the live
-	// note can be edited meanwhile. Do not let a now control-only target select
-	// an older prompt that remains in the thread history. This is a suppression,
-	// not a completed turn: the parent must release the note's dedup mark so
-	// restoring the question and requesting a response on that same note is not
-	// discarded as a duplicate.
-	if opts.replyNote > 0 && !chatNoteHasPrompt(notes, opts.replyNote, controls) {
+	// note can be edited meanwhile: a skip phrase or mute command added beside
+	// the question suppresses this turn, and a target edited down to controls
+	// only must not select an older prompt still sitting in the thread history.
+	// Enforce that HERE — before the engine is built and the LLM turn is paid
+	// for — not only at the final pre-post check. This is a suppression, not a
+	// completed turn: the parent must release the note's dedup mark so restoring
+	// the question and requesting a response on that same note is not discarded
+	// as a duplicate.
+	if opts.replyNote > 0 && !chatNoteDirectives(notes, opts.replyNote, controls).AllowsReply(opts.replyRequested) {
 		return errChatReplySuppressed
 	}
 	history := chatThreadToMessages(notes, botUserID, controls)
@@ -1449,10 +1452,9 @@ func stripChatControlsFromReviewComments(reviewCtx *model.ReviewContext, control
 	reviewCtx.Comments = comments
 }
 
-func chatNoteHasPrompt(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) bool {
-	return chatNoteDirectives(notes, noteID, controls).Remaining != ""
-}
-
+// chatNoteDirectives parses one note's LIVE controls. A note that has vanished
+// yields the zero value, whose empty Remaining fails AllowsReply — the safe
+// direction when the target can no longer be read.
 func chatNoteDirectives(notes []glscm.DiscussionNote, noteID int, controls chatMessageControls) serve.ChatDirectives {
 	for _, note := range notes {
 		if note.ID == noteID {

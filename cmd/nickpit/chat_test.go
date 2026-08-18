@@ -325,7 +325,10 @@ func TestStripChatControlsFromReviewComments(t *testing.T) {
 	}
 }
 
-func TestChatNoteHasPromptUsesLiveTargetBody(t *testing.T) {
+// The gate that runs BEFORE the engine is built uses the live target body, so
+// an edit landing between webhook admission and the child's read suppresses the
+// turn instead of paying for an LLM call that the pre-post check would discard.
+func TestChatNoteDirectivesGateUsesLiveTargetBody(t *testing.T) {
 	controls := chatMessageControls{keyword: "nickpit", skipPhrases: []string{"do not answer"}}
 	notes := []glscm.DiscussionNote{
 		{ID: 1, Body: "root", AuthorID: 5},
@@ -335,15 +338,32 @@ func TestChatNoteHasPromptUsesLiveTargetBody(t *testing.T) {
 		// the queued child read the discussion.
 		{ID: 4, Body: "/nickpit resume\ndo not answer", AuthorID: 10},
 	}
+	allows := func(noteID int, requested bool) bool {
+		return chatNoteDirectives(notes, noteID, controls).AllowsReply(requested)
+	}
 
-	if chatNoteHasPrompt(notes, 4, controls) {
+	if allows(4, true) {
 		t.Fatal("control-only live target must not trigger a reply to older history")
 	}
+	// A skip phrase added beside the question suppresses the turn; only an
+	// explicit request overrides it, and only while a question remains.
+	notes[3].Body = "still answer this\ndo not answer"
+	if allows(4, false) {
+		t.Fatal("live skip phrase must suppress the turn before the LLM runs")
+	}
+	if !allows(4, true) {
+		t.Fatal("explicit request must still override a live skip phrase")
+	}
+	// A mute command is never overridden.
+	notes[3].Body = "/nickpit mute\nstill answer this"
+	if allows(4, true) {
+		t.Fatal("live mute command must suppress even an explicitly requested turn")
+	}
 	notes[3].Body = "/nickpit resume\nstill answer this"
-	if !chatNoteHasPrompt(notes, 4, controls) {
+	if !allows(4, false) {
 		t.Fatal("live target with prompt text must remain eligible")
 	}
-	if chatNoteHasPrompt(notes, 99, controls) {
+	if allows(99, false) {
 		t.Fatal("missing target note must not remain eligible")
 	}
 }
