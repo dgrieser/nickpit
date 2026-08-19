@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -279,11 +280,20 @@ func yamlInt(value int) *yaml.Node {
 	}
 }
 
+// yamlFloat renders a float with a decimal point even when its value is whole.
+// yaml.v3 prints an explicit `!!float` tag whenever the rendered scalar would
+// resolve implicitly to something else — "1" resolves to !!int — and this file is
+// copied to .nickpit.yaml by hand, where a tagged scalar reads as a syntax
+// curiosity next to every other plain value.
 func yamlFloat(value float64) *yaml.Node {
+	text := strconv.FormatFloat(value, 'f', -1, 64)
+	if !strings.ContainsAny(text, ".eE") {
+		text += ".0"
+	}
 	return &yaml.Node{
 		Kind:  yaml.ScalarNode,
 		Tag:   "!!float",
-		Value: fmt.Sprintf("%g", value),
+		Value: text,
 	}
 }
 

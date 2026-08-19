@@ -1966,12 +1966,38 @@ func highlightSubcommand(command, sub string) string {
 // is skipped when no step needs a source (e.g. a merge/finalize-from-file run).
 // Finalize/summarize, when present in the spec, run inside the pipeline.
 func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, spec workflow.Spec, profile config.Profile, req model.ReviewRequest) error {
-	// The scale applies to the spec as loaded, before it is compiled: every budget
-	// the pipeline starts is derived from these values, and the verbose log then
-	// reports the caps the run will actually honor.
-	if scale := profile.TimeBudgetScale; scale > 0 && scale != 1 && !profile.DisableWorkflowTimeBudget {
-		spec = spec.WithScaledTimeBudgets(scale)
-		a.logf(ctx, "Scaled workflow time budgets: factor=%g", scale)
+	// The scale applies to the spec as loaded, before it is compiled: every cap the
+	// pipeline starts is derived from these values. The accepted range is validated
+	// once, in config.normalizeProfile, so there is nothing to re-test here — an
+	// unusable or neutral factor already leaves the spec alone and reports nothing.
+	// --disable-workflow-time-budget drops every cap outright and so takes
+	// precedence over scaling them.
+	if !profile.DisableWorkflowTimeBudget {
+		scaled, report := spec.WithScaledTimeBudgets(profile.TimeBudgetScale)
+		spec = scaled
+		// The profile-level max_reasoning_seconds moves with the step budgets for the
+		// same reason a spec-level one does, and it exists whether or not the spec
+		// declares any caps of its own. A step override, already scaled with the
+		// spec, still wins over it.
+		reasoning := workflow.ScaleReasoningSeconds(req.MaxReasoningSeconds, profile.TimeBudgetScale)
+		if report.Applied() || reasoning != req.MaxReasoningSeconds {
+			req.MaxReasoningSeconds = reasoning
+			specRange := "none"
+			if report.Applied() {
+				specRange = fmt.Sprintf("%ds..%ds", report.MinSeconds, report.MaxSeconds)
+			}
+			a.logf(ctx, "Scaled workflow time budgets: factor=%g caps=%d spec_range=%s max_reasoning=%ds",
+				profile.TimeBudgetScale, report.Caps, specRange, req.MaxReasoningSeconds)
+		}
+		// A clamped cap no longer follows the factor at all, so the run behaves
+		// unlike what was asked for. Say so on the progress log, not only under
+		// --verbose: at the floor every step dies on its deadline or is skipped,
+		// and without this the flag is never named as the cause.
+		if report.Clamped > 0 {
+			a.logProgress(ctx, logging.StageNickPit, logging.StateWarn, fmt.Sprintf(
+				"time budget scale %g clamped %d of %d caps to the %ds..%ds range; those steps no longer follow the factor",
+				profile.TimeBudgetScale, report.Clamped, report.Caps, workflow.MinScaledTimeBudgetSeconds, workflow.MaxScaledTimeBudgetSeconds))
+		}
 	}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {

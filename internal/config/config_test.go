@@ -2359,10 +2359,45 @@ func TestLoadConfigTimeBudgetScaleDefaultAndValidation(t *testing.T) {
 	if profile.TimeBudgetScale != DefaultTimeBudgetScale {
 		t.Fatalf("default time_budget_scale = %v, want %v", profile.TimeBudgetScale, DefaultTimeBudgetScale)
 	}
-	for _, bad := range []float64{-1, math.Inf(1), math.NaN()} {
+	for _, bad := range []float64{0, -1, math.Inf(1), math.Inf(-1), math.NaN()} {
 		value := bad
 		if _, _, err := Load(path, Overrides{TimeBudgetScale: &value}); err == nil {
 			t.Fatalf("factor %v was accepted", bad)
 		}
+	}
+}
+
+// Zero is the trap: applyProfileDefaults runs before validation, so without the
+// Configured companion it would rewrite a deliberate 0 to the default and the
+// validation above could never see it. A silent no-op is the wrong answer for a
+// CLI where --concurrency 0 means "unlimited" and nudge_count 0 means "disabled".
+func TestLoadConfigTimeBudgetScaleRejectsAnExplicitZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    time_budget_scale: 0
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(path, Overrides{}); err == nil {
+		t.Fatal("time_budget_scale: 0 in the file was accepted")
+	}
+
+	// mergeProfiles layers a file's profile over whatever the base already holds,
+	// so it has to carry the Configured companion too: a base with a usable factor
+	// would otherwise swallow an explicit 0 through the `!= 0` fallback.
+	merged := mergeProfiles(
+		Profile{Model: "test-model", TimeBudgetScale: 2},
+		Profile{TimeBudgetScale: 0, TimeBudgetScaleConfigured: true},
+	)
+	if merged.TimeBudgetScale != 0 || !merged.TimeBudgetScaleConfigured {
+		t.Fatalf("merged time_budget_scale = %v (configured=%t), want an explicit 0",
+			merged.TimeBudgetScale, merged.TimeBudgetScaleConfigured)
+	}
+	if _, err := normalizeProfile(merged); err == nil {
+		t.Fatal("merged time_budget_scale: 0 was accepted")
 	}
 }

@@ -105,6 +105,7 @@ type Profile struct {
 	NudgeCountConfigured               bool    `yaml:"-"`
 	MaxFindingsConfigured              bool    `yaml:"-"`
 	MaxSessionsConfigured              bool    `yaml:"-"`
+	TimeBudgetScaleConfigured          bool    `yaml:"-"`
 }
 
 // SmallModelConfig holds the model configuration workflow steps select with
@@ -872,6 +873,7 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.TimeBudgetScale != nil {
 		profile.TimeBudgetScale = *overrides.TimeBudgetScale
+		profile.TimeBudgetScaleConfigured = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
@@ -956,10 +958,20 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.AssetBaseURL == "" {
 		profile.AssetBaseURL = DefaultAssetBaseURL
 	}
-	if profile.TimeBudgetScale == 0 {
+	if profile.TimeBudgetScale == 0 && !profile.TimeBudgetScaleConfigured {
 		profile.TimeBudgetScale = DefaultTimeBudgetScale
 	}
 	return profile
+}
+
+// UsableTimeBudgetScale reports whether factor can be honored as a time-budget
+// multiplier. A non-positive or non-finite factor cannot be: it would turn every
+// declared cap into an already-expired deadline, or into no deadline at all. This
+// is the one definition of the accepted range — normalizeProfile rejects anything
+// outside it and workflow.Spec.WithScaledTimeBudgets refuses to apply it, so the
+// two cannot drift.
+func UsableTimeBudgetScale(factor float64) bool {
+	return factor > 0 && !math.IsInf(factor, 0) && !math.IsNaN(factor)
 }
 
 func normalizeProfile(profile Profile) (Profile, error) {
@@ -984,9 +996,7 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
 	}
-	// A non-positive or non-finite factor cannot be honored: it would turn every
-	// declared cap into an already-expired deadline, or into no deadline at all.
-	if profile.TimeBudgetScale <= 0 || math.IsInf(profile.TimeBudgetScale, 0) || math.IsNaN(profile.TimeBudgetScale) {
+	if !UsableTimeBudgetScale(profile.TimeBudgetScale) {
 		return Profile{}, fmt.Errorf("config: time_budget_scale must be a positive number")
 	}
 	if profile.MaxRateLimitDelaySeconds < 0 {
@@ -1217,6 +1227,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.NudgeCountConfigured = mappingValue(profileNode, "nudge_count") != nil
 		profile.MaxFindingsConfigured = mappingValue(profileNode, "max_findings") != nil
 		profile.MaxSessionsConfigured = mappingValue(profileNode, "max_sessions") != nil
+		profile.TimeBudgetScaleConfigured = mappingValue(profileNode, "time_budget_scale") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil
