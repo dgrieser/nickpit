@@ -96,17 +96,18 @@ func ParseUnifiedDiffFormatsWithModes(diff string, modes FileModes) ([]model.Dif
 				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
 				sectionSawMode = true
 			}
-		case strings.HasPrefix(line, "new mode "), strings.HasPrefix(line, "index "):
-			// Mode-only change into a symlink ("new mode 120000") and a changed
-			// symlink target ("index <old>..<new> 120000") carry the mode here
-			// instead of on a new/deleted-file line. Both appear in the header
+		case strings.HasPrefix(line, "new mode "), strings.HasPrefix(line, "mode "), strings.HasPrefix(line, "index "):
+			// A mode-only change into a symlink ("new mode 120000", or a combined
+			// diff's "mode <parents>..<new>") and a changed symlink target
+			// ("index <old>..<new> 120000") carry the mode here instead of on a
+			// new/deleted-file line. Both appear in the header
 			// block before the first hunk, so they cannot collide with body
 			// lines (those always carry a ' ', '+', '-', or '\' prefix).
 			if currentEntry != nil {
 				// An "index" line carries a mode only when the mode is unchanged
 				// on both sides; when git omits it there is nothing to learn and
 				// the fallback still applies.
-				if fileModeFromDiffHeader(line) != "" {
+				if fileModeSpecFromDiffHeader(line) != "" {
 					sectionSawMode = true
 				}
 				if diffHeaderMarksSymlink(line) {
@@ -313,25 +314,58 @@ func NormalizeFileMode(mode string) string {
 // Pass header lines only; hunk body lines are not header lines but always carry
 // a prefix character, so they cannot match these forms.
 func diffHeaderMarksSymlink(line string) bool {
-	return fileModeFromDiffHeader(line) == SymlinkFileMode
+	return modeSpecMarksSymlink(fileModeSpecFromDiffHeader(line))
 }
 
-// fileModeFromDiffHeader extracts the mode a header line states for the reviewed
-// side, or "" when the line states none. "old mode" is deliberately ignored: it
-// always comes with a "new mode" that describes the post-change side.
-func fileModeFromDiffHeader(line string) string {
-	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode "} {
-		if mode, ok := strings.CutPrefix(line, prefix); ok {
-			return NormalizeFileMode(mode)
+// fileModeSpecFromDiffHeader extracts the mode specification a header line states,
+// or "" when it states none. A two-way diff states one mode; a combined ("--cc")
+// diff lists one mode per parent, comma-separated, and states a mode change as a
+// range whose post-change side follows "..":
+//
+//	deleted file mode 120000,100644
+//	mode 000000,100644..100644
+//
+// "old mode" is deliberately ignored: it always comes with a "new mode" that
+// describes the post-change side.
+func fileModeSpecFromDiffHeader(line string) string {
+	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode ", "mode "} {
+		if spec, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(spec)
 		}
 	}
 	if strings.HasPrefix(line, "index ") {
+		// Two-way: "index <old>..<new> <mode>". A combined index line
+		// ("index <a>,<b>..<c>") carries no mode; the separate "mode" line does.
 		fields := strings.Fields(line)
 		if len(fields) == 3 {
-			return NormalizeFileMode(fields[2])
+			return fields[2]
 		}
 	}
 	return ""
+}
+
+// modeSpecMarksSymlink reports whether a mode specification describes a symlink on
+// the side under review. A range states the post-change mode after "..", so that
+// side decides. A comma-separated list has no post-change side — it enumerates the
+// parents of a combined add or delete — so any parent that held a symlink makes the
+// content the section shows a link target rather than file text.
+func modeSpecMarksSymlink(spec string) bool {
+	if spec == "" {
+		return false
+	}
+	if pre, post, isRange := strings.Cut(spec, ".."); isRange {
+		if NormalizeFileMode(post) != "" {
+			return NormalizeFileMode(post) == SymlinkFileMode
+		}
+		// The post-change side is gone; the parents describe what was there.
+		spec = pre
+	}
+	for mode := range strings.SplitSeq(spec, ",") {
+		if NormalizeFileMode(mode) == SymlinkFileMode {
+			return true
+		}
+	}
+	return false
 }
 
 // diffSectionMarksSymlink reports whether a per-file diff section's header block
@@ -344,9 +378,9 @@ func diffSectionMarksSymlink(section string) (symlink, sawMode bool) {
 		if strings.HasPrefix(line, "@@") {
 			return symlink, sawMode
 		}
-		if mode := fileModeFromDiffHeader(line); mode != "" {
+		if spec := fileModeSpecFromDiffHeader(line); spec != "" {
 			sawMode = true
-			if mode == SymlinkFileMode {
+			if modeSpecMarksSymlink(spec) {
 				symlink = true
 			}
 		}

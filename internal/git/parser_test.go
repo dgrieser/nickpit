@@ -628,3 +628,65 @@ func TestParseUnifiedDiffFormatsWithModesKeepsHeaderModes(t *testing.T) {
 		t.Fatalf("regular-file addition marked as symlink: %#v / %#v / %#v", files[1], diffFiles[1], hunks[1])
 	}
 }
+
+// A combined diff ("--cc", a merge state) states one mode per parent, and a mode
+// change as a range. Reading such a list as a single opaque mode would mark the
+// section as "mode known" while recognizing no symlink, so a deleted link target
+// would be exposed as ordinary text with the raw-mode fallback suppressed.
+func TestDiffHeaderMarksSymlinkHandlesCombinedModeSpecs(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		symlink bool
+		known   bool
+	}{
+		{name: "two-way new file", line: "new file mode 120000", symlink: true, known: true},
+		{name: "combined delete with symlink parent", line: "deleted file mode 120000,100644", symlink: true, known: true},
+		{name: "combined delete of regular parents", line: "deleted file mode 100644,100644", known: true},
+		{name: "combined mode change into symlink", line: "mode 100644,100644..120000", symlink: true, known: true},
+		{name: "combined mode change into a file", line: "mode 000000,100644..100644", known: true},
+		{name: "combined mode change out of a symlink", line: "mode 120000,120000..100644", known: true},
+		{name: "combined index line carries no mode", line: "index 1de5659,2cc7521..0000000"},
+		{name: "two-way index with mode", line: "index 1de5659..27fa349 120000", symlink: true, known: true},
+		{name: "old mode is not the reviewed side", line: "old mode 120000"},
+		{name: "hunk header", line: "@@@ -1,1 -1,1 +1,0 @@@"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := diffHeaderMarksSymlink(tc.line); got != tc.symlink {
+				t.Fatalf("diffHeaderMarksSymlink(%q) = %v, want %v", tc.line, got, tc.symlink)
+			}
+			if got := fileModeSpecFromDiffHeader(tc.line) != ""; got != tc.known {
+				t.Fatalf("mode known for %q = %v, want %v", tc.line, got, tc.known)
+			}
+		})
+	}
+}
+
+// The real thing: a merge that resolved a type conflict by deleting the file.
+// The combined section's own header names the symlink parent, so no fallback is
+// needed — but it must not be silently swallowed either.
+func TestParseUnifiedDiffFormatsMarksCombinedSymlinkDeletion(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --cc f",
+		"index 1de5659,2cc7521..0000000",
+		"deleted file mode 120000,100644",
+		"--- a/f",
+		"+++ /dev/null",
+		"@@@ -1,1 -1,1 +1,0 @@@",
+		"- target",
+		" -changed on a",
+		"",
+	}, "\n")
+
+	diffFiles, _, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || !files[0].Symlink {
+		t.Fatalf("combined symlink deletion unmarked: %#v", files)
+	}
+	if len(diffFiles) != 1 || !diffFiles[0].Symlink {
+		t.Fatalf("combined diff file unmarked: %#v", diffFiles)
+	}
+}

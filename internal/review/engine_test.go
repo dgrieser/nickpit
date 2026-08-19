@@ -5115,3 +5115,39 @@ func TestReviewWithoutToolsRetryKeepsRolesAlternatingOnEmptyRawContent(t *testin
 		}
 	}
 }
+
+// Reading a symlink's path follows the link, so inlining full files would put the
+// TARGET's text under the symlink's own path — misrepresenting the file and
+// inviting findings about unrelated content. The symlink's real content is its
+// target path, which the diff already carries.
+func TestAppendFullFilesSkipsSymlinks(t *testing.T) {
+	retriever := &recordingRetrieval{}
+	engine := &Engine{retrieval: retriever}
+	reviewCtx := &model.ReviewContext{
+		ChangedFiles: []model.ChangedFile{
+			{Path: "deploy/chart/templates", Symlink: true},
+			{Path: "cmd/main.go"},
+		},
+	}
+
+	engine.appendFullFiles(context.Background(), reviewCtx, "/checkout")
+
+	if want := []string{"cmd/main.go"}; !slices.Equal(retriever.paths, want) {
+		t.Fatalf("retrieved paths = %v, want %v", retriever.paths, want)
+	}
+	if len(reviewCtx.SupplementalContext) != 1 || reviewCtx.SupplementalContext[0].Path != "cmd/main.go" {
+		t.Fatalf("supplemental context = %#v, want only the regular file", reviewCtx.SupplementalContext)
+	}
+}
+
+// recordingRetrieval notes which paths were read; everything else comes from
+// stubRetrieval.
+type recordingRetrieval struct {
+	stubRetrieval
+	paths []string
+}
+
+func (r *recordingRetrieval) GetFile(ctx context.Context, repoRoot, path string) (*retrieval.FileContent, error) {
+	r.paths = append(r.paths, path)
+	return r.stubRetrieval.GetFile(ctx, repoRoot, path)
+}

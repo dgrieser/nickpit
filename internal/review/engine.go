@@ -346,21 +346,7 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 	}
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
-		e.logf(ctx, "Including full files: count=%d", len(reviewCtx.ChangedFiles))
-		for _, file := range reviewCtx.ChangedFiles {
-			e.logf(ctx, "Retrieving file: path=%s", file.Path)
-			content, err := e.retrieval.GetFile(ctx, req.RepoRoot, file.Path)
-			if err != nil {
-				e.logf(ctx, "Skipping file retrieval: path=%s error=%v", file.Path, err)
-				continue
-			}
-			reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, model.SupplementalFile{
-				Path:     file.Path,
-				Content:  content.Content,
-				Language: content.Language,
-				Kind:     "full_file",
-			})
-		}
+		e.appendFullFiles(ctx, reviewCtx, req.RepoRoot)
 	}
 
 	// Scope checks must use the complete filtered diff, not the prompt-budget
@@ -2970,6 +2956,35 @@ func addDetectorLanguages(seen map[string]struct{}, path, content string) {
 }
 
 const maxStyleGuideProbeBytes = 1 << 20
+
+// appendFullFiles inlines the current content of every changed file as
+// supplemental context.
+//
+// Symlinks are skipped: reading their path follows the link and would inline the
+// TARGET's text under the symlink's own path, which both misrepresents the file
+// and invites findings about unrelated content. A symlink's real content is its
+// target path, which the diff already shows.
+func (e *Engine) appendFullFiles(ctx context.Context, reviewCtx *model.ReviewContext, repoRoot string) {
+	e.logf(ctx, "Including full files: count=%d", len(reviewCtx.ChangedFiles))
+	for _, file := range reviewCtx.ChangedFiles {
+		if file.Symlink {
+			e.logf(ctx, "Skipping file retrieval: path=%s reason=symlink", file.Path)
+			continue
+		}
+		e.logf(ctx, "Retrieving file: path=%s", file.Path)
+		content, err := e.retrieval.GetFile(ctx, repoRoot, file.Path)
+		if err != nil {
+			e.logf(ctx, "Skipping file retrieval: path=%s error=%v", file.Path, err)
+			continue
+		}
+		reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, model.SupplementalFile{
+			Path:     file.Path,
+			Content:  content.Content,
+			Language: content.Language,
+			Kind:     "full_file",
+		})
+	}
+}
 
 func readReviewFile(root, path string) string {
 	if root == "" || path == "" {
