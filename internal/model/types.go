@@ -289,6 +289,15 @@ type ChangedFile struct {
 	// judge it as text — a trailing newline, formatting, or content edit would
 	// change or break the link target.
 	Symlink bool `json:"symlink,omitempty"`
+	// OldPath is the pre-change path of a rename or copy. A pure rename carries
+	// no hunk, so without it the move is invisible in the structured diff formats
+	// — and for a relative symlink the move alone decides whether the target
+	// still resolves.
+	OldPath string `json:"old_path,omitempty"`
+	// SymlinkTarget is the path a symlink entry points at, i.e. the blob's whole
+	// content. It is filled when the patch carries no content of its own (a pure
+	// rename), which is exactly when the target cannot be read off the diff.
+	SymlinkTarget string `json:"symlink_target,omitempty"`
 }
 
 type DiffFile struct {

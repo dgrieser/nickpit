@@ -10,9 +10,10 @@ import (
 )
 
 // allowedDiffCodeLocations returns the authoritative old- and new-side hunk
-// windows as complete code_location values. The same values drive scope
+// windows as complete code_location values, plus one location per metadata-only
+// symlink change (see metadataOnlySymlinkLocations). The same values drive scope
 // validation, deterministic repair, and reviewer retry guidance.
-func allowedDiffCodeLocations(hunks []model.DiffHunk) []model.CodeLocation {
+func allowedDiffCodeLocations(hunks []model.DiffHunk, changed []model.ChangedFile) []model.CodeLocation {
 	locations := make([]model.CodeLocation, 0, len(hunks)*2)
 	for _, hunk := range hunks {
 		path := normalizeReviewPath(hunk.FilePath)
@@ -55,6 +56,7 @@ func allowedDiffCodeLocations(hunks []model.DiffHunk) []model.CodeLocation {
 			})
 		}
 	}
+	locations = append(locations, metadataOnlySymlinkLocations(hunks, changed)...)
 	slices.SortFunc(locations, func(a, b model.CodeLocation) int {
 		if n := cmp.Compare(a.FilePath, b.FilePath); n != 0 {
 			return n
@@ -135,11 +137,45 @@ func rangesOverlap(start, end, hunkStart, hunkLines int) bool {
 	return start <= hunkEnd && end >= hunkStart
 }
 
-func filterFindingsByDiffScope(findings []model.Finding, hunks []model.DiffHunk) ([]model.Finding, []model.Finding) {
+// metadataOnlySymlinkLocations grants a scopeable location to every symlink change
+// whose patch has no hunk at all. Renaming a symlink emits only "rename from/to"
+// lines, yet moving a relative symlink is precisely what can break its target — so
+// without this the reviewer is told the entry is a symlink and then has every
+// finding about it dropped for pointing outside the (empty) diff scope. The single
+// line of a symlink blob is its target, so line 1 is the whole file.
+func metadataOnlySymlinkLocations(hunks []model.DiffHunk, changed []model.ChangedFile) []model.CodeLocation {
+	if len(changed) == 0 {
+		return nil
+	}
+	hasHunk := make(map[string]bool, len(hunks))
+	for _, hunk := range hunks {
+		if path := normalizeReviewPath(hunk.FilePath); path != "" {
+			hasHunk[path] = true
+		}
+	}
+	var locations []model.CodeLocation
+	seen := make(map[string]bool, len(changed))
+	for _, file := range changed {
+		path := normalizeReviewPath(file.Path)
+		if !file.Symlink || path == "" || hasHunk[path] || seen[path] {
+			continue
+		}
+		seen[path] = true
+		locations = append(locations, model.CodeLocation{
+			FilePath:  path,
+			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
+			Language:  filetype.DetectLanguage(path),
+			Content:   file.SymlinkTarget,
+		})
+	}
+	return locations
+}
+
+func filterFindingsByDiffScope(findings []model.Finding, hunks []model.DiffHunk, changed []model.ChangedFile) ([]model.Finding, []model.Finding) {
 	if len(findings) == 0 {
 		return findings, nil
 	}
-	allowed := allowedDiffCodeLocations(hunks)
+	allowed := allowedDiffCodeLocations(hunks, changed)
 	kept := make([]model.Finding, 0, len(findings))
 	dropped := make([]model.Finding, 0)
 	for _, finding := range findings {

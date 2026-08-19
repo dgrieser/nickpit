@@ -141,7 +141,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	enforceDiffScope := !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil
 	var allowedDiffScopes []model.CodeLocation
 	if enforceDiffScope {
-		allowedDiffScopes = allowedDiffCodeLocations(st.Enriched.DiffScopeHunks)
+		allowedDiffScopes = allowedDiffCodeLocations(st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
 	}
 	return agentSpec{
 		name:                          vector.name,

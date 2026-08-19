@@ -905,7 +905,7 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 	if req.DisableDiffScope || reviewCtx == nil || reviewCtx.DiffScopeHunks == nil {
 		return nil
 	}
-	allowed := allowedDiffCodeLocations(reviewCtx.DiffScopeHunks)
+	allowed := allowedDiffCodeLocations(reviewCtx.DiffScopeHunks, reviewCtx.ChangedFiles)
 	relocate := e.diffScopeCodeLocationRelocator(req.RepoRoot, allowed)
 	var warnings []string
 	for i := range vectorResults {

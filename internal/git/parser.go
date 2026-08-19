@@ -114,6 +114,13 @@ func ParseUnifiedDiffFormatsWithModes(diff string, modes FileModes) ([]model.Dif
 					currentEntry.Symlink = true
 				}
 			}
+		case strings.HasPrefix(line, "rename from "):
+			if currentEntry != nil {
+				// A pure rename has no hunk, so the old path is the only record
+				// that the file moved. Git C-quotes it exactly like the paths on
+				// the "diff --git" line.
+				currentEntry.OldPath = unquoteGitPath(strings.TrimPrefix(line, "rename from "))
+			}
 		case strings.HasPrefix(line, "rename to "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileRenamed

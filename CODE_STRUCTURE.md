@@ -26,7 +26,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/pipeline_steps.go`: Step implementations for context collection, review lanes, merge, finalize, verdict, summarize, and fused post-merge execution.
 - `internal/review/reviewer_session.go`: Reviewer session state, main review execution, nudge handling, and reasoning-mining/update subagents.
 - `internal/review/categorizer.go`: Private per-finding descriptive classification inside verification. The classifier is blind to routing outcomes, diff scope, tools, and verifier evidence; Go applies the configured drop policy and classification failures fail open.
-- `internal/review/diff_scope.go`: Canonical old/new diff windows, deterministic overlap checks, and scope filtering used for location repair and retry guidance.
+- `internal/review/diff_scope.go`: Canonical old/new diff windows (plus a line-1 window for metadata-only symlink changes, which have no hunk), deterministic overlap checks, and scope filtering used for location repair and retry guidance.
 - `internal/review/verifier.go`: Per-finding evidence verification, verifier options, fallback unverified results, and verifier telemetry.
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
@@ -97,7 +97,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/git.go`: Git command wrapper and repository helpers.
 - `internal/git/diff.go`: Diff loading and changed-file extraction. Owns `patchArgs`/`stableDiffArgs`, the pinned `-U3` plus configuration-neutralizing flags every patch-emitting git invocation must use.
 - `internal/git/parser.go`: Git diff parser and hunk model.
-- `internal/git/modes.go`: Git file-mode lookups: symlink paths in a given commit tree (`ls-tree`, literal pathspecs) and post-change modes from a `--raw` listing, so symlinks are recognized independently of how a worktree materialized them.
+- `internal/git/modes.go`: Git file-mode lookups: symlink paths in a given commit tree (`ls-tree`, literal pathspecs) and post-change modes plus blob names from a `--raw` listing, so symlinks are recognized — and their targets recoverable — independently of how a worktree materialized them.
 - `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring.

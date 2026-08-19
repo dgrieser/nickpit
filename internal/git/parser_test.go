@@ -3,6 +3,8 @@ package git
 import (
 	"strings"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/model"
 )
 
 func TestParseDiffGitPath(t *testing.T) {
@@ -575,7 +577,7 @@ func TestParseUnifiedDiffFormatsWithModesFillsSilentSections(t *testing.T) {
 		"+new",
 		"",
 	}, "\n")
-	modes := FileModes{"dir/link2": "120000", "main.go": "100644"}
+	modes := FileModes{"dir/link2": {Mode: "120000", Blob: "78bc337"}, "main.go": {Mode: "100644", Blob: "2222222"}}
 
 	diffFiles, _, files, err := ParseUnifiedDiffFormatsWithModes(diff, modes)
 	if err != nil {
@@ -583,6 +585,11 @@ func TestParseUnifiedDiffFormatsWithModesFillsSilentSections(t *testing.T) {
 	}
 	if len(files) != 2 || files[0].Path != "dir/link2" {
 		t.Fatalf("files = %#v, want the renamed path first", files)
+	}
+	// A pure rename has no hunk, so the old path is the only record of the move —
+	// and for a relative target the move alone decides whether it still resolves.
+	if files[0].OldPath != "dir/sub/link" || files[0].Status != model.FileRenamed {
+		t.Fatalf("rename metadata lost: %#v", files[0])
 	}
 	if !files[0].Symlink || !diffFiles[0].Symlink {
 		t.Fatalf("renamed symlink stayed unmarked: %#v / %#v", files[0], diffFiles[0])
@@ -615,7 +622,7 @@ func TestParseUnifiedDiffFormatsWithModesKeepsHeaderModes(t *testing.T) {
 	}, "\n")
 	// "git diff --raw" reports the replacement as one typechange entry, so the
 	// path's raw mode alone cannot describe both sections.
-	modes := FileModes{"link": "100644"}
+	modes := FileModes{"link": {Mode: "100644", Blob: "c93cae4"}}
 
 	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, modes)
 	if err != nil {

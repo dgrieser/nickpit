@@ -447,6 +447,8 @@ func TestLocalSourceResolveContextRecoversModesForSilentSections(t *testing.T) {
 		outputs: map[string]string{
 			joinArgs(patchCall): patch,
 			joinArgs(rawCall):   raw,
+			// The blob the raw listing named holds the link target verbatim.
+			joinArgs([]string{"cat-file", "blob", "78bc337"}): "../target",
 		},
 		// No origin mirror of the base branch, so the explicit refs stand.
 		errors: map[string]error{
@@ -469,6 +471,11 @@ func TestLocalSourceResolveContextRecoversModesForSilentSections(t *testing.T) {
 	}
 	if len(ctx.DiffFiles) != 1 || !ctx.DiffFiles[0].Symlink {
 		t.Fatalf("diff file stayed unmarked: %#v", ctx.DiffFiles)
+	}
+	// The mark alone is not reviewable: with no hunk and no content, the target is
+	// the only way to tell whether the move broke a relative link.
+	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || ctx.ChangedFiles[0].SymlinkTarget != "../target" {
+		t.Fatalf("rename metadata incomplete: %#v", ctx.ChangedFiles[0])
 	}
 	// The raw listing carries no content, so it must not carry the patch flags.
 	rawArgs := ""
@@ -512,5 +519,50 @@ func TestLocalSourceResolveContextSurvivesRawModeFailure(t *testing.T) {
 	}
 	if len(ctx.ChangedFiles) != 1 || !ctx.ChangedFiles[0].Symlink {
 		t.Fatalf("header mode was lost with the raw listing: %#v", ctx.ChangedFiles)
+	}
+}
+
+// A symlink whose patch already shows the target must not be read again: the diff
+// is what the reviewer sees, and a second read could only disagree with it.
+func TestLocalSourceResolveContextLeavesVisibleSymlinkTargetsAlone(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/link b/link",
+		"new file mode 120000",
+		"index 0000000..32f64f4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+target",
+		"\\ No newline at end of file",
+		"",
+	}, "\n")
+	raw := ":000000 120000 0000000 32f64f4 A\x00link\x00"
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs(patchArgs("diff", "--cached")):               patch,
+			joinArgs([]string{"diff", "--raw", "-z", "--cached"}): raw,
+			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}): "feature\n",
+			joinArgs([]string{"cat-file", "blob", "32f64f4"}):     "target",
+		},
+	}
+	source := &LocalSource{repoRoot: t.TempDir(), git: runner}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "staged",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 1 || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("added symlink unmarked: %#v", ctx.ChangedFiles)
+	}
+	if ctx.ChangedFiles[0].SymlinkTarget != "" {
+		t.Fatalf("target duplicated although the patch shows it: %#v", ctx.ChangedFiles[0])
+	}
+	for _, call := range runner.calls {
+		if slices.Contains(call, "cat-file") {
+			t.Fatalf("blob read although the patch carries the target: %v", call)
+		}
 	}
 }

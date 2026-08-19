@@ -22,7 +22,7 @@ func TestAllowedDiffCodeLocationsAreCompleteCodeLocationJSON(t *testing.T) {
 		Content:  " context\n-old()\n+new()\n",
 	}}
 
-	allowed := allowedDiffCodeLocations(hunks)
+	allowed := allowedDiffCodeLocations(hunks, nil)
 	if len(allowed) != 2 {
 		t.Fatalf("allowed locations = %#v, want old and new code_location", allowed)
 	}
@@ -60,7 +60,7 @@ func TestAllowedDiffCodeLocationsSkipsEmptySides(t *testing.T) {
 		{FilePath: "added.go", NewStart: 4, NewLines: 1, Content: "+added()\n"},
 		{FilePath: "deleted.go", OldStart: 7, OldLines: 1, Content: "-deleted()\n"},
 	}
-	allowed := allowedDiffCodeLocations(hunks)
+	allowed := allowedDiffCodeLocations(hunks, nil)
 	if len(allowed) != 2 {
 		t.Fatalf("allowed locations = %#v, want one non-empty side per hunk", allowed)
 	}
@@ -86,7 +86,7 @@ func TestCodeLocationOverlapsDiffAcceptsAnyOldOrNewSideIntersection(t *testing.T
 		{name: "outside after hunks", path: "f.go", start: 40, end: 50, want: false},
 		{name: "wrong file", path: "other.go", start: 10, end: 10, want: false},
 	}
-	allowed := allowedDiffCodeLocations(hunks)
+	allowed := allowedDiffCodeLocations(hunks, nil)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			loc := model.CodeLocation{FilePath: tt.path, LineRange: model.LineRange{Start: tt.start, End: tt.end}}
@@ -104,7 +104,7 @@ func TestCodeLocationOverlapsLegacyContentOnlyHunk(t *testing.T) {
 		NewStart: 5,
 		Content:  " old\n-removed\n+added\n context\n",
 	}}
-	allowed := allowedDiffCodeLocations(hunks)
+	allowed := allowedDiffCodeLocations(hunks, nil)
 	for _, line := range []int{5, 6, 7} {
 		loc := model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: line, End: line}}
 		if !codeLocationOverlapsAllowed(loc, allowed) {
@@ -160,5 +160,71 @@ func TestPrepareFindingsForVerificationAggregatesOutOfDiffWarnings(t *testing.T)
 	}
 	if len(results[0].resp.Findings) != 0 {
 		t.Fatalf("findings = %#v, want both dropped", results[0].resp.Findings)
+	}
+}
+
+// Renaming a symlink emits no hunk at all, so without a scopeable location the
+// reviewer is told the entry is a symlink and then has every finding about it
+// dropped. The single line of a symlink blob is its target, so line 1 is the file.
+func TestAllowedDiffCodeLocationsCoversMetadataOnlySymlinkChanges(t *testing.T) {
+	changed := []model.ChangedFile{
+		{Path: "dir/link2", Status: model.FileRenamed, OldPath: "dir/sub/link", Symlink: true, SymlinkTarget: "../target"},
+		// A regular rename keeps the existing policy: no hunk, no scope.
+		{Path: "docs/moved.md", Status: model.FileRenamed, OldPath: "docs/old.md"},
+		// A symlink that does have a hunk is scoped by that hunk alone.
+		{Path: "added-link", Status: model.FileAdded, Symlink: true},
+	}
+	hunks := []model.DiffHunk{
+		{FilePath: "added-link", NewStart: 1, NewLines: 1, Content: "+target", Symlink: true},
+	}
+
+	allowed := allowedDiffCodeLocations(hunks, changed)
+
+	var renamedLink *model.CodeLocation
+	for i := range allowed {
+		if allowed[i].FilePath == "dir/link2" {
+			renamedLink = &allowed[i]
+		}
+		if allowed[i].FilePath == "docs/moved.md" {
+			t.Fatalf("a regular rename gained a scope: %#v", allowed[i])
+		}
+	}
+	if renamedLink == nil {
+		t.Fatalf("renamed symlink has no allowed location: %#v", allowed)
+	}
+	if renamedLink.LineRange.Start != 1 || renamedLink.LineRange.End != 1 || renamedLink.Content != "../target" {
+		t.Fatalf("allowed location = %#v, want line 1 carrying the target", *renamedLink)
+	}
+	// One location per path, not one per hunk-less entry plus a duplicate.
+	count := 0
+	for _, loc := range allowed {
+		if loc.FilePath == "added-link" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("added symlink locations = %d, want only its hunk", count)
+	}
+}
+
+// The whole point: a finding about a renamed symlink must survive the gate.
+func TestFilterFindingsByDiffScopeKeepsRenamedSymlinkFinding(t *testing.T) {
+	changed := []model.ChangedFile{
+		{Path: "dir/link2", Status: model.FileRenamed, OldPath: "dir/sub/link", Symlink: true, SymlinkTarget: "../target"},
+	}
+	findings := []model.Finding{
+		{
+			Title: "Relative symlink target no longer resolves after the move",
+			CodeLocation: model.CodeLocation{
+				FilePath:  "dir/link2",
+				LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
+			},
+		},
+	}
+
+	kept, dropped := filterFindingsByDiffScope(findings, nil, changed)
+
+	if len(kept) != 1 || len(dropped) != 0 {
+		t.Fatalf("kept = %d, dropped = %d, want the finding kept", len(kept), len(dropped))
 	}
 }

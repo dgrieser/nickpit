@@ -265,3 +265,29 @@ func TestParseRawFileModesUsesEveryParentOfACombinedDeletion(t *testing.T) {
 		t.Fatalf("combined deletion with a symlink parent unmarked: %#v", modes)
 	}
 }
+
+// The blob name rides along with the mode because a pure rename shows no content:
+// reading that blob is the only way to recover the link target.
+func TestParseRawFileModesKeepsBlobNames(t *testing.T) {
+	out := strings.Join([]string{
+		":120000 120000 78bc337 78bc337 R100\x00dir/sub/old\x00dir/new\x00",
+		":120000 000000 32f64f4 0000000 D\x00gone\x00",
+		":000000 120000 0000000 1de5659 A\x00added\x00",
+	}, "")
+
+	modes := ParseRawFileModes(out)
+
+	if got := modes.Blob("dir/new"); got != "78bc337" {
+		t.Fatalf("renamed blob = %q, want the destination object", got)
+	}
+	if got := modes.Blob("added"); got != "1de5659" {
+		t.Fatalf("added blob = %q", got)
+	}
+	// A deletion has no destination blob, and an unknown path has no entry.
+	if got := modes.Blob("gone"); got != "" {
+		t.Fatalf("deleted blob = %q, want empty", got)
+	}
+	if got := modes.Blob("never-seen"); got != "" {
+		t.Fatalf("unknown blob = %q, want empty", got)
+	}
+}

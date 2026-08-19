@@ -504,7 +504,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	}
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
 		var dropped []model.Finding
-		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks)
+		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
 		for i, finding := range dropped {
 			if p.engine.logger != nil {
 				p.engine.logger.ProgressFor(

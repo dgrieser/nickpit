@@ -78,19 +78,30 @@ func collectTreeSymlinks(out string, symlinks map[string]bool) {
 	}
 }
 
-// FileModes maps a repo-relative path to the post-change git file mode of that
-// path, as "git diff --raw" reports it. It fills the gap a patch leaves: git
-// prints a mode header only when the mode is new, gone, or changed, so a plain
-// rename of an unchanged symlink carries no 120000 anywhere in its patch.
-type FileModes map[string]string
+// FileModes maps a repo-relative path to what "git diff --raw" reports for that
+// path. It fills the gaps a patch leaves: git prints a mode header only when the
+// mode is new, gone, or changed, so a plain rename of an unchanged symlink carries
+// no 120000 anywhere in its patch — and no content either, which is why the blob
+// name is kept alongside the mode.
+type FileModes map[string]RawFileEntry
 
-// Symlink reports whether path is stored as a symlink according to these modes.
+// RawFileEntry is one raw-listing entry: the file mode that describes the side
+// under review, and the object name of that side's blob (empty for a deletion,
+// whose blob is gone).
+type RawFileEntry struct {
+	Mode string
+	Blob string
+}
+
+// Symlink reports whether path is stored as a symlink according to this listing.
 func (m FileModes) Symlink(path string) bool {
-	if len(m) == 0 {
-		return false
-	}
-	mode, ok := m[path]
-	return ok && NormalizeFileMode(mode) == SymlinkFileMode
+	entry, ok := m[path]
+	return ok && NormalizeFileMode(entry.Mode) == SymlinkFileMode
+}
+
+// Blob returns the object name of path's reviewed-side blob, or "" when unknown.
+func (m FileModes) Blob(path string) string {
+	return m[path].Blob
 }
 
 // RawEntryModes parses the meta token of a "git diff --raw" entry:
@@ -138,6 +149,22 @@ func SymlinkModeFromRawEntry(parents []string, dst string) string {
 	return fallback
 }
 
+// rawEntryBlob extracts the destination object name of a raw entry, given how many
+// parents it lists. Returns "" when the entry has no destination blob.
+func rawEntryBlob(meta string, parents int) string {
+	fields := strings.Fields(strings.TrimLeft(meta, ":"))
+	// modes: [0, parents]; object names: [parents+1, 2*parents+1]; then status.
+	dst := 2*parents + 1
+	if parents < 1 || dst >= len(fields) {
+		return ""
+	}
+	blob := fields[dst]
+	if strings.Trim(blob, "0") == "" {
+		return ""
+	}
+	return blob
+}
+
 // ParseRawFileModes reads the file mode of every entry in "git diff --raw -z"
 // output. An entry is "<meta>\0<path>[\0<newpath>]"; a rename or copy adds the
 // second path — the destination, which is the one keyed here.
@@ -161,7 +188,10 @@ func ParseRawFileModes(out string) FileModes {
 		}
 		mode := SymlinkModeFromRawEntry(parents, dst)
 		if path := tokens[i+paths]; path != "" && mode != "" {
-			modes[path] = mode
+			// The blob names follow the modes, so the destination's is the one
+			// right after the last parent's. It is all zeroes for a deletion,
+			// which NormalizeFileMode maps to "" just like an absent mode.
+			modes[path] = RawFileEntry{Mode: mode, Blob: rawEntryBlob(tokens[i], len(parents))}
 		}
 		i += paths
 	}

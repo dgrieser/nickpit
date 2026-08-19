@@ -77,10 +77,12 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, s.fileModesForRequest(ctx, resolvedReq))
+	rawEntries := s.fileModesForRequest(ctx, resolvedReq)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, rawEntries)
 	if err != nil {
 		return nil, err
 	}
+	s.attachSymlinkTargets(ctx, files, hunks, rawEntries)
 	commits, err := s.commitSummaries(ctx, resolvedReq)
 	if err != nil {
 		return nil, err
@@ -216,6 +218,52 @@ func (s *LocalSource) fileModesForRequest(ctx context.Context, req model.ReviewR
 		return nil
 	}
 	return ParseRawFileModes(out)
+}
+
+// maxSymlinkTargetBytes bounds what is accepted as a link target. POSIX caps a
+// symlink at PATH_MAX; anything larger is not a target, so it is not read into the
+// review context.
+const maxSymlinkTargetBytes = 4096
+
+// attachSymlinkTargets fills SymlinkTarget for symlink entries whose patch shows
+// no content at all — a pure rename, where git emits only "rename from/to" lines.
+// Such a change is exactly the one worth reviewing (moving a relative symlink can
+// break its target) and the one an agent cannot judge from the patch, so the blob
+// the raw listing named is read directly.
+//
+// Entries whose patch does carry the target (an added or changed symlink) are left
+// alone: the diff already shows it, and reading the blob again would only risk
+// disagreeing with what the reviewer sees.
+func (s *LocalSource) attachSymlinkTargets(ctx context.Context, files []model.ChangedFile, hunks []model.DiffHunk, entries FileModes) {
+	if len(entries) == 0 {
+		return
+	}
+	hasHunk := make(map[string]bool, len(hunks))
+	for _, hunk := range hunks {
+		hasHunk[hunk.FilePath] = true
+	}
+	targets := make(map[string]string, len(files))
+	for i := range files {
+		file := &files[i]
+		if !file.Symlink || hasHunk[file.Path] {
+			continue
+		}
+		if target, ok := targets[file.Path]; ok {
+			file.SymlinkTarget = target
+			continue
+		}
+		blob := entries.Blob(file.Path)
+		if blob == "" {
+			continue
+		}
+		out, err := s.git.Run(ctx, "cat-file", "blob", blob)
+		if err != nil || len(out) > maxSymlinkTargetBytes {
+			continue
+		}
+		target := strings.TrimRight(out, "\n")
+		targets[file.Path] = target
+		file.SymlinkTarget = target
+	}
 }
 
 func (s *LocalSource) commitSummaries(ctx context.Context, req model.ReviewRequest) ([]model.CommitSummary, error) {
