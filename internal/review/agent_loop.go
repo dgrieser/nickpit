@@ -519,7 +519,7 @@ func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt
 	}
 	e.logf(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 	if e.logger != nil {
-		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt))
+		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(attempt, req.MaxOutputRetries, "invalid JSON", 0))
 	}
 }
 

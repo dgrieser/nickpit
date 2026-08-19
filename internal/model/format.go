@@ -37,6 +37,26 @@ func HumanDuration(d time.Duration) string {
 	return d.Truncate(time.Second).String()
 }
 
+// HumanWait renders a duration for wait, backoff and countdown lines: exact
+// below a millisecond, whole milliseconds below a second, one decimal below a
+// minute, and whole seconds above it. Sub-second precision is noise at minute
+// scale, so a 4m59.573s rate-limit wait reads as "4m59s". Negative durations
+// render as "0s".
+func HumanWait(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "0s"
+	case d < time.Millisecond:
+		return d.String()
+	case d < time.Second:
+		return d.Round(time.Millisecond).String()
+	case d < time.Minute:
+		return d.Round(100 * time.Millisecond).String()
+	default:
+		return d.Truncate(time.Second).String()
+	}
+}
+
 // RuntimeSeconds converts a duration to float seconds rounded to two
 // decimals, the numeric runtime representation used in JSON output.
 func RuntimeSeconds(d time.Duration) float64 {

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -404,11 +405,14 @@ func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 		t.Fatalf("attempts = %d", attempts)
 	}
 	got := logs.String()
-	if want := "Model      retry 1 rate limited (429), waiting 1ms"; !strings.Contains(got, want) {
+	if want := "Model      retry 1 rate limited (429), waiting 1ms (waited 1ms/10m0s)"; !strings.Contains(got, want) {
 		t.Fatalf("missing first retry progress log %q in:\n%s", want, got)
 	}
-	if want := "Model      retry 2 rate limited (429), waiting 1ms"; !strings.Contains(got, want) {
+	if want := "Model      retry 2 rate limited (429), waiting 1ms (waited 2ms/10m0s)"; !strings.Contains(got, want) {
 		t.Fatalf("missing second retry progress log %q in:\n%s", want, got)
+	}
+	if want := "Model      ok recovered after 2 retries"; !strings.Contains(got, want) {
+		t.Fatalf("missing recovery progress log %q in:\n%s", want, got)
 	}
 }
 
@@ -429,6 +433,11 @@ func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
 	client.retrier.InitialBackoff = time.Nanosecond
 	client.retrier.MaxBackoff = time.Nanosecond
 
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
 	resp, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
 		UserContent:  "user",
@@ -442,6 +451,16 @@ func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
 	if attempts != 6 {
 		t.Fatalf("attempts = %d", attempts)
 	}
+	got := logs.String()
+	for _, want := range []string{
+		"Model      retry 1/5 status=500",
+		"Model      retry 5/5 status=500",
+		"Model      ok recovered after 5 retries",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
 }
 
 func TestClientReviewDoesNotRetryRequestTooLargeWhenPayloadCannotBeTrimmed(t *testing.T) {
@@ -453,6 +472,11 @@ func TestClientReviewDoesNotRetryRequestTooLargeWhenPayloadCannotBeTrimmed(t *te
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
 	_, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
 		UserContent:  "user",
@@ -462,6 +486,14 @@ func TestClientReviewDoesNotRetryRequestTooLargeWhenPayloadCannotBeTrimmed(t *te
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	// Nothing was retried, so the failure line is the only progress the user
+	// gets for a 413 that cannot be trimmed.
+	if want := "Model      warn status=413"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("missing %q in:\n%s", want, logs.String())
+	}
+	if strings.Contains(logs.String(), "after") {
+		t.Fatalf("no retry happened, failure line should not count retries:\n%s", logs.String())
 	}
 }
 
@@ -495,6 +527,11 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
 	resp, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
 		UserContent:  strings.Repeat("large review context\n", 1000),
@@ -518,6 +555,15 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 	}
 	if !foundOmission {
 		t.Fatalf("trimmed retry messages = %#v, want omission marker", secondMessages)
+	}
+	// The trimmed retry is not bounded by MaxRetries, so its counter is bare.
+	for _, want := range []string{
+		"Model      retry 1 prompt too long, retrying trimmed request",
+		"Model      ok recovered after 1 retry",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("missing %q in:\n%s", want, logs.String())
+		}
 	}
 }
 
@@ -3938,18 +3984,21 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 }
 
 func TestClientReviewLogsGiveUpAfterNetworkRetriesExhausted(t *testing.T) {
-	attempts := 0
+	var attempts atomic.Int64
+	var hijackErr atomic.Value
 	var logBuf bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		attempts.Add(1)
 		hj, ok := w.(http.Hijacker)
 		if !ok {
-			t.Fatal("response writer does not support hijacking")
+			hijackErr.Store("response writer does not support hijacking")
+			return
 		}
 		conn, _, err := hj.Hijack()
 		if err != nil {
-			t.Fatalf("hijack: %v", err)
+			hijackErr.Store(fmt.Sprintf("hijack: %v", err))
+			return
 		}
 		_ = conn.Close()
 	}))
@@ -3970,14 +4019,17 @@ func TestClientReviewLogsGiveUpAfterNetworkRetriesExhausted(t *testing.T) {
 		t.Fatal("expected request to fail once retries are exhausted")
 	}
 
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3 (initial attempt plus two retries)", attempts)
+	if msg, ok := hijackErr.Load().(string); ok {
+		t.Fatal(msg)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3 (initial attempt plus two retries)", got)
 	}
 	got := logBuf.String()
 	for _, want := range []string{
 		"Model      retry 1/2 network error",
 		"Model      retry 2/2 network error",
-		"Model      error gave up after 2 retries: network error",
+		"Model      warn network error after 2 retries",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
@@ -3985,6 +4037,51 @@ func TestClientReviewLogsGiveUpAfterNetworkRetriesExhausted(t *testing.T) {
 	}
 	if strings.Contains(got, "recovered after") {
 		t.Fatalf("failed request should not log recovery:\n%s", got)
+	}
+}
+
+func TestClientReviewDoesNotLogGiveUpWhenContextCanceled(t *testing.T) {
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cancel the caller's context, then kill the connection so the attempt
+		// fails the way a Ctrl-C mid-request does.
+		cancel()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	retryLogger := logging.New(&logBuf, false, false)
+	retryLogger.SetShowProgress(true)
+	client.SetLogger(retryLogger)
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+
+	if _, err := client.Review(ctx, &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err == nil {
+		t.Fatal("expected the canceled request to fail")
+	}
+
+	// A deliberate cancel is not a model failure: the error reaches the caller,
+	// but the progress stream must not report it as one.
+	got := logBuf.String()
+	for _, unwanted := range []string{"Model      warn", "Model      error"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("cancellation logged %q in:\n%s", unwanted, got)
+		}
 	}
 }
 

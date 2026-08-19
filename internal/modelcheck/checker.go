@@ -14,6 +14,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
+	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/prompts"
@@ -304,7 +305,7 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if !retryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
-		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, maxRetries, fmt.Sprintf("reason=%q", err.Error()), 0))
 	}
 }
 
@@ -695,7 +696,7 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
 			validationErr = err
 			resp = retryResp
-			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("json_retry=%d error=%q", attempt+1, err.Error()))
+			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, fmt.Sprintf("invalid JSON, error=%q", err.Error()), 0))
 			continue
 		}
 		probe.Status = ""

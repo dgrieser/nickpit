@@ -185,10 +185,6 @@ func (r *Retrier) rateLimitMessageDelay(message string) (time.Duration, bool) {
 	return best, found
 }
 
-func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) error {
-	return r.WaitFor(ctx, r.Backoff(attempt, resp))
-}
-
 func (r *Retrier) WaitFor(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
