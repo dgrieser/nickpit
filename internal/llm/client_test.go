@@ -404,10 +404,10 @@ func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 		t.Fatalf("attempts = %d", attempts)
 	}
 	got := logs.String()
-	if want := "Model      retry rate limited (429), waiting 1ms before attempt 2"; !strings.Contains(got, want) {
+	if want := "Model      retry 1 rate limited (429), waiting 1ms"; !strings.Contains(got, want) {
 		t.Fatalf("missing first retry progress log %q in:\n%s", want, got)
 	}
-	if want := "Model      retry rate limited (429), waiting 1ms before attempt 3"; !strings.Contains(got, want) {
+	if want := "Model      retry 2 rate limited (429), waiting 1ms"; !strings.Contains(got, want) {
 		t.Fatalf("missing second retry progress log %q in:\n%s", want, got)
 	}
 }
@@ -3796,7 +3796,7 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry stream network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1/5 stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -3858,7 +3858,7 @@ func TestClientReviewRetriesPeerInternalStreamErrorWithPartialContent(t *testing
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry stream network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1/5 stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -3929,8 +3929,62 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1/5 network error") {
 		t.Fatalf("network retry notice missing: %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "Model      ok recovered after 1 retry") {
+		t.Fatalf("recovery notice missing: %q", logBuf.String())
+	}
+}
+
+func TestClientReviewLogsGiveUpAfterNetworkRetriesExhausted(t *testing.T) {
+	attempts := 0
+	var logBuf bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("response writer does not support hijacking")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	retryLogger := logging.New(&logBuf, false, false)
+	retryLogger.SetShowProgress(true)
+	client.SetLogger(retryLogger)
+	client.retrier.MaxRetries = 2
+	client.retrier.InitialBackoff = 4 * time.Nanosecond
+	client.retrier.MaxBackoff = 4 * time.Nanosecond
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err == nil {
+		t.Fatal("expected request to fail once retries are exhausted")
+	}
+
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3 (initial attempt plus two retries)", attempts)
+	}
+	got := logBuf.String()
+	for _, want := range []string{
+		"Model      retry 1/2 network error",
+		"Model      retry 2/2 network error",
+		"Model      error gave up after 2 retries: network error",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "recovered after") {
+		t.Fatalf("failed request should not log recovery:\n%s", got)
 	}
 }
 

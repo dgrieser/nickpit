@@ -1672,12 +1672,13 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					if changed && after < before {
 						requestTooLargeRetried = true
 						payload = trimmed
-						c.logProgress(ctx, logging.StageModel, logging.StateRetry, "prompt too long, retrying trimmed request")
+						c.logRetryAttempt(ctx, attempt, false, "prompt too long, retrying trimmed request", 0)
 						c.logf(ctx, "Retrying oversized request with trimmed payload: status=%d before_bytes=%d request_body_bytes=%d target_bytes=%d", status, before, after, target)
 						continue
 					}
 				}
 				if !c.shouldRetryHTTPStatus(status, attempt) {
+					c.logRetryGaveUp(ctx, attempt, c.retrier.ShouldRetry(status), fmt.Sprintf("status=%d", status))
 					return nil, statusErr
 				}
 				resp := responseFromCapture(capture)
@@ -1688,11 +1689,12 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					}
 					if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && rateLimitWaited+waitFor > budget {
 						c.logf(ctx, "Rate limit retry budget exhausted: waited=%s budget=%s", rateLimitWaited, budget)
+						c.logRetryGaveUp(ctx, attempt, true, fmt.Sprintf("rate limited (429) for over %s", budget))
 						return nil, fmt.Errorf("llm: rate limited for over %s: %w", budget, statusErr)
 					}
 					rateLimitWaited += waitFor
 				}
-				c.logRetryHTTPStatus(ctx, status, attempt+1, waitFor)
+				c.logRetryHTTPStatus(ctx, status, attempt, waitFor)
 				c.logf(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
 				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1700,11 +1702,14 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				continue
 			}
 			c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, err)
-			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
+			retryable := isRetryableNetworkError(err)
+			if !retryable || attempt >= c.retrier.MaxRetries {
+				c.logRetryGaveUp(ctx, attempt, retryable, "network error")
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
-			c.logProgress(ctx, logging.StageModel, logging.StateRetry, "network error")
-			if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
+			waitFor := c.retrier.Backoff(attempt, nil)
+			c.logRetryAttempt(ctx, attempt, true, "network error", waitFor)
+			if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 				return nil, fmt.Errorf("llm: request canceled: %w", waitErr)
 			}
 			continue
@@ -1763,20 +1768,27 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				if isReasoningOnlyPeerInternalStreamError(readErr) {
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
-				if retryableStreamReadError(readErr) && attempt < c.retrier.MaxRetries {
-					c.logProgress(ctx, logging.StageModel, logging.StateRetry, "stream network error")
+				if retryableStreamReadError(readErr) {
+					if attempt >= c.retrier.MaxRetries {
+						c.logRetryGaveUp(ctx, attempt, true, "stream network error")
+						return nil, streamErr
+					}
+					waitFor := c.retrier.Backoff(attempt, nil)
+					c.logRetryAttempt(ctx, attempt, true, "stream network error", waitFor)
 					c.logf(ctx, "Retrying request: stream network error")
-					if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
+					if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
 					}
 					continue
 				}
 			}
+			c.logRetryGaveUp(ctx, attempt, false, "stream error")
 			return nil, streamErr
 		}
 		if closeErr != nil {
 			return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
 		}
+		c.logRetryRecovered(ctx, attempt)
 		return resp, nil
 	}
 }
@@ -1822,12 +1834,74 @@ func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
 	return attempt < c.retrier.MaxRetries
 }
 
-func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, status, currentAttempt int, waitFor time.Duration) {
+func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, status, attempt int, waitFor time.Duration) {
 	if status == http.StatusTooManyRequests {
-		c.logProgress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("rate limited (429), waiting %s before attempt %d", waitFor, currentAttempt+1))
+		// 429 retries are bounded by the total rate-limit wait budget rather
+		// than MaxRetries, so their counter carries no denominator.
+		c.logRetryAttempt(ctx, attempt, false, "rate limited (429)", waitFor)
 		return
 	}
-	c.logProgress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("status=%d, retrying in %s", status, waitFor))
+	c.logRetryAttempt(ctx, attempt, true, fmt.Sprintf("status=%d", status), waitFor)
+}
+
+// logRetryAttempt emits the retry progress line: which retry this is, why, and
+// how long the wait before it is. bounded reports whether MaxRetries caps the
+// retries; a zero waitFor omits the wait for retries that fire immediately.
+func (c *OpenAIClient) logRetryAttempt(ctx context.Context, attempt int, bounded bool, reason string, waitFor time.Duration) {
+	msg := c.retryCounter(attempt, bounded) + " " + reason
+	if waitFor > 0 {
+		msg += ", waiting " + formatRetryWait(waitFor)
+	}
+	c.logProgress(ctx, logging.StageModel, logging.StateRetry, msg)
+}
+
+// logRetryGaveUp reports that the retry loop stopped for good. A first attempt
+// that failed with a non-retryable error stays silent: nothing was retried, so
+// there is nothing to give up on, and the error reaches the caller anyway.
+func (c *OpenAIClient) logRetryGaveUp(ctx context.Context, retries int, retryable bool, reason string) {
+	switch {
+	case retries > 0:
+		c.logProgress(ctx, logging.StageModel, logging.StateError, fmt.Sprintf("gave up after %s: %s", retryCountLabel(retries), reason))
+	case retryable:
+		c.logProgress(ctx, logging.StageModel, logging.StateError, "not retrying: "+reason)
+	}
+}
+
+// logRetryRecovered reports that a request succeeded after at least one retry,
+// so a burst of retry lines is visibly closed out instead of trailing off.
+func (c *OpenAIClient) logRetryRecovered(ctx context.Context, retries int) {
+	if retries <= 0 {
+		return
+	}
+	c.logProgress(ctx, logging.StageModel, logging.StateOK, "recovered after "+retryCountLabel(retries))
+}
+
+// retryCounter renders the retry number, with the MaxRetries denominator when
+// that is what bounds the loop ("2/5"), and bare otherwise ("2").
+func (c *OpenAIClient) retryCounter(attempt int, bounded bool) string {
+	if bounded && c.retrier.MaxRetries > 0 {
+		return fmt.Sprintf("%d/%d", attempt+1, c.retrier.MaxRetries)
+	}
+	return fmt.Sprintf("%d", attempt+1)
+}
+
+func retryCountLabel(retries int) string {
+	if retries == 1 {
+		return "1 retry"
+	}
+	return fmt.Sprintf("%d retries", retries)
+}
+
+// formatRetryWait keeps sub-second waits exact and trims the jitter noise off
+// longer ones, so "waiting 2.1s" never renders as "waiting 2.134217s".
+func formatRetryWait(d time.Duration) string {
+	if d >= time.Second {
+		return d.Round(100 * time.Millisecond).String()
+	}
+	if d >= time.Millisecond {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.String()
 }
 
 func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController, cancel context.CancelFunc) (*streamedResponse, error) {
