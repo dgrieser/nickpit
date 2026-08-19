@@ -6,9 +6,13 @@ import (
 )
 
 // RetryCounter renders the retry number for a progress line, with the maximum
-// as a denominator when one bounds the loop ("2/5") and bare otherwise ("2").
-// A max of zero or less means unbounded, matching the "0 = unlimited" retry
-// semantics the config uses.
+// as a denominator when a retry count bounds the loop ("2/5") and bare
+// otherwise ("2"). A max of zero or less means "no count bounds this retry" —
+// either nothing does, or something other than a count does, such as the
+// cumulative rate-limit wait that bounds 429 retries. It is the caller's job
+// to pass the bound that actually applies to the counter it is rendering; the
+// callers' own "0 = unlimited" config semantics are separate and must be
+// translated, not passed through.
 func RetryCounter(retry, max int) string {
 	if max > 0 {
 		return fmt.Sprintf("%d/%d", retry, max)

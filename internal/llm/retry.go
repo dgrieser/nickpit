@@ -18,7 +18,9 @@ type Retrier struct {
 	// MaxTotalRateLimitWait caps the cumulative time a single request is
 	// allowed to spend waiting on rate-limit (429) retries. Once the total
 	// would exceed this budget the caller stops retrying and surfaces the
-	// last rate-limit error. Zero disables the cap.
+	// last rate-limit error. Zero disables the wait cap, in which case 429
+	// retries fall back to the MaxRetries count bound: without either, a
+	// permanently rate-limited endpoint would stall a lane forever.
 	MaxTotalRateLimitWait time.Duration
 	maxRateLimitDelay     atomic.Int64
 	RetryableHTTP         map[int]struct{}

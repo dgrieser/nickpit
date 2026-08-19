@@ -885,7 +885,20 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if req == nil {
 		return nil, fmt.Errorf("llm: nil review request")
 	}
+	// One retryProgress spans the whole call, the reasoning-effort ladder in
+	// reviewLadder included, so the outcome is reported once per call instead of
+	// once per attempt: a stream failure the ladder recovers from is not a
+	// failure the user needs to see, and a failure after the stream closed is.
+	var progress retryProgress
+	resp, err := c.reviewLadder(ctx, req, &progress)
+	c.logRetryOutcome(ctx, &progress, err)
+	return resp, err
+}
 
+// reviewLadder runs one review down the reasoning-effort ladder, retrying at a
+// lower effort when the model exhausts its reasoning budget, loops, or answers
+// with reasoning only, and finally once without tools.
+func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, progress *retryProgress) (*ReviewResponse, error) {
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
 	if req.Urgent {
@@ -944,7 +957,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if loopDetected {
 			addReasoningLoopRetryHint(&attemptReq)
 		}
-		resp, usage, err := c.reviewOnce(ctx, &attemptReq)
+		resp, usage, err := c.reviewOnce(ctx, &attemptReq, progress)
 		addTokenUsage(&totalUsage, usage)
 		if err == nil {
 			return finishResponse(resp), nil
@@ -1024,7 +1037,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningBudgetRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last budget-exhausted reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq, progress)
 		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
@@ -1049,7 +1062,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningBudgetRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last reasoning-only empty effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq, progress)
 		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
@@ -1074,7 +1087,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningLoopRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq, progress)
 		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
@@ -1301,7 +1314,7 @@ func isUnknownVariantRejection(message, effort string) bool {
 // reviewOnce performs one logical review call. The returned TokenUsage is the
 // total spend of the call including stream-level retries, and is reported even
 // when the call fails so Review can accumulate spend across fallback attempts.
-func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*ReviewResponse, model.TokenUsage, error) {
+func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress *retryProgress) (*ReviewResponse, model.TokenUsage, error) {
 	var callUsage model.TokenUsage
 	if req == nil {
 		return nil, callUsage, fmt.Errorf("llm: nil review request")
@@ -1377,6 +1390,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 
 	serializedPayload, err := serializedRequestPayload(payload, requestExtraBody)
 	if err != nil {
+		progress.recordFailure("request could not be encoded")
 		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
 	}
 	requestBodyBytes := len(serializedPayload)
@@ -1384,9 +1398,11 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	if c.maxRequestBytes > 0 && requestBodyBytes > c.maxRequestBytes {
 		trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, requestExtraBody, c.maxRequestBytes)
 		if trimErr != nil {
+			progress.recordFailure("request could not be trimmed")
 			return nil, callUsage, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
 		}
 		if !changed || after > c.maxRequestBytes {
+			progress.recordFailure("request too large after trimming")
 			return nil, callUsage, fmt.Errorf(
 				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
 				after,
@@ -1398,6 +1414,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	}
 	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)
 	if err != nil {
+		progress.recordFailure("request could not be encoded")
 		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
 	}
 
@@ -1418,7 +1435,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logJSON(ctx, "LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, &callUsage)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, &callUsage, progress)
 	if err != nil {
 		return nil, callUsage, err
 	}
@@ -1434,9 +1451,11 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	c.logRawModelResponse(ctx, streamed)
 
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
+		progress.recordFailure("reasoning budget exhausted")
 		return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 	}
 	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls && reasoningOnlyEmptyFinish(streamed.lastFinishReason) {
+		progress.recordFailure("reasoning-only empty response")
 		return nil, callUsage, &ReasoningOnlyEmptyResponseError{
 			ReasoningEffort: payload.ReasoningEffort,
 			FinishReason:    streamed.lastFinishReason,
@@ -1467,6 +1486,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 					invalidResp.PartialResponse = resp
 				}
 			}
+			progress.recordFailure("invalid response")
 			return nil, callUsage, err
 		}
 		if overwrittenIDs > 0 {
@@ -1627,42 +1647,53 @@ func addTokenUsage(total *model.TokenUsage, usage model.TokenUsage) {
 	total.TotalTokens += usage.TotalTokens
 }
 
-// retryProgress accumulates what one request's retry loop did so its outcome
-// is reported from a single place. The loop has more than a dozen exits and
-// logging the terminal line at each of them left most of them silent, so a
+// retryProgress accumulates what one Review call's retries did so the outcome
+// is reported from a single place. The retry loop has more than a dozen exits
+// and logging the terminal line at each of them left most of them silent, so a
 // burst of retry lines could simply trail off.
+//
+// Its scope is the whole call, reviewLadder's effort ladder included, because
+// the ladder is Review's own recovery path: a stream failure the ladder
+// recovers from must not be reported as a failure, and a failure raised after
+// the stream closed cleanly must not be reported as a success.
 type retryProgress struct {
-	// retries counts the retries actually performed, of every kind.
+	// retries counts the retries performed for this call, of every kind, and is
+	// the number the outcome line reports. It is incremented where a retry is
+	// decided rather than inside a logging helper, so the count cannot drift
+	// with changes to when lines are emitted.
 	retries int
-	// rateLimitRetries counts the subset that were 429 waits. Those are bounded
-	// by the total rate-limit wait budget rather than by MaxRetries, so they get
-	// their own counter instead of sharing the loop's attempt number.
-	rateLimitRetries int
-	// rateLimitWaited accumulates every 429 backoff for this request; once the
-	// next wait would push it past the retrier's budget we stop retrying
-	// instead of stalling a lane indefinitely on a hard rate limit.
-	rateLimitWaited time.Duration
-	// reason describes the most recent failure for the outcome line. Retries
-	// set it too, in case the retry they announce turns out to be the last.
-	reason string
+	// failure names the most recent failure, for the outcome line.
+	// recordFailure is its only writer, so a retry cannot overwrite the reason
+	// the call actually ended with.
+	failure string
 }
 
-// fail records why the retry loop is ending, so the outcome line names the
-// failure that actually stopped it rather than the last retry's reason.
-func (p *retryProgress) fail(reason string) {
-	p.reason = reason
+// recordFailure names the failure that ended an attempt. Review may still
+// recover from it by retrying at a lower reasoning effort, in which case the
+// outcome is a recovery and this reason is never printed.
+func (p *retryProgress) recordFailure(reason string) {
+	p.failure = reason
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage) (*streamedResponse, error) {
-	var progress retryProgress
-	resp, err := c.reviewStreamAttempts(ctx, payload, extraBody, sink, maxReasoning, totalUsage, &progress)
-	c.logRetryOutcome(ctx, &progress, err)
-	return resp, err
+// requestRetries counts one HTTP request's retries per the budget that bounds
+// them, because those budgets differ: MaxRetries bounds network, stream-read
+// and retryable non-429 status retries, while the cumulative rate-limit wait
+// bounds 429s. Sharing the loop's attempt number let 429 retries spend the
+// MaxRetries budget, so the first 500 after a burst of rate limits was treated
+// as "retries exhausted" and failed without a single retry of its own.
+type requestRetries struct {
+	bounded   int
+	rateLimit int
+	// waited accumulates every 429 backoff for this request; once the next wait
+	// would push it past the retrier's budget we stop retrying instead of
+	// stalling a lane indefinitely on a hard rate limit.
+	waited time.Duration
 }
 
-func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage, progress *retryProgress) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage, progress *retryProgress) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	requestTooLargeRetried := false
+	var retries requestRetries
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		streamCtx, slot := contextWithCaptureSlot(streamCtx)
@@ -1688,7 +1719,7 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 				if isRequestTooLarge(status, statusErr.message) && !requestTooLargeRetried {
 					serialized, serializeErr := serializedRequestPayload(payload, extraBody)
 					if serializeErr != nil {
-						progress.fail("oversized request could not be encoded")
+						progress.recordFailure("oversized request could not be encoded")
 						return nil, fmt.Errorf("llm: encoding oversized retry request: %w", serializeErr)
 					}
 					target := len(serialized) * 3 / 4
@@ -1697,19 +1728,23 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 					}
 					trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, extraBody, target)
 					if trimErr != nil {
-						progress.fail("oversized request could not be trimmed")
+						progress.recordFailure("oversized request could not be trimmed")
 						return nil, fmt.Errorf("llm: trimming oversized retry request: %w", trimErr)
 					}
 					if changed && after < before {
 						requestTooLargeRetried = true
 						payload = trimmed
-						c.logRetryAttempt(ctx, progress, "prompt too long", model.RetryLine(attempt+1, 0, "prompt too long, retrying trimmed request", 0))
+						// requestTooLargeRetried gates this to one shot, so the
+						// counter is 1/1 rather than the loop's attempt number,
+						// which counts unrelated retries and is bounded elsewhere.
+						progress.retries++
+						c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(1, 1, "prompt too long, retrying trimmed request", 0))
 						c.logf(ctx, "Retrying oversized request with trimmed payload: status=%d before_bytes=%d request_body_bytes=%d target_bytes=%d", status, before, after, target)
 						continue
 					}
 				}
-				if !c.shouldRetryHTTPStatus(status, attempt) {
-					progress.fail(fmt.Sprintf("status=%d", status))
+				if !c.shouldRetryHTTPStatus(status, retries) {
+					progress.recordFailure(fmt.Sprintf("status=%d", status))
 					return nil, statusErr
 				}
 				resp := responseFromCapture(capture)
@@ -1718,14 +1753,18 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 					if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
 						c.logf(ctx, "Retry honoring 429 reset hint: %s", waitFor)
 					}
-					if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && progress.rateLimitWaited+waitFor > budget {
-						c.logf(ctx, "Rate limit retry budget exhausted: waited=%s budget=%s", progress.rateLimitWaited, budget)
-						progress.fail(fmt.Sprintf("rate limited (429) for over %s", model.HumanWait(budget)))
+					if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && retries.waited+waitFor > budget {
+						c.logf(ctx, "Rate limit retry budget exhausted: waited=%s budget=%s", retries.waited, budget)
+						progress.recordFailure(fmt.Sprintf("rate limited (429) for over %s", model.HumanWait(budget)))
 						return nil, fmt.Errorf("llm: rate limited for over %s: %w", budget, statusErr)
 					}
-					progress.rateLimitWaited += waitFor
+					retries.waited += waitFor
+					retries.rateLimit++
+				} else {
+					retries.bounded++
 				}
-				c.logRetryHTTPStatus(ctx, progress, status, attempt, waitFor)
+				progress.retries++
+				c.logProgress(ctx, logging.StageModel, logging.StateRetry, c.retryHTTPStatusLine(status, retries, waitFor))
 				c.logf(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
 				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1733,12 +1772,14 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 				continue
 			}
 			c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, err)
-			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
-				progress.fail("network error")
+			if !isRetryableNetworkError(err) || retries.bounded >= c.retrier.MaxRetries {
+				progress.recordFailure("network error")
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
 			waitFor := c.retrier.Backoff(attempt, nil)
-			c.logRetryAttempt(ctx, progress, "network error", model.RetryLine(attempt+1, c.retrier.MaxRetries, "network error", waitFor))
+			retries.bounded++
+			progress.retries++
+			c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(retries.bounded, c.retrier.MaxRetries, "network error", waitFor))
 			if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 				return nil, fmt.Errorf("llm: request canceled: %w", waitErr)
 			}
@@ -1775,7 +1816,7 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 					}
 					c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
-				progress.fail("reasoning loop detected")
+				progress.recordFailure("reasoning loop detected")
 				return nil, loopErr
 			}
 			var outputLoopErr *OutputLoopDetectedError
@@ -1788,27 +1829,29 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 					}
 					c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", outputLoopErr.RepeatedContent)
 				}
-				progress.fail("repeated output chunk")
+				progress.recordFailure("repeated output chunk")
 				return nil, outputLoopErr
 			}
 			if timeout.Expired() {
 				c.logf(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
-				progress.fail("reasoning time limit exceeded")
+				progress.recordFailure("reasoning time limit exceeded")
 				return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 			}
 			var readErr *streamReadError
 			if errors.As(streamErr, &readErr) {
 				if isReasoningOnlyPeerInternalStreamError(readErr) {
-					progress.fail("reasoning budget exhausted")
+					progress.recordFailure("reasoning budget exhausted")
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
 				if retryableStreamReadError(readErr) {
-					if attempt >= c.retrier.MaxRetries {
-						progress.fail("stream network error")
+					if retries.bounded >= c.retrier.MaxRetries {
+						progress.recordFailure("stream network error")
 						return nil, streamErr
 					}
 					waitFor := c.retrier.Backoff(attempt, nil)
-					c.logRetryAttempt(ctx, progress, "stream network error", model.RetryLine(attempt+1, c.retrier.MaxRetries, "stream network error", waitFor))
+					retries.bounded++
+					progress.retries++
+					c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(retries.bounded, c.retrier.MaxRetries, "stream network error", waitFor))
 					c.logf(ctx, "Retrying request: stream network error")
 					if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1816,11 +1859,11 @@ func (c *OpenAIClient) reviewStreamAttempts(ctx context.Context, payload openai.
 					continue
 				}
 			}
-			progress.fail("stream error")
+			progress.recordFailure("stream error")
 			return nil, streamErr
 		}
 		if closeErr != nil {
-			progress.fail("closing stream failed")
+			progress.recordFailure("closing stream failed")
 			return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
 		}
 		return resp, nil
@@ -1852,7 +1895,7 @@ func isRequestTooLarge(status int, message string) bool {
 	})
 }
 
-func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
+func (c *OpenAIClient) shouldRetryHTTPStatus(status int, retries requestRetries) bool {
 	// Retrying a byte-identical 413 request cannot succeed and can amplify load
 	// on an already constrained gateway. Keep this invariant explicit even if
 	// the retrier's generic status set changes later.
@@ -1863,49 +1906,60 @@ func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
 		return false
 	}
 	if status == http.StatusTooManyRequests {
-		return true
-	}
-	return attempt < c.retrier.MaxRetries
-}
-
-func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, progress *retryProgress, status, attempt int, waitFor time.Duration) {
-	if status == http.StatusTooManyRequests {
-		// 429 retries are bounded by the total rate-limit wait budget rather than
-		// MaxRetries, so their counter is the 429 count (not the loop's attempt
-		// number, which also counts 500s and trimmed retries) and the line reports
-		// how much of that budget is gone in place of a denominator.
-		progress.rateLimitRetries++
-		msg := model.RetryLine(progress.rateLimitRetries, 0, "rate limited (429)", waitFor)
-		if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 {
-			msg += fmt.Sprintf(" (waited %s/%s)", model.HumanWait(progress.rateLimitWaited), model.HumanWait(budget))
+		// 429s are bounded by the cumulative rate-limit wait rather than by a
+		// retry count, but that budget can be disabled and something has to stop
+		// the loop, so fall back to the count bound when it is.
+		if c.retrier.MaxTotalRateLimitWait > 0 {
+			return true
 		}
-		c.logRetryAttempt(ctx, progress, "rate limited (429)", msg)
-		return
+		return retries.rateLimit < c.retrier.MaxRetries
 	}
-	// Every other retryable status is gated on attempt < MaxRetries by
-	// shouldRetryHTTPStatus, so the attempt number carries that denominator.
+	// Counted apart from 429s so rate-limit waits cannot spend the budget that
+	// network, stream-read and 5xx retries share.
+	return retries.bounded < c.retrier.MaxRetries
+}
+
+// rateLimitRetryMax reports the count bound on 429 retries, or 0 when the
+// cumulative rate-limit wait bounds them instead and the line reports how much
+// of that budget is gone in place of a denominator.
+func (c *OpenAIClient) rateLimitRetryMax() int {
+	if c.retrier.MaxTotalRateLimitWait > 0 {
+		return 0
+	}
+	return c.retrier.MaxRetries
+}
+
+// retryHTTPStatusLine renders the retry line for a retryable HTTP status. Each
+// counter is printed against the bound that actually applies to it: 429s carry
+// the 429 count and how much of the rate-limit wait budget is gone, every other
+// status carries the count shouldRetryHTTPStatus gates on MaxRetries.
+func (c *OpenAIClient) retryHTTPStatusLine(status int, retries requestRetries, waitFor time.Duration) string {
+	if status == http.StatusTooManyRequests {
+		msg := model.RetryLine(retries.rateLimit, c.rateLimitRetryMax(), "rate limited (429)", waitFor)
+		if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 {
+			msg += fmt.Sprintf(" (waited %s/%s)", model.HumanWait(retries.waited), model.HumanWait(budget))
+		}
+		return msg
+	}
 	reason := fmt.Sprintf("status=%d", status)
-	c.logRetryAttempt(ctx, progress, reason, model.RetryLine(attempt+1, c.retrier.MaxRetries, reason, waitFor))
+	return model.RetryLine(retries.bounded, c.retrier.MaxRetries, reason, waitFor)
 }
 
-// logRetryAttempt records a retry and emits its progress line. reason is the
-// short form kept for the outcome line; msg is the rendered line, built by the
-// caller with model.RetryLine so every layer's retries read alike.
-func (c *OpenAIClient) logRetryAttempt(ctx context.Context, progress *retryProgress, reason, msg string) {
-	progress.retries++
-	progress.reason = reason
-	c.logProgress(ctx, logging.StageModel, logging.StateRetry, msg)
-}
-
-// logRetryOutcome closes out a request with exactly one line: recovery when
-// retries got it through, the failure reason when they did not. It is the only
-// terminal-line emitter for the retry loop, so no exit stays silent.
+// logRetryOutcome closes out one Review call with exactly one line: recovery
+// when retries got it through, the failure reason when they did not. It is the
+// only terminal-line emitter for the call, so no exit stays silent and none
+// reports the wrong outcome.
 //
-// The failure line is a warning, not an error: Review retries the whole request
-// down its reasoning-effort ladder, so this request failing is not the run
-// failing, and the returned error is what reports that. Deliberate cancellation
-// (Ctrl-C, an expired lane time budget) is not a model failure at all and stays
-// silent.
+// It runs at the Review level on purpose. reviewOnce can fail after the stream
+// closed cleanly, so reporting from the stream loop called those failures a
+// success; and reviewLadder recovers from reasoning loops and exhausted
+// reasoning budgets by retrying at a lower effort, so reporting per attempt
+// called that self-healing path a failure.
+//
+// The failure line is a warning, not an error: the returned error is what
+// reports a failed run, while this line only explains a lane that went quiet.
+// Deliberate cancellation (Ctrl-C, an expired lane time budget) is not a model
+// failure at all and stays silent.
 func (c *OpenAIClient) logRetryOutcome(ctx context.Context, progress *retryProgress, err error) {
 	if err == nil {
 		if progress.retries > 0 {
@@ -1916,7 +1970,7 @@ func (c *OpenAIClient) logRetryOutcome(ctx context.Context, progress *retryProgr
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	reason := progress.reason
+	reason := progress.failure
 	if reason == "" {
 		reason = "request failed"
 	}

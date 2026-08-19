@@ -53,7 +53,8 @@ func HumanWait(d time.Duration) string {
 	case d < time.Minute:
 		return d.Round(100 * time.Millisecond).String()
 	default:
-		return d.Truncate(time.Second).String()
+		// Above a minute a wait reads like any other duration.
+		return HumanDuration(d)
 	}
 }
 

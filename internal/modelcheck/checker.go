@@ -674,6 +674,10 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 
 func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSection, probe ProbeResult, req *llm.ReviewRequest, resp *llm.ReviewResponse, validationErr error) (*llm.ReviewResponse, ProbeResult) {
 	for attempt := 0; attempt < c.profile.MaxOutputRetries; attempt++ {
+		// Logged before the request, like reviewProbeWithMode's retry line, so
+		// "N/max" always announces a retry that is about to run rather than one
+		// that just failed with no successor.
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, fmt.Sprintf("invalid JSON, error=%q", validationErr.Error()), 0))
 		messages := append([]llm.Message(nil), req.Messages...)
 		if resp != nil && strings.TrimSpace(resp.RawResponse) != "" {
 			messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
@@ -696,7 +700,6 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
 			validationErr = err
 			resp = retryResp
-			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, fmt.Sprintf("invalid JSON, error=%q", err.Error()), 0))
 			continue
 		}
 		probe.Status = ""
