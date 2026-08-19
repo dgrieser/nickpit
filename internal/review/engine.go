@@ -440,7 +440,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			if retryInvalid := e.repairResponseOrRetry(ctx, loopReq, resp); retryInvalid != nil {
 				retryMessages := append([]llm.Message(nil), llmReq.Messages...)
 				var synthetic *llm.Message
-				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries), attempt+1, maxOutputRetries)
 				if err != nil {
 					return nil, err
 				}
@@ -461,7 +461,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 				if retryInvalid != nil {
 					retryMessages := append([]llm.Message(nil), llmReq.Messages...)
 					var synthetic *llm.Message
-					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries), attempt+1, maxOutputRetries)
 					if err != nil {
 						return nil, err
 					}
@@ -484,13 +484,18 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 				e.logf(ctx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 				return invalidResp.PartialResponse, nil
 			}
+			// The model layer hands invalid responses back without calling them a
+			// failure because this loop is what recovers from them, so the lane
+			// would otherwise end on "retry N/max invalid JSON" and go silent.
+			e.logf(ctx, "Output retries exhausted in no-tools call: retries=%d reason=%q", attempt, invalidResp.Reason)
+			e.logProgress(logging.StageModel, logging.StateWarn, outputRetriesExhaustedLine(attempt, "invalid JSON"))
 			return nil, err
 		}
 		if invalidResp.ReasoningEffort != "" {
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logf(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		e.logProgress(logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
+		e.logProgress(logging.StageModel, logging.StateRetry, model.RetryLine(attempt+1, maxOutputRetries, "invalid JSON", 0))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		} else {
@@ -3578,7 +3583,7 @@ func (e *Engine) logTimeBudgetUrgentNow(ctx context.Context) {
 	}
 	now := time.Now()
 	e.logf(ctx, "Workflow time budget speed-up threshold already reached: scope=%s elapsed=%s limit=%s; sending urgent request",
-		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)))
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)))
 }
 
 func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr error) {
@@ -3589,7 +3594,7 @@ func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr
 	}
 	now := time.Now()
 	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently first_error=%v soft_err=%v",
-		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetRemaining(budget, now)), firstErr, softErr)
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetRemaining(budget, now)), firstErr, softErr)
 }
 
 func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
@@ -3605,7 +3610,7 @@ func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
 		return
 	}
 	e.logf(ctx, "Workflow time budget deadline reached: scope=%s elapsed=%s limit=%s overrun=%s; call aborted",
-		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetOverrun(budget, now)))
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetOverrun(budget, now)))
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

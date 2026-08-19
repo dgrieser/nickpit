@@ -14,6 +14,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
+	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/prompts"
@@ -304,8 +305,25 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if !retryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
-		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, maxRetries, retryReason(err), 0))
 	}
+}
+
+// retryReason condenses an error into the short prose a retry progress line
+// carries. Provider errors can be multi-line and arbitrarily long, and
+// RetryLine renders the reason between the retry counter and the wait, so an
+// inlined error body would push both out of sight — and a control character in
+// it would reach the terminal verbatim, where a lone "\r" rewinds the cursor
+// over the line's own prefix. model.ClipLine handles both.
+func retryReason(err error) string {
+	if err == nil {
+		return "request failed"
+	}
+	const limit = 100
+	if msg := model.ClipLine(err.Error(), limit); msg != "" {
+		return msg
+	}
+	return "request failed"
 }
 
 func (c *Checker) logProgressFor(info logging.ProgressInfo, stage logging.Stage, state logging.State, msg string) {
@@ -673,6 +691,10 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 
 func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSection, probe ProbeResult, req *llm.ReviewRequest, resp *llm.ReviewResponse, validationErr error) (*llm.ReviewResponse, ProbeResult) {
 	for attempt := 0; attempt < c.profile.MaxOutputRetries; attempt++ {
+		// Logged before the request, like reviewProbeWithMode's retry line, so
+		// "N/max" always announces a retry that is about to run rather than one
+		// that just failed with no successor.
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, "invalid JSON: "+retryReason(validationErr), 0))
 		messages := append([]llm.Message(nil), req.Messages...)
 		if resp != nil && strings.TrimSpace(resp.RawResponse) != "" {
 			messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
@@ -695,12 +717,19 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
 			validationErr = err
 			resp = retryResp
-			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("json_retry=%d error=%q", attempt+1, err.Error()))
 			continue
 		}
 		probe.Status = ""
 		return retryResp, probe
 	}
+	// The model layer stays silent on invalid responses because this loop is what
+	// recovers from them, so without this the probe's last line is "retry N/max
+	// invalid JSON" and nothing says the retries ran out.
+	exhausted := "invalid JSON"
+	if c.profile.MaxOutputRetries > 0 {
+		exhausted += " after " + model.RetryCountLabel(c.profile.MaxOutputRetries)
+	}
+	c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateWarn, exhausted+": "+retryReason(validationErr))
 	probe.Status = StatusFailed
 	probe.Error = validationErr.Error()
 	return resp, probe
@@ -723,6 +752,10 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 		ReasoningEffort:                effort,
 		MaxReasoning:                   maxReasoning,
 		DisableReasoningEffortFallback: mode == probeRetrySameEffort,
+		// These modes retry nearly every error reviewProbeWithMode sees, so the
+		// model layer must not warn about the ones the checker recovers from;
+		// what a probe ended up as is what its status reports.
+		CallerRetriesOnError: mode == probeRetrySameEffort || mode == probeRetryAnyError,
 	}
 }
 

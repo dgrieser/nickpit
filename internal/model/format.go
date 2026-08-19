@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // HumanTokens renders a token count with k/M/G units and one decimal,
@@ -35,6 +36,69 @@ func HumanTokens(n int) string {
 // truncated to whole seconds, e.g. "4m12s".
 func HumanDuration(d time.Duration) string {
 	return d.Truncate(time.Second).String()
+}
+
+// HumanWait renders a duration for wait, backoff and countdown lines: exact
+// below a millisecond, whole milliseconds below a second, one decimal below a
+// minute, and whole seconds above it. Sub-second precision is noise at minute
+// scale, so a 4m59.573s rate-limit wait reads as "4m59s". Negative durations
+// render as "0s".
+func HumanWait(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "0s"
+	case d < time.Millisecond:
+		return d.String()
+	case d < time.Second:
+		return d.Round(time.Millisecond).String()
+	case d < time.Minute:
+		return d.Round(100 * time.Millisecond).String()
+	default:
+		// Above a minute a wait reads like any other duration.
+		return HumanDuration(d)
+	}
+}
+
+// ClipLine collapses text into the single short line a progress or log message
+// needs: every run of whitespace becomes one space, control characters are
+// dropped, and a result longer than limit runes ends in an ellipsis. The
+// dropping matters as much as the clipping — a raw "\r" in a provider error
+// rewinds the terminal cursor over the line's own prefix, and a raw escape
+// sequence outlives the line it arrived in. A limit of zero or less clips
+// nothing but still collapses.
+func ClipLine(text string, limit int) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	pendingSpace := false
+	for _, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			// Leading whitespace is dropped outright; anything later becomes a
+			// single space, but only once a following rune needs separating.
+			pendingSpace = b.Len() > 0
+		case unicode.IsControl(r):
+			// Never renderable, and some of them rewrite the line.
+		default:
+			if pendingSpace {
+				b.WriteRune(' ')
+				pendingSpace = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	clipped := b.String()
+	if limit <= 0 {
+		return clipped
+	}
+	runes := []rune(clipped)
+	if len(runes) <= limit {
+		return clipped
+	}
+	const ellipsis = "..."
+	if limit <= len(ellipsis) {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-len(ellipsis)]) + ellipsis
 }
 
 // RuntimeSeconds converts a duration to float seconds rounded to two

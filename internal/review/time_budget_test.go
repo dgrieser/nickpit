@@ -123,8 +123,14 @@ func TestReviewWithTimeBudgetThreshold100DoesNotRetryUrgently(t *testing.T) {
 	if len(got) != 1 || got[0] {
 		t.Fatalf("urgent calls = %v, want [false]", got)
 	}
-	if log := logs.String(); !strings.Contains(log, "Workflow time budget deadline reached: scope=unit:hard") || !strings.Contains(log, "call aborted") {
+	log := logs.String()
+	if !strings.Contains(log, "Workflow time budget deadline reached: scope=unit:hard") || !strings.Contains(log, "call aborted") {
 		t.Fatalf("log = %q, want hard deadline with scope", log)
+	}
+	// The overrun is the one number this line exists to report, and it is
+	// almost always sub-second: truncating it to whole seconds logs "0s".
+	if strings.Contains(log, "overrun=0s") {
+		t.Fatalf("log = %q, want the sub-second overrun, not a truncated 0s", log)
 	}
 }
 

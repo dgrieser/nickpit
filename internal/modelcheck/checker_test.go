@@ -838,3 +838,47 @@ func TestToolsJSONSchemaProbeSkippedWhenPrerequisiteFails(t *testing.T) {
 		t.Fatalf("summary.ToolsJSONSchema = %v, want nil for skipped probe", summary.ToolsJSONSchema)
 	}
 }
+
+// --- fixes from review round 2026-08 ---
+
+// A retry line renders the reason verbatim, so a control character in a provider
+// error reaches the terminal: a lone "\r" rewinds the cursor over the line's own
+// prefix and an escape sequence outlives the line it arrived in.
+func TestRetryReasonSanitizesProviderText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil error", nil, "request failed"},
+		{"multi-line", errors.New("upstream failed\ndetail: nope"), "upstream failed detail: nope"},
+		{"carriage return only", errors.New("upstream failed\rrewound"), "upstream failed rewound"},
+		{"escape sequence", errors.New("upstream \x1b[31mfailed"), "upstream [31mfailed"},
+		{"blank", errors.New(" \n "), "request failed"},
+		{"clipped", errors.New(strings.Repeat("x", 120)), strings.Repeat("x", 97) + "..."},
+	} {
+		if got := retryReason(tc.err); got != tc.want {
+			t.Fatalf("%s: retryReason = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The retrying probe modes recover from nearly every error, so the model layer
+// must not warn about the failures the checker retries; what a probe ended up as
+// is what its status reports.
+func TestBaseRequestLetsTheCheckerReportRetriedFailures(t *testing.T) {
+	checker := New(&scriptedClient{}, config.Profile{Model: "model", ReasoningEffort: "high"})
+	for _, tc := range []struct {
+		mode probeRetryMode
+		want bool
+	}{
+		{probeRetryAnyError, true},
+		{probeRetrySameEffort, true},
+		{probeRetryReviewLike, false},
+	} {
+		req := checker.baseRequest("high", nil, nil, tc.mode)
+		if req.CallerRetriesOnError != tc.want {
+			t.Fatalf("mode %d: CallerRetriesOnError = %v, want %v", tc.mode, req.CallerRetriesOnError, tc.want)
+		}
+	}
+}

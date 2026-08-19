@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
@@ -121,11 +122,11 @@ func logTimeBudgetStart(ctx context.Context, logf timeBudgetLogFunc, budget acti
 	limit := budget.deadline.Sub(budget.start)
 	speedupIn := "disabled"
 	if budget.speedupThreshold < 100 {
-		speedupIn = budgetDuration(time.Duration(float64(limit) * float64(budget.speedupThreshold) / 100))
+		speedupIn = model.HumanWait(time.Duration(float64(limit) * float64(budget.speedupThreshold) / 100))
 	}
 	logTimeBudgetf(ctx, logf,
 		"Workflow time budget started: scope=%s limit=%s deadline_in=%s speedup_threshold=%d%% speedup_in=%s",
-		budget.scope, budgetDuration(limit), budgetDuration(time.Until(budget.deadline)), budget.speedupThreshold, speedupIn)
+		budget.scope, model.HumanWait(limit), model.HumanWait(time.Until(budget.deadline)), budget.speedupThreshold, speedupIn)
 }
 
 func logTimeBudgetf(ctx context.Context, logf timeBudgetLogFunc, format string, args ...any) {
@@ -153,16 +154,6 @@ func timeBudgetOverrun(budget activeTimeBudget, now time.Time) time.Duration {
 		return 0
 	}
 	return overrun
-}
-
-func budgetDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	if d < time.Second {
-		return d.Round(time.Millisecond).String()
-	}
-	return d.Truncate(time.Second).String()
 }
 
 func inheritedSpeedupThreshold(ctx context.Context) int {

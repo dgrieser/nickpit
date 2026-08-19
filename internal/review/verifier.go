@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -330,12 +329,11 @@ func verifyProgressName(reviewerName string, idx int) string {
 	return fmt.Sprintf("Verify %s #%d", reviewerName, idx+1)
 }
 
+// truncateFindingTitle clips a finding title to the width a progress line has
+// for it. ClipLine also folds a multi-line title into one line, which a
+// progress line needs and a raw title does not guarantee.
 func truncateFindingTitle(title string) string {
-	title = strings.TrimSpace(title)
-	if len([]rune(title)) > 60 {
-		title = string([]rune(title)[:57]) + "..."
-	}
-	return title
+	return model.ClipLine(title, 60)
 }
 
 // buildFindingAgentUserPrompt renders the verifier payload: the full review

@@ -101,3 +101,27 @@ func TestSameEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestClipLine(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    string
+		limit int
+		want  string
+	}{
+		{"collapses every whitespace run", " a\n\tb  c\n", 100, "a b c"},
+		// A raw carriage return rewinds the terminal cursor over the line's own
+		// prefix, and an escape sequence outlives the line it arrived in.
+		{"drops control characters", "boom\rrewound", 100, "boom rewound"},
+		{"drops escape sequences", "boom \x1b[31mred", 100, "boom [31mred"},
+		{"clips with an ellipsis", "abcdefghij", 8, "abcde..."},
+		{"keeps a result at the limit", "abcdefgh", 8, "abcdefgh"},
+		{"clips hard below the ellipsis", "abcdefgh", 2, "ab"},
+		{"a limit of zero clips nothing", "a\nb", 0, "a b"},
+		{"whitespace only", " \n\t ", 10, ""},
+	} {
+		if got := ClipLine(tc.in, tc.limit); got != tc.want {
+			t.Fatalf("%s: ClipLine(%q, %d) = %q, want %q", tc.name, tc.in, tc.limit, got, tc.want)
+		}
+	}
+}
