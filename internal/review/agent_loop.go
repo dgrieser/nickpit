@@ -217,6 +217,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 				resp = invalidResp.PartialResponse
 			} else if err != nil {
+				e.logOutputRetriesExhausted(loopCtx, req, state.jsonRetries, "invalid JSON")
 				recordInvalidResponseTokens(invalidResp)
 				return result, err
 			}
@@ -268,6 +269,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					result.resp = resp
 				} else {
 					e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+					e.logOutputRetriesExhausted(loopCtx, req, state.jsonRetries, "response validation failed")
 				}
 			}
 		}
@@ -368,8 +370,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	return result, nil
 }
 
-func outputRetriesRemaining(used, max int) bool {
-	return max == 0 || used < max
+// outputRetriesRemaining reports whether an output-retry loop may retry again.
+// A limit of zero is unlimited, as MaxOutputRetries is everywhere else.
+func outputRetriesRemaining(used, limit int) bool {
+	return limit == 0 || used < limit
 }
 
 func agentLoopNoToolsMessages(req agentLoopRequest, messages []llm.Message) ([]llm.Message, error) {
@@ -502,6 +506,30 @@ func invalidResponseTokens(invalidResp *llm.InvalidResponseError) model.TokenUsa
 // reviewCallTokens extracts the tokens spent by a single review call from its
 // (resp, err) outcome, so every attempt can be accounted regardless of whether
 // it succeeded, returned a partial/invalid response, or failed outright.
+// logOutputRetriesExhausted closes out an output-retry loop that ran out of
+// retries. The model layer stays silent on invalid responses because this loop
+// is what normally recovers from them, so it is this loop's job to say when it
+// could not: without this line a lane's last word is "retry 5/5 invalid JSON"
+// and the run then ends with nothing explaining it.
+func (e *Engine) logOutputRetriesExhausted(ctx context.Context, req agentLoopRequest, retries int, reason string) {
+	e.logf(ctx, "Output retries exhausted: retries=%d reason=%q", retries, reason)
+	// Same gate as logJSONRetry: the agents that keep their retries off the
+	// progress stream keep their give-up off it too.
+	if req.JSONRetryProgressAgentName == "" || e.logger == nil {
+		return
+	}
+	e.logger.Progress(ctx, logging.StageModel, logging.StateWarn, outputRetriesExhaustedLine(retries, reason))
+}
+
+// outputRetriesExhaustedLine renders the give-up line an exhausted output-retry
+// loop ends with: "invalid JSON after 5 retries".
+func outputRetriesExhaustedLine(retries int, reason string) string {
+	if retries <= 0 {
+		return reason
+	}
+	return reason + " after " + model.RetryCountLabel(retries)
+}
+
 func reviewCallTokens(resp *llm.ReviewResponse, err error) model.TokenUsage {
 	if err != nil {
 		var invalidResp *llm.InvalidResponseError

@@ -5115,3 +5115,67 @@ func TestReviewWithoutToolsRetryKeepsRolesAlternatingOnEmptyRawContent(t *testin
 		}
 	}
 }
+
+// --- fixes from review round 2026-08 ---
+
+// The model layer hands an unparseable response back without calling it a
+// failure, because this loop is what normally recovers from one. When the loop
+// runs out of retries it must say so itself, or the lane's last word is
+// "retry N/max invalid JSON" and the run ends with nothing explaining it.
+func TestReviewWithoutToolsLogsGiveUpWhenOutputRetriesExhausted(t *testing.T) {
+	invalid := func() error {
+		return &llm.InvalidResponseError{RawContent: "malformed", Reason: "response is not valid JSON"}
+	}
+	llmClient := &scriptedLLM{results: []scriptedLLMResult{{err: invalid()}, {err: invalid()}}}
+	engine := nudgeTestEngine(llmClient)
+	var progress bytes.Buffer
+	logger := logging.New(&progress, false, false)
+	logger.SetShowProgress(true)
+	engine.SetLogger(logger)
+
+	llmReq := &llm.ReviewRequest{Model: "test-model", SchemaKind: llm.SchemaKindReview}
+	messages := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+	}
+	loopReq := agentLoopRequest{
+		AgentName:        "Test Reviewer",
+		AgentKind:        "review",
+		MaxOutputRetries: 1,
+		NoToolsMessages: func(m []llm.Message) ([]llm.Message, error) {
+			return append([]llm.Message(nil), m...), nil
+		},
+	}
+	if _, err := engine.reviewWithoutTools(context.Background(), llmReq, "review", "", messages, "", "", false, 1, nil, loopReq, newAgentLoopState(), nil); err == nil {
+		t.Fatal("expected the exhausted output retries to fail the call")
+	}
+	got := progress.String()
+	for _, want := range []string{
+		"retry 1/1 invalid JSON",
+		"warn invalid JSON after 1 retry",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// The agents that keep their retries off the progress stream keep their give-up
+// off it too, so the two lines cannot disagree about whether a lane is quiet.
+func TestLogOutputRetriesExhaustedFollowsTheRetryLinesGate(t *testing.T) {
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	var progress bytes.Buffer
+	logger := logging.New(&progress, false, false)
+	logger.SetShowProgress(true)
+	engine.SetLogger(logger)
+
+	engine.logOutputRetriesExhausted(context.Background(), agentLoopRequest{}, 5, "invalid JSON")
+	if got := progress.String(); got != "" {
+		t.Fatalf("agent without a retry progress name logged %q", got)
+	}
+
+	engine.logOutputRetriesExhausted(context.Background(), agentLoopRequest{JSONRetryProgressAgentName: "Test Reviewer"}, 5, "invalid JSON")
+	if want := "warn invalid JSON after 5 retries"; !strings.Contains(progress.String(), want) {
+		t.Fatalf("missing %q in:\n%s", want, progress.String())
+	}
+}

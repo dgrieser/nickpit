@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // HumanTokens renders a token count with k/M/G units and one decimal,
@@ -56,6 +57,48 @@ func HumanWait(d time.Duration) string {
 		// Above a minute a wait reads like any other duration.
 		return HumanDuration(d)
 	}
+}
+
+// ClipLine collapses text into the single short line a progress or log message
+// needs: every run of whitespace becomes one space, control characters are
+// dropped, and a result longer than limit runes ends in an ellipsis. The
+// dropping matters as much as the clipping — a raw "\r" in a provider error
+// rewinds the terminal cursor over the line's own prefix, and a raw escape
+// sequence outlives the line it arrived in. A limit of zero or less clips
+// nothing but still collapses.
+func ClipLine(text string, limit int) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	pendingSpace := false
+	for _, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			// Leading whitespace is dropped outright; anything later becomes a
+			// single space, but only once a following rune needs separating.
+			pendingSpace = b.Len() > 0
+		case unicode.IsControl(r):
+			// Never renderable, and some of them rewrite the line.
+		default:
+			if pendingSpace {
+				b.WriteRune(' ')
+				pendingSpace = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	clipped := b.String()
+	if limit <= 0 {
+		return clipped
+	}
+	runes := []rune(clipped)
+	if len(runes) <= limit {
+		return clipped
+	}
+	const ellipsis = "..."
+	if limit <= len(ellipsis) {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-len(ellipsis)]) + ellipsis
 }
 
 // RuntimeSeconds converts a duration to float seconds rounded to two

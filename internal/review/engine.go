@@ -484,6 +484,11 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 				e.logf(ctx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 				return invalidResp.PartialResponse, nil
 			}
+			// The model layer hands invalid responses back without calling them a
+			// failure because this loop is what recovers from them, so the lane
+			// would otherwise end on "retry N/max invalid JSON" and go silent.
+			e.logf(ctx, "Output retries exhausted in no-tools call: retries=%d reason=%q", attempt, invalidResp.Reason)
+			e.logProgress(logging.StageModel, logging.StateWarn, outputRetriesExhaustedLine(attempt, "invalid JSON"))
 			return nil, err
 		}
 		if invalidResp.ReasoningEffort != "" {

@@ -454,8 +454,13 @@ func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"Model      retry 1/5 status=500",
-		"Model      retry 5/5 status=500",
+		// The counter in front spans every retry budget the call has, so the
+		// MaxRetries bound this one belongs to is named in the trailing gauge
+		// instead of read as a denominator.
+		"Model      retry 1 status=500",
+		"(1/5 request retries)",
+		"Model      retry 5 status=500",
+		"(5/5 request retries)",
 		"Model      ok recovered after 5 retries",
 	} {
 		if !strings.Contains(got, want) {
@@ -511,7 +516,10 @@ func TestClientReviewRateLimitRetriesDoNotSpendMaxRetriesBudget(t *testing.T) {
 	for _, want := range []string{
 		"Model      retry 1 rate limited (429)",
 		"Model      retry 2 rate limited (429)",
-		"Model      retry 1/1 status=500",
+		// Third retry of the call, first against the MaxRetries budget: one
+		// number counts the call, the gauge names the budget.
+		"Model      retry 3 status=500",
+		"(1/1 request retries)",
 		"Model      ok recovered after 3 retries",
 	} {
 		if !strings.Contains(got, want) {
@@ -602,7 +610,7 @@ func TestClientReviewDoesNotWarnWhenEffortLadderRecovers(t *testing.T) {
 	// The ladder step is a retry like any other: it is announced while the lane
 	// waits on it and counted in the outcome, or the lane looks like it stalled
 	// through a whole extra model call and then simply answered.
-	if want := "Model      retry 1/5 reasoning budget exhausted, lower reasoning effort"; !strings.Contains(got, want) {
+	if want := "Model      retry 1 reasoning budget exhausted, lower reasoning effort (1/5 effort steps)"; !strings.Contains(got, want) {
 		t.Fatalf("missing %q in:\n%s", want, got)
 	}
 	if want := "Model      ok recovered after 1 retry"; !strings.Contains(got, want) {
@@ -704,7 +712,7 @@ func TestClientReviewRateLimitWaitsDoNotAdvanceTheStatusBackoffCurve(t *testing.
 	// initial backoff instead of the fourth step of the curve.
 	got := logs.String()
 	for _, want := range []string{
-		"Model      retry 1/5 status=500, waiting 10ms",
+		"Model      retry 4 status=500, waiting 10ms (1/5 request retries)",
 		"Model      ok recovered after 4 retries",
 	} {
 		if !strings.Contains(got, want) {
@@ -809,7 +817,7 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 	// The trimmed retry fires at most once, so its counter says so instead of
 	// borrowing the loop's attempt number.
 	for _, want := range []string{
-		"Model      retry 1/1 prompt too long, trimmed request",
+		"Model      retry 1 prompt too long, trimmed request",
 		"Model      ok recovered after 1 retry",
 	} {
 		if !strings.Contains(logs.String(), want) {
@@ -4093,7 +4101,7 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry 1/5 stream network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1 stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -4155,7 +4163,7 @@ func TestClientReviewRetriesPeerInternalStreamErrorWithPartialContent(t *testing
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry 1/5 stream network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1 stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -4226,7 +4234,7 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "Model      retry 1/5 network error") {
+	if !strings.Contains(logBuf.String(), "Model      retry 1 network error") {
 		t.Fatalf("network retry notice missing: %q", logBuf.String())
 	}
 	if !strings.Contains(logBuf.String(), "Model      ok recovered after 1 retry") {
@@ -4278,8 +4286,10 @@ func TestClientReviewLogsGiveUpAfterNetworkRetriesExhausted(t *testing.T) {
 	}
 	got := logBuf.String()
 	for _, want := range []string{
-		"Model      retry 1/2 network error",
-		"Model      retry 2/2 network error",
+		"Model      retry 1 network error",
+		"(1/2 request retries)",
+		"Model      retry 2 network error",
+		"(2/2 request retries)",
 		"Model      warn network error after 2 retries",
 	} {
 		if !strings.Contains(got, want) {
@@ -5184,7 +5194,10 @@ func TestClientReviewStops429RetriesAfterTotalRateLimitBudget(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rate limit error")
 	}
-	if !strings.Contains(err.Error(), "rate limited for over 25ms") {
+	// The budget is not spent when the loop stops — the next wait simply does not
+	// fit in what is left — so the message reports both numbers rather than
+	// claiming the whole budget went by.
+	if !strings.Contains(err.Error(), "rate limit wait budget of 25ms exhausted after waiting 20ms") {
 		t.Fatalf("error = %v, want total rate limit budget message", err)
 	}
 	if !strings.Contains(err.Error(), "429") {
@@ -5653,5 +5666,210 @@ func TestClientReviewAbortsAndRetriesStalledStream(t *testing.T) {
 	}
 	if !retryableStreamReadError(readErr) {
 		t.Fatalf("stalled-stream error must classify as retryable: %v", err)
+	}
+}
+
+// --- fixes from review round 2026-08 ---
+
+// An urgent call climbs the reasoning-effort ladder instead of descending it, so
+// its retry line must not claim the effort was lowered.
+func TestClientReviewUrgentLadderReportsHigherEffort(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Urgent:          true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	got := logs.String()
+	if want := "Model      retry 1 reasoning budget exhausted, higher reasoning effort"; !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
+	if strings.Contains(got, "lower reasoning effort") {
+		t.Fatalf("urgent ladder reported a lowered effort in:\n%s", got)
+	}
+}
+
+// With the 429 wait cap disabled and no retries allowed, 429s must still stop:
+// "no count bounds them" and "no retries at all" are different answers that were
+// conflated into one zero, leaving a permanently rate-limited endpoint retryable
+// forever.
+func TestClientReview429StopsWhenWaitCapAndRetriesAreBothDisabled(t *testing.T) {
+	var attempts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		http.Error(w, "Provider returned error: rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.MaxTotalRateLimitWait = 0
+	client.retrier.MaxRetries = 0
+	client.retrier.InitialBackoff = time.Nanosecond
+	client.retrier.MaxBackoff = time.Nanosecond
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err == nil {
+		t.Fatal("expected the 429 to fail once no budget allows a retry")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (no retry budget at all)", got)
+	}
+}
+
+// A caller that retries every error Review returns reports the outcome of its own
+// loop, so the model layer must not warn about a failure that caller is about to
+// recover from.
+func TestClientReviewCallerRetriesOnErrorSuppressesFailureLine(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "Provider returned error", http.StatusInternalServerError)
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Nanosecond
+	client.retrier.MaxBackoff = time.Nanosecond
+
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:                   "system",
+		UserContent:                    "user",
+		ReasoningEffort:                "high",
+		DisableReasoningEffortFallback: true,
+		CallerRetriesOnError:           true,
+	}); err == nil {
+		t.Fatal("expected the exhausted reasoning budget to fail the call")
+	}
+	got := logs.String()
+	if strings.Contains(got, "Model      warn") {
+		t.Fatalf("failure the caller retries was warned about in:\n%s", got)
+	}
+	// The retry itself is still announced: it is the lane going quiet that the
+	// line explains, and the caller cannot report a retry it never saw.
+	if want := "Model      retry 1 status=500"; !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
+}
+
+// Recovery inside the call has no other reporter, so the caller's own retry loop
+// does not silence it.
+func TestClientReviewCallerRetriesOnErrorStillReportsRecovery(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "Provider returned error", http.StatusInternalServerError)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Nanosecond
+	client.retrier.MaxBackoff = time.Nanosecond
+
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:         "system",
+		UserContent:          "user",
+		CallerRetriesOnError: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Model      ok recovered after 1 retry"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("missing %q in:\n%s", want, logs.String())
+	}
+}
+
+// recordRetry and recordFailure both record nothing for a nil progress, so the
+// one place that reads it must be nil-safe too.
+func TestLogRetryOutcomeWithNilProgressReportsNothing(t *testing.T) {
+	client := NewOpenAIClient("http://example.invalid", "token", "model")
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	client.logRetryOutcome(context.Background(), nil, errors.New("boom"), false)
+	if got := logs.String(); got != "" {
+		t.Fatalf("nil progress logged %q", got)
+	}
+}
+
+// The give-up line must not claim the whole wait budget went by: the loop stops
+// because the next wait would not fit in what is left, while the gauge on the
+// line right above is still under the budget.
+func TestClientReview429GiveUpAgreesWithTheWaitGauge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "Provider returned error: rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = 10 * time.Millisecond
+	client.retrier.MaxBackoff = 10 * time.Millisecond
+	client.retrier.MaxTotalRateLimitWait = 25 * time.Millisecond
+	stubJitter(client.retrier)
+
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err == nil {
+		t.Fatal("expected rate limit error")
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"Model      retry 2 rate limited (429), waiting 10ms (waited 10ms/25ms)",
+		"Model      warn rate limited (429), no retry left within the 25ms wait budget after 2 retries",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "for over") {
+		t.Fatalf("give-up line claimed the budget was spent in:\n%s", got)
 	}
 }
