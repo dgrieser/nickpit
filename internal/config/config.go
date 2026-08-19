@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,12 +21,14 @@ import (
 )
 
 const (
-	DefaultProfileName              = "default"
-	DefaultFallbackProfileName      = "openrouter"
-	DefaultMaxContextToken          = 240000
-	DefaultMaxToolResultPercent     = 10
-	DefaultMaxOutputRetries         = 5
-	DefaultMaxReasoningSeconds      = 300
+	DefaultProfileName          = "default"
+	DefaultFallbackProfileName  = "openrouter"
+	DefaultMaxContextToken      = 240000
+	DefaultMaxToolResultPercent = 10
+	DefaultMaxOutputRetries     = 5
+	DefaultMaxReasoningSeconds  = 300
+	// DefaultTimeBudgetScale leaves a workflow spec's time budgets as written.
+	DefaultTimeBudgetScale          = 1.0
 	DefaultMaxRateLimitDelaySeconds = 300
 	DefaultNudgeCount               = 3
 	DefaultConfigPath               = ".nickpit.yaml"
@@ -46,57 +49,62 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                              string                 `yaml:"model"`
-	Small                              SmallModelConfig       `yaml:"small"`
-	BaseURL                            string                 `yaml:"base_url"`
-	APIKey                             string                 `yaml:"api_key"`
-	SupportedModels                    []ModelCapabilities    `yaml:"supported_models"`
-	MaxTokens                          *int                   `yaml:"max_tokens"`
-	Temperature                        *float64               `yaml:"temperature"`
-	TopP                               *float64               `yaml:"top_p"`
-	TopK                               *int                   `yaml:"top_k"`
-	PresencePenalty                    *float64               `yaml:"presence_penalty"`
-	ExtraBody                          map[string]any         `yaml:"extra_body"`
-	DisableJSONResponseFormat          bool                   `yaml:"disable_json_response_format"`
-	IncludePaths                       []string               `yaml:"include_paths"`
-	ExcludePaths                       []string               `yaml:"exclude_paths"`
-	IncludeContent                     []string               `yaml:"include_content"`
-	ExcludeContent                     []string               `yaml:"exclude_content"`
-	StyleGuides                        []model.StyleGuideSpec `yaml:"styleguides"`
-	DisableStyleGuides                 []string               `yaml:"disable_styleguides"`
-	DiffFormat                         model.DiffFormat       `yaml:"diff_format"`
-	MaxContextTokens                   int                    `yaml:"max_context_tokens"`
-	MaxRequestBytes                    int                    `yaml:"max_request_bytes"`
-	MaxToolResultPercent               int                    `yaml:"max_tool_result_percent"`
-	MaxToolCalls                       int                    `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls              int                    `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries                   int                    `yaml:"max_output_retries"`
-	MaxReasoningSeconds                int                    `yaml:"max_reasoning_seconds"`
-	MaxRateLimitDelaySeconds           int                    `yaml:"max_rate_limit_delay_seconds"`
-	NudgeCount                         int                    `yaml:"nudge_count"`
-	MaxFindings                        int                    `yaml:"max_findings"`
-	MaxSessions                        int                    `yaml:"max_sessions"`
-	DisablePatchSummary                bool                   `yaml:"disable_patch_summary"`
-	DisableSuggestions                 bool                   `yaml:"disable_suggestions"`
-	DisableWorkflowTimeBudget          bool                   `yaml:"disable_workflow_time_budget"`
-	ReasoningEffort                    string                 `yaml:"reasoning_effort"`
-	Workdir                            string                 `yaml:"workdir"`
-	GitHubToken                        string                 `yaml:"github_token"`
-	GitLabToken                        string                 `yaml:"gitlab_token"`
-	GitLabBaseURL                      string                 `yaml:"gitlab_base_url"`
-	AssetBaseURL                       string                 `yaml:"asset_base_url"`
-	MaxContextTokensConfigured         bool                   `yaml:"-"`
-	MaxRequestBytesConfigured          bool                   `yaml:"-"`
-	MaxToolResultPercentConfigured     bool                   `yaml:"-"`
-	APIKeyConfigured                   bool                   `yaml:"-"`
-	MaxToolCallsConfigured             bool                   `yaml:"-"`
-	MaxDuplicateToolCallsConfigured    bool                   `yaml:"-"`
-	MaxOutputRetriesConfigured         bool                   `yaml:"-"`
-	MaxReasoningSecondsConfigured      bool                   `yaml:"-"`
-	MaxRateLimitDelaySecondsConfigured bool                   `yaml:"-"`
-	NudgeCountConfigured               bool                   `yaml:"-"`
-	MaxFindingsConfigured              bool                   `yaml:"-"`
-	MaxSessionsConfigured              bool                   `yaml:"-"`
+	Model                     string                 `yaml:"model"`
+	Small                     SmallModelConfig       `yaml:"small"`
+	BaseURL                   string                 `yaml:"base_url"`
+	APIKey                    string                 `yaml:"api_key"`
+	SupportedModels           []ModelCapabilities    `yaml:"supported_models"`
+	MaxTokens                 *int                   `yaml:"max_tokens"`
+	Temperature               *float64               `yaml:"temperature"`
+	TopP                      *float64               `yaml:"top_p"`
+	TopK                      *int                   `yaml:"top_k"`
+	PresencePenalty           *float64               `yaml:"presence_penalty"`
+	ExtraBody                 map[string]any         `yaml:"extra_body"`
+	DisableJSONResponseFormat bool                   `yaml:"disable_json_response_format"`
+	IncludePaths              []string               `yaml:"include_paths"`
+	ExcludePaths              []string               `yaml:"exclude_paths"`
+	IncludeContent            []string               `yaml:"include_content"`
+	ExcludeContent            []string               `yaml:"exclude_content"`
+	StyleGuides               []model.StyleGuideSpec `yaml:"styleguides"`
+	DisableStyleGuides        []string               `yaml:"disable_styleguides"`
+	DiffFormat                model.DiffFormat       `yaml:"diff_format"`
+	MaxContextTokens          int                    `yaml:"max_context_tokens"`
+	MaxRequestBytes           int                    `yaml:"max_request_bytes"`
+	MaxToolResultPercent      int                    `yaml:"max_tool_result_percent"`
+	MaxToolCalls              int                    `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls     int                    `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries          int                    `yaml:"max_output_retries"`
+	MaxReasoningSeconds       int                    `yaml:"max_reasoning_seconds"`
+	MaxRateLimitDelaySeconds  int                    `yaml:"max_rate_limit_delay_seconds"`
+	NudgeCount                int                    `yaml:"nudge_count"`
+	MaxFindings               int                    `yaml:"max_findings"`
+	MaxSessions               int                    `yaml:"max_sessions"`
+	DisablePatchSummary       bool                   `yaml:"disable_patch_summary"`
+	DisableSuggestions        bool                   `yaml:"disable_suggestions"`
+	DisableWorkflowTimeBudget bool                   `yaml:"disable_workflow_time_budget"`
+	// TimeBudgetScale multiplies every absolute time_budget.max_seconds a workflow
+	// spec declares, so a run can be given more (or less) wall clock without
+	// editing the spec. Relative shares (weight) and percentages
+	// (speedup_threshold) are unaffected. 1 keeps the spec as written.
+	TimeBudgetScale                    float64 `yaml:"time_budget_scale"`
+	ReasoningEffort                    string  `yaml:"reasoning_effort"`
+	Workdir                            string  `yaml:"workdir"`
+	GitHubToken                        string  `yaml:"github_token"`
+	GitLabToken                        string  `yaml:"gitlab_token"`
+	GitLabBaseURL                      string  `yaml:"gitlab_base_url"`
+	AssetBaseURL                       string  `yaml:"asset_base_url"`
+	MaxContextTokensConfigured         bool    `yaml:"-"`
+	MaxRequestBytesConfigured          bool    `yaml:"-"`
+	MaxToolResultPercentConfigured     bool    `yaml:"-"`
+	APIKeyConfigured                   bool    `yaml:"-"`
+	MaxToolCallsConfigured             bool    `yaml:"-"`
+	MaxDuplicateToolCallsConfigured    bool    `yaml:"-"`
+	MaxOutputRetriesConfigured         bool    `yaml:"-"`
+	MaxReasoningSecondsConfigured      bool    `yaml:"-"`
+	MaxRateLimitDelaySecondsConfigured bool    `yaml:"-"`
+	NudgeCountConfigured               bool    `yaml:"-"`
+	MaxFindingsConfigured              bool    `yaml:"-"`
+	MaxSessionsConfigured              bool    `yaml:"-"`
 }
 
 // SmallModelConfig holds the model configuration workflow steps select with
@@ -173,6 +181,7 @@ type Overrides struct {
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
 	DisableWorkflowTimeBudget bool
+	TimeBudgetScale           *float64
 	ReasoningEffort           string
 	Workdir                   string
 	GitHubToken               string
@@ -861,6 +870,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.DisableWorkflowTimeBudget {
 		profile.DisableWorkflowTimeBudget = true
 	}
+	if overrides.TimeBudgetScale != nil {
+		profile.TimeBudgetScale = *overrides.TimeBudgetScale
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -944,6 +956,9 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.AssetBaseURL == "" {
 		profile.AssetBaseURL = DefaultAssetBaseURL
 	}
+	if profile.TimeBudgetScale == 0 {
+		profile.TimeBudgetScale = DefaultTimeBudgetScale
+	}
 	return profile
 }
 
@@ -968,6 +983,11 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
+	}
+	// A non-positive or non-finite factor cannot be honored: it would turn every
+	// declared cap into an already-expired deadline, or into no deadline at all.
+	if profile.TimeBudgetScale <= 0 || math.IsInf(profile.TimeBudgetScale, 0) || math.IsNaN(profile.TimeBudgetScale) {
+		return Profile{}, fmt.Errorf("config: time_budget_scale must be a positive number")
 	}
 	if profile.MaxRateLimitDelaySeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_rate_limit_delay_seconds must be non-negative")

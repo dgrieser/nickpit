@@ -81,6 +81,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("disable_suggestions", yamlBool(profile.DisableSuggestions)),
 		yamlEntry("disable_workflow_time_budget", yamlBool(profile.DisableWorkflowTimeBudget)),
+		yamlEntry("time_budget_scale", yamlFloat(profile.TimeBudgetScale)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
 		yamlEntry("workdir", yamlScalar(profile.Workdir)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),

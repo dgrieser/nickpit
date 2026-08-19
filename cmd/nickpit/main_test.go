@@ -495,6 +495,40 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesTimeBudgetScale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    time_budget_scale: 2
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unset flag: the file's value stands.
+	configured := &app{profile: "default", configPath: path}
+	_, profile, err := configured.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TimeBudgetScale != 2 {
+		t.Fatalf("time_budget_scale = %v, want the configured 2", profile.TimeBudgetScale)
+	}
+
+	// --time-budget-scale wins.
+	flagged := &app{profile: "default", configPath: path, timeBudgetScale: 3, timeBudgetScaleSet: true}
+	_, profile, err = flagged.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TimeBudgetScale != 3 {
+		t.Fatalf("time_budget_scale = %v, want the flag's 3", profile.TimeBudgetScale)
+	}
+}
+
 func TestLoadProfileAppliesSamplingCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

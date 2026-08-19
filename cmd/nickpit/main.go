@@ -232,6 +232,8 @@ type app struct {
 	disableSuggestions            bool
 	requirePublish                bool
 	disableWorkflowTimeBudget     bool
+	timeBudgetScale               float64
+	timeBudgetScaleSet            bool
 	concurrency                   int
 	verifyDropPolicy              string
 	confidenceThreshold           float64
@@ -406,6 +408,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.requirePublish, "require-publish", false, "Fail unless the requested review is published successfully")
 	_ = root.PersistentFlags().MarkHidden("require-publish")
 	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.timeBudgetScale, &cli.timeBudgetScaleSet), "time-budget-scale", "Multiply every time_budget max_seconds in the workflow spec (2 = twice as much time, 0.5 = half)")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Which classified findings and verifier verdicts are dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
@@ -519,6 +522,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var reasoningSeconds *int
 	if a.maxReasoningSecondsSet {
 		reasoningSeconds = &a.maxReasoningSeconds
+	}
+	var timeBudgetScale *float64
+	if a.timeBudgetScaleSet {
+		timeBudgetScale = &a.timeBudgetScale
 	}
 	var rateLimitDelaySeconds *int
 	if a.maxRateLimitDelaySecondsSet {
@@ -661,6 +668,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		DisablePatchSummary:       a.disablePatchSummary,
 		DisableSuggestions:        a.disableSuggestions,
 		DisableWorkflowTimeBudget: a.disableWorkflowTimeBudget,
+		TimeBudgetScale:           timeBudgetScale,
 		Workdir:                   a.workDir,
 		GitHubToken:               a.githubToken,
 		GitLabToken:               a.gitlabToken,
@@ -1958,6 +1966,13 @@ func highlightSubcommand(command, sub string) string {
 // is skipped when no step needs a source (e.g. a merge/finalize-from-file run).
 // Finalize/summarize, when present in the spec, run inside the pipeline.
 func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, spec workflow.Spec, profile config.Profile, req model.ReviewRequest) error {
+	// The scale applies to the spec as loaded, before it is compiled: every budget
+	// the pipeline starts is derived from these values, and the verbose log then
+	// reports the caps the run will actually honor.
+	if scale := profile.TimeBudgetScale; scale > 0 && scale != 1 && !profile.DisableWorkflowTimeBudget {
+		spec = spec.WithScaledTimeBudgets(scale)
+		a.logf(ctx, "Scaled workflow time budgets: factor=%g", scale)
+	}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
 		return err
