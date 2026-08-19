@@ -444,7 +444,12 @@ steps:
 #                     starts when that step/part begins and is capped by the
 #                     parent deadline
 # Set disable_workflow_time_budget in the profile or pass
-# --disable-workflow-time-budget to ignore all workflow time budgets.
+# --disable-workflow-time-budget to ignore all workflow time budgets. Set
+# time_budget_scale in the profile or pass --time-budget-scale to multiply every
+# max_seconds (and every max_reasoning_seconds) instead of editing them here:
+# 2 = twice the declared time, 0.5 = half, 1 = the spec as written. Relative
+# keys (weight, speedup_threshold) are left alone, and
+# --disable-workflow-time-budget takes precedence over the scale.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,
 #  before any step runs.)
 #

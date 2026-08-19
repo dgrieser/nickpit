@@ -150,6 +150,12 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.DisableWorkflowTimeBudget {
 		base.DisableWorkflowTimeBudget = true
 	}
+	if override.TimeBudgetScaleConfigured {
+		base.TimeBudgetScaleConfigured = true
+		base.TimeBudgetScale = override.TimeBudgetScale
+	} else if override.TimeBudgetScale != 0 {
+		base.TimeBudgetScale = override.TimeBudgetScale
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

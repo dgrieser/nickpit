@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2308,5 +2309,95 @@ func TestEffectiveSmallProfileKeepsSupportedModelsOnSameEndpoint(t *testing.T) {
 	}
 	if small.APIKey != "primary-key" {
 		t.Fatalf("small api key = %q, want the inherited primary key", small.APIKey)
+	}
+}
+
+func TestLoadConfigTimeBudgetScale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    time_budget_scale: 2.5
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TimeBudgetScale != 2.5 {
+		t.Fatalf("time_budget_scale = %v, want 2.5", profile.TimeBudgetScale)
+	}
+
+	// The flag wins over the file.
+	override := 4.0
+	_, profile, err = Load(path, Overrides{TimeBudgetScale: &override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TimeBudgetScale != 4 {
+		t.Fatalf("overridden time_budget_scale = %v, want 4", profile.TimeBudgetScale)
+	}
+}
+
+// An unset knob must leave a spec as written, and a factor that cannot be honored
+// has to be rejected rather than turning every cap into an expired deadline.
+func TestLoadConfigTimeBudgetScaleDefaultAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("profiles:\n  default:\n    model: test-model\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TimeBudgetScale != DefaultTimeBudgetScale {
+		t.Fatalf("default time_budget_scale = %v, want %v", profile.TimeBudgetScale, DefaultTimeBudgetScale)
+	}
+	for _, bad := range []float64{0, -1, math.Inf(1), math.Inf(-1), math.NaN()} {
+		value := bad
+		if _, _, err := Load(path, Overrides{TimeBudgetScale: &value}); err == nil {
+			t.Fatalf("factor %v was accepted", bad)
+		}
+	}
+}
+
+// Zero is the trap: applyProfileDefaults runs before validation, so without the
+// Configured companion it would rewrite a deliberate 0 to the default and the
+// validation above could never see it. A silent no-op is the wrong answer for a
+// CLI where --concurrency 0 means "unlimited" and nudge_count 0 means "disabled".
+func TestLoadConfigTimeBudgetScaleRejectsAnExplicitZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    time_budget_scale: 0
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(path, Overrides{}); err == nil {
+		t.Fatal("time_budget_scale: 0 in the file was accepted")
+	}
+
+	// mergeProfiles layers a file's profile over whatever the base already holds,
+	// so it has to carry the Configured companion too: a base with a usable factor
+	// would otherwise swallow an explicit 0 through the `!= 0` fallback.
+	merged := mergeProfiles(
+		Profile{Model: "test-model", TimeBudgetScale: 2},
+		Profile{TimeBudgetScale: 0, TimeBudgetScaleConfigured: true},
+	)
+	if merged.TimeBudgetScale != 0 || !merged.TimeBudgetScaleConfigured {
+		t.Fatalf("merged time_budget_scale = %v (configured=%t), want an explicit 0",
+			merged.TimeBudgetScale, merged.TimeBudgetScaleConfigured)
+	}
+	if _, err := normalizeProfile(merged); err == nil {
+		t.Fatal("merged time_budget_scale: 0 was accepted")
 	}
 }

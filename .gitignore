@@ -9,3 +9,4 @@ findings/
 *.swp
 *.log
 loop_corpus.jsonl
+.nickpit.yaml
