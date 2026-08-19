@@ -16,8 +16,8 @@ func TestRetryCounter(t *testing.T) {
 		{2, 0, "2"},
 		{2, -1, "2"},
 	} {
-		if got := RetryCounter(tc.retry, tc.max); got != tc.want {
-			t.Fatalf("RetryCounter(%d, %d) = %q, want %q", tc.retry, tc.max, got, tc.want)
+		if got := retryCounter(tc.retry, tc.max); got != tc.want {
+			t.Fatalf("retryCounter(%d, %d) = %q, want %q", tc.retry, tc.max, got, tc.want)
 		}
 	}
 }

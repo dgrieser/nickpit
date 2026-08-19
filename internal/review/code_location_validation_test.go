@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 )
@@ -489,4 +491,52 @@ func runCodeLocationRepair(t *testing.T, engine *Engine, repoRoot string, resp *
 		t.Fatal("repairer is nil")
 	}
 	return repair(context.Background(), resp)
+}
+
+// The tool loop and the no-tools fallback each run their own retry budget, so
+// the code-location repair retry reports the counter of the loop that queued
+// it. Borrowing the other loop's counter made one lane print "1/5", then
+// "4/5", then "2/5" for what is a single ascending sequence of retries.
+func TestQueueCodeLocationRetryReportsQueueingLoopsCounter(t *testing.T) {
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	var progress bytes.Buffer
+	logger := logging.New(&progress, false, false)
+	logger.SetShowProgress(true)
+	engine.SetLogger(logger)
+
+	state := newAgentLoopState()
+	// The tool loop already spent three of its own retries before handing over.
+	state.jsonRetries = 3
+	req := agentLoopRequest{
+		AgentName:                  "Test Reviewer",
+		AgentKind:                  "review",
+		JSONRetryProgressAgentName: "Test Reviewer",
+		MaxOutputRetries:           5,
+	}
+	messages := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+	}
+	invalid := &llm.InvalidResponseError{
+		RawContent:    "malformed",
+		Reason:        "one or more findings are missing a code_location",
+		MissingFields: []string{"code_location"},
+	}
+
+	// The no-tools fallback is on its first retry of two, whatever the tool
+	// loop counted before it.
+	queued, err := engine.tryQueueCodeLocationRetry(context.Background(), req, state, invalid, &messages, nil, nil, true, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued {
+		t.Fatal("expected the code location retry to be queued")
+	}
+	got := progress.String()
+	if want := "retry 1/2 invalid JSON"; !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
+	if unwanted := "retry 4/5"; strings.Contains(got, unwanted) {
+		t.Fatalf("code location retry reported the other loop's counter %q in:\n%s", unwanted, got)
+	}
 }

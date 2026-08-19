@@ -305,8 +305,30 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if !retryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
-		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, maxRetries, fmt.Sprintf("reason=%q", err.Error()), 0))
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, maxRetries, retryReason(err), 0))
 	}
+}
+
+// retryReason condenses an error into the short prose a retry progress line
+// carries: its first line, clipped. Provider errors can be multi-line and
+// arbitrarily long, and RetryLine renders the reason between the retry counter
+// and the wait, so an inlined error body would push both out of sight.
+func retryReason(err error) string {
+	if err == nil {
+		return "request failed"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if line, _, found := strings.Cut(msg, "\n"); found {
+		msg = strings.TrimSpace(line)
+	}
+	if msg == "" {
+		return "request failed"
+	}
+	const limit = 100
+	if runes := []rune(msg); len(runes) > limit {
+		msg = string(runes[:limit-3]) + "..."
+	}
+	return msg
 }
 
 func (c *Checker) logProgressFor(info logging.ProgressInfo, stage logging.Stage, state logging.State, msg string) {
@@ -677,7 +699,7 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		// Logged before the request, like reviewProbeWithMode's retry line, so
 		// "N/max" always announces a retry that is about to run rather than one
 		// that just failed with no successor.
-		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, fmt.Sprintf("invalid JSON, error=%q", validationErr.Error()), 0))
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, model.RetryLine(attempt+1, c.profile.MaxOutputRetries, "invalid JSON: "+retryReason(validationErr), 0))
 		messages := append([]llm.Message(nil), req.Messages...)
 		if resp != nil && strings.TrimSpace(resp.RawResponse) != "" {
 			messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})

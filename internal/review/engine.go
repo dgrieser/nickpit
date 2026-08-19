@@ -440,7 +440,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			if retryInvalid := e.repairResponseOrRetry(ctx, loopReq, resp); retryInvalid != nil {
 				retryMessages := append([]llm.Message(nil), llmReq.Messages...)
 				var synthetic *llm.Message
-				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries), attempt+1, maxOutputRetries)
 				if err != nil {
 					return nil, err
 				}
@@ -461,7 +461,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 				if retryInvalid != nil {
 					retryMessages := append([]llm.Message(nil), llmReq.Messages...)
 					var synthetic *llm.Message
-					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries), attempt+1, maxOutputRetries)
 					if err != nil {
 						return nil, err
 					}
@@ -3578,7 +3578,7 @@ func (e *Engine) logTimeBudgetUrgentNow(ctx context.Context) {
 	}
 	now := time.Now()
 	e.logf(ctx, "Workflow time budget speed-up threshold already reached: scope=%s elapsed=%s limit=%s; sending urgent request",
-		budget.scope, model.HumanDuration(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)))
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)))
 }
 
 func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr error) {
@@ -3589,7 +3589,7 @@ func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr
 	}
 	now := time.Now()
 	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently first_error=%v soft_err=%v",
-		budget.scope, model.HumanDuration(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetRemaining(budget, now)), firstErr, softErr)
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetRemaining(budget, now)), firstErr, softErr)
 }
 
 func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
@@ -3605,7 +3605,7 @@ func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
 		return
 	}
 	e.logf(ctx, "Workflow time budget deadline reached: scope=%s elapsed=%s limit=%s overrun=%s; call aborted",
-		budget.scope, model.HumanDuration(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanDuration(timeBudgetOverrun(budget, now)))
+		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetOverrun(budget, now)))
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

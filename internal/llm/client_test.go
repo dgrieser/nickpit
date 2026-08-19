@@ -405,10 +405,11 @@ func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 		t.Fatalf("attempts = %d", attempts)
 	}
 	got := logs.String()
-	if want := "Model      retry 1 rate limited (429), waiting 1ms (waited 1ms/10m0s)"; !strings.Contains(got, want) {
+	// The gauge reports the wait already spent, so the first retry has none.
+	if want := "Model      retry 1 rate limited (429), waiting 1ms (waited 0s/10m0s)"; !strings.Contains(got, want) {
 		t.Fatalf("missing first retry progress log %q in:\n%s", want, got)
 	}
-	if want := "Model      retry 2 rate limited (429), waiting 1ms (waited 2ms/10m0s)"; !strings.Contains(got, want) {
+	if want := "Model      retry 2 rate limited (429), waiting 1ms (waited 1ms/10m0s)"; !strings.Contains(got, want) {
 		t.Fatalf("missing second retry progress log %q in:\n%s", want, got)
 	}
 	if want := "Model      ok recovered after 2 retries"; !strings.Contains(got, want) {
@@ -598,6 +599,118 @@ func TestClientReviewDoesNotWarnWhenEffortLadderRecovers(t *testing.T) {
 			t.Fatalf("effort-ladder recovery logged %q in:\n%s", unwanted, got)
 		}
 	}
+	// The ladder step is a retry like any other: it is announced while the lane
+	// waits on it and counted in the outcome, or the lane looks like it stalled
+	// through a whole extra model call and then simply answered.
+	if want := "Model      retry 1/5 reasoning budget exhausted, lower reasoning effort"; !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
+	if want := "Model      ok recovered after 1 retry"; !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
+}
+
+// An unparseable response is what the caller's output-retry loop exists to
+// absorb, so the model layer hands it back without calling it a failure.
+func TestClientReviewDoesNotWarnWhenResponseIsInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{"index": 0, "delta": map[string]any{"content": "not json at all"}},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("error = %v, want an invalid-response error", err)
+	}
+	got := logs.String()
+	for _, unwanted := range []string{"Model      warn", "Model      error"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("recoverable invalid response logged %q in:\n%s", unwanted, got)
+		}
+	}
+}
+
+// Each retry budget backs off on its own curve, so the delay printed next to a
+// retry number is the delay that retry number calls for.
+func TestClientReviewRateLimitWaitsDoNotAdvanceTheStatusBackoffCurve(t *testing.T) {
+	var attempts int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		switch {
+		case attempts <= 3:
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "Provider returned error", http.StatusTooManyRequests)
+		case attempts == 4:
+			http.Error(w, "Provider returned error", http.StatusInternalServerError)
+		default:
+			writeValidReviewSSE(t, w)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = 10 * time.Millisecond
+	client.retrier.MaxBackoff = 10 * time.Second
+	// Fixed jitter so the rendered wait is the computed backoff exactly.
+	client.retrier.rand = func() float64 { return 0.5 }
+
+	var logs bytes.Buffer
+	logger := logging.New(&logs, false, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 5 {
+		t.Fatalf("attempts = %d, want 5 (three 429 waits, one 500 retry, then success)", attempts)
+	}
+	// The 500 is the first retry counted against MaxRetries, so it waits the
+	// initial backoff instead of the fourth step of the curve.
+	got := logs.String()
+	for _, want := range []string{
+		"Model      retry 1/5 status=500, waiting 10ms",
+		"Model      ok recovered after 4 retries",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
 }
 
 func TestClientReviewDoesNotRetryRequestTooLargeWhenPayloadCannotBeTrimmed(t *testing.T) {
@@ -696,7 +809,7 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 	// The trimmed retry fires at most once, so its counter says so instead of
 	// borrowing the loop's attempt number.
 	for _, want := range []string{
-		"Model      retry 1/1 prompt too long, retrying trimmed request",
+		"Model      retry 1/1 prompt too long, trimmed request",
 		"Model      ok recovered after 1 retry",
 	} {
 		if !strings.Contains(logs.String(), want) {

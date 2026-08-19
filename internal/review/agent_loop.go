@@ -171,7 +171,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			if partialResp, retryInvalid, handled := e.tryRepairPartialResponse(loopCtx, req, invalidResp); handled {
 				repairedFromPartial = true
 				if retryInvalid != nil {
-					queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
+					queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true, state.jsonRetries+1, req.MaxOutputRetries)
 					if err != nil {
 						return result, err
 					}
@@ -196,7 +196,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					llmReq.ParallelToolCalls = false
 				}
 				state.jsonRetries++
-				e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
+				e.logJSONRetry(loopCtx, req, state.jsonRetries, req.MaxOutputRetries, invalidResp)
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 				} else {
@@ -225,7 +225,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		if !repairedFromPartial {
 			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
-				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
+				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true, state.jsonRetries+1, req.MaxOutputRetries)
 				if err != nil {
 					return result, err
 				}
@@ -250,7 +250,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 						llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 					}
 					state.jsonRetries++
-					e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
+					e.logJSONRetry(loopCtx, req, state.jsonRetries, req.MaxOutputRetries, invalidResp)
 					if strings.TrimSpace(invalidResp.RawContent) != "" {
 						messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 					}
@@ -438,17 +438,21 @@ func (e *Engine) canRetryCodeLocation(state *agentLoopState, maxRetries int) boo
 	return outputRetriesRemaining(state.jsonRetries, maxRetries)
 }
 
-func (e *Engine) tryQueueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest, retriesAvailable bool) (bool, error) {
+// tryQueueCodeLocationRetry queues one code-location repair retry when the
+// caller still has retries left. retryNum and maxRetries describe the calling
+// loop's own retry scope so the progress line continues that loop's sequence
+// instead of reporting a second, unrelated counter.
+func (e *Engine) tryQueueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest, retriesAvailable bool, retryNum, maxRetries int) (bool, error) {
 	if !retriesAvailable || !e.canRetryCodeLocation(state, req.MaxOutputRetries) {
 		return false, nil
 	}
-	if err := e.queueCodeLocationRetry(ctx, req, state, invalidResp, messages, syntheticFollowup, llmReq); err != nil {
+	if err := e.queueCodeLocationRetry(ctx, req, state, invalidResp, messages, syntheticFollowup, llmReq, retryNum, maxRetries); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest) error {
+func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest, retryNum, maxRetries int) error {
 	if state == nil || invalidResp == nil || messages == nil {
 		return nil
 	}
@@ -457,7 +461,7 @@ func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopReques
 	}
 	state.codeLocationRetried = true
 	state.jsonRetries++
-	e.logJSONRetry(ctx, req, state.jsonRetries, invalidResp)
+	e.logJSONRetry(ctx, req, retryNum, maxRetries, invalidResp)
 	if strings.TrimSpace(invalidResp.RawContent) != "" {
 		*messages = append(*messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 	}
@@ -512,14 +516,18 @@ func reviewCallTokens(resp *llm.ReviewResponse, err error) model.TokenUsage {
 	return model.TokenUsage{}
 }
 
-func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
+// logJSONRetry announces one output retry. attempt and maxRetries must come
+// from the same retry scope: the tool loop counts with state.jsonRetries while
+// the no-tools fallback counts its own attempts, and mixing the two made one
+// lane print retry numbers that jumped forward and then back.
+func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt, maxRetries int, invalidResp *llm.InvalidResponseError) {
 	if req.JSONRetryProgressAgentName == "" {
 		e.logf(ctx, "Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 		return
 	}
 	e.logf(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 	if e.logger != nil {
-		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(attempt, req.MaxOutputRetries, "invalid JSON", 0))
+		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, model.RetryLine(attempt, maxRetries, "invalid JSON", 0))
 	}
 }
 
