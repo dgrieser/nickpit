@@ -156,3 +156,26 @@ func TestStampSymlinkFlagsSkipsWithoutCheckout(t *testing.T) {
 		t.Fatalf("tree lookups = %v, want none without a checkout", runner.revs)
 	}
 }
+
+// Git paths must stay literal when the marks are propagated. On Unix a symlink
+// named `a\b` and a regular file `a/b` are two different files, and folding them
+// onto one key would let the symlink's mark suppress the other file's text.
+func TestStampSymlinkFlagsKeepsPathsLiteral(t *testing.T) {
+	reviewCtx := &model.ReviewContext{
+		Mode:         model.ModeGitHub,
+		CheckoutRoot: "/checkout",
+		DiffHeadSHA:  "head111",
+		ChangedFiles: []model.ChangedFile{{Path: `a\b`}, {Path: "a/b"}},
+		DiffFiles:    []model.DiffFile{{FilePath: `a\b`}, {FilePath: "a/b"}},
+		DiffHunks:    []model.DiffHunk{{FilePath: `a\b`}, {FilePath: "a/b"}},
+	}
+
+	stampSymlinkFlags(context.Background(), reviewCtx, &symlinkTreeRunner{symlinks: []string{`a\b`}})
+
+	if !reviewCtx.ChangedFiles[0].Symlink || !reviewCtx.DiffFiles[0].Symlink || !reviewCtx.DiffHunks[0].Symlink {
+		t.Fatalf("symlink not marked: %#v / %#v / %#v", reviewCtx.ChangedFiles[0], reviewCtx.DiffFiles[0], reviewCtx.DiffHunks[0])
+	}
+	if reviewCtx.ChangedFiles[1].Symlink || reviewCtx.DiffFiles[1].Symlink || reviewCtx.DiffHunks[1].Symlink {
+		t.Fatalf("a distinct path inherited the mark: %#v / %#v / %#v", reviewCtx.ChangedFiles[1], reviewCtx.DiffFiles[1], reviewCtx.DiffHunks[1])
+	}
+}

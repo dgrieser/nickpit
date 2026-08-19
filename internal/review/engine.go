@@ -2964,9 +2964,18 @@ const maxStyleGuideProbeBytes = 1 << 20
 // TARGET's text under the symlink's own path, which both misrepresents the file
 // and invites findings about unrelated content. A symlink's real content is its
 // target path, which the diff already shows.
+//
+// Deleted entries are skipped too. There is nothing to read for an ordinary
+// deletion, and replacing a file with a symlink produces two entries for one path
+// — a deleted regular file plus an added symlink — where reading the deleted entry
+// would land on the symlink that now occupies the path and inline its target.
 func (e *Engine) appendFullFiles(ctx context.Context, reviewCtx *model.ReviewContext, repoRoot string) {
 	e.logf(ctx, "Including full files: count=%d", len(reviewCtx.ChangedFiles))
 	for _, file := range reviewCtx.ChangedFiles {
+		if file.Status == model.FileDeleted {
+			e.logf(ctx, "Skipping file retrieval: path=%s reason=deleted", file.Path)
+			continue
+		}
 		if file.Symlink {
 			e.logf(ctx, "Skipping file retrieval: path=%s reason=symlink", file.Path)
 			continue

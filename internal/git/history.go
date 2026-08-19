@@ -1032,23 +1032,17 @@ func rawEntryStatus(token string) string {
 	return fields[len(fields)-1]
 }
 
-// rawEntrySymlink reports whether a raw entry's file is stored as a symlink.
-// An ordinary entry is ":<srcmode> <dstmode> <srcsha> <dstsha> <status>"; a
-// combined (merge) entry repeats the source columns once per parent and marks
-// that with one leading colon per parent, e.g.
-// "::100644 100644 100644 <sha> <sha> <sha> MM". The destination mode therefore
-// sits right after the source modes, and it decides — except for a deletion,
-// where the destination mode is all zeroes and the source side decides.
+// rawEntrySymlink reports whether a raw entry's file is stored as a symlink. The
+// destination mode decides; a deletion has none, so every parent is inspected — a
+// combined merge deletion can hold a regular file in one parent and a symlink in
+// another, and the patch then shows a link target. When the size limit drops that
+// patch, this metadata is the only symlink signal left.
 func rawEntrySymlink(token string) bool {
-	parents := len(token) - len(strings.TrimLeft(token, ":"))
-	fields := strings.Fields(strings.TrimLeft(token, ":"))
-	// One source mode per parent, one destination mode, the same number of
-	// object names, and one status column. The paths are separate NUL-delimited
-	// tokens, so they are not part of this count.
-	if parents < 1 || len(fields) != 2*(parents+1)+1 {
+	parents, dst, _, ok := RawEntryModes(token)
+	if !ok {
 		return false
 	}
-	return SymlinkFromModes(fields[0], fields[parents])
+	return SymlinkModeFromRawEntry(parents, dst) == SymlinkFileMode
 }
 
 func fileStatusFromRawStatus(status string) model.FileStatus {

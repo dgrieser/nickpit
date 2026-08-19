@@ -222,3 +222,46 @@ func TestSymlinkPathsAtRevSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
 		t.Fatalf("unknown revision produced marks = %#v, err = %v", marks, err)
 	}
 }
+
+// A combined merge deletion has no destination mode and one source column per
+// parent. If only the first parent were inspected, a merge whose symlink sits in a
+// later parent would report no symlink — and when the size limit drops the patch,
+// this metadata is the only symlink signal left.
+func TestSymlinkModeFromRawEntryChecksEveryParent(t *testing.T) {
+	tests := []struct {
+		name string
+		meta string
+		want bool
+	}{
+		{name: "two-way add", meta: ":000000 120000 0000000 32f64f4 A", want: true},
+		{name: "two-way delete", meta: ":120000 000000 32f64f4 0000000 D", want: true},
+		{name: "combined delete, symlink in first parent", meta: "::120000 100644 000000 1de5659 2cc7521 0000000 DD", want: true},
+		{name: "combined delete, symlink in later parent", meta: "::100644 120000 000000 2cc7521 1de5659 0000000 DD", want: true},
+		{name: "combined delete of regular parents", meta: "::100644 100644 000000 2cc7521 45b983b 0000000 DD"},
+		{name: "combined merge into a regular file", meta: "::120000 100644 100644 1de5659 2cc7521 45b983b MM"},
+		{name: "combined merge into a symlink", meta: "::100644 100644 120000 2cc7521 45b983b 1de5659 MM", want: true},
+		{name: "not a raw entry", meta: "1\t0\tmain.go"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parents, dst, _, ok := RawEntryModes(tc.meta)
+			if !ok {
+				if tc.want {
+					t.Fatalf("RawEntryModes(%q) refused a real entry", tc.meta)
+				}
+				return
+			}
+			if got := SymlinkModeFromRawEntry(parents, dst) == SymlinkFileMode; got != tc.want {
+				t.Fatalf("symlink for %q = %v, want %v", tc.meta, got, tc.want)
+			}
+		})
+	}
+}
+
+// The same rule has to reach the mode map the local diff fallback uses.
+func TestParseRawFileModesUsesEveryParentOfACombinedDeletion(t *testing.T) {
+	modes := ParseRawFileModes("::100644 120000 000000 2cc7521 1de5659 0000000 DD\x00f\x00")
+	if !modes.Symlink("f") {
+		t.Fatalf("combined deletion with a symlink parent unmarked: %#v", modes)
+	}
+}

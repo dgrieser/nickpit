@@ -85,20 +85,20 @@ func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runn
 	if len(marks) == 0 {
 		return
 	}
-	byPath := make(map[string]bool, len(marks))
-	for path := range marks {
-		byPath[normalizeReviewPath(path)] = true
-	}
+	// The keys stay literal git paths, exactly as ls-tree and the SCM payload
+	// spell them. Normalizing would fold distinct legal names together — a
+	// symlink named `a\b` and a regular file `a/b` are two different files on
+	// Unix — and the symlink's mark would then suppress the other file's text.
 	for i := range reviewCtx.ChangedFiles {
 		file := &reviewCtx.ChangedFiles[i]
 		if !file.Symlink {
-			file.Symlink = byPath[normalizeReviewPath(file.Path)]
+			file.Symlink = marks[file.Path]
 		}
 	}
 	for i := range reviewCtx.DiffFiles {
 		file := &reviewCtx.DiffFiles[i]
 		if !file.Symlink {
-			file.Symlink = byPath[normalizeReviewPath(file.FilePath)]
+			file.Symlink = marks[file.FilePath]
 		}
 	}
 	// The git-json diff format drops DiffFiles, so an unstamped hunk would carry
@@ -106,7 +106,7 @@ func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runn
 	for i := range reviewCtx.DiffHunks {
 		hunk := &reviewCtx.DiffHunks[i]
 		if !hunk.Symlink {
-			hunk.Symlink = byPath[normalizeReviewPath(hunk.FilePath)]
+			hunk.Symlink = marks[hunk.FilePath]
 		}
 	}
 }

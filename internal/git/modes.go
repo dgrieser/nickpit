@@ -93,26 +93,65 @@ func (m FileModes) Symlink(path string) bool {
 	return ok && NormalizeFileMode(mode) == SymlinkFileMode
 }
 
-// ParseRawFileModes reads the post-change file mode of every entry in
-// "git diff --raw -z" output. An entry is "<meta>\0<path>[\0<newpath>]", where
-// meta is ":<srcmode> <dstmode> <srcsha> <dstsha> <status>" and a rename or copy
-// adds the second path — the destination, which is the one keyed here.
+// RawEntryModes parses the meta token of a "git diff --raw" entry:
+//
+//	:<srcmode> <dstmode> <srcsha> <dstsha> <status>
+//	::<mode1> <mode2> <dstmode> <sha1> <sha2> <dstsha> <status>
+//
+// The second form is a combined (merge) entry: one leading colon and one source
+// column per parent. Returned modes are normalized, so an absent side ("000000")
+// comes back as "". ok is false for anything that is not a raw entry.
+func RawEntryModes(meta string) (parents []string, dst, status string, ok bool) {
+	rest := strings.TrimLeft(meta, ":")
+	count := len(meta) - len(rest)
+	fields := strings.Fields(rest)
+	// One source mode per parent, one destination mode, the same number of object
+	// names, and one status column; the paths are separate tokens.
+	if count < 1 || len(fields) != 2*(count+1)+1 {
+		return nil, "", "", false
+	}
+	parents = make([]string, 0, count)
+	for _, mode := range fields[:count] {
+		parents = append(parents, NormalizeFileMode(mode))
+	}
+	return parents, NormalizeFileMode(fields[count]), fields[len(fields)-1], true
+}
+
+// SymlinkModeFromRawEntry picks the mode that describes the side under review of a
+// raw entry: the destination when the entry has one, else the parent side. A
+// combined deletion has no destination and one source column per parent, and any
+// parent that held a symlink means the patch shows a link target — so a symlink
+// parent wins over a regular one. Returns "" when no side states a mode.
+func SymlinkModeFromRawEntry(parents []string, dst string) string {
+	if dst != "" {
+		return dst
+	}
+	fallback := ""
+	for _, mode := range parents {
+		if mode == SymlinkFileMode {
+			return mode
+		}
+		if fallback == "" {
+			fallback = mode
+		}
+	}
+	return fallback
+}
+
+// ParseRawFileModes reads the file mode of every entry in "git diff --raw -z"
+// output. An entry is "<meta>\0<path>[\0<newpath>]"; a rename or copy adds the
+// second path — the destination, which is the one keyed here.
 func ParseRawFileModes(out string) FileModes {
 	tokens := strings.Split(out, "\x00")
 	modes := FileModes{}
 	for i := 0; i < len(tokens); i++ {
-		meta := tokens[i]
-		if !strings.HasPrefix(meta, ":") {
+		if !strings.HasPrefix(tokens[i], ":") {
 			continue
 		}
-		fields := strings.Fields(strings.TrimLeft(meta, ":"))
-		parents := len(meta) - len(strings.TrimLeft(meta, ":"))
-		// One source mode per parent, one destination mode, the same number of
-		// object names, and one status column; the paths are separate tokens.
-		if parents < 1 || len(fields) != 2*(parents+1)+1 {
+		parents, dst, status, ok := RawEntryModes(tokens[i])
+		if !ok {
 			continue
 		}
-		status := fields[len(fields)-1]
 		paths := 1
 		if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
 			paths = 2
@@ -120,14 +159,9 @@ func ParseRawFileModes(out string) FileModes {
 		if i+paths >= len(tokens) {
 			break
 		}
-		// A deletion reports an all-zero destination mode; the source side is
-		// what describes the file that was there.
-		dstMode := NormalizeFileMode(fields[parents])
-		if dstMode == "" {
-			dstMode = NormalizeFileMode(fields[0])
-		}
-		if path := tokens[i+paths]; path != "" && dstMode != "" {
-			modes[path] = dstMode
+		mode := SymlinkModeFromRawEntry(parents, dst)
+		if path := tokens[i+paths]; path != "" && mode != "" {
+			modes[path] = mode
 		}
 		i += paths
 	}

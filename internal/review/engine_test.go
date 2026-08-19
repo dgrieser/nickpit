@@ -5140,6 +5140,28 @@ func TestAppendFullFilesSkipsSymlinks(t *testing.T) {
 	}
 }
 
+// Replacing a regular file with a symlink yields two entries for one path: a
+// deleted regular file plus an added symlink. Reading the deleted entry would land
+// on the symlink that now occupies the path and inline its target's text.
+func TestAppendFullFilesSkipsDeletedEntries(t *testing.T) {
+	retriever := &recordingRetrieval{}
+	engine := &Engine{retrieval: retriever}
+	reviewCtx := &model.ReviewContext{
+		ChangedFiles: []model.ChangedFile{
+			{Path: "link", Status: model.FileDeleted},
+			{Path: "link", Status: model.FileAdded, Symlink: true},
+			{Path: "gone.go", Status: model.FileDeleted},
+			{Path: "cmd/main.go", Status: model.FileModified},
+		},
+	}
+
+	engine.appendFullFiles(context.Background(), reviewCtx, "/checkout")
+
+	if want := []string{"cmd/main.go"}; !slices.Equal(retriever.paths, want) {
+		t.Fatalf("retrieved paths = %v, want %v", retriever.paths, want)
+	}
+}
+
 // recordingRetrieval notes which paths were read; everything else comes from
 // stubRetrieval.
 type recordingRetrieval struct {
