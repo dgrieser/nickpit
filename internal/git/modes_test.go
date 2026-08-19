@@ -30,10 +30,10 @@ func TestSymlinkPathsAtRevReadsTreeModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !marks["deploy/chart/templates"] {
-		t.Fatalf("symlink not marked: %#v", marks)
+	if marks["deploy/chart/templates"] != "32f64f4d836716819dc5fa9a1e09a29b428881df" {
+		t.Fatalf("symlink not marked with its blob: %#v", marks)
 	}
-	if marks["main.go"] || marks["scripts/run.sh"] {
+	if marks["main.go"] != "" || marks["scripts/run.sh"] != "" {
 		t.Fatalf("regular files marked as symlinks: %#v", marks)
 	}
 	// The tree is addressed by SHA, not by whatever the checkout holds.
@@ -98,7 +98,7 @@ func TestSymlinkPathsAtRevChunksAndSurvivesFailures(t *testing.T) {
 	if got := len(runner.calls[1]) - 4; got != 1 {
 		t.Fatalf("second chunk carried %d paths, want 1", got)
 	}
-	if !marks["link"] {
+	if marks["link"] == "" {
 		t.Fatalf("marks from the surviving chunk were dropped: %#v", marks)
 	}
 }
@@ -209,10 +209,10 @@ func TestSymlinkPathsAtRevSeesSymlinkMaterializedAsRegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !marks["link"] {
+	if marks["link"] == "" {
 		t.Fatalf("tree symlink missed while the worktree holds a regular file: %#v", marks)
 	}
-	if marks["main.go"] {
+	if marks["main.go"] != "" {
 		t.Fatalf("regular file marked as symlink: %#v", marks)
 	}
 
@@ -289,5 +289,33 @@ func TestParseRawFileModesKeepsBlobNames(t *testing.T) {
 	}
 	if got := modes.Blob("never-seen"); got != "" {
 		t.Fatalf("unknown blob = %q, want empty", got)
+	}
+}
+
+// A symlink's blob IS its target: git appends no separator, and POSIX permits a
+// newline in a pathname, so nothing may be trimmed off a blob read.
+func TestReadBlobKeepsBytesVerbatim(t *testing.T) {
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs([]string{"cat-file", "blob", "32f64f4"}): "../weird target\n",
+		},
+	}
+
+	target, err := ReadBlob(context.Background(), runner, "32f64f4", 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "../weird target\n" {
+		t.Fatalf("target = %q, want the blob byte for byte", target)
+	}
+	// A blob past the limit is not a link target, and no runner means no read.
+	if _, err := ReadBlob(context.Background(), runner, "32f64f4", 4); err == nil {
+		t.Fatal("oversized blob was accepted")
+	}
+	if _, err := ReadBlob(context.Background(), nil, "32f64f4", 4096); err == nil {
+		t.Fatal("blob read without a runner")
+	}
+	if _, err := ReadBlob(context.Background(), runner, "", 4096); err == nil {
+		t.Fatal("blob read without an object name")
 	}
 }

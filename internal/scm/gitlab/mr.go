@@ -136,10 +136,18 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		if path == "" {
 			path = change.OldPath
 		}
+		oldPath := ""
+		if change.Renamed && change.OldPath != path {
+			// A pure rename carries no hunk, so the old path is the only record of
+			// the move; for a relative symlink it is what decides whether the
+			// target still resolves.
+			oldPath = change.OldPath
+		}
 		changedFiles = append(changedFiles, model.ChangedFile{
 			Path:    path,
 			Status:  status,
 			Symlink: git.SymlinkFromModes(change.AMode, change.BMode),
+			OldPath: oldPath,
 		})
 		diff.WriteString("diff --git a/")
 		diff.WriteString(path)

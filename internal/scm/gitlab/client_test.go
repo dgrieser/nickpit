@@ -430,3 +430,47 @@ func TestSymlinkModeHeader(t *testing.T) {
 		})
 	}
 }
+
+// GitLab reports the rename source per change; a pure rename has no hunk, so it is
+// the only record of the move.
+func TestFetchMRCarriesRenameOldPath(t *testing.T) {
+	changes := `{"changes": [
+		{"new_path": "dir/link2", "old_path": "dir/sub/link", "renamed_file": true,
+		 "a_mode": "120000", "b_mode": "120000", "diff": ""},
+		{"new_path": "main.go", "old_path": "main.go",
+		 "a_mode": "100644", "b_mode": "100644", "diff": "@@ -1 +1 @@\n-old\n+new\n"}
+	]}`
+	fixtures := map[string][]byte{
+		"/api/v4/projects/group%2Fproject/merge_requests/456":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_commits.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/changes": []byte(changes),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			data, ok = fixtures[r.URL.Path]
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchMR(context.Background(), "group/project", 456, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 2 {
+		t.Fatalf("changed files = %#v, want two entries", ctx.ChangedFiles)
+	}
+	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("rename metadata incomplete: %#v", ctx.ChangedFiles[0])
+	}
+	// An unchanged path must not be reported as its own rename source.
+	if ctx.ChangedFiles[1].OldPath != "" {
+		t.Fatalf("old path invented for a modified file: %#v", ctx.ChangedFiles[1])
+	}
+}

@@ -125,8 +125,8 @@ func (r *codeLocationRepairer) repairFindingToAllowed(ctx context.Context, field
 	if r == nil || r.retrieval == nil || strings.TrimSpace(r.repoRoot) == "" || loc == nil || strings.TrimSpace(loc.Content) == "" {
 		return false
 	}
-	path := normalizeReviewPath(loc.FilePath)
-	if path == "" || !allowedContainsPath(r.allowed, path) {
+	path := allowedPathFor(r.allowed, loc.FilePath)
+	if path == "" {
 		return false
 	}
 	found, err := r.findLines(ctx, path, loc.Content)
@@ -160,13 +160,16 @@ func (r *codeLocationRepairer) repairFindingToAllowed(ctx context.Context, field
 	return true
 }
 
-func allowedContainsPath(allowed []model.CodeLocation, path string) bool {
+// allowedPathFor resolves a model-supplied path to the literal git path of the
+// allowed location it designates, or "" when no allowed location covers that file.
+// Repair then works on git's spelling of the path rather than the model's.
+func allowedPathFor(allowed []model.CodeLocation, path string) string {
 	for _, candidate := range allowed {
-		if normalizeReviewPath(candidate.FilePath) == path {
-			return true
+		if allowedPathMatches(path, candidate.FilePath) {
+			return candidate.FilePath
 		}
 	}
-	return false
+	return ""
 }
 
 // codeLocationMatchesAllowedEvidence preserves submitted old-side evidence that
@@ -176,13 +179,12 @@ func codeLocationMatchesAllowedEvidence(loc model.CodeLocation, allowed []model.
 	if strings.TrimSpace(loc.Content) == "" || !codeLocationOverlapsAllowed(loc, allowed) {
 		return false
 	}
-	path := normalizeReviewPath(loc.FilePath)
 	for _, candidate := range allowed {
-		if normalizeReviewPath(candidate.FilePath) != path ||
+		if !allowedPathMatches(loc.FilePath, candidate.FilePath) ||
 			!rangesOverlap(loc.LineRange.Start, max(loc.LineRange.End, loc.LineRange.Start), candidate.LineRange.Start, candidate.LineRange.EffectiveCount()) {
 			continue
 		}
-		content := &retrieval.FileContent{Path: path, Content: candidate.Content}
+		content := &retrieval.FileContent{Path: candidate.FilePath, Content: candidate.Content}
 		for _, match := range retrieval.FindLinesIn(content, loc.Content).Matches {
 			matchStart := candidate.LineRange.Start + match.CodeLocation.LineRange.Start - 1
 			if rangesOverlap(

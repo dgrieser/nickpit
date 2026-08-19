@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -20,7 +22,9 @@ func literalPathspec(path string) string {
 }
 
 // SymlinkPathsAtRev asks git which of paths are stored as symlinks (mode 120000)
-// in rev's tree, keyed by the path as git reports it.
+// in rev's tree. The result maps each such path, as git reports it, to the object
+// name of its blob — a symlink's blob is its target, so that name is what makes
+// the target readable when the patch shows no content of its own.
 //
 // The tree of the reviewed commit — not the index and not the worktree — is the
 // authority, for two independent reasons. A checkout can hold a different
@@ -35,11 +39,11 @@ func literalPathspec(path string) string {
 // result, and a failing git call yields no marks rather than a guess: a missing
 // mark, never a wrong one. The error is returned so a caller that can log it may,
 // but it never invalidates the marks already collected.
-func SymlinkPathsAtRev(ctx context.Context, runner Runner, rev string, paths []string) (map[string]bool, error) {
+func SymlinkPathsAtRev(ctx context.Context, runner Runner, rev string, paths []string) (map[string]string, error) {
 	if runner == nil || rev == "" || len(paths) == 0 {
 		return nil, nil
 	}
-	symlinks := make(map[string]bool, len(paths))
+	symlinks := make(map[string]string, len(paths))
 	var firstErr error
 	for chunk := range slices.Chunk(paths, maxTreeQueryPaths) {
 		args := make([]string, 0, 5+len(chunk))
@@ -62,20 +66,36 @@ func SymlinkPathsAtRev(ctx context.Context, runner Runner, rev string, paths []s
 // collectTreeSymlinks parses "ls-tree -z" output. Each NUL-terminated entry is
 // "<mode> <type> <object>\t<path>"; -z keeps the path literal, so it needs no
 // unquoting.
-func collectTreeSymlinks(out string, symlinks map[string]bool) {
+func collectTreeSymlinks(out string, symlinks map[string]string) {
 	for entry := range strings.SplitSeq(out, "\x00") {
 		meta, path, ok := strings.Cut(entry, "\t")
 		if !ok || path == "" {
 			continue
 		}
 		fields := strings.Fields(meta)
-		if len(fields) == 0 {
+		if len(fields) < 3 || NormalizeFileMode(fields[0]) != SymlinkFileMode {
 			continue
 		}
-		if NormalizeFileMode(fields[0]) == SymlinkFileMode {
-			symlinks[path] = true
-		}
+		symlinks[path] = fields[2]
 	}
+}
+
+// ReadBlob returns an object's bytes exactly as git stores them, refusing anything
+// larger than limit. Nothing is trimmed: for a symlink the blob is the target
+// pathname, git appends no separator, and a pathname may legally contain — or end
+// in — a newline, so any trimming would change the target.
+func ReadBlob(ctx context.Context, runner Runner, blob string, limit int) (string, error) {
+	if runner == nil || blob == "" {
+		return "", errors.New("git: no blob to read")
+	}
+	out, err := runner.Run(ctx, "cat-file", "blob", blob)
+	if err != nil {
+		return "", err
+	}
+	if limit > 0 && len(out) > limit {
+		return "", fmt.Errorf("git: blob %s exceeds %d bytes", blob, limit)
+	}
+	return out, nil
 }
 
 // FileModes maps a repo-relative path to what "git diff --raw" reports for that

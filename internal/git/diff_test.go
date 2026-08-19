@@ -447,8 +447,9 @@ func TestLocalSourceResolveContextRecoversModesForSilentSections(t *testing.T) {
 		outputs: map[string]string{
 			joinArgs(patchCall): patch,
 			joinArgs(rawCall):   raw,
-			// The blob the raw listing named holds the link target verbatim.
-			joinArgs([]string{"cat-file", "blob", "78bc337"}): "../target",
+			// The blob the raw listing named holds the link target verbatim — a
+			// pathname may legally end in a newline, so nothing may be trimmed.
+			joinArgs([]string{"cat-file", "blob", "78bc337"}): "../target\n",
 		},
 		// No origin mirror of the base branch, so the explicit refs stand.
 		errors: map[string]error{
@@ -474,8 +475,8 @@ func TestLocalSourceResolveContextRecoversModesForSilentSections(t *testing.T) {
 	}
 	// The mark alone is not reviewable: with no hunk and no content, the target is
 	// the only way to tell whether the move broke a relative link.
-	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || ctx.ChangedFiles[0].SymlinkTarget != "../target" {
-		t.Fatalf("rename metadata incomplete: %#v", ctx.ChangedFiles[0])
+	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || ctx.ChangedFiles[0].SymlinkTarget != "../target\n" {
+		t.Fatalf("rename metadata incomplete or trimmed: %#v", ctx.ChangedFiles[0])
 	}
 	// The raw listing carries no content, so it must not carry the patch flags.
 	rawArgs := ""

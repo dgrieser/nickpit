@@ -228,3 +228,64 @@ func TestFilterFindingsByDiffScopeKeepsRenamedSymlinkFinding(t *testing.T) {
 		t.Fatalf("kept = %d, dropped = %d, want the finding kept", len(kept), len(dropped))
 	}
 }
+
+// Backslashes and spaces are legal in Unix filenames, so a symlink named `a\b` and
+// a regular file `a/b` are two different files. Folding them would let one file's
+// hunk cancel the other's location, or lend it scope for a finding about the wrong
+// file.
+func TestAllowedDiffCodeLocationsKeepsPathsLiteral(t *testing.T) {
+	changed := []model.ChangedFile{
+		{Path: `a\b`, Status: model.FileRenamed, OldPath: `dir/a\b`, Symlink: true, SymlinkTarget: "../target"},
+	}
+	hunks := []model.DiffHunk{
+		{FilePath: "a/b", NewStart: 4, NewLines: 2, Content: "+text\n+more"},
+	}
+
+	allowed := allowedDiffCodeLocations(hunks, changed)
+
+	var symlinkLoc, hunkLoc *model.CodeLocation
+	for i := range allowed {
+		switch allowed[i].FilePath {
+		case `a\b`:
+			symlinkLoc = &allowed[i]
+		case "a/b":
+			hunkLoc = &allowed[i]
+		default:
+			t.Fatalf("path was rewritten: %q", allowed[i].FilePath)
+		}
+	}
+	if symlinkLoc == nil {
+		t.Fatalf("the other file's hunk cancelled the symlink location: %#v", allowed)
+	}
+	if hunkLoc == nil {
+		t.Fatalf("hunk location missing: %#v", allowed)
+	}
+	// A finding about the regular file must not borrow the symlink's line-1 scope.
+	borrowed := model.CodeLocation{FilePath: "a/b", LineRange: model.LineRange{Start: 1, End: 1, Count: 1}}
+	if codeLocationOverlapsAllowed(borrowed, allowed) {
+		t.Fatal("a finding on a/b was authorized by the symlink's location")
+	}
+	// The symlink's own line 1 is in scope.
+	own := model.CodeLocation{FilePath: `a\b`, LineRange: model.LineRange{Start: 1, End: 1, Count: 1}}
+	if !codeLocationOverlapsAllowed(own, allowed) {
+		t.Fatal("the symlink's own location is out of scope")
+	}
+	// Model-added noise on the finding side is still tolerated.
+	noisy := model.CodeLocation{FilePath: "./a/b", LineRange: model.LineRange{Start: 4, End: 4, Count: 1}}
+	if !codeLocationOverlapsAllowed(noisy, allowed) {
+		t.Fatal("a ./-prefixed finding path no longer matches its hunk")
+	}
+}
+
+// Scope without evidence would invite a finding the prompt cannot ground: with no
+// hunk, the target and the old path are the entire change.
+func TestMetadataOnlySymlinkLocationsRequireEvidence(t *testing.T) {
+	bare := []model.ChangedFile{{Path: "link", Status: model.FileRenamed, Symlink: true}}
+	if locs := metadataOnlySymlinkLocations(nil, bare); len(locs) != 0 {
+		t.Fatalf("locations = %#v, want none without a target or an old path", locs)
+	}
+	withOldPath := []model.ChangedFile{{Path: "link", Status: model.FileRenamed, OldPath: "old/link", Symlink: true}}
+	if locs := metadataOnlySymlinkLocations(nil, withOldPath); len(locs) != 1 {
+		t.Fatalf("locations = %#v, want one once the move is visible", locs)
+	}
+}

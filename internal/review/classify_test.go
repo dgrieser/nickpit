@@ -13,20 +13,26 @@ import (
 // was asked for, because the marks are only sound when they come from the
 // reviewed head rather than from whatever a checkout holds.
 type symlinkTreeRunner struct {
-	symlinks []string
-	revs     []string
+	symlinks  []string
+	target    string
+	revs      []string
+	blobReads []string
 }
 
 func (r *symlinkTreeRunner) Run(_ context.Context, args ...string) (string, error) {
-	if len(args) < 3 || args[0] != "ls-tree" {
-		return "", nil
+	switch {
+	case len(args) >= 3 && args[0] == "ls-tree":
+		r.revs = append(r.revs, args[2])
+		var out strings.Builder
+		for _, path := range r.symlinks {
+			out.WriteString("120000 blob 32f64f4\t" + path + "\x00")
+		}
+		return out.String(), nil
+	case len(args) == 3 && args[0] == "cat-file" && args[1] == "blob":
+		r.blobReads = append(r.blobReads, args[2])
+		return r.target, nil
 	}
-	r.revs = append(r.revs, args[2])
-	var out strings.Builder
-	for _, path := range r.symlinks {
-		out.WriteString("120000 blob 32f64f4\t" + path + "\x00")
-	}
-	return out.String(), nil
+	return "", nil
 }
 
 // A symlink replaced by a regular file at the same path arrives as two entries
@@ -177,5 +183,56 @@ func TestStampSymlinkFlagsKeepsPathsLiteral(t *testing.T) {
 	}
 	if reviewCtx.ChangedFiles[1].Symlink || reviewCtx.DiffFiles[1].Symlink || reviewCtx.DiffHunks[1].Symlink {
 		t.Fatalf("a distinct path inherited the mark: %#v / %#v / %#v", reviewCtx.ChangedFiles[1], reviewCtx.DiffFiles[1], reviewCtx.DiffHunks[1])
+	}
+}
+
+// A pure symlink rename emits no hunk and no content in any source, so the target
+// is nowhere in the patch — yet whether a relative target still resolves from the
+// new directory is the whole question the change raises. It is read from the blob
+// the reviewed head tree names, for every source, not just the mode-less ones.
+func TestStampSymlinkFlagsReadsTargetForHunklessRename(t *testing.T) {
+	for _, mode := range []model.ReviewMode{model.ModeGitLab, model.ModeGitHub} {
+		t.Run(string(mode), func(t *testing.T) {
+			reviewCtx := &model.ReviewContext{
+				Mode:         mode,
+				CheckoutRoot: "/checkout",
+				DiffHeadSHA:  "head111",
+				ChangedFiles: []model.ChangedFile{
+					{Path: "dir/link2", Status: model.FileRenamed, OldPath: "dir/sub/link", Symlink: true},
+				},
+			}
+
+			runner := &symlinkTreeRunner{symlinks: []string{"dir/link2"}, target: "../target"}
+			stampSymlinkFlags(context.Background(), reviewCtx, runner)
+
+			if reviewCtx.ChangedFiles[0].SymlinkTarget != "../target" {
+				t.Fatalf("target not recovered: %#v", reviewCtx.ChangedFiles[0])
+			}
+			if len(runner.blobReads) != 1 || runner.blobReads[0] != "32f64f4" {
+				t.Fatalf("blob reads = %v, want the object the tree named once", runner.blobReads)
+			}
+		})
+	}
+}
+
+// A symlink whose patch carries a hunk already shows its target, so the blob must
+// not be read again — the diff is what the reviewer sees.
+func TestStampSymlinkFlagsLeavesVisibleTargetsAlone(t *testing.T) {
+	reviewCtx := &model.ReviewContext{
+		Mode:         model.ModeGitLab,
+		CheckoutRoot: "/checkout",
+		DiffHeadSHA:  "head111",
+		ChangedFiles: []model.ChangedFile{{Path: "link", Status: model.FileAdded, Symlink: true}},
+		DiffHunks:    []model.DiffHunk{{FilePath: "link", NewStart: 1, NewLines: 1, Content: "+target", Symlink: true}},
+	}
+
+	runner := &symlinkTreeRunner{symlinks: []string{"link"}, target: "target"}
+	stampSymlinkFlags(context.Background(), reviewCtx, runner)
+
+	if reviewCtx.ChangedFiles[0].SymlinkTarget != "" {
+		t.Fatalf("target duplicated although the hunk shows it: %#v", reviewCtx.ChangedFiles[0])
+	}
+	if len(runner.revs) != 0 || len(runner.blobReads) != 0 {
+		t.Fatalf("git ran anyway: revs=%v blobs=%v", runner.revs, runner.blobReads)
 	}
 }

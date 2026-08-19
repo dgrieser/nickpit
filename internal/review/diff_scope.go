@@ -16,8 +16,13 @@ import (
 func allowedDiffCodeLocations(hunks []model.DiffHunk, changed []model.ChangedFile) []model.CodeLocation {
 	locations := make([]model.CodeLocation, 0, len(hunks)*2)
 	for _, hunk := range hunks {
-		path := normalizeReviewPath(hunk.FilePath)
-		if path == "" {
+		// The path stays the literal git path: normalizing would fold distinct
+		// legal names together (`a\b` and `a/b` are two files on Unix) and could
+		// then authorize a finding against the wrong file. Findings are matched
+		// against it by allowedPathMatches, which tolerates model-added noise on
+		// the finding's side only.
+		path := hunk.FilePath
+		if strings.TrimSpace(path) == "" {
 			continue
 		}
 		language := hunk.Language
@@ -112,14 +117,13 @@ func splitDiffHunkSides(content string) (oldContent, newContent string, oldCount
 // intentionally accepted as-is when only part overlaps or when they span gaps
 // between hunks.
 func codeLocationOverlapsAllowed(loc model.CodeLocation, allowed []model.CodeLocation) bool {
-	path := normalizeReviewPath(loc.FilePath)
 	start := loc.LineRange.Start
-	if path == "" || start <= 0 {
+	if strings.TrimSpace(loc.FilePath) == "" || start <= 0 {
 		return false
 	}
 	end := max(loc.LineRange.End, start)
 	for _, candidate := range allowed {
-		if normalizeReviewPath(candidate.FilePath) != path {
+		if !allowedPathMatches(loc.FilePath, candidate.FilePath) {
 			continue
 		}
 		if rangesOverlap(start, end, candidate.LineRange.Start, candidate.LineRange.EffectiveCount()) {
@@ -127,6 +131,19 @@ func codeLocationOverlapsAllowed(loc model.CodeLocation, allowed []model.CodeLoc
 		}
 	}
 	return false
+}
+
+// allowedPathMatches reports whether a model-supplied file path designates the same
+// file as an allowed location's git path. The allowed side is a literal git path and
+// is compared as such; only the finding's side is also tried normalized, because a
+// model may prefix "./" or spell a separator loosely. Folding both sides would
+// merge distinct legal names — a symlink `a\b` and a regular file `a/b` — and let
+// one file's scope authorize a finding about the other.
+func allowedPathMatches(findingPath, candidatePath string) bool {
+	if findingPath == candidatePath {
+		return true
+	}
+	return normalizeReviewPath(findingPath) == candidatePath
 }
 
 func rangesOverlap(start, end, hunkStart, hunkLines int) bool {
@@ -147,17 +164,24 @@ func metadataOnlySymlinkLocations(hunks []model.DiffHunk, changed []model.Change
 	if len(changed) == 0 {
 		return nil
 	}
+	// Literal git paths throughout: a hunk for `a/b` must not cancel the location
+	// of a symlink named `a\b`, nor lend its scope to that other file.
 	hasHunk := make(map[string]bool, len(hunks))
 	for _, hunk := range hunks {
-		if path := normalizeReviewPath(hunk.FilePath); path != "" {
-			hasHunk[path] = true
-		}
+		hasHunk[hunk.FilePath] = true
 	}
 	var locations []model.CodeLocation
 	seen := make(map[string]bool, len(changed))
 	for _, file := range changed {
-		path := normalizeReviewPath(file.Path)
-		if !file.Symlink || path == "" || hasHunk[path] || seen[path] {
+		path := file.Path
+		if !file.Symlink || strings.TrimSpace(path) == "" || hasHunk[path] || seen[path] {
+			continue
+		}
+		// Scope without evidence would invite a finding the prompt cannot ground:
+		// with no hunk, the target and the old path are the entire change. When
+		// neither reached the context, the change stays unreviewable rather than
+		// reviewable on nothing.
+		if file.SymlinkTarget == "" && file.OldPath == "" {
 			continue
 		}
 		seen[path] = true

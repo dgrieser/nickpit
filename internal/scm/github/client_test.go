@@ -215,3 +215,33 @@ func TestFetchPRCarriesHeadSHA(t *testing.T) {
 		t.Fatalf("diff base SHA = %q, want empty", ctx.DiffBaseSHA)
 	}
 }
+
+// A pure rename has no patch at all, so previous_filename is the only record of the
+// move — and for a relative symlink the move alone decides whether the target still
+// resolves.
+func TestFetchPRCarriesRenameOldPath(t *testing.T) {
+	files := `[{"filename":"dir/link2","status":"renamed","previous_filename":"dir/sub/link","additions":0,"deletions":0}]`
+	fixtures := map[string][]byte{
+		"/repos/owner/repo/pulls/123":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_metadata.json")),
+		"/repos/owner/repo/pulls/123/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_commits.json")),
+		"/repos/owner/repo/pulls/123/files":   []byte(files),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchPR(context.Background(), "owner/repo", 123, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 1 || ctx.ChangedFiles[0].OldPath != "dir/sub/link" {
+		t.Fatalf("changed files = %#v, want the rename source", ctx.ChangedFiles)
+	}
+}

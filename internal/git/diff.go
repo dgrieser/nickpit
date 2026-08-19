@@ -256,11 +256,12 @@ func (s *LocalSource) attachSymlinkTargets(ctx context.Context, files []model.Ch
 		if blob == "" {
 			continue
 		}
-		out, err := s.git.Run(ctx, "cat-file", "blob", blob)
-		if err != nil || len(out) > maxSymlinkTargetBytes {
+		// The blob IS the target, byte for byte: git appends no separator, and a
+		// pathname may legally end in a newline, so nothing may be trimmed here.
+		target, err := ReadBlob(ctx, s.git, blob, maxSymlinkTargetBytes)
+		if err != nil {
 			continue
 		}
-		target := strings.TrimRight(out, "\n")
 		targets[file.Path] = target
 		file.SymlinkTarget = target
 	}
