@@ -50,6 +50,10 @@ type fileResponse struct {
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
 	Patch     string `json:"patch"`
+	// PreviousFilename is the pre-change path of a rename or copy. A pure rename
+	// has no patch at all, so without it the move is invisible — and for a
+	// relative symlink the move alone decides whether the target still resolves.
+	PreviousFilename string `json:"previous_filename"`
 }
 
 type reviewResponse struct {
@@ -175,6 +179,7 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 			Status:    status,
 			Additions: file.Additions,
 			Deletions: file.Deletions,
+			OldPath:   file.PreviousFilename,
 		})
 	}
 	diff := framedDiff(files)
@@ -196,6 +201,11 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		DiffFiles:    diffFiles,
 		DiffHunks:    hunks,
 		Comments:     comments,
+		// The head SHA identifies the post-change side this diff describes. The
+		// files API reports no file modes, so a symlink can only be recognized by
+		// asking that exact tree; a base SHA is deliberately not set, because the
+		// API diffs against the merge base, which it does not report.
+		DiffHeadSHA: pr.Head.SHA,
 	}, nil
 }
 

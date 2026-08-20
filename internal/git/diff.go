@@ -77,10 +77,12 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
+	rawEntries := s.fileModesForRequest(ctx, resolvedReq)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormatsWithModes(diff, rawEntries)
 	if err != nil {
 		return nil, err
 	}
+	s.attachSymlinkTargets(ctx, files, hunks, rawEntries)
 	commits, err := s.commitSummaries(ctx, resolvedReq)
 	if err != nil {
 		return nil, err
@@ -163,26 +165,105 @@ func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
+// diffRevArgs renders the revision selection of a request: what the patch and
+// the raw listing below must both diff, so their entries describe one comparison.
+func diffRevArgs(req model.ReviewRequest) ([]string, error) {
 	switch req.Submode {
 	case "uncommitted":
-		return s.git.Run(ctx, patchArgs("diff", "HEAD")...)
+		return []string{"HEAD"}, nil
 	case "staged":
-		return s.git.Run(ctx, patchArgs("diff", "--cached")...)
+		return []string{"--cached"}, nil
 	case "unstaged":
-		return s.git.Run(ctx, patchArgs("diff")...)
+		return nil, nil
 	case "commits":
 		if req.BaseRef == "" || req.HeadRef == "" {
-			return "", fmt.Errorf("git: commits mode requires --from and --to")
+			return nil, fmt.Errorf("git: commits mode requires --from and --to")
 		}
-		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+".."+req.HeadRef)...)
+		return []string{req.BaseRef + ".." + req.HeadRef}, nil
 	case "branch":
 		if req.BaseRef == "" || req.HeadRef == "" {
-			return "", fmt.Errorf("git: branch mode requires --base and --head")
+			return nil, fmt.Errorf("git: branch mode requires --base and --head")
 		}
-		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+"..."+req.HeadRef)...)
+		return []string{req.BaseRef + "..." + req.HeadRef}, nil
 	default:
-		return "", fmt.Errorf("git: unknown submode %q", req.Submode)
+		return nil, fmt.Errorf("git: unknown submode %q", req.Submode)
+	}
+}
+
+func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
+	revArgs, err := diffRevArgs(req)
+	if err != nil {
+		return "", err
+	}
+	return s.git.Run(ctx, patchArgs("diff", revArgs...)...)
+}
+
+// fileModesForRequest lists the post-change file mode of every changed path of
+// the same comparison the patch covers. A patch states a mode only when it is
+// new, gone, or changed, so a plain rename of an unchanged symlink carries no
+// 120000 anywhere — and moving a relative symlink is exactly the kind of change
+// whose target can break. The raw listing carries paths and modes but no content,
+// so none of the stableDiffArgs settings can reach it.
+//
+// A failing listing yields no modes rather than a guess: the patch's own mode
+// headers still stand, only the sections git left silent stay unmarked.
+func (s *LocalSource) fileModesForRequest(ctx context.Context, req model.ReviewRequest) FileModes {
+	revArgs, err := diffRevArgs(req)
+	if err != nil {
+		return nil
+	}
+	args := append([]string{"diff", "--raw", "-z"}, revArgs...)
+	out, err := s.git.Run(ctx, args...)
+	if err != nil {
+		return nil
+	}
+	return ParseRawFileModes(out)
+}
+
+// maxSymlinkTargetBytes bounds what is accepted as a link target. POSIX caps a
+// symlink at PATH_MAX; anything larger is not a target, so it is not read into the
+// review context.
+const maxSymlinkTargetBytes = 4096
+
+// attachSymlinkTargets fills SymlinkTarget for symlink entries whose patch shows
+// no content at all — a pure rename, where git emits only "rename from/to" lines.
+// Such a change is exactly the one worth reviewing (moving a relative symlink can
+// break its target) and the one an agent cannot judge from the patch, so the blob
+// the raw listing named is read directly.
+//
+// Entries whose patch does carry the target (an added or changed symlink) are left
+// alone: the diff already shows it, and reading the blob again would only risk
+// disagreeing with what the reviewer sees.
+func (s *LocalSource) attachSymlinkTargets(ctx context.Context, files []model.ChangedFile, hunks []model.DiffHunk, entries FileModes) {
+	if len(entries) == 0 {
+		return
+	}
+	hasHunk := make(map[string]bool, len(hunks))
+	for _, hunk := range hunks {
+		hasHunk[hunk.FilePath] = true
+	}
+	targets := make(map[string]string, len(files))
+	for i := range files {
+		file := &files[i]
+		if !file.Symlink || hasHunk[file.Path] {
+			continue
+		}
+		if target, ok := targets[file.Path]; ok {
+			file.SymlinkTarget = target
+			continue
+		}
+		blob := entries.Blob(file.Path)
+		if blob == "" {
+			continue
+		}
+		// The blob IS the target, byte for byte: git appends no separator, and a
+		// pathname may legally end in a newline, so nothing may be trimmed here.
+		target, err := ReadBlob(ctx, s.git, blob, maxSymlinkTargetBytes)
+		if err != nil {
+			continue
+		}
+		targets[file.Path] = target
+		file.SymlinkTarget = target
 	}
 }
 

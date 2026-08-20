@@ -455,3 +455,34 @@ func TestValidDropPoliciesAndDefault(t *testing.T) {
 		t.Fatalf("DefaultDropPolicy = %q, want %q", DefaultDropPolicy, DropPolicyRefutedOnly)
 	}
 }
+
+// The symlink mark only helps if it survives into the JSON the agents read, in
+// both diff formats: git_json drops the per-file diffs, so `changed_files` has
+// to carry the mark on its own there.
+func TestPromptPayloadCarriesSymlinkMark(t *testing.T) {
+	src := &ReviewContext{
+		ChangedFiles: []ChangedFile{{Path: "deploy/chart/templates", Status: FileAdded, Symlink: true}},
+		DiffFiles:    []DiffFile{{FilePath: "deploy/chart/templates", Content: "@@ -0,0 +1 @@\n+../../config/crd/bases", Symlink: true}},
+		DiffHunks:    []DiffHunk{{FilePath: "deploy/chart/templates", NewStart: 1, NewLines: 1, Content: "+../../config/crd/bases", Symlink: true}},
+	}
+	for _, format := range []DiffFormat{DiffFormatGit, DiffFormatGitJson} {
+		payload := PromptPayloadFromContextWithDiffFormat(src, format)
+		data, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"symlink":true`) {
+			t.Fatalf("format %q payload lost the symlink mark: %s", format, data)
+		}
+		// git-json drops the per-file patches, so the hunk itself has to carry
+		// the mark; otherwise it presents a link target as ordinary text.
+		if format == DiffFormatGitJson {
+			if len(payload.DiffFiles) != 0 {
+				t.Fatalf("git-json payload kept diff files: %#v", payload.DiffFiles)
+			}
+			if len(payload.DiffHunks) != 1 || !payload.DiffHunks[0].Symlink {
+				t.Fatalf("git-json hunk lost the symlink mark: %#v", payload.DiffHunks)
+			}
+		}
+	}
+}

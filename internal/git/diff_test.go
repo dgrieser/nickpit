@@ -428,3 +428,142 @@ func TestParseCommitsParsesAuthorDate(t *testing.T) {
 		t.Fatalf("invalid date parsed to %v", commits[1].Date)
 	}
 }
+
+// The raw listing must cover the same comparison as the patch, and its modes must
+// only fill the sections the patch left silent — a plain rename states no mode, so
+// a moved symlink is invisible without it.
+func TestLocalSourceResolveContextRecoversModesForSilentSections(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/dir/sub/link b/dir/link2",
+		"similarity index 100%",
+		"rename from dir/sub/link",
+		"rename to dir/link2",
+		"",
+	}, "\n")
+	raw := ":120000 120000 78bc337 78bc337 R100\x00dir/sub/link\x00dir/link2\x00"
+	patchCall := patchArgs("diff", "main...feature")
+	rawCall := []string{"diff", "--raw", "-z", "main...feature"}
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs(patchCall): patch,
+			joinArgs(rawCall):   raw,
+			// The blob the raw listing named holds the link target verbatim — a
+			// pathname may legally end in a newline, so nothing may be trimmed.
+			joinArgs([]string{"cat-file", "blob", "78bc337"}): "../target\n",
+		},
+		// No origin mirror of the base branch, so the explicit refs stand.
+		errors: map[string]error{
+			joinArgs([]string{"show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}): errors.New("no such ref"),
+		},
+	}
+	source := &LocalSource{repoRoot: t.TempDir(), git: runner}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "branch",
+		BaseRef: "main",
+		HeadRef: "feature",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 1 || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("renamed symlink stayed unmarked: %#v", ctx.ChangedFiles)
+	}
+	if len(ctx.DiffFiles) != 1 || !ctx.DiffFiles[0].Symlink {
+		t.Fatalf("diff file stayed unmarked: %#v", ctx.DiffFiles)
+	}
+	// The mark alone is not reviewable: with no hunk and no content, the target is
+	// the only way to tell whether the move broke a relative link.
+	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || ctx.ChangedFiles[0].SymlinkTarget != "../target\n" {
+		t.Fatalf("rename metadata incomplete or trimmed: %#v", ctx.ChangedFiles[0])
+	}
+	// The raw listing carries no content, so it must not carry the patch flags.
+	rawArgs := ""
+	for _, call := range runner.calls {
+		if slices.Contains(call, "--raw") {
+			rawArgs = joinArgs(call)
+		}
+	}
+	if rawArgs != joinArgs(rawCall) {
+		t.Fatalf("raw args = %q, want %q", rawArgs, joinArgs(rawCall))
+	}
+}
+
+// A failing raw listing must not fail the review: the patch's own mode headers
+// still stand, only the silent sections stay unmarked.
+func TestLocalSourceResolveContextSurvivesRawModeFailure(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/link b/link",
+		"new file mode 120000",
+		"index 0000000..32f64f4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+target",
+		"\\ No newline at end of file",
+		"",
+	}, "\n")
+	runner := &stubGitRunner{
+		outputs: map[string]string{joinArgs(patchArgs("diff")): patch},
+		errors:  map[string]error{joinArgs([]string{"diff", "--raw", "-z"}): errors.New("raw listing failed")},
+	}
+	runner.outputs[joinArgs([]string{"symbolic-ref", "--short", "HEAD"})] = "feature\n"
+	source := &LocalSource{repoRoot: t.TempDir(), git: runner}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "unstaged",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 1 || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("header mode was lost with the raw listing: %#v", ctx.ChangedFiles)
+	}
+}
+
+// A symlink whose patch already shows the target must not be read again: the diff
+// is what the reviewer sees, and a second read could only disagree with it.
+func TestLocalSourceResolveContextLeavesVisibleSymlinkTargetsAlone(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/link b/link",
+		"new file mode 120000",
+		"index 0000000..32f64f4",
+		"--- /dev/null",
+		"+++ b/link",
+		"@@ -0,0 +1 @@",
+		"+target",
+		"\\ No newline at end of file",
+		"",
+	}, "\n")
+	raw := ":000000 120000 0000000 32f64f4 A\x00link\x00"
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs(patchArgs("diff", "--cached")):               patch,
+			joinArgs([]string{"diff", "--raw", "-z", "--cached"}): raw,
+			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}): "feature\n",
+			joinArgs([]string{"cat-file", "blob", "32f64f4"}):     "target",
+		},
+	}
+	source := &LocalSource{repoRoot: t.TempDir(), git: runner}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "staged",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 1 || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("added symlink unmarked: %#v", ctx.ChangedFiles)
+	}
+	if ctx.ChangedFiles[0].SymlinkTarget != "" {
+		t.Fatalf("target duplicated although the patch shows it: %#v", ctx.ChangedFiles[0])
+	}
+	for _, call := range runner.calls {
+		if slices.Contains(call, "cat-file") {
+			t.Fatalf("blob read although the patch carries the target: %v", call)
+		}
+	}
+}

@@ -19,13 +19,37 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 }
 
 func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
+	return ParseUnifiedDiffFormatsWithModes(diff, nil)
+}
+
+// ParseUnifiedDiffFormatsWithModes parses a patch and, for every file section
+// whose header carries no git file mode, takes the mode from modes instead
+// (typically "git diff --raw" output for the same revisions). Sections that do
+// carry a mode header keep it, so the two entries of a symlink/regular-file
+// replacement — which share one path — stay individually correct.
+func ParseUnifiedDiffFormatsWithModes(diff string, modes FileModes) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
 	var (
 		hunks        []model.DiffHunk
 		files        []model.ChangedFile
 		currentFile  string
 		currentHunk  *model.DiffHunk
 		currentEntry *model.ChangedFile
+		// sectionSawMode records whether the current section's header carried a
+		// mode, so the modes fallback only fills sections git left silent.
+		sectionSawMode bool
 	)
+	// applyModeFallback resolves the current section's mode from modes. It runs
+	// once the section's header block is complete — at its first hunk or at its
+	// end — so a rename's final path is already known.
+	applyModeFallback := func() {
+		if sectionSawMode || currentEntry == nil {
+			return
+		}
+		sectionSawMode = true
+		if modes.Symlink(currentEntry.Path) {
+			currentEntry.Symlink = true
+		}
+	}
 
 	scanner := bufio.NewScanner(strings.NewReader(diff))
 	for scanner.Scan() {
@@ -36,11 +60,13 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 				hunks = append(hunks, *currentHunk)
 				currentHunk = nil
 			}
+			applyModeFallback()
 			if currentEntry != nil {
 				files = append(files, *currentEntry)
 			}
 			currentFile = parseDiffGitPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
+			sectionSawMode = false
 		case strings.HasPrefix(line, "diff --cc "), strings.HasPrefix(line, "diff --combined "):
 			// Combined-diff ("merge state") file boundary. Without it the
 			// section's header lines (index, ---/+++ file headers) would bleed
@@ -51,18 +77,49 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 				hunks = append(hunks, *currentHunk)
 				currentHunk = nil
 			}
+			applyModeFallback()
 			if currentEntry != nil {
 				files = append(files, *currentEntry)
 			}
 			currentFile = parseDiffCCPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
+			sectionSawMode = false
 		case strings.HasPrefix(line, "new file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileAdded
+				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
+				sectionSawMode = true
 			}
 		case strings.HasPrefix(line, "deleted file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileDeleted
+				currentEntry.Symlink = currentEntry.Symlink || diffHeaderMarksSymlink(line)
+				sectionSawMode = true
+			}
+		case strings.HasPrefix(line, "new mode "), strings.HasPrefix(line, "mode "), strings.HasPrefix(line, "index "):
+			// A mode-only change into a symlink ("new mode 120000", or a combined
+			// diff's "mode <parents>..<new>") and a changed symlink target
+			// ("index <old>..<new> 120000") carry the mode here instead of on a
+			// new/deleted-file line. Both appear in the header
+			// block before the first hunk, so they cannot collide with body
+			// lines (those always carry a ' ', '+', '-', or '\' prefix).
+			if currentEntry != nil {
+				// An "index" line carries a mode only when the mode is unchanged
+				// on both sides; when git omits it there is nothing to learn and
+				// the fallback still applies.
+				if fileModeSpecFromDiffHeader(line) != "" {
+					sectionSawMode = true
+				}
+				if diffHeaderMarksSymlink(line) {
+					currentEntry.Symlink = true
+				}
+			}
+		case strings.HasPrefix(line, "rename from "):
+			if currentEntry != nil {
+				// A pure rename has no hunk, so the old path is the only record
+				// that the file moved. Git C-quotes it exactly like the paths on
+				// the "diff --git" line.
+				currentEntry.OldPath = unquoteGitPath(strings.TrimPrefix(line, "rename from "))
 			}
 		case strings.HasPrefix(line, "rename to "):
 			if currentEntry != nil {
@@ -88,9 +145,17 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			if currentHunk != nil {
 				hunks = append(hunks, *currentHunk)
 			}
+			applyModeFallback()
 			parsed, err := parseHunkHeader(currentFile, line)
 			if err != nil {
 				return nil, nil, nil, err
+			}
+			// The file's mode header lines all precede its first hunk, so the
+			// entry's mark is final here. Copying it per hunk keeps a hunk
+			// self-describing without a path lookup, which could not tell apart
+			// the two same-path entries of a symlink/regular-file replacement.
+			if currentEntry != nil {
+				parsed.Symlink = currentEntry.Symlink
 			}
 			currentHunk = parsed
 		default:
@@ -119,10 +184,11 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 	if currentHunk != nil {
 		hunks = append(hunks, *currentHunk)
 	}
+	applyModeFallback()
 	if currentEntry != nil {
 		files = append(files, *currentEntry)
 	}
-	diffFiles := DiffFilesFromUnifiedDiff(diff)
+	diffFiles := diffFilesFromUnifiedDiff(diff, modes)
 	// Hunk languages come from path-only detection; refine them with the
 	// content-aware per-file classification.
 	langByPath := make(map[string]string, len(diffFiles))
@@ -138,6 +204,10 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 }
 
 func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
+	return diffFilesFromUnifiedDiff(diff, nil)
+}
+
+func diffFilesFromUnifiedDiff(diff string, modes FileModes) []model.DiffFile {
 	sections := splitUnifiedDiff(diff)
 	files := make([]model.DiffFile, 0, len(sections))
 	for _, section := range sections {
@@ -145,11 +215,16 @@ func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
 			continue
 		}
 		classification := filetype.Classify(section.path, section.text)
+		symlink, sawMode := diffSectionMarksSymlink(section.text)
+		if !sawMode {
+			symlink = modes.Symlink(section.path)
+		}
 		files = append(files, model.DiffFile{
 			FilePath:  section.path,
 			Language:  classification.Language,
 			Content:   section.text,
 			Generated: classification.Generated,
+			Symlink:   symlink,
 		})
 	}
 	return files
@@ -203,6 +278,121 @@ func splitUnifiedDiff(diff string) []diffSection {
 	}
 	flush()
 	return sections
+}
+
+// SymlinkFileMode is the git blob mode of a symlink: its content is the link
+// target path, never file text.
+const SymlinkFileMode = "120000"
+
+// SymlinkFromModes reports whether the reviewed side of a change is a symlink,
+// given the pre- and post-change git file modes as an SCM API reports them
+// ("100644", "120000", and "0" or "" for a side that does not exist). The
+// post-change side decides; for a deletion the pre-change side does. This is
+// the same rule diffHeaderMarksSymlink applies to raw git diff headers, so both
+// diff sources classify a symlink identically.
+func SymlinkFromModes(oldMode, newMode string) bool {
+	if mode := NormalizeFileMode(newMode); mode != "" {
+		return mode == SymlinkFileMode
+	}
+	return NormalizeFileMode(oldMode) == SymlinkFileMode
+}
+
+// NormalizeFileMode trims a reported file mode and maps every "absent side"
+// spelling to the empty string: "" and "0" as SCM APIs report it, and the
+// all-zero mode ("000000") git prints in raw diff entries.
+func NormalizeFileMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" || strings.Trim(mode, "0") == "" {
+		return ""
+	}
+	return mode
+}
+
+// diffHeaderMarksSymlink reports whether one per-file diff header line says the
+// reviewed side of the file is a symlink. Git spells the mode four ways:
+//
+//	new file mode 120000            symlink added
+//	deleted file mode 120000        symlink removed
+//	new mode 120000                 mode-only change into a symlink
+//	index 1de5659..27fa349 120000   symlink target changed
+//
+// "old mode 120000" is deliberately not matched: with a regular "new mode" the
+// post-change side is real text and must be reviewed as such.
+// Pass header lines only; hunk body lines are not header lines but always carry
+// a prefix character, so they cannot match these forms.
+func diffHeaderMarksSymlink(line string) bool {
+	return modeSpecMarksSymlink(fileModeSpecFromDiffHeader(line))
+}
+
+// fileModeSpecFromDiffHeader extracts the mode specification a header line states,
+// or "" when it states none. A two-way diff states one mode; a combined ("--cc")
+// diff lists one mode per parent, comma-separated, and states a mode change as a
+// range whose post-change side follows "..":
+//
+//	deleted file mode 120000,100644
+//	mode 000000,100644..100644
+//
+// "old mode" is deliberately ignored: it always comes with a "new mode" that
+// describes the post-change side.
+func fileModeSpecFromDiffHeader(line string) string {
+	for _, prefix := range []string{"new file mode ", "deleted file mode ", "new mode ", "mode "} {
+		if spec, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(spec)
+		}
+	}
+	if strings.HasPrefix(line, "index ") {
+		// Two-way: "index <old>..<new> <mode>". A combined index line
+		// ("index <a>,<b>..<c>") carries no mode; the separate "mode" line does.
+		fields := strings.Fields(line)
+		if len(fields) == 3 {
+			return fields[2]
+		}
+	}
+	return ""
+}
+
+// modeSpecMarksSymlink reports whether a mode specification describes a symlink on
+// the side under review. A range states the post-change mode after "..", so that
+// side decides. A comma-separated list has no post-change side — it enumerates the
+// parents of a combined add or delete — so any parent that held a symlink makes the
+// content the section shows a link target rather than file text.
+func modeSpecMarksSymlink(spec string) bool {
+	if spec == "" {
+		return false
+	}
+	if pre, post, isRange := strings.Cut(spec, ".."); isRange {
+		if NormalizeFileMode(post) != "" {
+			return NormalizeFileMode(post) == SymlinkFileMode
+		}
+		// The post-change side is gone; the parents describe what was there.
+		spec = pre
+	}
+	for mode := range strings.SplitSeq(spec, ",") {
+		if NormalizeFileMode(mode) == SymlinkFileMode {
+			return true
+		}
+	}
+	return false
+}
+
+// diffSectionMarksSymlink reports whether a per-file diff section's header block
+// marks the file as a symlink, and whether it stated a mode at all — a section
+// that states none (a plain rename, for instance) is the case a caller-supplied
+// mode map has to answer. Only lines before the first hunk header are inspected
+// so body content can never be mistaken for a mode line.
+func diffSectionMarksSymlink(section string) (symlink, sawMode bool) {
+	for line := range strings.SplitSeq(section, "\n") {
+		if strings.HasPrefix(line, "@@") {
+			return symlink, sawMode
+		}
+		if spec := fileModeSpecFromDiffHeader(line); spec != "" {
+			sawMode = true
+			if modeSpecMarksSymlink(spec) {
+				symlink = true
+			}
+		}
+	}
+	return symlink, sawMode
 }
 
 func parseDiffGitPath(line string) string {

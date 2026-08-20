@@ -233,7 +233,8 @@ type ReviewContext struct {
 	// slice means scope checking is available but the diff has no line hunks.
 	DiffScopeHunks []DiffHunk `json:"-"`
 	// DiffBaseSHA and DiffHeadSHA identify the exact commits this context's diff
-	// was built between, when the source knows them (GitLab MRs). They are
+	// was built between, when the source knows them (GitLab MRs report both,
+	// GitHub PRs only the head). They are
 	// deliberately NOT copied into prompt payloads; chat sessions persist them so
 	// a cached context's freshness can be checked against the live MR without a
 	// spurious first-resume refresh.
@@ -283,6 +284,20 @@ type ChangedFile struct {
 	Additions int        `json:"additions"`
 	Deletions int        `json:"deletions"`
 	Generated bool       `json:"generated,omitempty"`
+	// Symlink marks an entry whose blob is a symlink (git mode 120000): the
+	// "content" is the link target path, not file text. Reviewers must not
+	// judge it as text — a trailing newline, formatting, or content edit would
+	// change or break the link target.
+	Symlink bool `json:"symlink,omitempty"`
+	// OldPath is the pre-change path of a rename or copy. A pure rename carries
+	// no hunk, so without it the move is invisible in the structured diff formats
+	// — and for a relative symlink the move alone decides whether the target
+	// still resolves.
+	OldPath string `json:"old_path,omitempty"`
+	// SymlinkTarget is the path a symlink entry points at, i.e. the blob's whole
+	// content. It is filled when the patch carries no content of its own (a pure
+	// rename), which is exactly when the target cannot be read off the diff.
+	SymlinkTarget string `json:"symlink_target,omitempty"`
 }
 
 type DiffFile struct {
@@ -290,6 +305,8 @@ type DiffFile struct {
 	Language  string `json:"language,omitempty"`
 	Content   string `json:"content"`
 	Generated bool   `json:"generated,omitempty"`
+	// Symlink mirrors ChangedFile.Symlink for the raw per-file diff text.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type DiffHunk struct {
@@ -300,6 +317,10 @@ type DiffHunk struct {
 	NewStart int    `json:"new_start"`
 	NewLines int    `json:"new_lines"`
 	Content  string `json:"content"`
+	// Symlink mirrors ChangedFile.Symlink. Hunks carry it because the git-json
+	// diff format drops DiffFiles, so a hunk would otherwise present a link
+	// target as ordinary text.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type StyleGuide struct {

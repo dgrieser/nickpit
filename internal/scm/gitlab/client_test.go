@@ -344,3 +344,133 @@ func TestFetchMRErrorOnNonJSONBody(t *testing.T) {
 		}
 	}
 }
+
+// GitLab's per-change `diff` starts at the first hunk header, so the only place
+// a symlink shows up is a_mode/b_mode. Both the changed-file flag and a mode
+// header line in the synthesized diff must carry that fact to the reviewer:
+// without it the link target reads as a one-line text file missing a newline.
+func TestFetchMRMarksSymlinkChange(t *testing.T) {
+	changes := `{"changes": [
+		{"new_path": "deploy/crd-chart/templates", "old_path": "deploy/crd-chart/templates",
+		 "new_file": true, "deleted_file": false, "renamed_file": false,
+		 "a_mode": "0", "b_mode": "120000",
+		 "diff": "@@ -0,0 +1 @@\n+../../config/crd/bases\n\\ No newline at end of file\n"},
+		{"new_path": "deploy/crd-chart/Chart.yaml", "old_path": "deploy/crd-chart/Chart.yaml",
+		 "new_file": true, "deleted_file": false, "renamed_file": false,
+		 "a_mode": "0", "b_mode": "100644",
+		 "diff": "@@ -0,0 +1 @@\n+apiVersion: v2\n"}
+	]}`
+	fixtures := map[string][]byte{
+		"/api/v4/projects/group%2Fproject/merge_requests/456":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_commits.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/changes": []byte(changes),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			data, ok = fixtures[r.URL.Path]
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchMR(context.Background(), "group/project", 456, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 2 {
+		t.Fatalf("changed files = %#v, want two entries", ctx.ChangedFiles)
+	}
+	if !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("symlink change not marked: %#v", ctx.ChangedFiles[0])
+	}
+	if ctx.ChangedFiles[1].Symlink {
+		t.Fatalf("regular file marked as symlink: %#v", ctx.ChangedFiles[1])
+	}
+	if !strings.Contains(ctx.Diff, "new file mode 120000") {
+		t.Fatalf("diff lacks symlink mode header:\n%s", ctx.Diff)
+	}
+	// Only symlink changes gain a mode line; the common shape stays untouched.
+	if strings.Contains(ctx.Diff, "new file mode 100644") {
+		t.Fatalf("regular file gained a mode header:\n%s", ctx.Diff)
+	}
+	for _, file := range ctx.DiffFiles {
+		if file.FilePath == "deploy/crd-chart/templates" && !file.Symlink {
+			t.Fatalf("diff file not marked as symlink: %#v", file)
+		}
+	}
+}
+
+func TestSymlinkModeHeader(t *testing.T) {
+	tests := []struct {
+		name    string
+		aMode   string
+		bMode   string
+		newFile bool
+		deleted bool
+		want    string
+	}{
+		{name: "added symlink", aMode: "0", bMode: "120000", newFile: true, want: "new file mode 120000\n"},
+		{name: "deleted symlink", aMode: "120000", bMode: "0", deleted: true, want: "deleted file mode 120000\n"},
+		{name: "changed symlink target", aMode: "120000", bMode: "120000", want: "old mode 120000\nnew mode 120000\n"},
+		{name: "symlink turned into file", aMode: "120000", bMode: "100644", want: "old mode 120000\nnew mode 100644\n"},
+		{name: "regular file", aMode: "100644", bMode: "100644", want: ""},
+		{name: "missing modes", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := symlinkModeHeader(tc.aMode, tc.bMode, tc.newFile, tc.deleted); got != tc.want {
+				t.Fatalf("symlinkModeHeader() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// GitLab reports the rename source per change; a pure rename has no hunk, so it is
+// the only record of the move.
+func TestFetchMRCarriesRenameOldPath(t *testing.T) {
+	changes := `{"changes": [
+		{"new_path": "dir/link2", "old_path": "dir/sub/link", "renamed_file": true,
+		 "a_mode": "120000", "b_mode": "120000", "diff": ""},
+		{"new_path": "main.go", "old_path": "main.go",
+		 "a_mode": "100644", "b_mode": "100644", "diff": "@@ -1 +1 @@\n-old\n+new\n"}
+	]}`
+	fixtures := map[string][]byte{
+		"/api/v4/projects/group%2Fproject/merge_requests/456":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_commits.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/changes": []byte(changes),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			data, ok = fixtures[r.URL.Path]
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchMR(context.Background(), "group/project", 456, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ChangedFiles) != 2 {
+		t.Fatalf("changed files = %#v, want two entries", ctx.ChangedFiles)
+	}
+	if ctx.ChangedFiles[0].OldPath != "dir/sub/link" || !ctx.ChangedFiles[0].Symlink {
+		t.Fatalf("rename metadata incomplete: %#v", ctx.ChangedFiles[0])
+	}
+	// An unchanged path must not be reported as its own rename source.
+	if ctx.ChangedFiles[1].OldPath != "" {
+		t.Fatalf("old path invented for a modified file: %#v", ctx.ChangedFiles[1])
+	}
+}

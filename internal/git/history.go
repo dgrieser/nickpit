@@ -93,6 +93,10 @@ type CommitFile struct {
 	Additions int              `json:"additions"`
 	Deletions int              `json:"deletions"`
 	Binary    bool             `json:"binary,omitempty"`
+	// Symlink marks a file stored as a symlink (git mode 120000): its content is
+	// the link target path, not file text. Taken from the raw entry's modes, so
+	// it is present regardless of the requested diff format.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 // CommitEntry is a commit's metadata plus its changed files, without any patch
@@ -977,6 +981,7 @@ func parseFileEntries(tokens []string) ([]CommitFile, int) {
 			}
 			file := upsert(tokens[i+paths])
 			file.Status = fileStatusFromRawStatus(status)
+			file.Symlink = rawEntrySymlink(token)
 			if paths == 2 {
 				file.OldPath = tokens[i+1]
 			}
@@ -1027,6 +1032,19 @@ func rawEntryStatus(token string) string {
 	return fields[len(fields)-1]
 }
 
+// rawEntrySymlink reports whether a raw entry's file is stored as a symlink. The
+// destination mode decides; a deletion has none, so every parent is inspected — a
+// combined merge deletion can hold a regular file in one parent and a symlink in
+// another, and the patch then shows a link target. When the size limit drops that
+// patch, this metadata is the only symlink signal left.
+func rawEntrySymlink(token string) bool {
+	parents, dst, _, ok := RawEntryModes(token)
+	if !ok {
+		return false
+	}
+	return SymlinkModeFromRawEntry(parents, dst) == SymlinkFileMode
+}
+
 func fileStatusFromRawStatus(status string) model.FileStatus {
 	switch status[0] {
 	case 'A', 'C':
@@ -1048,6 +1066,7 @@ func commitFilesFromChanged(changed []model.ChangedFile) []CommitFile {
 			Status:    file.Status,
 			Additions: file.Additions,
 			Deletions: file.Deletions,
+			Symlink:   file.Symlink,
 		})
 	}
 	return files
