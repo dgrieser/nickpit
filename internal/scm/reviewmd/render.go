@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -1191,8 +1192,7 @@ func renderFindingHistory(history []model.FindingRevision, r Renderer) string {
 	}
 	var b strings.Builder
 	b.WriteString(historyStartMarker + "\n<details>\n<summary>:scroll: Finding History</summary>\n\n")
-	for i := len(history) - 1; i >= 0; i-- {
-		rev := history[i]
+	for _, rev := range slices.Backward(history) {
 		finding := model.FindingFromSnapshot(rev.Finding)
 		title, body, rank, confidence := FindingDisplay(finding)
 		fmt.Fprintf(&b, "**Revision %d** — %s\n\n", rev.Revision, revisionSource(rev.RevisionSource))
@@ -1203,10 +1203,7 @@ func renderFindingHistory(history []model.FindingRevision, r Renderer) string {
 			}
 		} else {
 			location := finding.CodeLocation
-			end := location.LineRange.End
-			if end < location.LineRange.Start {
-				end = location.LineRange.Start
-			}
+			end := max(location.LineRange.End, location.LineRange.Start)
 			fmt.Fprintf(&b, "%s **%s**\n\n`%s:%d-%d` · confidence %.2f\n\n%s", r.PriorityBadge(rank), Sanitize(title), Sanitize(location.FilePath), location.LineRange.Start, end, confidence, sanitizeWithHardBreaks(body))
 			for _, suggestion := range FindingDisplaySuggestions(finding) {
 				if text := strings.TrimSpace(suggestion.Body); text != "" {
@@ -1226,8 +1223,7 @@ func renderReviewHistory(history []model.ReviewRevision, r Renderer) string {
 	}
 	var b strings.Builder
 	b.WriteString(historyStartMarker + "\n<details>\n<summary>:scroll: Review History</summary>\n\n")
-	for i := len(history) - 1; i >= 0; i-- {
-		rev := history[i]
+	for _, rev := range slices.Backward(history) {
 		fmt.Fprintf(&b, "**Revision %d** — %s\n\n%s\n\n%s\n\n---\n\n", rev.Revision, revisionSource(rev.RevisionSource), r.CorrectnessBadge(rev.OverallCorrectness), sanitizeWithHardBreaks(rev.OverallExplanation))
 	}
 	b.WriteString("</details>\n" + historyEndMarker + "\n\n")
