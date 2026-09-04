@@ -239,3 +239,39 @@ func TestDiscussOpener(t *testing.T) {
 		t.Fatalf("opener should be empty for unknown finding id")
 	}
 }
+
+func TestDiscussResponseValidatorScopesAndResolutionSentence(t *testing.T) {
+	p := 1
+	finding := model.Finding{ID: "f1", Title: "Title", Body: "Body", Priority: &p, ConfidenceScore: .8, CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}}
+	result := &model.ReviewResult{Findings: []model.Finding{finding, {ID: "f2", Title: "Other", Body: "Body", Priority: &p, CodeLocation: finding.CodeLocation}}}
+	validator := discussResponseValidator(result, "f1", false)
+	response := discussStructuredResponse{Reply: "Agreed.", FindingUpdates: []DiscussFindingUpdate{{ID: "f1", State: model.FindingStateResolved, Resolution: "The added guard handles the nil value.", Reason: "guard is present", Finding: finding}}}
+	raw, _ := json.Marshal(response)
+	if invalid := validator(&llm.ReviewResponse{RawResponse: string(raw)}); invalid != nil {
+		t.Fatalf("valid update rejected: %v", invalid)
+	}
+	response.FindingUpdates[0].Resolution = "It is fixed. This is another sentence."
+	raw, _ = json.Marshal(response)
+	if invalid := validator(&llm.ReviewResponse{RawResponse: string(raw)}); invalid == nil {
+		t.Fatal("multi-sentence resolution accepted")
+	}
+	response.FindingUpdates[0].ID = "f2"
+	response.FindingUpdates[0].Finding.ID = "f2"
+	response.FindingUpdates[0].Resolution = "The added guard handles the nil value."
+	raw, _ = json.Marshal(response)
+	if invalid := validator(&llm.ReviewResponse{RawResponse: string(raw)}); invalid == nil {
+		t.Fatal("pinned discussion updated another finding")
+	}
+}
+
+func TestDiscussReviewForPromptOmitsRevisionHistory(t *testing.T) {
+	p := 2
+	result := &model.ReviewResult{Findings: []model.Finding{{ID: "f1", Title: "Current", Body: "Current body", Priority: &p, Revision: 3, LastUpdateID: "u3", History: []model.FindingRevision{{Revision: 2, Finding: model.FindingSnapshot{ID: "f1", Title: "Old secret", Body: "Old body"}}}}}}
+	prompt := discussReviewForPrompt(result, false)
+	if len(prompt.Findings) != 1 || prompt.Findings[0].Revision != 0 || prompt.Findings[0].LastUpdateID != "" || len(prompt.Findings[0].History) != 0 {
+		t.Fatalf("mutation history leaked into prompt: %#v", prompt.Findings)
+	}
+	if result.Findings[0].Revision != 3 || len(result.Findings[0].History) != 1 {
+		t.Fatal("prompt projection mutated review result")
+	}
+}

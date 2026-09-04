@@ -184,6 +184,71 @@ func (a *Adapter) publishFinding(ctx context.Context, render reviewmd.Renderer, 
 	return bodyCarried, nil
 }
 
+// CreatedFinding identifies the root note created for an updated finding.
+type CreatedFinding struct {
+	DiscussionID string
+	NoteID       int
+	Body         string
+	Carried      bool
+}
+
+// CreateFindingDiscussion publishes a replacement finding at its current code
+// location and returns the new canonical discussion root.
+func (a *Adapter) CreateFindingDiscussion(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult, finding model.Finding) (CreatedFinding, error) {
+	var out CreatedFinding
+	info, err := a.client.FetchMRPositionInfo(ctx, req.Repo, req.Identifier)
+	if err != nil {
+		return out, fmt.Errorf("gitlab update: fetch position info: %w", err)
+	}
+	render := a.render.ForReview(result.ReviewID).WithContextOptions(result.ContextOptions)
+	changes := make(map[string]MRChange, len(info.Changes))
+	for _, change := range info.Changes {
+		changes[change.NewPath] = change
+	}
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escapeProject(req.Repo), req.Identifier)
+	post := func(body string, payload any) (CreatedFinding, error) {
+		var response struct {
+			ID    string `json:"id"`
+			Notes []struct {
+				ID int `json:"id"`
+			} `json:"notes"`
+		}
+		if err := a.client.Post(ctx, path, payload, &response); err != nil {
+			return CreatedFinding{}, err
+		}
+		created := CreatedFinding{DiscussionID: response.ID, Body: body}
+		if len(response.Notes) > 0 {
+			created.NoteID = response.Notes[0].ID
+		}
+		return created, nil
+	}
+	if change, ok := changes[finding.CodeLocation.FilePath]; ok {
+		body, carried := render.FindingBodyCarried(finding, "")
+		positions := make([]position, 0, 2)
+		if pos, found := multiLinePosition(change, info.DiffRefs, finding.CodeLocation.LineRange); found {
+			positions = append(positions, pos)
+		}
+		if pos, found := bestPosition(change, info.DiffRefs, finding.CodeLocation.LineRange); found {
+			positions = append(positions, pos)
+		}
+		for _, pos := range positions {
+			created, postErr := post(body, discussionPayload(body, pos))
+			if postErr == nil {
+				created.Carried = carried
+				return created, nil
+			}
+			if !isUnprocessable(postErr) {
+				return out, postErr
+			}
+		}
+	}
+	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
+	body, carried := render.FindingBodyCarried(finding, prefix)
+	created, err := post(body, map[string]string{"body": body})
+	created.Carried = carried
+	return created, err
+}
+
 func discussionPayload(body string, pos position) map[string]any {
 	return map[string]any{"body": body, "position": pos}
 }

@@ -922,3 +922,25 @@ func TestPostChatReplyWithPolicyRevalidatesRequestedTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyChatFindingUpdatesStoresHistoryAndSanitizesBookkeeping(t *testing.T) {
+	p1, p2 := 1, 2
+	old := model.Finding{ID: "f1", Title: "Old", Body: "Old body", Priority: &p1, ConfidenceScore: .8, CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 2, End: 2}}, Finalization: &model.FindingFinalization{Title: "Final old"}}
+	result := &model.ReviewResult{ReviewID: "r1", Findings: []model.Finding{old}}
+	update := review.DiscussFindingUpdate{ID: "f1", State: model.FindingStateResolved, Resolution: "A new guard handles the nil value.", Reason: "commit adds guard", Finding: model.Finding{ID: "f1", Title: "Injected", Body: "Replacement body", Priority: &p2, ConfidenceScore: .95, CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 9, End: 9}}, Revision: 99, LastUpdateID: "model-owned", History: []model.FindingRevision{{Revision: 98}}}}
+	source := model.RevisionSource{UpdateID: "u1", SourceNoteID: 7, HeadSHA: "abc"}
+	got, changes, err := applyChatFindingUpdates(result, []review.DiscussFindingUpdate{update}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || got.Findings[0].Revision != 1 || got.Findings[0].LastUpdateID != "u1" || len(got.Findings[0].History) != 1 {
+		t.Fatalf("updated finding bookkeeping = %#v, changes=%d", got.Findings[0], len(changes))
+	}
+	if got.Findings[0].History[0].Finding.Title != "Old" || got.Findings[0].Finalization != nil || got.Findings[0].Resolution == nil {
+		t.Fatalf("history/sanitization = %#v", got.Findings[0])
+	}
+	gotAgain, again, err := applyChatFindingUpdates(got, []review.DiscussFindingUpdate{update}, source)
+	if err != nil || len(again) != 0 || gotAgain.Findings[0].Revision != 1 {
+		t.Fatalf("idempotent replay = revision %d changes %d err %v", gotAgain.Findings[0].Revision, len(again), err)
+	}
+}

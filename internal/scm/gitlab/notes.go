@@ -45,6 +45,12 @@ func (c *Client) UpdateMRDiscussionNote(ctx context.Context, project string, iid
 	return c.Put(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// ResolveMRDiscussion marks a review thread resolved or unresolved.
+func (c *Client) ResolveMRDiscussion(ctx context.Context, project string, iid int, discussionID string, resolved bool) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escapeProject(project), iid, url.PathEscape(discussionID))
+	return c.Put(ctx, path, map[string]bool{"resolved": resolved}, nil)
+}
+
 // MRDiscussion is one merge-request discussion with notes ordered oldest first.
 type MRDiscussion struct {
 	ID    string
@@ -62,6 +68,7 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 			Username string `json:"username"`
 			ID       int    `json:"id"`
 		} `json:"author"`
+		Position any `json:"position"`
 	}
 	var raw []struct {
 		ID    string     `json:"id"`
@@ -77,7 +84,7 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 		for _, note := range discussion.Notes {
 			item.Notes = append(item.Notes, DiscussionNote{
 				ID: note.ID, Body: note.Body, System: note.System,
-				AuthorName: note.Author.Username, AuthorID: note.Author.ID,
+				AuthorName: note.Author.Username, AuthorID: note.Author.ID, Positioned: note.Position != nil,
 			})
 		}
 		out = append(out, item)
@@ -165,4 +172,5 @@ type DiscussionNote struct {
 	System     bool
 	AuthorName string
 	AuthorID   int
+	Positioned bool
 }

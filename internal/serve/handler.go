@@ -156,8 +156,9 @@ type Handler struct {
 	// outliving the daemon.
 	chatCtx    context.Context
 	chatCancel context.CancelFunc
-	// chatLocks serializes chat replies within a discussion, so two quick replies
-	// are answered in order instead of racing and both answering the newest note.
+	// chatLocks serializes chat replies within an MR. A chat may mutate both its
+	// finding root and the shared verdict root, so sibling discussions must not
+	// race those read-modify-write updates.
 	chatLocks keyedMutex
 	// chatSeen drops webhook redeliveries of a note already answered.
 	chatSeen *noteDedup
@@ -796,11 +797,10 @@ func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, pr
 // admitted event's shared deadline (see handleChat) — every blocking step here
 // runs under it.
 func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, projectID int, decision Decision, dedupMarked, acked *bool) (retryable, gateConfirmed bool) {
-	// Serialize replies within a discussion BEFORE competing for a global slot.
-	// The reverse order would let queued replies to one busy discussion each sit
-	// on a global slot while blocked on that discussion's lock, starving chats
-	// in unrelated discussions.
-	unlock := h.chatLocks.lock(fmt.Sprintf("%s!%s", projectPath, decision.DiscussionID))
+	// Serialize replies within an MR BEFORE competing for a global slot.
+	// The reverse order would let queued replies to one busy MR each sit on a
+	// global slot while blocked on that MR's lock, starving unrelated MRs.
+	unlock := h.chatLocks.lock(fmt.Sprintf("%s!%d", projectPath, decision.IID))
 	defer unlock()
 
 	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
@@ -828,7 +828,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 		// denies this comment. Otherwise a restart with changed response config
 		// can leave the root's visible instructions stale indefinitely.
 		if ours {
-			go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
+			h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
 		}
 		if decision.Requested && decision.NoteID == state.Root.ID {
 			return false, ours

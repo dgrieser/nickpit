@@ -143,6 +143,11 @@ const ChatReplyMarkerPrefix = MarkerOpen + "chatreply:"
 // Its payload is a gzipped, base64-encoded findingEnvelope.
 const FindingMarkerPrefix = MarkerOpen + "finding:"
 
+const (
+	historyStartMarker = MarkerOpen + "history:start -->"
+	historyEndMarker   = MarkerOpen + "history:end -->"
+)
+
 // maxCarrierDecodedBytes caps how much a single carrier payload may expand to
 // when decompressed. Carrier markers are read from arbitrary MR/PR comments, so
 // a hostile commenter could craft a small gzip payload that expands to gigabytes
@@ -211,7 +216,10 @@ type ReviewEnvelope struct {
 	// Context carries the review's context-shaping options (path/content
 	// filters, budgets), so a chat rebuilt from MR/PR markers recreates the
 	// SAME filtered context — never files the review deliberately withheld.
-	Context *model.ContextOptions `json:"ctx,omitempty"`
+	Context      *model.ContextOptions  `json:"ctx,omitempty"`
+	Revision     int                    `json:"revision,omitempty"`
+	LastUpdateID string                 `json:"last_update_id,omitempty"`
+	History      []model.ReviewRevision `json:"history,omitempty"`
 	// Ref marks a routing-only reference: when the full envelope is too large to
 	// ride in the visible summary, the summary carries a tiny ref (review id
 	// only) so replies beneath it still route to the discussion agent, while the
@@ -269,6 +277,9 @@ func reviewMarkerWithSize(result *model.ReviewResult, contextOpts *model.Context
 		NickpitVersion:         result.NickpitVersion,
 		FindingsTotal:          carriable,
 		Context:                contextOpts,
+		Revision:               result.Revision,
+		LastUpdateID:           result.LastUpdateID,
+		History:                result.History,
 	})
 }
 
@@ -309,6 +320,12 @@ func findingRefMarker(reviewID, findingID string) string {
 	}
 	marker, _ := encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: model.Finding{ID: findingID}, Ref: true})
 	return marker
+}
+
+// FindingRoutingMarker returns a small reference carrier for a visible
+// tombstone whose full finding now lives in another canonical discussion.
+func FindingRoutingMarker(reviewID, findingID string) string {
+	return findingRefMarker(reviewID, findingID)
 }
 
 // ChatReplyEnvelope binds a fallback top-level chat answer to the discussion
@@ -538,6 +555,7 @@ func UniqueFindingsByID(findings []model.Finding) []model.Finding {
 // carrier reassembly.
 func StripMarkers(s string) string {
 	s = StripResponseFooter(s)
+	s = stripHistory(s)
 	if !strings.Contains(s, MarkerOpen) {
 		// Trim like the marker path below does, so "was this body only
 		// markers/whitespace?" checks behave identically on both paths.
@@ -560,6 +578,21 @@ func StripMarkers(s string) string {
 		rest = rest[i+j+3:]
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func stripHistory(s string) string {
+	for {
+		start := strings.Index(s, historyStartMarker)
+		if start < 0 {
+			return s
+		}
+		end := strings.Index(s[start+len(historyStartMarker):], historyEndMarker)
+		if end < 0 {
+			return s[:start]
+		}
+		end += start + len(historyStartMarker) + len(historyEndMarker)
+		s = s[:start] + s[end:]
+	}
 }
 
 // IsStaleCarrierBody reports whether body is a pure carrier note — nothing
@@ -643,14 +676,15 @@ func RefReviewIDs(bodies []string) map[string]struct{} {
 // omitted entirely — see the completeness gate below.
 func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 	byID := make(map[string]*model.ReviewResult)
-	seen := make(map[string]map[string]struct{})
+	findings := make(map[string]map[string]model.Finding)
+	findingOrder := make(map[string][]string)
 	expected := make(map[string]int)
 	get := func(rid string) *model.ReviewResult {
 		r := byID[rid]
 		if r == nil {
 			r = &model.ReviewResult{ReviewID: rid}
 			byID[rid] = r
-			seen[rid] = make(map[string]struct{})
+			findings[rid] = make(map[string]model.Finding)
 		}
 		return r
 	}
@@ -666,6 +700,9 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 				continue
 			}
 			r := get(env.ReviewID)
+			if r.Revision > env.Revision {
+				continue
+			}
 			r.CreatedAt = env.CreatedAt
 			r.OverallCorrectness = env.OverallCorrectness
 			r.OverallExplanation = env.OverallExplanation
@@ -678,6 +715,9 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 
 			r.Model = env.Model
 			r.NickpitVersion = env.NickpitVersion
+			r.Revision = env.Revision
+			r.LastUpdateID = env.LastUpdateID
+			r.History = env.History
 			if env.Context != nil {
 				r.ContextOptions = env.Context
 			}
@@ -719,13 +759,20 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 					key = "content:" + string(raw)
 				}
 			}
-			if key != "" {
-				if _, dup := seen[env.ReviewID][key]; dup {
+			if current, exists := findings[env.ReviewID][key]; exists {
+				if current.Revision > env.Finding.Revision {
 					continue
 				}
-				seen[env.ReviewID][key] = struct{}{}
+			} else {
+				findingOrder[env.ReviewID] = append(findingOrder[env.ReviewID], key)
 			}
-			r.Findings = append(r.Findings, env.Finding)
+			findings[env.ReviewID][key] = env.Finding
+		}
+	}
+	for rid, order := range findingOrder {
+		r := byID[rid]
+		for _, key := range order {
+			r.Findings = append(r.Findings, findings[rid][key])
 		}
 	}
 	// A review whose envelope declares more findings than could be collected is
@@ -940,6 +987,10 @@ func (r Renderer) PriorityBadge(rank int) string {
 	return fmt.Sprintf("![P%d](%sp%d.svg)", rank, r.assetBaseURL, rank)
 }
 
+func (r Renderer) ResolvedBadge() string {
+	return fmt.Sprintf("![resolved](%sresolved.svg)", r.assetBaseURL)
+}
+
 // SummaryBodyCarried renders the overall verdict comment, tagged with
 // SummaryMarker, plus whether the review envelope actually rode along. Like
 // finding carriers, the envelope is omitted when it would push the visible
@@ -950,6 +1001,7 @@ func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) 
 	var b strings.Builder
 	b.WriteString(SummaryMarker)
 	b.WriteString("\n")
+	b.WriteString(renderReviewHistory(result.History, r))
 	// The overall confidence score is deliberately not rendered here — it stays
 	// in the review envelope (and the JSON output) only.
 	correctness := strings.TrimSpace(result.OverallCorrectness)
@@ -1066,28 +1118,38 @@ func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix strin
 	fingerprint := FingerprintMarker(finding, title)
 	var b strings.Builder
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "%s\n\n", r.PriorityBadge(rank))
-	if locationPrefix != "" {
-		// Hard break so the location sits on its own line above the title/body.
-		b.WriteString(locationPrefix)
-		b.WriteString("  \n\n")
+	b.WriteString(renderFindingHistory(finding.History, r))
+	if finding.IsResolved() {
+		fmt.Fprintf(&b, "%s\n\n", r.ResolvedBadge())
+		if finding.Resolution != nil {
+			b.WriteString(sanitizeWithHardBreaks(strings.TrimSpace(finding.Resolution.Summary)))
+		}
+	} else {
+		fmt.Fprintf(&b, "%s\n\n", r.PriorityBadge(rank))
+		if locationPrefix != "" {
+			// Hard break so the location sits on its own line above the title/body.
+			b.WriteString(locationPrefix)
+			b.WriteString("  \n\n")
+		}
+		if title != "" {
+			fmt.Fprintf(&b, "#### %s  \n\n", Sanitize(title))
+		}
+		b.WriteString(sanitizeWithHardBreaks(body))
 	}
-	if title != "" {
-		fmt.Fprintf(&b, "#### %s  \n\n", Sanitize(title))
-	}
-	b.WriteString(sanitizeWithHardBreaks(body))
 	// Suggestions ride in a collapsed <details> block so a long list does not
 	// bury the finding itself. The blank lines around the item list are load
 	// bearing: without them GitLab/GitHub render the markdown inside the HTML
 	// block as literal text.
 	var suggestionItems strings.Builder
-	for _, suggestion := range FindingDisplaySuggestions(finding) {
-		text := strings.TrimSpace(suggestion.Body)
-		if text == "" {
-			continue
+	if !finding.IsResolved() {
+		for _, suggestion := range FindingDisplaySuggestions(finding) {
+			text := strings.TrimSpace(suggestion.Body)
+			if text == "" {
+				continue
+			}
+			formatted := strings.ReplaceAll(sanitizeWithHardBreaks(text), "\n", "\n  ")
+			fmt.Fprintf(&suggestionItems, "\n- %s", formatted)
 		}
-		formatted := strings.ReplaceAll(sanitizeWithHardBreaks(text), "\n", "\n  ")
-		fmt.Fprintf(&suggestionItems, "\n- %s", formatted)
 	}
 	if suggestionItems.Len() > 0 {
 		b.WriteString("\n\n<details>\n<summary>Suggestions</summary>\n")
@@ -1121,6 +1183,75 @@ func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix strin
 		return fingerprint + "\n" + ref + visible, false
 	}
 	return fingerprint + visible, false
+}
+
+func renderFindingHistory(history []model.FindingRevision, r Renderer) string {
+	if len(history) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(historyStartMarker + "\n<details>\n<summary>:scroll: Finding History</summary>\n\n")
+	for i := len(history) - 1; i >= 0; i-- {
+		rev := history[i]
+		finding := model.FindingFromSnapshot(rev.Finding)
+		title, body, rank, confidence := FindingDisplay(finding)
+		fmt.Fprintf(&b, "**Revision %d** — %s\n\n", rev.Revision, revisionSource(rev.RevisionSource))
+		if finding.IsResolved() {
+			b.WriteString(r.ResolvedBadge())
+			if finding.Resolution != nil {
+				b.WriteString(" — " + Sanitize(finding.Resolution.Summary))
+			}
+		} else {
+			location := finding.CodeLocation
+			end := location.LineRange.End
+			if end < location.LineRange.Start {
+				end = location.LineRange.Start
+			}
+			fmt.Fprintf(&b, "%s **%s**\n\n`%s:%d-%d` · confidence %.2f\n\n%s", r.PriorityBadge(rank), Sanitize(title), Sanitize(location.FilePath), location.LineRange.Start, end, confidence, sanitizeWithHardBreaks(body))
+			for _, suggestion := range FindingDisplaySuggestions(finding) {
+				if text := strings.TrimSpace(suggestion.Body); text != "" {
+					fmt.Fprintf(&b, "\n\n- Suggestion: %s", sanitizeWithHardBreaks(text))
+				}
+			}
+		}
+		b.WriteString("\n\n---\n\n")
+	}
+	b.WriteString("</details>\n" + historyEndMarker + "\n\n")
+	return b.String()
+}
+
+func renderReviewHistory(history []model.ReviewRevision, r Renderer) string {
+	if len(history) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(historyStartMarker + "\n<details>\n<summary>:scroll: Review History</summary>\n\n")
+	for i := len(history) - 1; i >= 0; i-- {
+		rev := history[i]
+		fmt.Fprintf(&b, "**Revision %d** — %s\n\n%s\n\n%s\n\n---\n\n", rev.Revision, revisionSource(rev.RevisionSource), r.CorrectnessBadge(rev.OverallCorrectness), sanitizeWithHardBreaks(rev.OverallExplanation))
+	}
+	b.WriteString("</details>\n" + historyEndMarker + "\n\n")
+	return b.String()
+}
+
+func revisionSource(source model.RevisionSource) string {
+	parts := make([]string, 0, 3)
+	if !source.UpdatedAt.IsZero() {
+		parts = append(parts, source.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	if source.SourceURL != "" {
+		parts = append(parts, fmt.Sprintf("[source](%s)", Sanitize(source.SourceURL)))
+	} else if source.SourceNoteID > 0 {
+		parts = append(parts, fmt.Sprintf("source note %d", source.SourceNoteID))
+	}
+	if source.HeadSHA != "" {
+		sha := source.HeadSHA
+		if len(sha) > 12 {
+			sha = sha[:12]
+		}
+		parts = append(parts, "`"+Sanitize(sha)+"`")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // FindingDisplay prefers the finalized title/body/priority/confidence when a

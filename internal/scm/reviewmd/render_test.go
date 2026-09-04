@@ -907,3 +907,44 @@ func TestLocateLine(t *testing.T) {
 		t.Fatal("line 99 must not map")
 	}
 }
+
+func TestResolvedFindingRendersHistoryAndStripsItFromPromptText(t *testing.T) {
+	p := 1
+	old := model.Finding{ID: "f1", Title: "Old title", Body: "Long original explanation.", Priority: &p, ConfidenceScore: .8, CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 4, End: 4}}}
+	snapshot, err := model.SnapshotFinding(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := old
+	resolved.State = model.FindingStateResolved
+	resolved.Resolution = &model.FindingResolution{Summary: "The new guard prevents the nil dereference."}
+	resolved.History = []model.FindingRevision{{Revision: 0, RevisionSource: model.RevisionSource{UpdatedAt: time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC), SourceURL: "https://gitlab.example/mr/1#note_7", HeadSHA: "1234567890abcdef"}, Finding: snapshot}}
+	body := findingBody(NewRenderer("https://assets/"), resolved, "")
+	for _, want := range []string{"<summary>:scroll: Finding History</summary>", "resolved.svg", "The new guard prevents the nil dereference.", "Old title", "1234567890ab"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+	stripped := StripMarkers(body)
+	if strings.Contains(stripped, "Old title") || strings.Contains(stripped, "Finding History") {
+		t.Fatalf("history leaked into prompt text: %q", stripped)
+	}
+	if !strings.Contains(stripped, "new guard") {
+		t.Fatalf("current resolution was stripped: %q", stripped)
+	}
+}
+
+func TestReviewResultsByIDPrefersNewestRevisions(t *testing.T) {
+	p := 2
+	old := &model.ReviewResult{ReviewID: "r1", Revision: 0, OverallCorrectness: "patch is incorrect", Findings: []model.Finding{{ID: "f1", Revision: 0, Title: "old", Body: "old", Priority: &p}}}
+	newer := &model.ReviewResult{ReviewID: "r1", Revision: 1, LastUpdateID: "u1", OverallCorrectness: "patch is correct", Findings: []model.Finding{{ID: "f1", Revision: 1, LastUpdateID: "u1", Title: "new", Body: "new", Priority: &p}}}
+	r := NewRenderer("").ForReview("r1")
+	oldSummary, _ := r.SummaryBodyCarried(old)
+	oldFinding, _ := r.FindingBodyCarried(old.Findings[0], "")
+	newSummary, _ := r.SummaryBodyCarried(newer)
+	newFinding, _ := r.FindingBodyCarried(newer.Findings[0], "")
+	got := ReviewResultsByID([]string{newFinding, oldSummary, oldFinding, newSummary})["r1"]
+	if got == nil || got.Revision != 1 || got.OverallCorrectness != "patch is correct" || len(got.Findings) != 1 || got.Findings[0].Title != "new" {
+		t.Fatalf("reassembled newest review = %#v", got)
+	}
+}

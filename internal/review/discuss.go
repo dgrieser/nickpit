@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -26,11 +28,19 @@ type DiscussRequest struct {
 	// reviewers saw. It is rebuilt from the current repo/MR at chat time.
 	ReviewCtx *model.ReviewContext
 	// Result is the complete review being discussed: every finding plus the
-	// overall verdict. Its full JSON is placed in the system prompt.
+	// overall verdict. Its current JSON is placed in the system prompt; revision
+	// history is omitted so old prose cannot crowd or confuse the live finding.
 	Result *model.ReviewResult
 	// PinnedFindingID, when set, focuses the conversation on one finding and makes
 	// the agent open with a message pointing at it.
 	PinnedFindingID string
+	// AllowReviewUpdates switches the final response to a structured GitLab-chat
+	// contract: a normal reply plus complete replacements for existing findings.
+	// Other chat front-ends retain free-form text behavior.
+	AllowReviewUpdates bool
+	// DisableJSONResponseFormat keeps the structured prompt/parser contract but
+	// omits the provider-side response_format schema.
+	DisableJSONResponseFormat bool
 	// Messages is the conversation so far and MUST end with the author's latest
 	// user message. The system prompt and (for a pinned chat) the opener are
 	// prepended internally, so they are not part of this slice.
@@ -68,7 +78,24 @@ type DiscussResult struct {
 	// and any tool-call / tool-result messages). The caller appends these to its
 	// stored conversation so a later turn replays the same context.
 	NewMessages []llm.Message
+	Updates     []DiscussFindingUpdate
 	TokensUsed  model.TokenUsage
+}
+
+// DiscussFindingUpdate is one evidence-backed replacement proposed by the
+// discussion agent. Finding is complete rather than patch-shaped, so clearing
+// suggestions and other optional values is unambiguous.
+type DiscussFindingUpdate struct {
+	ID         string        `json:"id"`
+	State      string        `json:"state"`
+	Resolution string        `json:"resolution,omitempty"`
+	Reason     string        `json:"reason"`
+	Finding    model.Finding `json:"finding"`
+}
+
+type discussStructuredResponse struct {
+	Reply          string                 `json:"reply"`
+	FindingUpdates []DiscussFindingUpdate `json:"finding_updates"`
 }
 
 // Discuss runs one turn of the discussion agent and returns its reply. The agent
@@ -148,12 +175,14 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		Pinned                     bool
 		HasTools                   bool
+		AllowReviewUpdates         bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		ContextJSON                string
 	}{
 		Pinned:                     pinned,
 		HasTools:                   hasTools,
+		AllowReviewUpdates:         req.AllowReviewUpdates,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		ContextJSON:                contextJSON,
@@ -177,14 +206,27 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		progress = e.progressInfo("discuss", "Discuss Review", "")
 	}
 
+	schemaKind := llm.SchemaKindText
+	var schema []byte
+	var validate func(*llm.ReviewResponse) *llm.InvalidResponseError
+	if req.AllowReviewUpdates {
+		if !req.DisableJSONResponseFormat {
+			schema, err = discussResponseSchema(req.Result, req.PinnedFindingID, req.DisableSuggestions)
+			if err != nil {
+				return out, err
+			}
+		}
+		schemaKind = llm.SchemaKindJSON
+		validate = discussResponseValidator(req.Result, req.PinnedFindingID, req.DisableSuggestions)
+	}
 	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 		AgentName:             "Discuss Review",
 		AgentKind:             "discuss",
 		Progress:              progress,
 		Messages:              all,
 		Tools:                 tools,
-		Schema:                nil,
-		SchemaKind:            llm.SchemaKindText,
+		Schema:                schema,
+		SchemaKind:            schemaKind,
 		Model:                 e.config.Model,
 		MaxTokens:             e.config.MaxTokens,
 		Temperature:           e.config.Temperature,
@@ -212,13 +254,26 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			return noToolsMessagesFromRendered(systemPrompt, messages)
 		},
+		ValidateResponse: validate,
 	})
 	if err != nil {
 		return out, err
 	}
 	out.TokensUsed = loopResult.tokensUsed
 	if loopResult.resp != nil {
-		out.Reply = strings.TrimSpace(loopResult.resp.RawResponse)
+		if req.AllowReviewUpdates {
+			if invalid := discussResponseValidator(req.Result, req.PinnedFindingID, req.DisableSuggestions)(loopResult.resp); invalid != nil {
+				return out, invalid
+			}
+			parsed, parseErr := parseDiscussStructuredResponse(loopResult.resp.RawResponse)
+			if parseErr != nil {
+				return out, parseErr
+			}
+			out.Reply = strings.TrimSpace(parsed.Reply)
+			out.Updates = parsed.FindingUpdates
+		} else {
+			out.Reply = strings.TrimSpace(loopResult.resp.RawResponse)
+		}
 	}
 
 	if len(loopResult.messages) > prefixLen {
@@ -229,9 +284,143 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	// last persisted message so a resumed turn replays it.
 	if out.Reply != "" {
 		last := len(out.NewMessages) - 1
-		if last < 0 || out.NewMessages[last].Role != "assistant" || strings.TrimSpace(out.NewMessages[last].Content) != out.Reply {
+		replacedStructured := false
+		if req.AllowReviewUpdates && last >= 0 && out.NewMessages[last].Role == "assistant" {
+			if parsed, err := parseDiscussStructuredResponse(out.NewMessages[last].Content); err == nil && strings.TrimSpace(parsed.Reply) == out.Reply {
+				out.NewMessages[last].Content = out.Reply
+				out.NewMessages[last].ToolCalls = nil
+				replacedStructured = true
+			}
+		}
+		if !replacedStructured && (last < 0 || out.NewMessages[last].Role != "assistant" || strings.TrimSpace(out.NewMessages[last].Content) != out.Reply) {
 			out.NewMessages = append(out.NewMessages, llm.Message{Role: "assistant", Content: out.Reply})
 		}
+	}
+	return out, nil
+}
+
+func parseDiscussStructuredResponse(raw string) (discussStructuredResponse, error) {
+	var parsed discussStructuredResponse
+	if err := llm.LenientUnmarshal(raw, &parsed); err != nil {
+		return parsed, fmt.Errorf("discuss: parsing structured response: %w", err)
+	}
+	return parsed, nil
+}
+
+var additionalSentence = regexp.MustCompile(`[.!?]\s+\S`)
+
+func discussResponseValidator(result *model.ReviewResult, pinnedID string, disableSuggestions bool) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	allowed := make(map[string]struct{}, len(result.Findings))
+	for _, finding := range result.Findings {
+		allowed[finding.ID] = struct{}{}
+	}
+	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+		parsed, err := parseDiscussStructuredResponse(resp.RawResponse)
+		invalid := func(reason string) *llm.InvalidResponseError {
+			return &llm.InvalidResponseError{RawContent: resp.RawResponse, Reason: reason, MissingFields: []string{"reply", "finding_updates"}}
+		}
+		if err != nil {
+			return invalid(err.Error())
+		}
+		if strings.TrimSpace(parsed.Reply) == "" {
+			return invalid("discussion reply is empty")
+		}
+		seen := make(map[string]struct{}, len(parsed.FindingUpdates))
+		for _, update := range parsed.FindingUpdates {
+			id := strings.TrimSpace(update.ID)
+			if _, ok := allowed[id]; !ok || id == "" || update.Finding.ID != id {
+				return invalid("finding update references an unknown or mismatched id")
+			}
+			if pinnedID != "" && id != pinnedID {
+				return invalid("pinned discussion may update only its focused finding")
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return invalid("finding update id is duplicated")
+			}
+			seen[id] = struct{}{}
+			state := strings.ToLower(strings.TrimSpace(update.State))
+			if state != model.FindingStateActive && state != model.FindingStateResolved {
+				return invalid("finding state must be active or resolved")
+			}
+			if strings.TrimSpace(update.Reason) == "" {
+				return invalid("finding update lacks evidence reason")
+			}
+			if p := update.Finding.Priority; p == nil || *p < 0 || *p > 3 {
+				return invalid("finding priority must be between 0 and 3")
+			}
+			if update.Finding.ConfidenceScore < 0 || update.Finding.ConfidenceScore > 1 {
+				return invalid("finding confidence must be between 0 and 1")
+			}
+			if strings.TrimSpace(update.Finding.Title) == "" || strings.TrimSpace(update.Finding.Body) == "" {
+				return invalid("active finding replacement requires title and body")
+			}
+			loc := update.Finding.CodeLocation
+			if strings.TrimSpace(loc.FilePath) == "" || loc.LineRange.Start <= 0 || loc.LineRange.End < loc.LineRange.Start {
+				return invalid("finding replacement has an invalid code location")
+			}
+			if disableSuggestions && len(update.Finding.Suggestions) > 0 {
+				return invalid("suggestions are disabled")
+			}
+			if state == model.FindingStateResolved {
+				summary := strings.TrimSpace(update.Resolution)
+				if summary == "" || utf8.RuneCountInString(summary) > 160 || strings.ContainsAny(summary, "\r\n") || additionalSentence.MatchString(summary) {
+					return invalid("resolved finding requires one factual sentence of at most 160 characters")
+				}
+				last, _ := utf8.DecodeLastRuneInString(summary)
+				if !unicode.IsPunct(last) {
+					return invalid("resolution sentence must end with punctuation")
+				}
+			}
+		}
+		return nil
+	}
+}
+
+func discussResponseSchema(result *model.ReviewResult, pinnedID string, disableSuggestions bool) ([]byte, error) {
+	ids := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		if pinnedID == "" || finding.ID == pinnedID {
+			ids = append(ids, finding.ID)
+		}
+	}
+	location := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"file_path": map[string]any{"type": "string"},
+			"line_range": map[string]any{"type": "object", "properties": map[string]any{
+				"start": map[string]any{"type": "integer"}, "end": map[string]any{"type": "integer"}, "count": map[string]any{"type": "integer"},
+			}, "required": []string{"start", "end", "count"}},
+			"language": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"},
+		},
+		"required": []string{"file_path", "line_range", "content"},
+	}
+	findingProps := map[string]any{
+		"id": map[string]any{"type": "string", "enum": ids}, "title": map[string]any{"type": "string"},
+		"body": map[string]any{"type": "string"}, "confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+		"priority": map[string]any{"type": "integer", "minimum": 0, "maximum": 3}, "code_location": location,
+	}
+	if !disableSuggestions {
+		findingProps["suggestions"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+			"body": map[string]any{"type": "string"}, "code_location": location,
+		}, "required": []string{"body", "code_location"}}}
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"reply": map[string]any{"type": "string"},
+			"finding_updates": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "properties": map[string]any{
+					"id": map[string]any{"type": "string", "enum": ids}, "state": map[string]any{"type": "string", "enum": []string{model.FindingStateActive, model.FindingStateResolved}},
+					"resolution": map[string]any{"type": "string", "maxLength": 160}, "reason": map[string]any{"type": "string"},
+					"finding": map[string]any{"type": "object", "properties": findingProps, "required": []string{"id", "title", "body", "confidence_score", "priority", "code_location"}},
+				}, "required": []string{"id", "state", "reason", "finding"},
+			}},
+		},
+		"required": []string{"reply", "finding_updates"},
+	}
+	out, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("discuss: encoding response schema: %w", err)
 	}
 	return out, nil
 }
@@ -290,16 +479,16 @@ type discussReviewPrompt struct {
 }
 
 // discussReviewForPrompt builds the review object embedded in the discussion
-// prompt. With suggestions disabled the findings are deep-cloned before
-// stripping: Finalization/Summarization are pointers, so model.StripSuggestions
-// on a shallow copy would mutate the caller's result (and a shallow strip would
-// leave their suggestions reachable).
+// prompt. Revision history and mutation bookkeeping are deliberately omitted.
+// Pointer-owned downstream values are cloned before suggestions may be stripped.
 func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool) discussReviewPrompt {
-	findings := result.Findings
-	if disableSuggestions {
-		findings = make([]model.Finding, len(result.Findings))
-		copy(findings, result.Findings)
-		for i := range findings {
+	findings := make([]model.Finding, len(result.Findings))
+	copy(findings, result.Findings)
+	for i := range findings {
+		findings[i].Revision = 0
+		findings[i].LastUpdateID = ""
+		findings[i].History = nil
+		if disableSuggestions {
 			if f := findings[i].Finalization; f != nil {
 				clone := *f
 				findings[i].Finalization = &clone
@@ -309,6 +498,8 @@ func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool)
 				findings[i].Summarization = &clone
 			}
 		}
+	}
+	if disableSuggestions {
 		model.StripSuggestions(findings)
 	}
 	return discussReviewPrompt{

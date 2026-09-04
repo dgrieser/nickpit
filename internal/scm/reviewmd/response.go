@@ -100,6 +100,25 @@ func StripResponseFooter(body string) string {
 	}
 }
 
+// PreserveResponseFooter copies the bot-controlled response policy block from
+// oldBody onto a freshly rendered review body.
+func PreserveResponseFooter(oldBody, newBody string) string {
+	start := strings.Index(oldBody, responseFooterStart)
+	if start < 0 {
+		return newBody
+	}
+	endRel := strings.Index(oldBody[start+len(responseFooterStart):], responseFooterEnd)
+	if endRel < 0 {
+		return newBody
+	}
+	end := start + len(responseFooterStart) + endRel + len(responseFooterEnd)
+	base := strings.TrimSpace(newBody)
+	if base != "" {
+		base += "\n\n"
+	}
+	return base + oldBody[start:end]
+}
+
 // UpsertResponseFooter replaces any prior response section and appends the
 // current one. The hidden command marker makes command muting survive daemon
 // restarts without introducing a second state store.

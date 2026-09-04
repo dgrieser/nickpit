@@ -1126,19 +1126,21 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 
 	res, err := engine.Discuss(ctx, review.DiscussRequest{
-		ReviewCtx:                reviewCtx,
-		Result:                   result,
-		PinnedFindingID:          findingID,
-		Messages:                 history,
-		RepoRoot:                 toolRoot,
-		Tools:                    chatToolset(toolRoot),
-		DiffFormat:               profile.DiffFormat,
-		DisableSuggestions:       profile.DisableSuggestions,
-		DisableParallelToolCalls: a.disableParallelToolCalls,
-		MaxToolCalls:             profile.MaxToolCalls,
-		MaxDuplicateToolCalls:    profile.MaxDuplicateToolCalls,
-		MaxOutputRetries:         profile.MaxOutputRetries,
-		MaxReasoningSeconds:      profile.MaxReasoningSeconds,
+		ReviewCtx:                 reviewCtx,
+		Result:                    result,
+		PinnedFindingID:           findingID,
+		Messages:                  history,
+		RepoRoot:                  toolRoot,
+		Tools:                     chatToolset(toolRoot),
+		DiffFormat:                profile.DiffFormat,
+		DisableSuggestions:        profile.DisableSuggestions,
+		DisableParallelToolCalls:  a.disableParallelToolCalls,
+		MaxToolCalls:              profile.MaxToolCalls,
+		MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
+		MaxOutputRetries:          profile.MaxOutputRetries,
+		MaxReasoningSeconds:       profile.MaxReasoningSeconds,
+		AllowReviewUpdates:        true,
+		DisableJSONResponseFormat: a.disableJSONResponseFormat,
 	})
 	if err != nil {
 		return fmt.Errorf("chat: discussion agent: %w", err)
@@ -1151,6 +1153,53 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// permanently unanswered; a non-zero exit makes the handler forget the
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
+	}
+	source := chatRevisionSource(result, reviewCtx, pending)
+	before, err := result.Clone()
+	if err != nil {
+		return fmt.Errorf("chat: cloning review before update: %w", err)
+	}
+	updated, changes, err := applyChatFindingUpdates(result, res.Updates, source)
+	if err != nil {
+		return err
+	}
+	repairRoot := updated.LastUpdateID != source.UpdateID
+	if repairRoot {
+		repairRoot = false
+		for _, finding := range updated.Findings {
+			if finding.LastUpdateID == source.UpdateID {
+				repairRoot = true
+				break
+			}
+		}
+	}
+	if len(changes) > 0 || repairRoot {
+		updated, err = a.recomputeChatReview(ctx, profile, engine, reviewCtx, updated, changes, toolRoot)
+		if err != nil {
+			return err
+		}
+		reviewSource := source
+		if len(res.Updates) > 0 {
+			reasons := make([]string, 0, len(res.Updates))
+			for _, update := range res.Updates {
+				if reason := strings.TrimSpace(update.Reason); reason != "" {
+					reasons = append(reasons, reason)
+				}
+			}
+			reviewSource.Reason = strings.Join(reasons, "; ")
+		}
+		appendReviewHistory(before, updated, reviewSource)
+		for i := range changes {
+			for _, finding := range updated.Findings {
+				if finding.ID == changes[i].After.ID {
+					changes[i].After = finding
+					break
+				}
+			}
+		}
+		if err := publishChatReviewUpdates(ctx, client, adapter, profile, project, mrID, botUserID, updated, changes); err != nil {
+			return fmt.Errorf("chat: publishing review update: %w", err)
+		}
 	}
 	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply)
 }

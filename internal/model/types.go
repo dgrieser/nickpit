@@ -123,6 +123,11 @@ type ReviewResult struct {
 	// all findings and the overall verdict for one run can be regrouped later
 	// (e.g. when starting a discussion about the review).
 	ReviewID string `json:"review_id,omitempty"`
+	// Revision increases whenever a GitLab discussion turn changes this review.
+	// Zero is the original published review and keeps old carrier data readable.
+	Revision int `json:"revision,omitempty"`
+	// LastUpdateID makes chat-driven SCM updates idempotent across daemon retries.
+	LastUpdateID string `json:"last_update_id,omitempty"`
 	// CreatedAt records when the review completed. Carried in the hidden SCM
 	// note markers so the newest of several reviews on one MR/PR can be selected.
 	CreatedAt time.Time `json:"created_at,omitzero"`
@@ -131,19 +136,20 @@ type ReviewResult struct {
 	// restores it, so a chat rebuilt from MR/PR markers recreates the SAME
 	// filtered context the review saw — never files the review deliberately
 	// withheld. Pipeline results emitted to stdout leave it nil.
-	ContextOptions         *ContextOptions `json:"context_options,omitempty"`
-	Findings               []Finding       `json:"findings"`
-	OverallCorrectness     string          `json:"overall_correctness"`
-	OverallExplanation     string          `json:"overall_explanation"`
-	OverallConfidenceScore float64         `json:"overall_confidence_score"`
-	AgentRuns              []AgentRun      `json:"agent_runs,omitempty"`
-	Warnings               []string        `json:"warnings,omitempty"`
-	TokensUsed             TokenUsage      `json:"tokens_used"`
-	CategorizeTokensUsed   TokenUsage      `json:"categorize_tokens_used"`
-	VerifyTokensUsed       TokenUsage      `json:"verify_tokens_used"`
-	FinalizeTokensUsed     TokenUsage      `json:"finalize_tokens_used"`
-	VerdictTokensUsed      TokenUsage      `json:"verdict_tokens_used"`
-	SummarizeTokensUsed    TokenUsage      `json:"summarize_tokens_used"`
+	ContextOptions         *ContextOptions  `json:"context_options,omitempty"`
+	History                []ReviewRevision `json:"history,omitempty"`
+	Findings               []Finding        `json:"findings"`
+	OverallCorrectness     string           `json:"overall_correctness"`
+	OverallExplanation     string           `json:"overall_explanation"`
+	OverallConfidenceScore float64          `json:"overall_confidence_score"`
+	AgentRuns              []AgentRun       `json:"agent_runs,omitempty"`
+	Warnings               []string         `json:"warnings,omitempty"`
+	TokensUsed             TokenUsage       `json:"tokens_used"`
+	CategorizeTokensUsed   TokenUsage       `json:"categorize_tokens_used"`
+	VerifyTokensUsed       TokenUsage       `json:"verify_tokens_used"`
+	FinalizeTokensUsed     TokenUsage       `json:"finalize_tokens_used"`
+	VerdictTokensUsed      TokenUsage       `json:"verdict_tokens_used"`
+	SummarizeTokensUsed    TokenUsage       `json:"summarize_tokens_used"`
 	// RuntimeSeconds is the whole review command span in seconds (model check,
 	// checkout, pipeline through summarize).
 	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
@@ -386,7 +392,14 @@ type CommitSummary struct {
 type Finding struct {
 	// ID is required at serialization boundaries; regenerate legacy artifacts
 	// that predate UUID finding IDs.
-	ID              string                `json:"id"`
+	ID string `json:"id"`
+	// Revision and LastUpdateID mirror ReviewResult's chat-update bookkeeping.
+	// Missing values identify an original, active finding.
+	Revision        int                   `json:"revision,omitempty"`
+	LastUpdateID    string                `json:"last_update_id,omitempty"`
+	State           string                `json:"state,omitempty"`
+	Resolution      *FindingResolution    `json:"resolution,omitempty"`
+	History         []FindingRevision     `json:"history,omitempty"`
 	Title           string                `json:"title"`
 	Body            string                `json:"body"`
 	ConfidenceScore float64               `json:"confidence_score"`
@@ -401,6 +414,70 @@ type Finding struct {
 	// dropped findings; the merge step strips it before findings leave the
 	// step, so it never reaches results or posted reviews.
 	MergedFrom []string `json:"merged_from,omitempty"`
+}
+
+const (
+	FindingStateActive   = "active"
+	FindingStateResolved = "resolved"
+)
+
+// RevisionSource identifies the chat turn and repository state that produced a
+// stored finding or overall-review revision.
+type RevisionSource struct {
+	UpdatedAt    time.Time `json:"updated_at"`
+	UpdateID     string    `json:"update_id,omitempty"`
+	SourceNoteID int       `json:"source_note_id,omitempty"`
+	SourceURL    string    `json:"source_url,omitempty"`
+	HeadSHA      string    `json:"head_sha,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+}
+
+// FindingResolution is the current resolved-state explanation. Summary is
+// rendered as the finding's sole current sentence; prior full text lives in
+// History.
+type FindingResolution struct {
+	Summary string `json:"summary"`
+	RevisionSource
+}
+
+// FindingSnapshot is a non-recursive, lossless copy of one finding version.
+// History is intentionally absent so revisions cannot recursively contain all
+// earlier revisions again.
+type FindingSnapshot struct {
+	ID              string                `json:"id"`
+	Title           string                `json:"title"`
+	Body            string                `json:"body"`
+	ConfidenceScore float64               `json:"confidence_score"`
+	Priority        *int                  `json:"priority,omitempty"`
+	CodeLocation    CodeLocation          `json:"code_location"`
+	Suggestions     []Suggestion          `json:"suggestions,omitempty"`
+	Verification    *FindingVerification  `json:"verification,omitempty"`
+	Finalization    *FindingFinalization  `json:"finalization,omitempty"`
+	Summarization   *FindingSummarization `json:"summarization,omitempty"`
+	State           string                `json:"state,omitempty"`
+	Resolution      *FindingResolution    `json:"resolution,omitempty"`
+}
+
+type FindingRevision struct {
+	Revision int `json:"revision"`
+	RevisionSource
+	Finding FindingSnapshot `json:"finding"`
+}
+
+// ReviewRevision stores one prior root verdict. Finding bodies remain in each
+// finding's own revision list, avoiding quadratic review carriers.
+type ReviewRevision struct {
+	Revision               int     `json:"revision"`
+	OverallCorrectness     string  `json:"overall_correctness"`
+	OverallExplanation     string  `json:"overall_explanation"`
+	OverallConfidenceScore float64 `json:"overall_confidence_score"`
+	RevisionSource
+}
+
+// IsResolved reports the effective finding state. Empty remains active for
+// compatibility with review JSON written before chat updates existed.
+func (f Finding) IsResolved() bool {
+	return strings.EqualFold(strings.TrimSpace(f.State), FindingStateResolved)
 }
 
 // StripSuggestions removes code suggestions from every finding.
