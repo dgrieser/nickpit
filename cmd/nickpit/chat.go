@@ -994,6 +994,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return fmt.Errorf("chat: resolving token user for thread verification: %w", err)
 	}
 	botUserID := user.ID
+	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
+		return fmt.Errorf("chat: recovering pending review update: %w", err)
+	}
 
 	notes, err := discussionWithFallbacks(ctx, client, project, mrID, opts.replyDiscussion, botUserID)
 	if err != nil {
@@ -1074,6 +1077,12 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return errChatReplySuppressed
 	}
 	history := chatThreadToMessages(notes, botUserID, controls)
+	if findingID != "" {
+		history, err = linkedFindingMessages(ctx, client, project, mrID, reviewID, []string{findingID}, notes, pending, botUserID, controls)
+		if err != nil {
+			return err
+		}
+	}
 	if len(history) == 0 {
 		return nil
 	}
@@ -1125,7 +1134,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		toolRoot = co.root
 	}
 
-	res, err := engine.Discuss(ctx, review.DiscussRequest{
+	discussReq := review.DiscussRequest{
 		ReviewCtx:                reviewCtx,
 		Result:                   result,
 		PinnedFindingID:          findingID,
@@ -1139,8 +1148,15 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		MaxDuplicateToolCalls:    profile.MaxDuplicateToolCalls,
 		MaxOutputRetries:         profile.MaxOutputRetries,
 		MaxReasoningSeconds:      profile.MaxReasoningSeconds,
-	})
+	}
+	update := gitLabChatUpdate{app: a, engine: engine, adapter: adapter, profile: profile, opts: opts,
+		project: project, iid: mrID, botUserID: botUserID, pending: pending, controls: controls, request: discussReq, triggerNotes: notes}
+	discussReq.UpdateReview = update.run
+	res, err := engine.Discuss(ctx, discussReq)
 	if err != nil {
+		if errors.Is(err, errChatReplySuperseded) {
+			return nil
+		}
 		return fmt.Errorf("chat: discussion agent: %w", err)
 	}
 	reply := strings.TrimSpace(res.Reply)

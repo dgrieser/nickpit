@@ -40,6 +40,17 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
+	active, err := in.Clone()
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	active.Findings = nil
+	for _, finding := range in.Findings {
+		if finding.Resolution == nil {
+			active.Findings = append(active.Findings, finding)
+		}
+	}
+	in = active
 	filtered, priorityDropped, err := filterResultByDisplayPriority(in, opts.PriorityThreshold)
 	if err != nil {
 		return nil, model.AgentRun{}, err

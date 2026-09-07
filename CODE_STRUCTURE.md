@@ -31,6 +31,10 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
+- `internal/review/update.go`: Independent, selected-finding correction agent; validates evidence-based replacements and terminal resolutions, without publishing or exposing history.
+- `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
+- `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
+- `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
 - `internal/review/classify.go`: Stamps generated-file marks across the changed-file and diff-file views, plus symlink metadata from the reviewed head tree: marks (changed files, diff files and hunks) for sources whose diff carries no git file mode (GitHub), and link targets for any source whose patch shows none (a pure rename).
@@ -114,6 +118,9 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/savedreply.go`: Comment templates ("saved replies") per scope — user, project, or group: listing and prefix-scoped idempotent sync (create/update/prune, dry run).
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
+- `internal/scm/gitlab/update.go`: Original-review-scoped revision publishing, linked location replacements, durable pending updates, and crash recovery.
+- `internal/scm/gitlab/lock*.go`: Reentrant process-safe MR write locks shared by publishing, corrections, and response controls.
+- `internal/scm/reviewmd/history.go`: Bounded flat comment archives, hidden update/thread metadata, and highest-current-revision carrier selection.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
 - `internal/scm/reviewmd/response.go`: Visible GitLab response-mode footers plus hidden persistent thread-mute metadata and a rendered-policy fingerprint (so footers stamped under earlier settings are detectable), with stripping before LLM context assembly.
 

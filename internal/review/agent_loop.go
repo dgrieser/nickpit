@@ -15,6 +15,8 @@ import (
 )
 
 type agentLoopRequest struct {
+	// ToolHandlers are request-scoped tools, never exposed to other agents.
+	ToolHandlers                      map[string]func(context.Context, llm.ToolCall) (string, error)
 	AgentName                         string
 	AgentKind                         string
 	Progress                          logging.ProgressInfo
@@ -341,7 +343,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		// Provider tool-call IDs are only unique within one response, so each
 		// batch opens a fresh reservation scope before executing.
 		state.toolState.beginToolRound()
-		rawBatch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
+		rawBatch, toolErr := e.executeAgentTools(loopCtx, req, resp.ToolCalls, state.toolState)
+		if toolErr != nil {
+			return result, toolErr
+		}
 		maxContextTokens := e.config.MaxContextTokens
 		if maxContextTokens <= 0 {
 			maxContextTokens = config.DefaultMaxContextToken

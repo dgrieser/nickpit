@@ -22,6 +22,9 @@ import (
 // just answers the author. The caller owns the running conversation (Messages)
 // and appends the returned NewMessages to it between turns.
 type DiscussRequest struct {
+	// UpdateReview enables the GitLab-only correction tool. The caller owns
+	// evaluation/publishing and returns only after the update has completed.
+	UpdateReview func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error)
 	// ReviewCtx carries the diff, changed files, commits, and toolchain that the
 	// reviewers saw. It is rebuilt from the current repo/MR at chat time.
 	ReviewCtx *model.ReviewContext
@@ -96,6 +99,30 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	tools := req.Tools
 	if tools == nil {
 		tools = reviewerToolDefinitions()
+	}
+	var handlers map[string]func(context.Context, llm.ToolCall) (string, error)
+	var updateUsage model.TokenUsage
+	if req.UpdateReview != nil && req.MaxToolCalls >= 0 {
+		tools = append(append([]llm.ToolDefinition(nil), tools...), reviewUpdateTool())
+		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){reviewUpdateToolName: func(ctx context.Context, call llm.ToolCall) (string, error) {
+			var signal ReviewUpdateSignal
+			if err := json.Unmarshal([]byte(call.Arguments), &signal); err != nil {
+				return `{"error":"invalid update arguments"}`, nil
+			}
+			if err := signal.Validate(req.Result); err != nil {
+				body, _ := json.Marshal(map[string]string{"error": err.Error()})
+				return string(body), nil
+			}
+			outcome, err := req.UpdateReview(ctx, signal)
+			if err != nil {
+				return "", err
+			}
+			if outcome != nil {
+				updateUsage = addTokenUsage(updateUsage, outcome.TokensUsed)
+			}
+			body, err := json.Marshal(outcome)
+			return string(body), err
+		}}
 	}
 	hasTools := len(tools) > 0
 
@@ -183,6 +210,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		Progress:              progress,
 		Messages:              all,
 		Tools:                 tools,
+		ToolHandlers:          handlers,
 		Schema:                nil,
 		SchemaKind:            llm.SchemaKindText,
 		Model:                 e.config.Model,
@@ -216,7 +244,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if err != nil {
 		return out, err
 	}
-	out.TokensUsed = loopResult.tokensUsed
+	out.TokensUsed = addTokenUsage(loopResult.tokensUsed, updateUsage)
 	if loopResult.resp != nil {
 		out.Reply = strings.TrimSpace(loopResult.resp.RawResponse)
 	}
@@ -295,10 +323,14 @@ type discussReviewPrompt struct {
 // on a shallow copy would mutate the caller's result (and a shallow strip would
 // leave their suggestions reachable).
 func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool) discussReviewPrompt {
-	findings := result.Findings
+	findings := make([]model.Finding, len(result.Findings))
+	for i, finding := range result.Findings {
+		findings[i] = finding
+		if finding.Resolution != nil {
+			findings[i] = model.Finding{ID: finding.ID, Resolution: finding.Resolution, Body: finding.Resolution.Reason}
+		}
+	}
 	if disableSuggestions {
-		findings = make([]model.Finding, len(result.Findings))
-		copy(findings, result.Findings)
 		for i := range findings {
 			if f := findings[i].Finalization; f != nil {
 				clone := *f
@@ -516,6 +548,9 @@ func discussOpener(result *model.ReviewResult, findingID string) string {
 	for _, f := range result.Findings {
 		if f.ID != findingID {
 			continue
+		}
+		if f.Resolution != nil {
+			return "This finding is resolved: " + f.Resolution.Reason
 		}
 		// Use the same summarization/finalization precedence as the published
 		// comment (reviewmd.FindingDisplay), so the opener names the title and
