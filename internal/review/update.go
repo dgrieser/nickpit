@@ -21,14 +21,13 @@ import (
 const reviewUpdateToolName = "request_review_update"
 
 type ReviewUpdateSignal struct {
-	FindingIDs     []string `json:"finding_ids"`
-	Reason         string   `json:"reason"`
-	RefreshVerdict bool     `json:"refresh_verdict"`
+	FindingIDs []string `json:"finding_ids"`
+	Reason     string   `json:"reason"`
 }
 
 func (s ReviewUpdateSignal) Validate(result *model.ReviewResult) error {
-	if strings.TrimSpace(s.Reason) == "" || (len(s.FindingIDs) == 0 && !s.RefreshVerdict) {
-		return fmt.Errorf("provide a reason and finding_ids or refresh_verdict")
+	if strings.TrimSpace(s.Reason) == "" {
+		return fmt.Errorf("provide a concrete reason for disputing the findings or review")
 	}
 	seen := map[string]bool{}
 	for _, id := range s.FindingIDs {
@@ -55,6 +54,7 @@ func (s ReviewUpdateSignal) Validate(result *model.ReviewResult) error {
 type ReviewUpdateOutcome struct {
 	TokensUsed         model.TokenUsage     `json:"-"`
 	Checks             []FindingUpdateCheck `json:"checks"`
+	ReviewCheck        *ReviewUpdateCheck   `json:"review_check,omitempty"`
 	Changed            []model.Finding      `json:"changed_findings"`
 	OverallCorrectness string               `json:"overall_correctness"`
 	OverallExplanation string               `json:"overall_explanation"`
@@ -68,13 +68,24 @@ type FindingUpdateCheck struct {
 
 type FindingUpdateReport struct {
 	model.AgentRun
-	Checks []FindingUpdateCheck
+	Checks      []FindingUpdateCheck
+	ReviewCheck *ReviewUpdateCheck
+}
+
+// ReviewUpdateCheck assesses evidence, not which agents or SCM writes to run.
+type ReviewUpdateCheck struct {
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+}
+
+func (r FindingUpdateReport) ReviewCorrectionWarranted() bool {
+	return r.ReviewCheck != nil && r.ReviewCheck.Action == "correction_warranted"
 }
 
 func reviewUpdateTool() llm.ToolDefinition {
 	return llm.ToolDefinition{Name: reviewUpdateToolName,
-		Description: "Request an evidence-based correction of selected findings or the overall verdict. An independent agent checks the evidence; Go updates GitLab posts and history. Returns the actual outcome. Resolved findings cannot be reopened.",
-		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"},"refresh_verdict":{"type":"boolean"}},"required":["finding_ids","reason","refresh_verdict"]}`),
+		Description: "Signal disputed findings or a disputed review with concrete evidence. Supply affected finding IDs, or an empty list for a review-level dispute. An independent agent checks the evidence; Go handles any warranted updates. Returns the actual outcome. Resolved findings cannot be reopened.",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}},"required":["finding_ids","reason"]}`),
 	}
 }
 
@@ -104,9 +115,7 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	if err != nil {
 		return nil, run, err
 	}
-	if len(req.Signal.FindingIDs) == 0 {
-		return out, run, nil
-	}
+	reviewOnly := len(req.Signal.FindingIDs) == 0
 	selected := &model.ReviewResult{ReviewID: out.ReviewID}
 	for _, id := range req.Signal.FindingIDs {
 		for _, f := range out.Findings {
@@ -118,6 +127,20 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	template, err := e.loadPrompt("agent_update_system_prompt.tmpl")
 	if err != nil {
 		return nil, run, err
+	}
+	template, err = llm.RenderPrompt(template, struct{ ReviewOnly bool }{reviewOnly})
+	if err != nil {
+		return nil, run, err
+	}
+	promptResult := selected
+	if reviewOnly {
+		promptResult = &model.ReviewResult{ReviewID: out.ReviewID, OverallCorrectness: out.OverallCorrectness,
+			OverallExplanation: out.OverallExplanation, OverallConfidenceScore: out.OverallConfidenceScore}
+		for _, finding := range out.Findings {
+			if finding.Resolution == nil {
+				promptResult.Findings = append(promptResult.Findings, currentFinding(finding))
+			}
+		}
 	}
 	guides, err := e.styleGuidesFor(req.ReviewCtx)
 	if err != nil {
@@ -132,12 +155,12 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 		maxContext = config.DefaultMaxContextToken
 	}
 	estimator := tokenestimate.SimpleEstimator{}
-	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxContext, discussFixedOverheadTokens(selected, req.DisableSuggestions, style+req.Signal.Reason, estimator)), estimator)
-	trimmed, err := e.trimForDiscuss(req.ReviewCtx, selected, messages, style+req.Signal.Reason, req.DisableSuggestions, req.DiffFormat)
+	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxContext, discussFixedOverheadTokens(promptResult, req.DisableSuggestions, style+req.Signal.Reason, estimator)), estimator)
+	trimmed, err := e.trimForDiscuss(req.ReviewCtx, promptResult, messages, style+req.Signal.Reason, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, run, err
 	}
-	contextJSON, err := e.buildDiscussContext(trimmed, selected, "", req.DisableSuggestions, req.DiffFormat)
+	contextJSON, err := e.buildDiscussContext(trimmed, promptResult, "", req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, run, err
 	}
@@ -145,7 +168,7 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	if err != nil {
 		return nil, run, err
 	}
-	schema := llm.UpdateFindingsSchema(req.DisableSuggestions)
+	schema := llm.UpdateFindingsSchema(req.DisableSuggestions, reviewOnly)
 	system := template + "\n\n" + style + "\n\n" + instructions + "\n\nOutput JSON schema:\n" + string(schema)
 	payload, err := json.Marshal(map[string]any{"context": json.RawMessage(contextJSON), "conversation": messages, "reason": req.Signal.Reason, "head_sha": req.ReviewCtx.DiffHeadSHA})
 	if err != nil {
@@ -168,6 +191,16 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 		parsed, parseErr := parseFindingUpdates(raw, selected, req.DisableSuggestions)
 		if parseErr != nil {
 			return &llm.InvalidResponseError{RawContent: raw, Reason: parseErr.Error()}
+		}
+		if reviewOnly {
+			var payload struct {
+				Review *ReviewUpdateCheck `json:"review"`
+			}
+			if err := llm.LenientUnmarshal(raw, &payload); err != nil || payload.Review == nil ||
+				(payload.Review.Action != "unchanged" && payload.Review.Action != "correction_warranted") || strings.TrimSpace(payload.Review.Reason) == "" {
+				return &llm.InvalidResponseError{RawContent: raw, Reason: "return a review assessment with action unchanged or correction_warranted and a concrete evidence-based reason"}
+			}
+			run.ReviewCheck = payload.Review
 		}
 		for _, d := range parsed {
 			if d.Action != "updated" {

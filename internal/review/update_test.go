@@ -175,7 +175,7 @@ func TestDiscussUpdateToolUsesActualOutcomeAndPropagatesFailure(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
 			client := &updateTestLLM{responses: []*llm.ReviewResponse{
-				{ToolCalls: []llm.ToolCall{{ID: "call", Name: reviewUpdateToolName, Arguments: `{"finding_ids":["finding"],"reason":"Guard proves it safe.","refresh_verdict":false}`}}},
+				{ToolCalls: []llm.ToolCall{{ID: "call", Name: reviewUpdateToolName, Arguments: `{"finding_ids":["finding"],"reason":"Guard proves it safe."}`}}},
 				{RawResponse: "The finding has been resolved."},
 			}}
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})

@@ -31,7 +31,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
-- `internal/review/update.go`: Independent, selected-finding correction agent; validates evidence-based replacements and terminal resolutions, without publishing or exposing history.
+- `internal/review/update.go`: Independent correction agent; validates selected-finding replacements and terminal resolutions, or assesses review-level disputes without generating verdicts, publishing, or exposing history.
 - `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
 - `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
 - `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.

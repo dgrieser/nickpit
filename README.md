@@ -437,6 +437,8 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 ## Discuss a Review (Chat) 💬
 
+GitLab chat signals disputes, not verdict-refresh commands. Finding corrections automatically trigger verdict regeneration in Go. A review-level dispute first receives an independent evidence assessment; only a warranted correction triggers the existing verdict agent.
+
 After a review you can talk to an agent about it. The discussion agent gets the same context a reviewer/verifier has — the diff, the toolchain, the applicable styleguides, and the same retrieval tools — plus the **complete findings JSON and the overall verdict**. It is free-form: no workflow, no output schema, no priority gates. Ask why a finding is a bug, push back on a nitpick, or propose a fix and have it evaluated.
 
 GitLab thread replies (`--reply-discussion`, including replies started by the serve daemon) can automatically correct the thread's original review. The chat agent requests a check of selected findings; a separate update agent evaluates the conversation against the current code, diff, and relevant commits. Proven corrections can change titles, explanations, suggestions, priority, confidence, or code locations. Changed findings also regenerate the overall verdict using the existing verdict agent. Terminal-only chat does not edit GitLab posts, and a new commit alone does not trigger this process.

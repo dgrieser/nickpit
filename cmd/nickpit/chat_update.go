@@ -93,13 +93,16 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 			changed = append(changed, f)
 		}
 	}
-	if len(changed) > 0 || signal.RefreshVerdict {
+	if len(changed) > 0 || report.ReviewCorrectionWarranted() {
 		verdictInput, err := after.Clone()
 		if err != nil {
 			return nil, err
 		}
 		verdictInput.OverallCorrectness, verdictInput.OverallExplanation, verdictInput.OverallConfidenceScore = "", "", 0
 		contextNotes := signal.Reason
+		if report.ReviewCheck != nil {
+			contextNotes += "\n\nIndependent evidence assessment:\n" + report.ReviewCheck.Reason
+		}
 		// Explicit chat evidence is available even when general MR comments are disabled.
 		for i := len(req.Messages) - 1; i >= 0; i-- {
 			if req.Messages[i].Role == "user" {
@@ -130,7 +133,7 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 		*req.Result = *published
 		after = published
 	}
-	return &review.ReviewUpdateOutcome{TokensUsed: usage, Checks: report.Checks, Changed: changed, OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation}, nil
+	return &review.ReviewUpdateOutcome{TokensUsed: usage, Checks: report.Checks, ReviewCheck: report.ReviewCheck, Changed: changed, OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation}, nil
 }
 
 // Linked thread roots are identified by stable review/finding IDs and bot

@@ -33,8 +33,8 @@ that review.
   and whether it introduces new problems.
 {{- if .HasReviewUpdate}}
 - When evidence warrants a correction, call `request_review_update` with the
-  affected finding IDs and concrete reason. Request a verdict
-  refresh directly when the overall assessment needs correction. The tool runs
+  affected finding IDs and concrete reason. For a disputed overall assessment,
+  pass an empty finding list and explain the evidence. The tool runs
   an independent check and updates the posts; use its result in your answer.
   Never claim an update succeeded before the tool confirms it. A proposed fix
   is not a committed fix, and disagreement alone is not proof. Resolved findings
