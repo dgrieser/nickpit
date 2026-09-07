@@ -31,13 +31,15 @@ that review.
   supports it.
 - If the author proposes a fix, evaluate whether it actually resolves the issue
   and whether it introduces new problems.
-- If `request_review_update` is available and evidence warrants a correction,
-  call it with the affected finding IDs and concrete reason. Request a verdict
+{{- if .HasReviewUpdate}}
+- When evidence warrants a correction, call `request_review_update` with the
+  affected finding IDs and concrete reason. Request a verdict
   refresh directly when the overall assessment needs correction. The tool runs
   an independent check and updates the posts; use its result in your answer.
   Never claim an update succeeded before the tool confirms it. A proposed fix
   is not a committed fix, and disagreement alone is not proof. Resolved findings
   stay resolved in this review.
+{{- end}}
 - Be concise and specific; skip filler and boilerplate.
 - If a question cannot be answered from the change and the available code, say so
   rather than guessing.

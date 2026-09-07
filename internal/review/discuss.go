@@ -102,7 +102,8 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	}
 	var handlers map[string]func(context.Context, llm.ToolCall) (string, error)
 	var updateUsage model.TokenUsage
-	if req.UpdateReview != nil && req.MaxToolCalls >= 0 {
+	hasReviewUpdate := req.UpdateReview != nil && req.MaxToolCalls >= 0
+	if hasReviewUpdate {
 		tools = append(append([]llm.ToolDefinition(nil), tools...), reviewUpdateTool())
 		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){reviewUpdateToolName: func(ctx context.Context, call llm.ToolCall) (string, error) {
 			var signal ReviewUpdateSignal
@@ -175,12 +176,14 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		Pinned                     bool
 		HasTools                   bool
+		HasReviewUpdate            bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		ContextJSON                string
 	}{
 		Pinned:                     pinned,
 		HasTools:                   hasTools,
+		HasReviewUpdate:            hasReviewUpdate,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		ContextJSON:                contextJSON,

@@ -131,6 +131,46 @@ func TestUpdateSuggestionsOmissionPreservesAndEmptyClears(t *testing.T) {
 	}
 }
 
+func TestDiscussUpdateInstructionsMatchToolRegistration(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		callback bool
+		maxTools int
+		want     bool
+	}{
+		{"terminal", false, 0, false},
+		{"gitlab", true, 0, true},
+		{"tools disabled", true, -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: "Answer."}}}
+			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+			req := DiscussRequest{Result: &model.ReviewResult{}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Explain."}}, Tools: []llm.ToolDefinition{}, MaxToolCalls: tc.maxTools}
+			if tc.callback {
+				req.UpdateReview = func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error) {
+					t.Fatal("unexpected update call")
+					return nil, nil
+				}
+			}
+			if _, err := e.Discuss(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			request := client.requests[0]
+			registered := false
+			for _, tool := range request.Tools {
+				registered = registered || tool.Name == reviewUpdateToolName
+			}
+			prompt := request.Messages[0].Content
+			if registered != tc.want || strings.Contains(prompt, reviewUpdateToolName) != tc.want {
+				t.Fatalf("tool=%v instructions=%v want=%v", registered, strings.Contains(prompt, reviewUpdateToolName), tc.want)
+			}
+			if strings.Contains(prompt, "is available and evidence") {
+				t.Fatal("availability check reached agent")
+			}
+		})
+	}
+}
+
 func TestDiscussUpdateToolUsesActualOutcomeAndPropagatesFailure(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
