@@ -437,6 +437,8 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 ## Discuss a Review (Chat) 💬
 
+GitLab chat corrections require serve's `state_dir` and always run asynchronously: NickPit durably queues the request before acknowledging it, then follows up in the original thread after checking evidence and updating any warranted findings/verdict. A separate worker resumes pending jobs after restart, retries failed checks, and retries acknowledgement/follow-up delivery without duplicating posts. New comments or commits invalidate uncommitted decisions and require fresh evaluation. Finished job records remain in the state directory for deduplication; checkpoints contain review text but no credentials, so keep that directory private and on durable storage. Without `state_dir` (including ordinary terminal invocations), chat remains available but the correction tool is disabled; there is no synchronous fallback.
+
 GitLab chat signals disputes, not verdict-refresh commands. Finding corrections automatically trigger verdict regeneration in Go. A review-level dispute first receives an independent evidence assessment; only a warranted correction triggers the existing verdict agent.
 
 After a review you can talk to an agent about it. The discussion agent gets the same context a reviewer/verifier has — the diff, the toolchain, the applicable styleguides, and the same retrieval tools — plus the **complete findings JSON and the overall verdict**. It is free-form: no workflow, no output schema, no priority gates. Ask why a finding is a bug, push back on a nitpick, or propose a fix and have it evaluated.

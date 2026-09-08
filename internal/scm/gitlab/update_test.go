@@ -241,6 +241,39 @@ func TestUpdateReviewRecoversPartialWrite(t *testing.T) {
 	}
 }
 
+func TestUpdateJobCommitSurvivesRecoveryAndLaterRootRevision(t *testing.T) {
+	s, a, before := newUpdateServer(t)
+	after, _ := before.Clone()
+	after.Findings[0].Title = "Corrected title"
+	req := updateRequest(before, after)
+	req.Operation = "durable-job"
+	s.failNote = 1
+	if _, err := a.UpdateReview(context.Background(), "group/project", 456, req); err == nil {
+		t.Fatal("expected interrupted publication")
+	}
+	if committed, err := a.ReviewUpdateCommitted(context.Background(), "group/project", 456, before.ReviewID, req.Operation); err != nil || committed {
+		t.Fatalf("partial operation reported committed: %v %v", committed, err)
+	}
+	if err := a.RecoverReviewUpdates(context.Background(), "group/project", 456); err != nil {
+		t.Fatal(err)
+	}
+	current := reviewmd.ReviewResultsByID(ownedBodies(s.snapshot(), 7))[before.ReviewID]
+	next, _ := current.Clone()
+	next.Findings[0].Title = "Second correction"
+	req2 := updateRequest(current, next)
+	req2.Operation = "next-job"
+	if _, err := a.UpdateReview(context.Background(), "group/project", 456, req2); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := a.ReviewUpdateCommitted(context.Background(), "group/project", 456, before.ReviewID, req.Operation)
+	if err != nil || !committed {
+		t.Fatalf("lost durable commit receipt: %v %v", committed, err)
+	}
+	if committed, err := a.ReviewUpdateCommitted(context.Background(), "group/project", 456, "another-review", req.Operation); err != nil || committed {
+		t.Fatalf("commit leaked across reviews: %v %v", committed, err)
+	}
+}
+
 func TestUpdateReviewReplacesLocationAndRecoversRedirect(t *testing.T) {
 	s, a, before := newUpdateServer(t)
 	after, _ := before.Clone()

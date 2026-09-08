@@ -17,6 +17,7 @@ import (
 )
 
 type ReviewUpdateRequest struct {
+	Operation        string
 	Before, After    *model.ReviewResult
 	BaseSHA, HeadSHA string
 	// Validate rechecks the initiating note and response policy inside the
@@ -117,7 +118,14 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	if len(changed) == 0 && !rootChanged {
 		return current, nil
 	}
-	transaction := reviewUpdateTransaction{ReviewID: current.ReviewID, Operation: uuid.NewString(), Revision: after.Revision, At: time.Now().UTC()}
+	operation := req.Operation
+	if operation == "" {
+		operation = uuid.NewString()
+	}
+	if strings.IndexFunc(operation, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') }) >= 0 {
+		return nil, fmt.Errorf("invalid update operation ID")
+	}
+	transaction := reviewUpdateTransaction{ReviewID: current.ReviewID, Operation: operation, Revision: after.Revision, At: time.Now().UTC()}
 	render := a.render.ForReview(after.ReviewID).WithContextOptions(after.ContextOptions)
 	for _, finding := range changed {
 		old := findUpdateTarget(discussions, user.ID, after.ReviewID, finding.ID)
@@ -179,7 +187,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	}
 	marker := updateItemMarker(transaction.Operation, len(transaction.Items))
 	body = reviewmd.TransferResponseFooter(previous, body+"\n\n"+marker)
-	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged)
+	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || req.Operation != "")
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +200,39 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	}
 	a.cleanupUpdateRecords(ctx, project, iid, user.ID, transaction.Operation)
 	return after, nil
+}
+
+// ReviewUpdateCommitted recognizes a durable job's root commit across crashes.
+func (a *Adapter) ReviewUpdateCommitted(ctx context.Context, project string, iid int, reviewID, operation string) (bool, error) {
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return false, err
+	}
+	discussions, err := a.client.MRDiscussions(ctx, project, iid)
+	if err != nil {
+		return false, err
+	}
+	for _, d := range discussions {
+		if len(d.Notes) == 0 || d.Notes[0].AuthorID != user.ID {
+			continue
+		}
+		body := d.Notes[0].Body
+		rid, fid, ok := reviewmd.DetectThreadReview(body)
+		if !ok || rid != reviewID || fid != "" {
+			continue
+		}
+		// Archives are inspected only by recovery code, never by agents.
+		bodies := []string{reviewmd.StripHistory(body)}
+		for _, entry := range reviewmd.ReadHistory(body).Entries {
+			bodies = append(bodies, entry.Body)
+		}
+		for _, snapshot := range bodies {
+			if strings.Contains(snapshot, "<!-- nickpit:update-item:"+operation+":") {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func locationPrefix(f model.Finding) string {

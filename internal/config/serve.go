@@ -58,6 +58,8 @@ type ServeConfig struct {
 	// then have their ack reactions revoked at shutdown instead. The directory
 	// must be daemon-writable but not group/world-writable and, to survive pod
 	// replacement, on durable storage.
+	// Also enables strict durable asynchronous chat corrections; unlike the
+	// review journal, these reject acceptance if persistence fails.
 	StateDir string `yaml:"state_dir"`
 	// Notices collects non-fatal adjustments made while loading the config
 	// (e.g. a defaulted outcome emoji dropped because it collided with an

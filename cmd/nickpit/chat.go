@@ -30,6 +30,10 @@ import (
 )
 
 type chatOptions struct {
+	updateStateDir      string
+	updateJobID         string
+	updateJob           *serve.UpdateJob
+	updateStore         *serve.UpdateStore
 	sessionID           string
 	findingID           string
 	fromJSON            string
@@ -69,6 +73,10 @@ func (a *app) newChatCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "Resume an existing session by id")
+	cmd.Flags().StringVar(&opts.updateStateDir, "update-state-dir", "", "Internal serve setting: durable update job directory")
+	cmd.Flags().StringVar(&opts.updateJobID, "run-update-job", "", "Internal serve setting: execute a durable update job")
+	_ = cmd.Flags().MarkHidden("update-state-dir")
+	_ = cmd.Flags().MarkHidden("run-update-job")
 	cmd.Flags().StringVar(&opts.findingID, "finding", "", "Focus the conversation on a specific finding id")
 	cmd.Flags().StringVar(&opts.fromJSON, "from-json", "", "Start a session from a saved review JSON file")
 	cmd.Flags().BoolVar(&opts.gitlab, "gitlab", false, "Start a session from a GitLab merge request (use with --url or --repo/--id)")
@@ -176,6 +184,9 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// post the reply back into the thread. This is what the serve daemon spawns,
 	// and it is directly runnable from the terminal too.
 	if opts.replyDiscussion != "" {
+		if opts.updateJobID != "" {
+			return a.runUpdateJob(ctx, profile, opts)
+		}
 		return a.runChatGitLabReply(ctx, profile, opts)
 	}
 	// The store is opened only when this invocation loads from it or will
@@ -1015,6 +1026,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if !ok {
 		return nil
 	}
+	if opts.updateJob != nil && reviewID != opts.updateJob.ReviewID {
+		return fmt.Errorf("update job's original review no longer matches thread")
+	}
 	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, notes, botUserID, opts.replyMuteEmoji)
 	if err != nil {
 		return fmt.Errorf("chat: checking response policy: %w", err)
@@ -1057,6 +1071,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// bot already answered, the superseded invocation bows out so the thread gets
 	// exactly one answer covering the conversation instead of duplicates.
 	pending, pendingOK := latestPendingNote(notes, botUserID)
+	if opts.updateJob != nil {
+		pending, pendingOK = opts.updateJob.NoteID, true
+	}
 	if !pendingOK {
 		return nil
 	}
@@ -1115,6 +1132,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	defer co.release()
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co, controls)
 	if err != nil {
+		if opts.updateJob != nil {
+			return err
+		}
 		// A context-preparation failure (often a remote checkout that could not
 		// be cloned, or content filters/toolchain capture that could not read
 		// the MR) leaves the author's question unanswered. Post a reply so they
@@ -1151,10 +1171,14 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	update := gitLabChatUpdate{app: a, engine: engine, adapter: adapter, profile: profile, opts: opts,
 		project: project, iid: mrID, botUserID: botUserID, pending: pending, controls: controls, request: discussReq, triggerNotes: notes}
-	discussReq.UpdateReview = update.run
+	if opts.updateJob != nil {
+		update.job, update.store = opts.updateJob, opts.updateStore
+		return update.executeJob(ctx)
+	}
+	discussReq.UpdateReview = update.discussionUpdateHandler()
 	res, err := engine.Discuss(ctx, discussReq)
 	if err != nil {
-		if errors.Is(err, errChatReplySuperseded) {
+		if errors.Is(err, errChatReplySuperseded) || errors.Is(err, errUpdateQueued) {
 			return nil
 		}
 		return fmt.Errorf("chat: discussion agent: %w", err)
@@ -1402,11 +1426,19 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 // the newest activity is the bot's own reply (the pending question was already
 // answered; answering again would duplicate) or the thread has no user notes.
 func latestPendingNote(notes []glscm.DiscussionNote, botUserID int) (noteID int, ok bool) {
+	answeredThrough := 0
 	for _, note := range slices.Backward(notes) {
 		if note.System {
 			continue
 		}
 		if botUserID != 0 && note.AuthorID == botUserID {
+			if reply := reviewmd.ReadUpdateJobReply(note.Body); reply.JobID != "" && reply.NoteID > 0 {
+				answeredThrough = max(answeredThrough, reply.NoteID)
+				continue
+			}
+			return 0, false
+		}
+		if note.ID <= answeredThrough {
 			return 0, false
 		}
 		return note.ID, true

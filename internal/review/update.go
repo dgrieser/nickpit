@@ -84,7 +84,7 @@ func (r FindingUpdateReport) ReviewCorrectionWarranted() bool {
 
 func reviewUpdateTool() llm.ToolDefinition {
 	return llm.ToolDefinition{Name: reviewUpdateToolName,
-		Description: "Signal disputed findings or a disputed review with concrete evidence. Supply affected finding IDs, or an empty list for a review-level dispute. An independent agent checks the evidence; Go handles any warranted updates. Returns the actual outcome. Resolved findings cannot be reopened.",
+		Description: "Queue an independent evidence check of disputed findings or a disputed review. Supply affected finding IDs, or an empty list for an overall dispute, plus concrete evidence. Go durably queues work and posts acknowledgement and follow-up in this thread. Queue acceptance does not confirm a correction. Resolved findings cannot be reopened.",
 		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}},"required":["finding_ids","reason"]}`),
 	}
 }

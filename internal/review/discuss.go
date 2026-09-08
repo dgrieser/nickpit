@@ -23,7 +23,7 @@ import (
 // and appends the returned NewMessages to it between turns.
 type DiscussRequest struct {
 	// UpdateReview enables the GitLab-only correction tool. The caller owns
-	// evaluation/publishing and returns only after the update has completed.
+	// durable enqueue and acknowledgement/follow-up delivery.
 	UpdateReview func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error)
 	// ReviewCtx carries the diff, changed files, commits, and toolchain that the
 	// reviewers saw. It is rebuilt from the current repo/MR at chat time.
@@ -104,7 +104,8 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	var updateUsage model.TokenUsage
 	hasReviewUpdate := req.UpdateReview != nil && req.MaxToolCalls >= 0
 	if hasReviewUpdate {
-		tools = append(append([]llm.ToolDefinition(nil), tools...), reviewUpdateTool())
+		updateTool := reviewUpdateTool()
+		tools = append(append([]llm.ToolDefinition(nil), tools...), updateTool)
 		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){reviewUpdateToolName: func(ctx context.Context, call llm.ToolCall) (string, error) {
 			var signal ReviewUpdateSignal
 			if err := json.Unmarshal([]byte(call.Arguments), &signal); err != nil {

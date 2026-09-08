@@ -52,9 +52,11 @@ type ReviewRunner interface {
 // gates on the thread's root marker, runs the discussion agent, and posts the
 // reply back into the thread, so the daemon itself stays free of LLM logic.
 type ChatSpec struct {
-	ProjectPath  string
-	IID          int
-	DiscussionID string
+	UpdateStateDir string
+	UpdateJobID    string
+	ProjectPath    string
+	IID            int
+	DiscussionID   string
 	// NoteID is the triggering note; the child answers only when this note is
 	// still the latest pending user reply.
 	NoteID int
@@ -223,6 +225,7 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 	for _, phrase := range spec.SkipPhrases {
 		args = append(args, "--reply-skip-phrase", phrase)
 	}
+	args = append(args, "--update-state-dir="+spec.UpdateStateDir, "--run-update-job="+spec.UpdateJobID)
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

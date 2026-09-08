@@ -48,6 +48,7 @@ func (s *Server) Run(ctx context.Context, workers int) error {
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()
 	s.dispatcher.Start(workerCtx, workers)
+	s.handler.StartUpdateWorker()
 
 	errCh := make(chan error, 1)
 	go func() {

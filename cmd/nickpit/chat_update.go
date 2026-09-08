@@ -12,9 +12,12 @@ import (
 	"github.com/dgrieser/nickpit/internal/review"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+	"github.com/dgrieser/nickpit/internal/serve"
 )
 
 type gitLabChatUpdate struct {
+	job                     *serve.UpdateJob
+	store                   *serve.UpdateStore
 	app                     *app
 	engine                  *review.Engine
 	adapter                 *glscm.Adapter
@@ -28,6 +31,9 @@ type gitLabChatUpdate struct {
 }
 
 func (u *gitLabChatUpdate) validate(ctx context.Context) error {
+	if u.job != nil {
+		return u.validateJob(ctx)
+	}
 	client := u.adapter.Client()
 	check := func() ([]glscm.DiscussionNote, error) {
 		fresh, err := chatFreshTarget(ctx, client, u.project, u.iid, u.opts.replyDiscussion, u.pending, u.botUserID, u.opts.replyRequested, u.controls)
@@ -61,13 +67,20 @@ func (u *gitLabChatUpdate) validate(ctx context.Context) error {
 }
 
 func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSignal) (*review.ReviewUpdateOutcome, error) {
+	if u.job == nil || u.store == nil {
+		return nil, fmt.Errorf("review updates require a durable job and state directory")
+	}
 	if err := u.validate(ctx); err != nil {
 		return nil, err
 	}
 	req := u.request
 	req.UpdateReview = nil
 	var err error
-	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, u.pending, u.botUserID, u.controls)
+	cutoff := u.pending
+	if u.job != nil {
+		cutoff = int(^uint(0) >> 1)
+	}
+	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, cutoff, u.botUserID, u.controls)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +137,18 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 		usage.CompletionTokens += verdictRun.TokensUsed.CompletionTokens
 		usage.TotalTokens += verdictRun.TokensUsed.TotalTokens
 		after.OverallCorrectness, after.OverallExplanation, after.OverallConfidenceScore = verdict.OverallCorrectness, verdict.OverallExplanation, verdict.OverallConfidenceScore
+		operation := ""
+		if u.job != nil {
+			operation = u.job.ID
+			outcome := &review.ReviewUpdateOutcome{Checks: report.Checks, ReviewCheck: report.ReviewCheck, Changed: changed, OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation}
+			u.job.Plan = &serve.UpdatePublication{Before: req.Result, After: after, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Evidence: u.job.Evidence, Followup: updateFollowup(outcome)}
+			if err := u.store.Save(u.job); err != nil {
+				return nil, err
+			}
+		}
 		published, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
-			Before: req.Result, After: after, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validate,
+			Operation: operation,
+			Before:    req.Result, After: after, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validate,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chat: publishing review update: %w", err)

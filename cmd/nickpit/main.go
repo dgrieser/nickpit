@@ -1220,11 +1220,12 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				chatExtra = cfg.Chat.ExtraArgs
 			}
 			chatConfig := serve.ChatConfig{
-				ConfigPath:    a.configPath,
-				BaseURL:       baseURL,
-				LogDir:        cfg.LogDir,
-				ExtraArgs:     append(append([]string(nil), chatExtra...), sessionArgs...),
-				MaxConcurrent: cfg.Chat.MaxConcurrent,
+				UpdateStateDir: cfg.StateDir,
+				ConfigPath:     a.configPath,
+				BaseURL:        baseURL,
+				LogDir:         cfg.LogDir,
+				ExtraArgs:      append(append([]string(nil), chatExtra...), sessionArgs...),
+				MaxConcurrent:  cfg.Chat.MaxConcurrent,
 			}
 			var chatRunner serve.ChatRunner
 			if cfg.ChatEnabled() {

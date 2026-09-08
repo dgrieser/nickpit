@@ -100,10 +100,11 @@ type HandlerConfig struct {
 // (the daemon's config path, GitLab base URL, log dir, and any extra args). The
 // per-group token is taken from the matched group at spawn time.
 type ChatConfig struct {
-	ConfigPath string
-	BaseURL    string
-	LogDir     string
-	ExtraArgs  []string
+	UpdateStateDir string
+	ConfigPath     string
+	BaseURL        string
+	LogDir         string
+	ExtraArgs      []string
 	// MaxConcurrent caps concurrent chat children; <=0 uses
 	// defaultMaxConcurrentChats.
 	MaxConcurrent int
@@ -867,6 +868,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	}
 
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
+		UpdateStateDir: h.chatCfg.UpdateStateDir,
 		ProjectPath:    projectPath,
 		IID:            decision.IID,
 		DiscussionID:   decision.DiscussionID,
