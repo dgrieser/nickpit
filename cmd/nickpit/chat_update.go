@@ -3,14 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"slices"
 	"sort"
-	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
-	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/review"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
@@ -99,91 +95,29 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 		}
 	}
 	req.ReviewCtx = &clean
-	after, report, err := u.engine.UpdateFindings(ctx, review.UpdateFindingsRequest{DiscussRequest: req, Signal: signal})
+	result, err := u.engine.RunUpdateWorkflow(ctx, review.UpdateWorkflowRequest{
+		UpdateFindingsRequest: review.UpdateFindingsRequest{DiscussRequest: req, Signal: signal},
+		PriorityThreshold:     u.app.priorityThreshold, ConfidenceThreshold: u.app.confidenceThreshold,
+		DisablePatchSummary: u.profile.DisablePatchSummary,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("chat: checking finding update: %w", err)
+		return nil, err
 	}
-	var changed []model.Finding
-	usage := report.TokensUsed
-	for i, f := range after.Findings {
-		if !reflect.DeepEqual(f, req.Result.Findings[i]) {
-			changed = append(changed, f)
-		}
-	}
-	if len(changed) > 0 || report.ReviewCorrectionWarranted() {
-		verdictInput, err := after.Clone()
-		if err != nil {
+	if result.Publish {
+		u.job.Plan = &serve.UpdatePublication{Before: req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Evidence: u.job.Evidence, Followup: updateFollowup(&result.Outcome)}
+		if err := u.store.Save(u.job); err != nil {
 			return nil, err
 		}
-		verdictInput.OverallCorrectness, verdictInput.OverallExplanation, verdictInput.OverallConfidenceScore = "", "", 0
-		var contextNotes strings.Builder
-		contextNotes.WriteString(signal.Reason)
-		if report.ReviewCheck != nil {
-			contextNotes.WriteString("\n\nIndependent evidence assessment:\n")
-			contextNotes.WriteString(report.ReviewCheck.Reason)
-		}
-		// Explicit chat evidence is available even when general MR comments are disabled.
-		for _, m := range slices.Backward(req.Messages) {
-			if m.Role == "user" {
-				contextNotes.WriteString("\n\nLatest author message:\n")
-				contextNotes.WriteString(m.Content)
-				break
-			}
-		}
-		verdict, verdictRun, err := u.engine.Verdict(ctx, &clean, verdictInput, review.VerdictOptions{
-			RepoRoot: req.RepoRoot, DiffFormat: req.DiffFormat, DisableSuggestions: req.DisableSuggestions,
-			DisableJSONResponseFormat: u.profile.DisableJSONResponseFormat, MaxOutputRetries: req.MaxOutputRetries,
-			MaxReasoningSeconds: req.MaxReasoningSeconds, DisableParallelToolCalls: req.DisableParallelToolCalls,
-			DisablePatchSummary: u.profile.DisablePatchSummary, PriorityThreshold: u.app.priorityThreshold,
-			ConfidenceThreshold: u.app.confidenceThreshold, ContextNotes: contextNotes.String(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("chat: regenerating verdict: %w", err)
-		}
-		usage.PromptTokens += verdictRun.TokensUsed.PromptTokens
-		usage.CompletionTokens += verdictRun.TokensUsed.CompletionTokens
-		usage.TotalTokens += verdictRun.TokensUsed.TotalTokens
-		after.OverallCorrectness, after.OverallExplanation, after.OverallConfidenceScore = verdict.OverallCorrectness, verdict.OverallExplanation, verdict.OverallConfidenceScore
-		var summaryUsage model.TokenUsage
-		after, summaryUsage, err = u.engine.SummarizeUpdate(ctx, after, changed, verdictRun, len(verdict.Findings) > 0, model.ReviewRequest{
-			RepoRoot: req.RepoRoot, DisableJSONResponseFormat: u.profile.DisableJSONResponseFormat,
-			MaxOutputRetries: req.MaxOutputRetries, MaxReasoningSeconds: req.MaxReasoningSeconds,
-			DisableParallelToolCalls: req.DisableParallelToolCalls, DisablePatchSummary: u.profile.DisablePatchSummary,
-			DisableSuggestions: req.DisableSuggestions,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("chat: summarizing update: %w", err)
-		}
-		usage.PromptTokens += summaryUsage.PromptTokens
-		usage.CompletionTokens += summaryUsage.CompletionTokens
-		usage.TotalTokens += summaryUsage.TotalTokens
-		// Publish and report the summarized versions, not pre-summary findings.
-		changed = nil
-		for i, finding := range after.Findings {
-			if !reflect.DeepEqual(finding, req.Result.Findings[i]) {
-				changed = append(changed, finding)
-			}
-		}
-		operation := ""
-		if u.job != nil {
-			operation = u.job.ID
-			outcome := &review.ReviewUpdateOutcome{Checks: report.Checks, ReviewCheck: report.ReviewCheck, Changed: changed, OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation}
-			u.job.Plan = &serve.UpdatePublication{Before: req.Result, After: after, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Evidence: u.job.Evidence, Followup: updateFollowup(outcome)}
-			if err := u.store.Save(u.job); err != nil {
-				return nil, err
-			}
-		}
 		published, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
-			Operation: operation,
-			Before:    req.Result, After: after, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validate,
+			Operation: u.job.ID,
+			Before:    req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validate,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chat: publishing review update: %w", err)
 		}
 		*req.Result = *published
-		after = published
 	}
-	return &review.ReviewUpdateOutcome{TokensUsed: usage, Checks: report.Checks, ReviewCheck: report.ReviewCheck, Changed: changed, OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation}, nil
+	return &result.Outcome, nil
 }
 
 // Linked thread roots are identified by stable review/finding IDs and bot

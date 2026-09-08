@@ -11,12 +11,15 @@ import (
 // including @small routing and warning-only fallback. Unchanged and resolved
 // findings are not rewritten as a side effect of correcting another finding.
 func (e *Engine) SummarizeUpdate(ctx context.Context, in *model.ReviewResult, changed []model.Finding, verdictRun model.AgentRun, verdictHasFindings bool, req model.ReviewRequest) (*model.ReviewResult, model.TokenUsage, error) {
+	spec := workflow.UpdateSpec()
+	return summarizeUpdate(ctx, e.stepContext(spec.Steps[2].Config, req), in, changed, verdictRun, verdictHasFindings)
+}
+
+func summarizeUpdate(ctx context.Context, sc *stepContext, in *model.ReviewResult, changed []model.Finding, verdictRun model.AgentRun, verdictHasFindings bool) (*model.ReviewResult, model.TokenUsage, error) {
 	out, err := in.Clone()
 	if err != nil {
 		return nil, model.TokenUsage{}, err
 	}
-	small := "@small"
-	sc := e.stepContext(&workflow.StepOverride{Model: &small}, req)
 	var usage model.TokenUsage
 	selected := &model.ReviewResult{}
 	for _, finding := range changed {

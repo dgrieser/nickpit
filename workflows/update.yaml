@@ -1,0 +1,10 @@
+version: 1
+name: Review update
+
+steps:
+  - type: update
+  # Only continue when the evidence check warrants a correction.
+  - type: verdict
+  - type: summarize
+    config:
+      model: "@small"

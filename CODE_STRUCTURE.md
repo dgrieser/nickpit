@@ -33,6 +33,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/update.go`: Independent correction agent; validates selected-finding replacements and terminal resolutions, or assesses review-level disputes without generating verdicts, publishing, or exposing history.
 - `internal/review/update_summary.go`: Reuses default-workflow finding and overall summarization passes for corrections, including small-model routing and failure fallback, while preserving unchanged and resolved findings.
+- `internal/review/update_workflow.go`: Executes the embedded `workflows/update.yaml` correction stages. Durable jobs checkpoint its result before publishing.
+- `internal/workflow/update.go`: Loads the built-in correction YAML with the shared spec parser; no external override path.
 - `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
 - `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
 - `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.
@@ -172,7 +174,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `prompts/`: Agent system prompts and shared prompt snippets.
 - `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts.
-- `workflows/`: Embedded workflow YAML definitions.
+- `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews and internal-only `update.yaml` for chat corrections.
 - `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, and styleguide detectors. All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
 - `assets/`: Static assets used by output or packaging.
 - `testdata/`: Fixtures and golden data used by tests.
