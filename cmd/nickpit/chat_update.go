@@ -144,6 +144,26 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 		usage.CompletionTokens += verdictRun.TokensUsed.CompletionTokens
 		usage.TotalTokens += verdictRun.TokensUsed.TotalTokens
 		after.OverallCorrectness, after.OverallExplanation, after.OverallConfidenceScore = verdict.OverallCorrectness, verdict.OverallExplanation, verdict.OverallConfidenceScore
+		var summaryUsage model.TokenUsage
+		after, summaryUsage, err = u.engine.SummarizeUpdate(ctx, after, changed, verdictRun, len(verdict.Findings) > 0, model.ReviewRequest{
+			RepoRoot: req.RepoRoot, DisableJSONResponseFormat: u.profile.DisableJSONResponseFormat,
+			MaxOutputRetries: req.MaxOutputRetries, MaxReasoningSeconds: req.MaxReasoningSeconds,
+			DisableParallelToolCalls: req.DisableParallelToolCalls, DisablePatchSummary: u.profile.DisablePatchSummary,
+			DisableSuggestions: req.DisableSuggestions,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("chat: summarizing update: %w", err)
+		}
+		usage.PromptTokens += summaryUsage.PromptTokens
+		usage.CompletionTokens += summaryUsage.CompletionTokens
+		usage.TotalTokens += summaryUsage.TotalTokens
+		// Publish and report the summarized versions, not pre-summary findings.
+		changed = nil
+		for i, finding := range after.Findings {
+			if !reflect.DeepEqual(finding, req.Result.Findings[i]) {
+				changed = append(changed, finding)
+			}
+		}
 		operation := ""
 		if u.job != nil {
 			operation = u.job.ID

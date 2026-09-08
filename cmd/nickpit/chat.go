@@ -1108,6 +1108,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if err != nil {
 		return err
 	}
+	if opts.updateJob != nil {
+		smallProfile := config.EffectiveSmallProfile(profile)
+		engine.SetSmallClient(newLLMClient(smallProfile, logger), smallProfile)
+	}
 	// Prepare the context through the review pipeline (filters, trimming,
 	// toolchain) rather than a raw fetch, so the chat never sees withheld files
 	// or an over-budget patch. The review's OWN context options — carried in
