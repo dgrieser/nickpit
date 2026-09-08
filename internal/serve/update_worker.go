@@ -16,10 +16,7 @@ func (h *Handler) StartUpdateWorker() {
 	h.chatWG.Go(func() {
 		var store *UpdateStore
 		for store == nil {
-			h.chatAdmitMu.Lock()
-			closed := h.chatClosed
-			h.chatAdmitMu.Unlock()
-			if closed || h.chatCtx.Err() != nil {
+			if h.chatStopping() {
 				return
 			}
 			var err error
@@ -34,14 +31,10 @@ func (h *Handler) StartUpdateWorker() {
 			}
 		}
 		defer func() { _ = store.Close() }()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
 		for {
-			h.chatAdmitMu.Lock()
-			closed := h.chatClosed
-			h.chatAdmitMu.Unlock()
-			if closed {
-				return
-			}
-			if h.chatCtx.Err() != nil {
+			if h.chatStopping() {
 				return
 			}
 			jobs, err := store.Pending()
@@ -49,13 +42,7 @@ func (h *Handler) StartUpdateWorker() {
 				h.log.Error("reading update jobs", "error", err)
 			}
 			for _, job := range jobs {
-				h.chatAdmitMu.Lock()
-				closed := h.chatClosed
-				h.chatAdmitMu.Unlock()
-				if closed {
-					return
-				}
-				if h.chatCtx.Err() != nil {
+				if h.chatStopping() {
 					return
 				}
 				group := h.groups.Match(job.ProjectPath)
@@ -86,8 +73,14 @@ func (h *Handler) StartUpdateWorker() {
 			select {
 			case <-h.chatCtx.Done():
 				return
-			case <-time.After(5 * time.Second):
+			case <-ticker.C:
 			}
 		}
 	})
+}
+
+func (h *Handler) chatStopping() bool {
+	h.chatAdmitMu.Lock()
+	defer h.chatAdmitMu.Unlock()
+	return h.chatClosed || h.chatCtx.Err() != nil
 }

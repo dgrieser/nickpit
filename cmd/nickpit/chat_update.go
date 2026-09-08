@@ -16,8 +16,6 @@ import (
 type gitLabChatUpdate struct {
 	queuedJob               *serve.UpdateJob
 	queuedRelease           func()
-	job                     *serve.UpdateJob
-	store                   *serve.UpdateStore
 	app                     *app
 	engine                  *review.Engine
 	adapter                 *glscm.Adapter
@@ -30,10 +28,13 @@ type gitLabChatUpdate struct {
 	triggerNotes            []glscm.DiscussionNote
 }
 
+type gitLabUpdateExecution struct {
+	*gitLabChatUpdate
+	job   *serve.UpdateJob
+	store *serve.UpdateStore
+}
+
 func (u *gitLabChatUpdate) validate(ctx context.Context) error {
-	if u.job != nil {
-		return u.validateJob(ctx)
-	}
 	client := u.adapter.Client()
 	check := func() ([]glscm.DiscussionNote, error) {
 		fresh, err := chatFreshTarget(ctx, client, u.project, u.iid, u.opts.replyDiscussion, u.pending, u.botUserID, u.opts.replyRequested, u.controls)
@@ -66,21 +67,17 @@ func (u *gitLabChatUpdate) validate(ctx context.Context) error {
 	return err
 }
 
-func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSignal) (*review.ReviewUpdateOutcome, error) {
+func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpdateSignal) (*review.ReviewUpdateOutcome, error) {
 	if u.job == nil || u.store == nil {
 		return nil, fmt.Errorf("review updates require a durable job and state directory")
 	}
-	if err := u.validate(ctx); err != nil {
+	if err := u.validateJob(ctx); err != nil {
 		return nil, err
 	}
 	req := u.request
 	req.UpdateReview = nil
 	var err error
-	cutoff := u.pending
-	if u.job != nil {
-		cutoff = int(^uint(0) >> 1)
-	}
-	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, cutoff, u.botUserID, u.controls)
+	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, int(^uint(0)>>1), u.botUserID, u.controls)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +107,7 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 		}
 		published, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
 			Operation: u.job.ID,
-			Before:    req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validate,
+			Before:    req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validateJob,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chat: publishing review update: %w", err)
@@ -161,5 +158,5 @@ func linkedFindingMessages(ctx context.Context, client *glscm.Client, project st
 		ordered = append(ordered, note)
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
-	return chatThreadToMessages(append([]glscm.DiscussionNote{{}}, ordered...), botUserID, controls), nil
+	return chatNotesToMessages(ordered, botUserID, controls), nil
 }

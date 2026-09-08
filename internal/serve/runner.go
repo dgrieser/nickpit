@@ -225,7 +225,12 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 	for _, phrase := range spec.SkipPhrases {
 		args = append(args, "--reply-skip-phrase", phrase)
 	}
-	args = append(args, "--update-state-dir="+spec.UpdateStateDir, "--run-update-job="+spec.UpdateJobID)
+	if spec.UpdateStateDir != "" {
+		args = append(args, "--update-state-dir="+spec.UpdateStateDir)
+	}
+	if spec.UpdateJobID != "" {
+		args = append(args, "--run-update-job="+spec.UpdateJobID)
+	}
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)

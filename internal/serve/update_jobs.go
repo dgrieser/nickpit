@@ -161,6 +161,7 @@ func (s *UpdateStore) Pending() ([]UpdateJob, error) {
 	}
 	var jobs []UpdateJob
 	var failures []error
+	now := time.Now()
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "update-") || !strings.HasSuffix(name, ".json") {
@@ -174,7 +175,7 @@ func (s *UpdateStore) Pending() ([]UpdateJob, error) {
 			failures = append(failures, fmt.Errorf("%s: %w", name, err))
 			continue
 		}
-		if !job.Done && !job.NextAttempt.After(time.Now()) {
+		if !job.Done && !job.NextAttempt.After(now) {
 			jobs = append(jobs, *job)
 		}
 	}

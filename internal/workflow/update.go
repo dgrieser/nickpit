@@ -26,3 +26,16 @@ func UpdateSpec() Spec {
 	}
 	return spec
 }
+
+type UpdateWorkflowStages struct {
+	Update    StepEntry
+	Verdict   StepEntry
+	Summarize StepEntry
+}
+
+// UpdateStages names the fixed stages so correction orchestration does not need
+// dynamic dispatch or positional indexes.
+func UpdateStages() UpdateWorkflowStages {
+	steps := UpdateSpec().Steps
+	return UpdateWorkflowStages{Update: steps[0], Verdict: steps[1], Summarize: steps[2]}
+}

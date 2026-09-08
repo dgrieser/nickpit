@@ -97,15 +97,16 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	for _, f := range current.Findings {
 		beforeByID[f.ID] = f
 	}
+	seen := make(map[string]bool, len(after.Findings))
 	var changed []model.Finding
 	after.Revision = current.Revision + 1
 	for i := range after.Findings {
 		f := &after.Findings[i]
 		before, ok := beforeByID[f.ID]
-		if !ok {
+		if !ok || seen[f.ID] {
 			return nil, fmt.Errorf("update contains unknown or repeated finding %s", f.ID)
 		}
-		delete(beforeByID, f.ID)
+		seen[f.ID] = true
 		if !reflect.DeepEqual(before, *f) {
 			if before.Resolution != nil {
 				return nil, fmt.Errorf("resolved finding %s cannot change", f.ID)
@@ -127,15 +128,11 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	}
 	transaction := reviewUpdateTransaction{ReviewID: current.ReviewID, Operation: operation, Revision: after.Revision, At: time.Now().UTC()}
 	render := a.render.ForReview(after.ReviewID).WithContextOptions(after.ContextOptions)
+	targets := indexUpdateTargets(discussions, user.ID, after.ReviewID)
 	for _, finding := range changed {
-		old := findUpdateTarget(discussions, user.ID, after.ReviewID, finding.ID)
+		old := targets[finding.ID]
 		previous := old.Body
-		var original model.Finding
-		for _, f := range current.Findings {
-			if f.ID == finding.ID {
-				original = f
-			}
-		}
+		original := beforeByID[finding.ID]
 		if previous == "" {
 			previous, _ = render.FindingBodyCarried(original, locationPrefix(original))
 		}
@@ -176,7 +173,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		}
 		transaction.Items = append(transaction.Items, item)
 	}
-	root := findUpdateTarget(discussions, user.ID, after.ReviewID, "")
+	root := targets[""]
 	previous := root.Body
 	if previous == "" {
 		previous, _ = render.SummaryBodyCarried(current)
@@ -256,8 +253,12 @@ func ownedBodies(discussions []MRDiscussion, userID int) []string {
 }
 
 func findUpdateTarget(discussions []MRDiscussion, userID int, rid, fid string) updateTarget {
-	var out updateTarget
-	var revision uint64
+	return indexUpdateTargets(discussions, userID, rid)[fid]
+}
+
+func indexUpdateTargets(discussions []MRDiscussion, userID int, rid string) map[string]updateTarget {
+	targets := make(map[string]updateTarget)
+	revisions := make(map[string]uint64)
 	for _, d := range discussions {
 		if len(d.Notes) == 0 {
 			continue
@@ -267,11 +268,11 @@ func findUpdateTarget(discussions []MRDiscussion, userID int, rid, fid string) u
 			continue
 		}
 		r, f, ok := reviewmd.DetectThreadReview(n.Body)
-		if !ok || r != rid || f != fid {
+		if !ok || r != rid {
 			continue
 		}
 		var rev uint64
-		if fid == "" {
+		if f == "" {
 			for _, e := range reviewmd.CollectReviewEnvelopes(n.Body) {
 				rev = max(rev, e.Revision)
 			}
@@ -280,12 +281,12 @@ func findUpdateTarget(discussions []MRDiscussion, userID int, rid, fid string) u
 				rev = max(rev, e.Finding.Revision)
 			}
 		}
-		if out.NoteID == 0 || rev > revision {
-			out = updateTarget{DiscussionID: d.ID, NoteID: n.ID, Body: n.Body}
-			revision = rev
+		if current := targets[f]; current.NoteID == 0 || rev > revisions[f] {
+			targets[f] = updateTarget{DiscussionID: d.ID, NoteID: n.ID, Body: n.Body}
+			revisions[f] = rev
 		}
 	}
-	return out
+	return targets
 }
 
 func reviewStateHash(r *model.ReviewResult) [32]byte {
@@ -345,8 +346,9 @@ func (a *Adapter) RecoverReviewUpdates(ctx context.Context, project string, iid 
 	if err != nil {
 		return err
 	}
+	bodies := ownedBodies(discussions, user.ID)
 	groups := map[string][]reviewmd.UpdateRecord{}
-	for _, body := range ownedBodies(discussions, user.ID) {
+	for _, body := range bodies {
 		for _, record := range reviewmd.CollectUpdateRecords(body) {
 			groups[record.Operation] = append(groups[record.Operation], record)
 		}
@@ -369,7 +371,7 @@ func (a *Adapter) RecoverReviewUpdates(ctx context.Context, project string, iid 
 			continue
 		}
 		committed := false
-		for _, body := range ownedBodies(discussions, user.ID) {
+		for _, body := range bodies {
 			for _, env := range reviewmd.CollectReviewEnvelopes(body) {
 				if !env.Ref && env.ReviewID == active.ReviewID && env.Revision >= active.Revision {
 					committed = true

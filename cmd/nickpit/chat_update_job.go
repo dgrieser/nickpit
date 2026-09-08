@@ -116,17 +116,8 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 	if err := adapter.RecoverReviewUpdates(ctx, job.ProjectPath, job.IID); err != nil {
 		return err
 	}
-	if job.Plan != nil {
-		committed, err := adapter.ReviewUpdateCommitted(ctx, job.ProjectPath, job.IID, job.ReviewID, job.ID)
-		if err != nil {
-			return err
-		}
-		if committed {
-			job.Followup, job.Plan = job.Plan.Followup, nil
-			if err := store.Save(job); err != nil {
-				return err
-			}
-		}
+	if err := recoverUpdateJobPlan(ctx, adapter, store, job); err != nil {
+		return err
 	}
 	if job.Followup == "" {
 		if err := syncUpdateEyes(ctx, client, job, user.ID, true); err != nil {
@@ -135,51 +126,76 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		if job.Attempts >= 3 && job.Plan == nil {
 			job.Followup = updateFailed
 		} else {
-			job.Attempts++
-			job.Evidence, err = updateEvidence(ctx, client, job.ProjectPath, job.IID, user.ID)
-			if err != nil {
+			done, err := a.attemptUpdateJob(ctx, profile, opts, client, store, job, user.ID)
+			if err != nil || done {
 				return err
-			}
-			if err := store.Save(job); err != nil {
-				return err
-			}
-			opts.updateJob, opts.updateStore = job, store
-			opts.replyNote, opts.replyRequested = job.NoteID, job.Requested
-			err = a.runChatGitLabReply(ctx, profile, opts)
-			if errors.Is(err, errChatReplySuppressed) {
-				if err := syncUpdateEyes(ctx, client, job, user.ID, false); err != nil {
-					return err
-				}
-				job.Done = true
-				return store.Save(job)
-			}
-			if err != nil || job.Followup == "" {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				} // Keep checkpoint for restart.
-				if job.Attempts < 3 || job.Plan != nil {
-					job.NextAttempt = time.Now().Add(time.Duration(min(job.Attempts, 6)) * 10 * time.Second)
-					if saveErr := store.Save(job); saveErr != nil {
-						return saveErr
-					}
-					if err == nil {
-						err = fmt.Errorf("original review or question is unavailable")
-					}
-					return fmt.Errorf("update attempt incomplete: %w", err)
-				}
-				job.Followup = updateFailed
 			}
 		}
 		if err := store.Save(job); err != nil {
 			return err
 		}
 	}
-	if err := postUpdateJobMessage(ctx, client, job, user.ID, opts, "followup", job.Followup); err != nil {
+	return finishUpdateJob(ctx, client, store, job, user.ID, opts)
+}
+
+func recoverUpdateJobPlan(ctx context.Context, adapter *glscm.Adapter, store *serve.UpdateStore, job *serve.UpdateJob) error {
+	if job.Plan == nil {
+		return nil
+	}
+	committed, err := adapter.ReviewUpdateCommitted(ctx, job.ProjectPath, job.IID, job.ReviewID, job.ID)
+	if err != nil || !committed {
+		return err
+	}
+	job.Followup, job.Plan = job.Plan.Followup, nil
+	return store.Save(job)
+}
+
+func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts chatOptions, client *glscm.Client, store *serve.UpdateStore, job *serve.UpdateJob, bot int) (bool, error) {
+	job.Attempts++
+	var err error
+	job.Evidence, err = updateEvidence(ctx, client, job.ProjectPath, job.IID, bot)
+	if err != nil {
+		return false, err
+	}
+	if err := store.Save(job); err != nil {
+		return false, err
+	}
+	opts.replyNote, opts.replyRequested = job.NoteID, job.Requested
+	err = a.runChatGitLabReply(ctx, profile, opts, &chatUpdateExecution{job: job, store: store})
+	if errors.Is(err, errChatReplySuppressed) {
+		if err := syncUpdateEyes(ctx, client, job, bot, false); err != nil {
+			return false, err
+		}
+		job.Done = true
+		return true, store.Save(job)
+	}
+	if err == nil && job.Followup != "" {
+		return false, nil
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if job.Attempts >= 3 && job.Plan == nil {
+		job.Followup = updateFailed
+		return false, nil
+	}
+	job.NextAttempt = time.Now().Add(time.Duration(min(job.Attempts, 6)) * 10 * time.Second)
+	if saveErr := store.Save(job); saveErr != nil {
+		return false, saveErr
+	}
+	if err == nil {
+		err = fmt.Errorf("original review or question is unavailable")
+	}
+	return false, fmt.Errorf("update attempt incomplete: %w", err)
+}
+
+func finishUpdateJob(ctx context.Context, client *glscm.Client, store *serve.UpdateStore, job *serve.UpdateJob, bot int, opts chatOptions) error {
+	if err := postUpdateJobMessage(ctx, client, job, bot, opts, "followup", job.Followup); err != nil {
 		if !errors.Is(err, errChatReplySuppressed) {
 			return err
 		}
 	}
-	if err := syncUpdateEyes(ctx, client, job, user.ID, false); err != nil {
+	if err := syncUpdateEyes(ctx, client, job, bot, false); err != nil {
 		return err
 	}
 	job.Done = true
@@ -223,16 +239,9 @@ func postUpdateJobMessage(ctx context.Context, client *glscm.Client, job *serve.
 		return err
 	}
 	defer release()
-	notes, err := client.DiscussionNotes(ctx, job.ProjectPath, job.IID, job.DiscussionID)
+	notes, err := updateJobDiscussion(ctx, client, job, bot)
 	if err != nil {
 		return err
-	}
-	if len(notes) == 0 || notes[0].AuthorID != bot {
-		return errChatReplySuppressed
-	}
-	rid, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
-	if !ok || rid != job.ReviewID {
-		return errChatReplySuppressed
 	}
 	for _, note := range notes {
 		marker := reviewmd.ReadUpdateJobReply(note.Body)
@@ -241,18 +250,40 @@ func postUpdateJobMessage(ctx context.Context, client *glscm.Client, job *serve.
 		}
 	}
 	controls := resolveChatMessageControls([]chatMessageControls{{keyword: opts.replyCommandKeyword, skipPhrases: opts.replySkipPhrases}})
+	if err := validateUpdateResponsePolicy(ctx, client, job, bot, opts.replyMuteEmoji, controls, notes); err != nil {
+		return err
+	}
+	body := reviewmd.EscapeQuickActions(reviewmd.Sanitize(text)) + "\n\n" + reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: job.ID, NoteID: job.NoteID, Phase: phase})
+	return client.ReplyToMRDiscussionPath(ctx, job.ProjectPath, job.IID, job.DiscussionID, body)
+}
+
+func updateJobDiscussion(ctx context.Context, client *glscm.Client, job *serve.UpdateJob, bot int) ([]glscm.DiscussionNote, error) {
+	notes, err := client.DiscussionNotes(ctx, job.ProjectPath, job.IID, job.DiscussionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(notes) == 0 || notes[0].AuthorID != bot {
+		return nil, errChatReplySuppressed
+	}
+	rid, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
+	if !ok || rid != job.ReviewID {
+		return nil, errChatReplySuppressed
+	}
+	return notes, nil
+}
+
+func validateUpdateResponsePolicy(ctx context.Context, client *glscm.Client, job *serve.UpdateJob, bot int, muteEmoji string, controls chatMessageControls, notes []glscm.DiscussionNote) error {
 	if !chatNoteDirectives(notes, job.NoteID, controls).AllowsReply(job.Requested) {
 		return errChatReplySuppressed
 	}
-	allowed, err := gitLabThreadResponsesAllowed(ctx, client, job.ProjectPath, job.IID, notes, bot, opts.replyMuteEmoji)
+	allowed, err := gitLabThreadResponsesAllowed(ctx, client, job.ProjectPath, job.IID, notes, bot, muteEmoji)
 	if err != nil {
 		return err
 	}
 	if !allowed {
 		return errChatReplySuppressed
 	}
-	body := reviewmd.EscapeQuickActions(reviewmd.Sanitize(text)) + "\n\n" + reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: job.ID, NoteID: job.NoteID, Phase: phase})
-	return client.ReplyToMRDiscussionPath(ctx, job.ProjectPath, job.IID, job.DiscussionID, body)
+	return nil
 }
 
 func updateEvidence(ctx context.Context, client *glscm.Client, project string, iid, bot int) (string, error) {
@@ -277,41 +308,28 @@ func updateEvidence(ctx context.Context, client *glscm.Client, project string, i
 	return fmt.Sprintf("%x", sha256.Sum256(raw)), nil
 }
 
-func (u *gitLabChatUpdate) validateJob(ctx context.Context) error {
-	notes, err := u.adapter.Client().DiscussionNotes(ctx, u.project, u.iid, u.job.DiscussionID)
+func (u *gitLabUpdateExecution) validateJob(ctx context.Context) error {
+	client := u.adapter.Client()
+	notes, err := updateJobDiscussion(ctx, client, u.job, u.botUserID)
 	if err != nil {
 		return err
-	}
-	if len(notes) == 0 || notes[0].AuthorID != u.botUserID {
-		return errChatReplySuppressed
-	}
-	rid, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
-	if !ok || rid != u.job.ReviewID {
-		return errChatReplySuppressed
-	}
-	if !chatNoteDirectives(notes, u.job.NoteID, u.controls).AllowsReply(u.job.Requested) {
-		return errChatReplySuppressed
 	}
 	for _, note := range notes {
 		if note.ID == u.job.NoteID && note.Body != u.job.Question {
 			return fmt.Errorf("original question was edited")
 		}
 	}
-	allowed, err := gitLabThreadResponsesAllowed(ctx, u.adapter.Client(), u.project, u.iid, notes, u.botUserID, u.opts.replyMuteEmoji)
-	if err != nil {
+	if err := validateUpdateResponsePolicy(ctx, client, u.job, u.botUserID, u.opts.replyMuteEmoji, u.controls, notes); err != nil {
 		return err
 	}
-	if !allowed {
-		return errChatReplySuppressed
-	}
-	evidence, err := updateEvidence(ctx, u.adapter.Client(), u.project, u.iid, u.botUserID)
+	evidence, err := updateEvidence(ctx, client, u.project, u.iid, u.botUserID)
 	if err != nil {
 		return err
 	}
 	if evidence != u.job.Evidence {
 		return fmt.Errorf("comments changed during update evaluation; retry with fresh context")
 	}
-	info, err := u.adapter.Client().FetchMRPositionInfo(ctx, u.project, u.iid)
+	info, err := client.FetchMRPositionInfo(ctx, u.project, u.iid)
 	if err != nil {
 		return err
 	}
@@ -321,7 +339,7 @@ func (u *gitLabChatUpdate) validateJob(ctx context.Context) error {
 	return nil
 }
 
-func (u *gitLabChatUpdate) executeJob(ctx context.Context) error {
+func (u *gitLabUpdateExecution) executeJob(ctx context.Context) error {
 	if err := u.validateJob(ctx); err != nil {
 		return err
 	}
@@ -330,7 +348,7 @@ func (u *gitLabChatUpdate) executeJob(ctx context.Context) error {
 		if plan.Evidence == u.job.Evidence && plan.HeadSHA == u.request.ReviewCtx.DiffHeadSHA && plan.BaseSHA == u.request.ReviewCtx.DiffBaseSHA &&
 			current.Revision == plan.Before.Revision && reflect.DeepEqual(current.Findings, plan.Before.Findings) &&
 			current.OverallCorrectness == plan.Before.OverallCorrectness && current.OverallExplanation == plan.Before.OverallExplanation {
-			_, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{Operation: u.job.ID, Before: plan.Before, After: plan.After, HeadSHA: plan.HeadSHA, BaseSHA: plan.BaseSHA, Validate: u.validate})
+			_, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{Operation: u.job.ID, Before: plan.Before, After: plan.After, HeadSHA: plan.HeadSHA, BaseSHA: plan.BaseSHA, Validate: u.validateJob})
 			if err != nil {
 				return err
 			}

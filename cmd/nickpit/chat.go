@@ -32,8 +32,6 @@ import (
 type chatOptions struct {
 	updateStateDir      string
 	updateJobID         string
-	updateJob           *serve.UpdateJob
-	updateStore         *serve.UpdateStore
 	sessionID           string
 	findingID           string
 	fromJSON            string
@@ -49,6 +47,11 @@ type chatOptions struct {
 	replyMuteEmoji      string
 	replyCommandKeyword string
 	replySkipPhrases    []string
+}
+
+type chatUpdateExecution struct {
+	job   *serve.UpdateJob
+	store *serve.UpdateStore
 }
 
 // errChatReplySuppressed crosses the chat command boundary as
@@ -187,7 +190,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		if opts.updateJobID != "" {
 			return a.runUpdateJob(ctx, profile, opts)
 		}
-		return a.runChatGitLabReply(ctx, profile, opts)
+		return a.runChatGitLabReply(ctx, profile, opts, nil)
 	}
 	// The store is opened only when this invocation loads from it or will
 	// persist turns. An explicitly ephemeral chat from an external source
@@ -975,7 +978,7 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 // on the thread's root marker (a thread nickpit did not start is a quiet no-op),
 // reassembles the review by id from the MR notes, rebuilds the context from the
 // live MR, runs one discussion turn seeded with the thread, and posts the answer.
-func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, opts chatOptions) error {
+func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, opts chatOptions, execution *chatUpdateExecution) error {
 	project, mrID, baseURL := opts.repo, opts.mrID, ""
 	if strings.TrimSpace(opts.rawURL) != "" {
 		var err error
@@ -1026,7 +1029,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if !ok {
 		return nil
 	}
-	if opts.updateJob != nil && reviewID != opts.updateJob.ReviewID {
+	if execution != nil && reviewID != execution.job.ReviewID {
 		return fmt.Errorf("update job's original review no longer matches thread")
 	}
 	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, notes, botUserID, opts.replyMuteEmoji)
@@ -1071,8 +1074,8 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// bot already answered, the superseded invocation bows out so the thread gets
 	// exactly one answer covering the conversation instead of duplicates.
 	pending, pendingOK := latestPendingNote(notes, botUserID)
-	if opts.updateJob != nil {
-		pending, pendingOK = opts.updateJob.NoteID, true
+	if execution != nil {
+		pending, pendingOK = execution.job.NoteID, true
 	}
 	if !pendingOK {
 		return nil
@@ -1108,7 +1111,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if err != nil {
 		return err
 	}
-	if opts.updateJob != nil {
+	if execution != nil {
 		smallProfile := config.EffectiveSmallProfile(profile)
 		engine.SetSmallClient(newLLMClient(smallProfile, logger), smallProfile)
 	}
@@ -1136,7 +1139,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	defer co.release()
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co, controls)
 	if err != nil {
-		if opts.updateJob != nil {
+		if execution != nil {
 			return err
 		}
 		// A context-preparation failure (often a remote checkout that could not
@@ -1180,9 +1183,8 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 			update.queuedRelease()
 		}
 	}()
-	if opts.updateJob != nil {
-		update.job, update.store = opts.updateJob, opts.updateStore
-		return update.executeJob(ctx)
+	if execution != nil {
+		return (&gitLabUpdateExecution{gitLabChatUpdate: &update, job: execution.job, store: execution.store}).executeJob(ctx)
 	}
 	discussReq.UpdateReview = update.discussionUpdateHandler()
 	res, err := engine.Discuss(ctx, discussReq)
@@ -1540,10 +1542,17 @@ func chatNoteDirectives(notes []glscm.DiscussionNote, noteID int, controls chatM
 }
 
 func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
+	if len(notes) == 0 {
+		return nil
+	}
+	return chatNotesToMessages(notes[1:], botUserID, controls...)
+}
+
+func chatNotesToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
 	resolvedControls := resolveChatMessageControls(controls)
 	var msgs []llm.Message
-	for i, note := range notes {
-		if i == 0 || note.System {
+	for _, note := range notes {
+		if note.System {
 			continue
 		}
 		body := stripChatMessageControls(note.Body, resolvedControls)

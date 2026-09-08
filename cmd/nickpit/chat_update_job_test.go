@@ -41,7 +41,7 @@ func TestReviewUpdatesRequireDurableState(t *testing.T) {
 			if got := u.discussionUpdateHandler() != nil; got != tc.want {
 				t.Fatalf("update tool enabled=%v want=%v", got, tc.want)
 			}
-			if _, err := u.run(context.Background(), review.ReviewUpdateSignal{}); err == nil {
+			if _, err := (&gitLabUpdateExecution{gitLabChatUpdate: u}).run(context.Background(), review.ReviewUpdateSignal{}); err == nil {
 				t.Fatal("synchronous execution without a durable job accepted")
 			}
 		})
