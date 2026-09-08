@@ -33,8 +33,10 @@ that review.
   and whether it introduces new problems.
 {{- if .HasReviewUpdate}}
 - When evidence warrants a correction, call `request_review_update` with the
-  affected finding IDs and concrete reason. For a disputed overall assessment,
+  affected finding IDs and a concrete reason. For a disputed overall assessment,
   pass an empty finding list and explain the evidence.
+- ALWAYS write the `request_review_update` reason in English, even when you
+  answer the author in another language; the corrected review stays English.
 {{- end}}
 - Be concise and specific; skip filler and boilerplate.
 - If a question cannot be answered from the change and the available code, say so

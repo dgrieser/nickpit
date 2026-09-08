@@ -97,7 +97,7 @@ func (r FindingUpdateReport) ReviewCorrectionWarranted() bool {
 
 func reviewUpdateTool() llm.ToolDefinition {
 	return llm.ToolDefinition{Name: reviewUpdateToolName,
-		Description: "Schedule an update of findings using their IDs and a concrete reason; use an empty list for an overall review update. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
+		Description: "Schedule an update of findings using their IDs and a concrete reason written in English; use an empty list for an overall review update. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
 		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}},"required":["finding_ids","reason"]}`),
 	}
 }
@@ -137,14 +137,6 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 			}
 		}
 	}
-	template, err := e.loadPrompt("agent_update_system_prompt.tmpl")
-	if err != nil {
-		return nil, run, err
-	}
-	template, err = llm.RenderPrompt(template, struct{ ReviewOnly bool }{reviewOnly})
-	if err != nil {
-		return nil, run, err
-	}
 	promptResult := selected
 	if reviewOnly {
 		promptResult = &model.ReviewResult{ReviewID: out.ReviewID, OverallCorrectness: out.OverallCorrectness,
@@ -163,13 +155,61 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	if err != nil {
 		return nil, run, err
 	}
+	tools := req.Tools
+	if tools == nil {
+		tools = reviewerToolDefinitions()
+	}
+	if req.MaxToolCalls < 0 {
+		tools = nil
+	}
+	hasTools := len(tools) > 0
+	var instructions string
+	if hasTools {
+		instructions, err = e.renderToolInstructions(toolInstructionsConfig{agentRole: "update", parallelToolCallGuidance: !req.DisableParallelToolCalls})
+		if err != nil {
+			return nil, run, err
+		}
+	}
+	systemTemplate, err := e.loadPrompt("agent_update_system_prompt.tmpl")
+	if err != nil {
+		return nil, run, err
+	}
+	outputSchemaSnippet := llm.UpdateExamplePromptSnippetFor(req.DisableSuggestions, reviewOnly)
+	commonSnippets, err := agentCommonSystemPromptSnippetsForTools("update", outputSchemaSnippet, req.DisableSuggestions, hasTools)
+	if err != nil {
+		return nil, run, err
+	}
+	system, err := llm.RenderPrompt(systemTemplate, struct {
+		ReviewOnly                 bool
+		DisableSuggestions         bool
+		HasTools                   bool
+		ToolInstructions           string
+		StyleGuideToolchainSnippet string
+		PrioritySnippet            string
+		OutputSchemaSnippet        string
+		OutputFormatSnippet        string
+	}{
+		ReviewOnly:                 reviewOnly,
+		DisableSuggestions:         req.DisableSuggestions,
+		HasTools:                   hasTools,
+		ToolInstructions:           instructions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(style),
+		PrioritySnippet:            commonSnippets.priority,
+		OutputSchemaSnippet:        outputSchemaSnippet,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+	})
+	if err != nil {
+		return nil, run, fmt.Errorf("update: rendering system prompt: %w", err)
+	}
 	maxContext := e.config.MaxContextTokens
 	if maxContext <= 0 {
 		maxContext = config.DefaultMaxContextToken
 	}
 	estimator := tokenestimate.SimpleEstimator{}
-	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxContext, discussFixedOverheadTokens(promptResult, req.DisableSuggestions, style+req.Signal.Reason, estimator)), estimator)
-	trimmed, err := e.trimForDiscuss(req.ReviewCtx, promptResult, messages, style+req.Signal.Reason, req.DisableSuggestions, req.DiffFormat)
+	// The rendered system prompt is the real fixed overhead: styleguides, tool
+	// instructions, and the output example all ship with it.
+	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxContext, discussFixedOverheadTokens(promptResult, req.DisableSuggestions, system+req.Signal.Reason, estimator)), estimator)
+	trimmed, err := e.trimForDiscuss(req.ReviewCtx, promptResult, messages, system+req.Signal.Reason, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, run, err
 	}
@@ -177,24 +217,12 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	if err != nil {
 		return nil, run, err
 	}
-	instructions, err := e.renderToolInstructions(toolInstructionsConfig{agentRole: "update", parallelToolCallGuidance: !req.DisableParallelToolCalls})
-	if err != nil {
-		return nil, run, err
-	}
 	schema := llm.UpdateFindingsSchema(req.DisableSuggestions, reviewOnly)
-	system := template + "\n\n" + style + "\n\n" + instructions + "\n\nOutput JSON schema:\n" + string(schema)
 	payload, err := json.Marshal(map[string]any{"context": json.RawMessage(contextJSON), "conversation": messages, "reason": req.Signal.Reason, "head_sha": req.ReviewCtx.DiffHeadSHA})
 	if err != nil {
 		return nil, run, err
 	}
-	tools := req.Tools
-	if tools == nil {
-		tools = reviewerToolDefinitions()
-	}
 	var decisions []findingUpdateDecision
-	if req.MaxToolCalls < 0 {
-		tools = nil
-	}
 	allowed := allowedDiffCodeLocations(req.ReviewCtx.DiffHunks, req.ReviewCtx.ChangedFiles)
 	validate := func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
 		raw := ""

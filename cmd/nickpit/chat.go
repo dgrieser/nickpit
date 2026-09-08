@@ -1349,11 +1349,14 @@ func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project 
 // postChatReplyUnchecked performs the POST after its caller has completed all
 // required freshness and policy reads.
 func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string, markers ...string) error {
-	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
+	var posted strings.Builder
+	posted.WriteString(reviewmd.EscapeQuickActions(reviewmd.Sanitize(body)))
 	for _, marker := range markers {
-		posted += "\n\n" + marker
+		posted.WriteString("\n\n")
+		posted.WriteString(marker)
 	}
-	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
+	postedBody := posted.String()
+	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, postedBody)
 	if err == nil {
 		return nil
 	}
@@ -1362,7 +1365,7 @@ func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient,
 		return err
 	}
 	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
-	noteBody := posted
+	noteBody := postedBody
 	if marker := reviewmd.ChatReplyMarker(discussionID, pending); marker != "" {
 		noteBody += "\n\n" + marker
 	}
