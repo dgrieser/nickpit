@@ -43,7 +43,12 @@ func TestLinkedFindingMessagesTrustScopeAndHistory(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	trigger := []glscm.DiscussionNote{{ID: 9, AuthorID: 7}, {ID: 10, AuthorID: 8, Body: "Latest question"}}
+	trigger := []glscm.DiscussionNote{
+		{ID: 9, AuthorID: 7},
+		{ID: 10, AuthorID: 8, Body: "Latest question"},
+		{ID: 11, AuthorID: 7, Body: "Update scheduled"},
+		{ID: 13, AuthorID: 8, Body: "Unrelated later question"},
+	}
 	messages, err := linkedFindingMessages(context.Background(), glscm.NewClient(server.URL, "token"), "p", 1, "original", []string{"finding"}, trigger, 10, 7, chatMessageControls{})
 	if err != nil {
 		t.Fatal(err)

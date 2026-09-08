@@ -77,7 +77,7 @@ func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpd
 	req := u.request
 	req.UpdateReview = nil
 	var err error
-	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, int(^uint(0)>>1), u.botUserID, u.controls)
+	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, u.job.NoteID, u.botUserID, u.controls)
 	if err != nil {
 		return nil, err
 	}
