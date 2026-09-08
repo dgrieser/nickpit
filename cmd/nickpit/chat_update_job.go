@@ -56,7 +56,7 @@ func (u *gitLabChatUpdate) enqueue(ctx context.Context, signal review.ReviewUpda
 		}
 	}
 	job.SetID()
-	ctx, release, err := u.adapter.Client().LockMR(ctx, "update-job/"+job.ID, 1)
+	_, release, err := u.adapter.Client().LockMR(ctx, "update-job/"+job.ID, 1)
 	if err != nil {
 		return review.ReviewUpdateToolResult{}, err
 	}
