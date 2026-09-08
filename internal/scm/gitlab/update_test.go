@@ -145,7 +145,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		if payload.Position != nil {
 			s.positionAttempts++
 			if s.rejectPositions {
-				http.Error(w, "position rejected", 422)
+				http.Error(w, "position rejected", http.StatusUnprocessableEntity)
 				return
 			}
 		}

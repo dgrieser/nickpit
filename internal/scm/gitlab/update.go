@@ -122,7 +122,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	if operation == "" {
 		operation = uuid.NewString()
 	}
-	if strings.IndexFunc(operation, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') }) >= 0 {
+	if strings.IndexFunc(operation, func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' }) >= 0 {
 		return nil, fmt.Errorf("invalid update operation ID")
 	}
 	transaction := reviewUpdateTransaction{ReviewID: current.ReviewID, Operation: operation, Revision: after.Revision, At: time.Now().UTC()}
@@ -312,7 +312,7 @@ func (a *Adapter) stageReviewUpdate(ctx context.Context, project string, iid int
 	}
 	const chunk = 24_000
 	parts := (len(raw) + chunk - 1) / chunk
-	for part := 0; part < parts; part++ {
+	for part := range parts {
 		record := reviewmd.UpdateRecord{ReviewID: transaction.ReviewID, Operation: transaction.Operation, Revision: transaction.Revision, Part: part, Parts: parts, Data: raw[part*chunk : min((part+1)*chunk, len(raw))]}
 		marker, err := reviewmd.UpdateRecordMarker(record)
 		if err != nil {

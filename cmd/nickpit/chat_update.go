@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
@@ -112,14 +114,17 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 			return nil, err
 		}
 		verdictInput.OverallCorrectness, verdictInput.OverallExplanation, verdictInput.OverallConfidenceScore = "", "", 0
-		contextNotes := signal.Reason
+		var contextNotes strings.Builder
+		contextNotes.WriteString(signal.Reason)
 		if report.ReviewCheck != nil {
-			contextNotes += "\n\nIndependent evidence assessment:\n" + report.ReviewCheck.Reason
+			contextNotes.WriteString("\n\nIndependent evidence assessment:\n")
+			contextNotes.WriteString(report.ReviewCheck.Reason)
 		}
 		// Explicit chat evidence is available even when general MR comments are disabled.
-		for i := len(req.Messages) - 1; i >= 0; i-- {
-			if req.Messages[i].Role == "user" {
-				contextNotes += "\n\nLatest author message:\n" + req.Messages[i].Content
+		for _, m := range slices.Backward(req.Messages) {
+			if m.Role == "user" {
+				contextNotes.WriteString("\n\nLatest author message:\n")
+				contextNotes.WriteString(m.Content)
 				break
 			}
 		}
@@ -128,7 +133,7 @@ func (u *gitLabChatUpdate) run(ctx context.Context, signal review.ReviewUpdateSi
 			DisableJSONResponseFormat: u.profile.DisableJSONResponseFormat, MaxOutputRetries: req.MaxOutputRetries,
 			MaxReasoningSeconds: req.MaxReasoningSeconds, DisableParallelToolCalls: req.DisableParallelToolCalls,
 			DisablePatchSummary: u.profile.DisablePatchSummary, PriorityThreshold: u.app.priorityThreshold,
-			ConfidenceThreshold: u.app.confidenceThreshold, ContextNotes: contextNotes,
+			ConfidenceThreshold: u.app.confidenceThreshold, ContextNotes: contextNotes.String(),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chat: regenerating verdict: %w", err)

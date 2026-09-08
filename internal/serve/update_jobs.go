@@ -73,7 +73,7 @@ func NewUpdateStore(dir string) (*UpdateStore, error) {
 func (s *UpdateStore) Close() error { return s.journal.Close() }
 
 func updateJobName(id string) (string, error) {
-	if len(id) != 64 || strings.IndexFunc(id, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) >= 0 {
+	if len(id) != 64 || strings.IndexFunc(id, func(r rune) bool { return (r < '0' || r > '9') && (r < 'a' || r > 'f') }) >= 0 {
 		return "", fmt.Errorf("invalid update job ID")
 	}
 	return "update-" + id + ".json", nil

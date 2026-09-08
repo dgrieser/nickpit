@@ -13,9 +13,7 @@ func (h *Handler) StartUpdateWorker() {
 	if h.chatRunner == nil || h.chatCfg.UpdateStateDir == "" {
 		return
 	}
-	h.chatWG.Add(1)
-	go func() {
-		defer h.chatWG.Done()
+	h.chatWG.Go(func() {
 		var store *UpdateStore
 		for store == nil {
 			h.chatAdmitMu.Lock()
@@ -91,5 +89,5 @@ func (h *Handler) StartUpdateWorker() {
 			case <-time.After(5 * time.Second):
 			}
 		}
-	}()
+	})
 }
