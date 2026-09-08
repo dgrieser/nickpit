@@ -443,6 +443,8 @@ In GitLab, point out a mistake or a fix in a review thread. NickPit can schedule
 
 A new commit alone doesn't trigger an update.
 
+An 👀 reaction on NickPit's reply means an update is pending. It disappears when NickPit follows up.
+
 Every review automatically saves a resumable session — including the exact prepared context the reviewers saw — so chatting needs no re-fetch (disable with `--no-session`). A review that found nothing is saved too, so "why did you find nothing here?" stays answerable. Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`. The store keeps every session by default; cap it with `--max-sessions` or `max_sessions` in config (`0` = unlimited) and each save deletes the oldest files beyond the cap. Resuming a GitLab session checks the MR's live head and recreates the diff when new commits landed. For remote sessions the retrieval tools read from a temporary checkout of the live head, cloned automatically for the duration of the chat (the same mechanism reviews use) and removed when it ends; pass `--repo-root <checkout>` to use a local checkout instead (full history, local edits). Code-reading tools stay off only when tools are disabled (`max_tool_calls: -1`) or the checkout cannot be prepared.
 
 ```bash

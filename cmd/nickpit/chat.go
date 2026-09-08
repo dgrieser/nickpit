@@ -1197,7 +1197,19 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply)
+	var markers []string
+	if update.queuedJob != nil {
+		markers = append(markers, reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: update.queuedJob.ID, NoteID: pending, Phase: "scheduled"}))
+	}
+	postErr := a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply, markers...)
+	if update.queuedJob != nil {
+		// Also check after an uncertain POST: the reply may have landed. The
+		// durable worker retries missing reactions before evaluating the job.
+		if err := syncUpdateEyes(ctx, client, update.queuedJob, botUserID, true); err != nil {
+			a.logf(ctx, "chat: update progress reaction awaits retry: %v", err)
+		}
+	}
+	return postErr
 }
 
 type chatResponseClient interface {
@@ -1263,7 +1275,7 @@ func chatFreshTarget(ctx context.Context, client chatNoteClient, project string,
 	return fresh, nil
 }
 
-func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string, markers ...string) error {
 	fresh, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls)
 	if errors.Is(err, errChatReplySuperseded) {
 		return nil
@@ -1293,7 +1305,7 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseCl
 			return err
 		}
 	}
-	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body, markers...)
 }
 
 // chatNoteClient is the subset of the GitLab client the chat reply path uses:
@@ -1336,8 +1348,11 @@ func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project 
 
 // postChatReplyUnchecked performs the POST after its caller has completed all
 // required freshness and policy reads.
-func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string) error {
+func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string, markers ...string) error {
 	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
+	for _, marker := range markers {
+		posted += "\n\n" + marker
+	}
 	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
 	if err == nil {
 		return nil

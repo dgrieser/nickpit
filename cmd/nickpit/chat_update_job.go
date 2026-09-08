@@ -129,6 +129,9 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		}
 	}
 	if job.Followup == "" {
+		if err := syncUpdateEyes(ctx, client, job, user.ID, true); err != nil {
+			return err
+		}
 		if job.Attempts >= 3 && job.Plan == nil {
 			job.Followup = updateFailed
 		} else {
@@ -144,6 +147,9 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 			opts.replyNote, opts.replyRequested = job.NoteID, job.Requested
 			err = a.runChatGitLabReply(ctx, profile, opts)
 			if errors.Is(err, errChatReplySuppressed) {
+				if err := syncUpdateEyes(ctx, client, job, user.ID, false); err != nil {
+					return err
+				}
 				job.Done = true
 				return store.Save(job)
 			}
@@ -173,8 +179,39 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 			return err
 		}
 	}
+	if err := syncUpdateEyes(ctx, client, job, user.ID, false); err != nil {
+		return err
+	}
 	job.Done = true
 	return store.Save(job)
+}
+
+// Only the bot's own eyes on the scheduling response belong to this job.
+// Discovering by marker handles crashes, uncertain POSTs, and plain-note fallback.
+func syncUpdateEyes(ctx context.Context, client *glscm.Client, job *serve.UpdateJob, bot int, pending bool) error {
+	notes, err := client.MRNotes(ctx, job.ProjectPath, job.IID)
+	if err != nil {
+		return err
+	}
+	seen := map[int]bool{}
+	for _, note := range notes {
+		if note.AuthorID != bot || note.ID <= 0 || seen[note.ID] {
+			continue
+		}
+		seen[note.ID] = true
+		marker := reviewmd.ReadUpdateJobReply(note.Body)
+		if marker.JobID != job.ID || marker.NoteID != job.NoteID || marker.Phase != "scheduled" {
+			continue
+		}
+		add := ""
+		if pending {
+			add = "eyes"
+		}
+		if err := client.ReplaceNoteEmojiPath(ctx, job.ProjectPath, job.IID, note.ID, bot, add, "eyes"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // postUpdateJobMessage is retry-safe even if the POST succeeds but its response

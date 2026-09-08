@@ -19,10 +19,12 @@ import (
 )
 
 type updateJobTestServer struct {
-	notes         []glscm.DiscussionNote
-	posts         int
-	failAfterPost bool
-	onPost        func()
+	awards          []map[string]any
+	failEyesRemoval bool
+	notes           []glscm.DiscussionNote
+	posts           int
+	failAfterPost   bool
+	onPost          func()
 }
 
 func TestReviewUpdatesRequireDurableState(t *testing.T) {
@@ -49,6 +51,43 @@ func TestReviewUpdatesRequireDurableState(t *testing.T) {
 func (s *updateJobTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	write := func(v any) { _ = json.NewEncoder(w).Encode(v) }
+	if strings.HasSuffix(r.URL.Path, "/award_emoji") {
+		if r.Method == http.MethodGet {
+			write(s.awards)
+			return
+		}
+		if r.Method == http.MethodPost {
+			for _, award := range s.awards {
+				if award["id"] == 77 {
+					w.WriteHeader(400)
+					write(map[string]string{"message": "Award Emoji Name has already been taken"})
+					return
+				}
+			}
+			s.awards = append(s.awards, map[string]any{"id": 77, "name": "eyes", "user": map[string]int{"id": 7}})
+			write(map[string]int{"id": 77})
+			return
+		}
+	}
+	if r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/award_emoji/") {
+		if !strings.HasSuffix(r.URL.Path, "/77") {
+			w.WriteHeader(403)
+			return
+		}
+		if s.failEyesRemoval {
+			s.failEyesRemoval = false
+			w.WriteHeader(500)
+			return
+		}
+		for i, award := range s.awards {
+			if award["id"] == 77 {
+				s.awards = append(s.awards[:i], s.awards[i+1:]...)
+				break
+			}
+		}
+		w.WriteHeader(204)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/user") {
 		write(map[string]any{"id": 7})
 		return
@@ -174,6 +213,61 @@ func TestAsyncFollowupDoesNotConsumeNewerQuestion(t *testing.T) {
 		if pending != newer || newer && id != 3 {
 			t.Fatalf("newer=%v pending=%v id=%d", newer, pending, id)
 		}
+	}
+}
+
+func TestUpdateEyesOnChatReplyAndDurableCleanup(t *testing.T) {
+	root, _ := reviewmd.NewRenderer("").ForReview("review").SummaryBodyCarried(&model.ReviewResult{ReviewID: "review"})
+	s := &updateJobTestServer{notes: []glscm.DiscussionNote{{ID: 1, AuthorID: 7, Body: root}, {ID: 2, AuthorID: 8, Body: "Check verdict."}}, awards: []map[string]any{
+		{"id": 81, "name": "eyes", "user": map[string]int{"id": 8}},
+		{"id": 82, "name": "thumbsup", "user": map[string]int{"id": 7}},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(s.handle))
+	defer server.Close()
+	client := glscm.NewClient(server.URL, "token")
+	dir := filepath.Join(t.TempDir(), "journal")
+	store, err := serve.NewUpdateStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	job := &serve.UpdateJob{ProjectPath: "g/p", IID: 1, BaseURL: server.URL, ReviewID: "review", DiscussionID: "thread", NoteID: 2, Followup: "The review has been updated."}
+	job.SetID()
+	if err := store.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	marker := reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: job.ID, NoteID: 2, Phase: "scheduled"})
+	a := &app{}
+	if err := a.postChatReplyUnchecked(context.Background(), client, "g/p", 1, "thread", 2, "I scheduled an update.", marker); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := syncUpdateEyes(context.Background(), client, job, 7, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.awards) != 3 {
+		t.Fatalf("missing or duplicate eyes: %+v", s.awards)
+	}
+	s.failEyesRemoval = true
+	opts := chatOptions{repo: "g/p", mrID: 1, replyDiscussion: "thread", updateStateDir: dir, updateJobID: job.ID}
+	profile := config.Profile{GitLabBaseURL: server.URL}
+	if err := a.runUpdateJob(context.Background(), profile, opts); err == nil {
+		t.Fatal("expected cleanup failure")
+	}
+	loaded, err := store.Load(job.ID)
+	if err != nil || loaded.Done {
+		t.Fatal("job retired before eyes cleanup")
+	}
+	if err := a.runUpdateJob(context.Background(), profile, opts); err != nil {
+		t.Fatal(err)
+	}
+	if s.posts != 2 || len(s.awards) != 2 {
+		t.Fatalf("duplicated follow-up or wrong cleanup: posts=%d awards=%+v", s.posts, s.awards)
+	}
+	loaded, err = store.Load(job.ID)
+	if err != nil || !loaded.Done {
+		t.Fatal("cleanup not completed durably")
 	}
 }
 

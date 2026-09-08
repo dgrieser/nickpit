@@ -88,6 +88,7 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 // MRNote is one merge-request note body plus its author, so callers can verify
 // carrier provenance before trusting embedded markers.
 type MRNote struct {
+	ID       int
 	Body     string
 	AuthorID int
 }
@@ -99,6 +100,7 @@ type MRNote struct {
 func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote, error) {
 	escaped := escapeProject(project)
 	type noteJSON struct {
+		ID     int    `json:"id"`
 		Body   string `json:"body"`
 		Author struct {
 			ID int `json:"id"`
@@ -110,7 +112,7 @@ func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote
 		return nil, fmt.Errorf("gitlab: listing MR notes: %w", err)
 	}
 	for _, note := range notes {
-		out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+		out = append(out, MRNote{ID: note.ID, Body: note.Body, AuthorID: note.Author.ID})
 	}
 	var discussions []struct {
 		Notes []noteJSON `json:"notes"`
@@ -120,7 +122,7 @@ func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote
 	}
 	for _, discussion := range discussions {
 		for _, note := range discussion.Notes {
-			out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+			out = append(out, MRNote{ID: note.ID, Body: note.Body, AuthorID: note.Author.ID})
 		}
 	}
 	return out, nil
