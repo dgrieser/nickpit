@@ -20,6 +20,19 @@ import (
 
 const reviewUpdateToolName = "request_review_update"
 
+type ReviewUpdateStatus string
+
+const (
+	ReviewUpdateScheduled   ReviewUpdateStatus = "scheduled"
+	ReviewUpdateQueueFailed ReviewUpdateStatus = "queue_failed"
+	ReviewUpdateError       ReviewUpdateStatus = "error"
+)
+
+type ReviewUpdateToolResult struct {
+	Status  ReviewUpdateStatus `json:"status"`
+	Message string             `json:"message,omitempty"`
+}
+
 type ReviewUpdateSignal struct {
 	FindingIDs []string `json:"finding_ids"`
 	Reason     string   `json:"reason"`
@@ -84,7 +97,7 @@ func (r FindingUpdateReport) ReviewCorrectionWarranted() bool {
 
 func reviewUpdateTool() llm.ToolDefinition {
 	return llm.ToolDefinition{Name: reviewUpdateToolName,
-		Description: "Queue an independent evidence check of disputed findings or a disputed review. Supply affected finding IDs, or an empty list for an overall dispute, plus concrete evidence. Go durably queues work and posts acknowledgement and follow-up in this thread. Queue acceptance does not confirm a correction. Resolved findings cannot be reopened.",
+		Description: "Schedule an update of findings using their IDs and a concrete reason; use an empty list for an overall review update. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
 		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}},"required":["finding_ids","reason"]}`),
 	}
 }

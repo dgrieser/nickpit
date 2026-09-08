@@ -136,7 +136,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/update_jobs.go`: Strict atomic, fsynced correction-job checkpoints in the private serve state directory; no credentials or temporary checkout paths.
 - `internal/serve/update_worker.go`: Restart-resumable correction worker, separate from chat admission, resolving current group credentials and response policy.
-- `cmd/nickpit/chat_update_job.go`: Durable enqueue, idempotent acknowledgement/follow-up, fresh-evidence evaluation, and checkpointed GitLab publication recovery.
+- `cmd/nickpit/chat_update_job.go`: Durable enqueue returning scheduling status to chat, idempotent follow-up, fresh-evidence evaluation, and checkpointed GitLab publication recovery.
 - `internal/scm/reviewmd/update_reply.go`: Bot-owned asynchronous reply metadata binding late follow-ups to their original question.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
 - `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit gitlab mr --publish` (review) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.

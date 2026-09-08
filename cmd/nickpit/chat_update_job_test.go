@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -85,7 +85,7 @@ func (s *updateJobTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestUpdateEnqueueDurableBeforeAckAndFollowupResumes(t *testing.T) {
+func TestUpdateEnqueueReturnsStatusWithoutPostingAndFollowupResumes(t *testing.T) {
 	result := &model.ReviewResult{ReviewID: "review", Findings: []model.Finding{{ID: "finding"}}}
 	root, _ := reviewmd.NewRenderer("").ForReview("review").FindingBodyCarried(result.Findings[0], "")
 	s := &updateJobTestServer{notes: []glscm.DiscussionNote{{ID: 1, AuthorID: 7, Body: root}, {ID: 2, AuthorID: 8, Body: "Check the guard."}}, failAfterPost: true}
@@ -108,20 +108,37 @@ func TestUpdateEnqueueDurableBeforeAckAndFollowupResumes(t *testing.T) {
 	opts := chatOptions{repo: "g/p", mrID: 1, replyDiscussion: "thread", replyNote: 2, updateStateDir: dir}
 	u := &gitLabChatUpdate{app: &app{}, adapter: adapter, profile: profile, project: "g/p", iid: 1, botUserID: 7, pending: 2, opts: opts,
 		request: review.DiscussRequest{Result: result}, triggerNotes: append([]glscm.DiscussionNote(nil), s.notes...)}
-	_, err = u.enqueue(context.Background(), review.ReviewUpdateSignal{FindingIDs: []string{"finding"}, Reason: "Check guard."})
-	if !errors.Is(err, errUpdateQueued) {
-		t.Fatal(err)
+	outcome, err := u.enqueue(context.Background(), review.ReviewUpdateSignal{FindingIDs: []string{"finding"}, Reason: "Check guard."})
+	if err != nil || outcome.Status != review.ReviewUpdateScheduled {
+		t.Fatalf("enqueue: %+v %v", outcome, err)
 	}
+	defer func() {
+		if u.queuedRelease != nil {
+			u.queuedRelease()
+		}
+	}()
 	jobs, err := store.Pending()
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("job missing: %+v %v", jobs, err)
 	}
 	job := &jobs[0]
-	if err := postUpdateJobMessage(context.Background(), adapter.Client(), job, 7, opts, "ack", updateAck); err != nil {
-		t.Fatal(err)
+	if s.posts != 0 {
+		t.Fatal("enqueue posted a fixed acknowledgement")
 	}
-	if s.posts != 1 {
-		t.Fatal("uncertain ack duplicated")
+	lockCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	_, release, lockErr := adapter.Client().LockMR(lockCtx, "update-job/"+job.ID, 1)
+	cancel()
+	if lockErr == nil {
+		release()
+		t.Fatal("worker admitted before chat reply finished")
+	}
+	u.queuedRelease()
+	u.queuedRelease = nil
+	u.queuedJob = nil
+	u.opts.updateStateDir = ""
+	failed, err := u.enqueue(context.Background(), review.ReviewUpdateSignal{FindingIDs: []string{"finding"}, Reason: "Check guard."})
+	if err != nil || failed.Status != review.ReviewUpdateQueueFailed || s.posts != 0 {
+		t.Fatalf("queue failure: %+v %v posts=%d", failed, err, s.posts)
 	}
 	// Simulate restart after evaluation, before follow-up delivery. No LLM is
 	// configured: a saved result must be delivered without re-evaluation.
@@ -136,7 +153,7 @@ func TestUpdateEnqueueDurableBeforeAckAndFollowupResumes(t *testing.T) {
 	if err := a.runUpdateJob(context.Background(), profile, opts); err != nil {
 		t.Fatal(err)
 	}
-	if s.posts != 2 {
+	if s.posts != 1 {
 		t.Fatalf("follow-up duplicated: %d posts", s.posts)
 	}
 	loaded, err := store.Load(job.ID)
@@ -184,7 +201,7 @@ func TestUpdateJobExhaustedChecksDeliverFailure(t *testing.T) {
 	if err != nil || !loaded.Done || loaded.Followup != updateFailed {
 		t.Fatalf("failure not delivered durably: %+v %v", loaded, err)
 	}
-	if s.posts != 2 || !strings.Contains(s.notes[len(s.notes)-1].Body, updateFailed) {
+	if s.posts != 1 || !strings.Contains(s.notes[len(s.notes)-1].Body, updateFailed) {
 		t.Fatal("missing failure follow-up")
 	}
 }

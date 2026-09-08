@@ -1171,6 +1171,11 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	update := gitLabChatUpdate{app: a, engine: engine, adapter: adapter, profile: profile, opts: opts,
 		project: project, iid: mrID, botUserID: botUserID, pending: pending, controls: controls, request: discussReq, triggerNotes: notes}
+	defer func() {
+		if update.queuedRelease != nil {
+			update.queuedRelease()
+		}
+	}()
 	if opts.updateJob != nil {
 		update.job, update.store = opts.updateJob, opts.updateStore
 		return update.executeJob(ctx)
@@ -1178,7 +1183,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	discussReq.UpdateReview = update.discussionUpdateHandler()
 	res, err := engine.Discuss(ctx, discussReq)
 	if err != nil {
-		if errors.Is(err, errChatReplySuperseded) || errors.Is(err, errUpdateQueued) {
+		if errors.Is(err, errChatReplySuperseded) {
 			return nil
 		}
 		return fmt.Errorf("chat: discussion agent: %w", err)

@@ -147,9 +147,9 @@ func TestDiscussUpdateInstructionsMatchToolRegistration(t *testing.T) {
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
 			req := DiscussRequest{Result: &model.ReviewResult{}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Explain."}}, Tools: []llm.ToolDefinition{}, MaxToolCalls: tc.maxTools}
 			if tc.callback {
-				req.UpdateReview = func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error) {
+				req.UpdateReview = func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error) {
 					t.Fatal("unexpected update call")
-					return nil, nil
+					return ReviewUpdateToolResult{}, nil
 				}
 			}
 			if _, err := e.Discuss(context.Background(), req); err != nil {
@@ -171,35 +171,35 @@ func TestDiscussUpdateInstructionsMatchToolRegistration(t *testing.T) {
 	}
 }
 
-func TestDiscussUpdateToolUsesActualOutcomeAndPropagatesFailure(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
+func TestDiscussUpdateToolReturnsStatusAndContinues(t *testing.T) {
+	for _, status := range []ReviewUpdateStatus{ReviewUpdateScheduled, ReviewUpdateQueueFailed, ReviewUpdateError} {
+		t.Run(string(status), func(t *testing.T) {
 			client := &updateTestLLM{responses: []*llm.ReviewResponse{
 				{ToolCalls: []llm.ToolCall{{ID: "call", Name: reviewUpdateToolName, Arguments: `{"finding_ids":["finding"],"reason":"Guard proves it safe."}`}}},
-				{RawResponse: "The finding has been resolved."},
+				{RawResponse: "I checked the evidence and scheduled an update."},
 			}}
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
 			called := 0
-			_, err := e.Discuss(context.Background(), DiscussRequest{Result: &model.ReviewResult{Findings: []model.Finding{updateTestFinding()}}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Check the guard."}}, Tools: []llm.ToolDefinition{}, UpdateReview: func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error) {
+			result, err := e.Discuss(context.Background(), DiscussRequest{Result: &model.ReviewResult{Findings: []model.Finding{updateTestFinding()}}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Check the guard."}}, Tools: []llm.ToolDefinition{}, UpdateReview: func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error) {
 				called++
-				if fail {
-					return nil, errors.New("publish failed")
+				if status == ReviewUpdateError {
+					return ReviewUpdateToolResult{}, errors.New("private internal error")
 				}
-				return &ReviewUpdateOutcome{OverallCorrectness: "patch is correct"}, nil
+				return ReviewUpdateToolResult{Status: status}, nil
 			}})
-			if called != 1 || (err != nil) != fail {
+			if called != 1 || err != nil || result.Reply == "" {
 				t.Fatalf("callback calls=%d err=%v", called, err)
 			}
-			if !fail {
+			{
 				last := client.requests[1].Messages
 				found := false
 				for _, msg := range last {
-					if msg.Role == "tool" && strings.Contains(msg.Content, "patch is correct") {
+					if msg.Role == "tool" && strings.Contains(msg.Content, `"status":"`+string(status)+`"`) && !strings.Contains(msg.Content, "private internal error") {
 						found = true
 					}
 				}
 				if !found {
-					t.Fatal("actual outcome not supplied to chat")
+					t.Fatal("scheduling status not supplied to chat")
 				}
 			}
 		})

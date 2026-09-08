@@ -19,28 +19,32 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 )
 
-var errUpdateQueued = errors.New("chat: update durably queued")
-
-const updateAck = "I’ll check this against the current code and follow up here shortly."
 const updateFailed = "I could not complete the review update after repeated failures; please ask again in a new reply."
 
-func (u *gitLabChatUpdate) discussionUpdateHandler() func(context.Context, review.ReviewUpdateSignal) (*review.ReviewUpdateOutcome, error) {
+func (u *gitLabChatUpdate) discussionUpdateHandler() func(context.Context, review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error) {
 	if strings.TrimSpace(u.opts.updateStateDir) == "" {
 		return nil
 	}
 	return u.enqueue
 }
 
-func (u *gitLabChatUpdate) enqueue(ctx context.Context, signal review.ReviewUpdateSignal) (*review.ReviewUpdateOutcome, error) {
+func (u *gitLabChatUpdate) enqueue(ctx context.Context, signal review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error) {
+	failed := review.ReviewUpdateToolResult{Status: review.ReviewUpdateQueueFailed}
+	if u.queuedJob != nil {
+		if reflect.DeepEqual(u.queuedJob.FindingIDs, signal.FindingIDs) && u.queuedJob.Reason == signal.Reason {
+			return review.ReviewUpdateToolResult{Status: review.ReviewUpdateScheduled}, nil
+		}
+		return review.ReviewUpdateToolResult{Status: review.ReviewUpdateError, Message: "An update is already scheduled for this question."}, nil
+	}
 	if err := signal.Validate(u.request.Result); err != nil {
-		return nil, err
+		return review.ReviewUpdateToolResult{}, err
 	}
 	if err := u.validate(ctx); err != nil {
-		return nil, err
+		return review.ReviewUpdateToolResult{}, err
 	}
 	store, err := serve.NewUpdateStore(u.opts.updateStateDir)
 	if err != nil {
-		return nil, err
+		return failed, nil
 	}
 	defer func() { _ = store.Close() }()
 	job := &serve.UpdateJob{ProjectPath: u.project, IID: u.iid, BaseURL: u.profile.GitLabBaseURL,
@@ -54,27 +58,31 @@ func (u *gitLabChatUpdate) enqueue(ctx context.Context, signal review.ReviewUpda
 	job.SetID()
 	ctx, release, err := u.adapter.Client().LockMR(ctx, "update-job/"+job.ID, 1)
 	if err != nil {
-		return nil, err
+		return review.ReviewUpdateToolResult{}, err
 	}
-	defer release()
+	retained := false
+	defer func() {
+		if !retained {
+			release()
+		}
+	}()
 	existing, err := store.Load(job.ID)
 	if err == nil {
 		job = existing
 	} else if os.IsNotExist(err) {
 		if err := store.Save(job); err != nil {
-			return nil, fmt.Errorf("persisting update job: %w", err)
+			return failed, nil
 		}
 	} else {
-		return nil, err
+		return failed, nil
 	}
-	// A failed acknowledgement does not discard accepted work or let the chat
-	// agent promise success: the durable worker retries delivery after restart.
-	if !job.Done {
-		if err := postUpdateJobMessage(ctx, u.adapter.Client(), job, u.botUserID, u.opts, "ack", updateAck); err != nil {
-			u.app.logf(ctx, "update job queued; acknowledgement awaits worker retry: %v", err)
-		}
+	if job.Done {
+		return review.ReviewUpdateToolResult{Status: review.ReviewUpdateError, Message: "An update was already processed for this question."}, nil
 	}
-	return nil, errUpdateQueued
+	// Let chat finish its normal reply before the worker can follow up. A
+	// process exit releases this lock, leaving the durable job runnable.
+	u.queuedJob, u.queuedRelease, retained = job, release, true
+	return review.ReviewUpdateToolResult{Status: review.ReviewUpdateScheduled}, nil
 }
 
 func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts chatOptions) error {
@@ -121,13 +129,6 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		}
 	}
 	if job.Followup == "" {
-		if err := postUpdateJobMessage(ctx, client, job, user.ID, opts, "ack", updateAck); err != nil {
-			if errors.Is(err, errChatReplySuppressed) {
-				job.Done = true
-				return store.Save(job)
-			}
-			return err
-		}
 		if job.Attempts >= 3 && job.Plan == nil {
 			job.Followup = updateFailed
 		} else {

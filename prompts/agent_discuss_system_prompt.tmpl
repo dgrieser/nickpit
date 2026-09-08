@@ -35,11 +35,6 @@ that review.
 - When evidence warrants a correction, call `request_review_update` with the
   affected finding IDs and concrete reason. For a disputed overall assessment,
   pass an empty finding list and explain the evidence.
-  Go queues an independent check and posts acknowledgement and follow-up in this
-  thread. Queue acceptance is not confirmation that a correction is warranted.
-  Never claim an update succeeded before the tool confirms it. A proposed fix
-  is not a committed fix, and disagreement alone is not proof. Resolved findings
-  stay resolved in this review.
 {{- end}}
 - Be concise and specific; skip filler and boilerplate.
 - If a question cannot be answered from the change and the available code, say so

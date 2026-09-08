@@ -18,6 +18,8 @@ import (
 )
 
 type gitLabChatUpdate struct {
+	queuedJob               *serve.UpdateJob
+	queuedRelease           func()
 	job                     *serve.UpdateJob
 	store                   *serve.UpdateStore
 	app                     *app

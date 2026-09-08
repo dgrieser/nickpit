@@ -23,8 +23,8 @@ import (
 // and appends the returned NewMessages to it between turns.
 type DiscussRequest struct {
 	// UpdateReview enables the GitLab-only correction tool. The caller owns
-	// durable enqueue and acknowledgement/follow-up delivery.
-	UpdateReview func(context.Context, ReviewUpdateSignal) (*ReviewUpdateOutcome, error)
+	// durable enqueue and follow-up delivery; chat receives scheduling status.
+	UpdateReview func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error)
 	// ReviewCtx carries the diff, changed files, commits, and toolchain that the
 	// reviewers saw. It is rebuilt from the current repo/MR at chat time.
 	ReviewCtx *model.ReviewContext
@@ -101,7 +101,6 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		tools = reviewerToolDefinitions()
 	}
 	var handlers map[string]func(context.Context, llm.ToolCall) (string, error)
-	var updateUsage model.TokenUsage
 	hasReviewUpdate := req.UpdateReview != nil && req.MaxToolCalls >= 0
 	if hasReviewUpdate {
 		updateTool := reviewUpdateTool()
@@ -109,18 +108,15 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){reviewUpdateToolName: func(ctx context.Context, call llm.ToolCall) (string, error) {
 			var signal ReviewUpdateSignal
 			if err := json.Unmarshal([]byte(call.Arguments), &signal); err != nil {
-				return `{"error":"invalid update arguments"}`, nil
+				return `{"status":"error","message":"Invalid update arguments."}`, nil
 			}
 			if err := signal.Validate(req.Result); err != nil {
-				body, _ := json.Marshal(map[string]string{"error": err.Error()})
+				body, _ := json.Marshal(ReviewUpdateToolResult{Status: ReviewUpdateError, Message: err.Error()})
 				return string(body), nil
 			}
 			outcome, err := req.UpdateReview(ctx, signal)
 			if err != nil {
-				return "", err
-			}
-			if outcome != nil {
-				updateUsage = addTokenUsage(updateUsage, outcome.TokensUsed)
+				outcome = ReviewUpdateToolResult{Status: ReviewUpdateError, Message: "The update could not be scheduled."}
 			}
 			body, err := json.Marshal(outcome)
 			return string(body), err
@@ -248,7 +244,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if err != nil {
 		return out, err
 	}
-	out.TokensUsed = addTokenUsage(loopResult.tokensUsed, updateUsage)
+	out.TokensUsed = loopResult.tokensUsed
 	if loopResult.resp != nil {
 		out.Reply = strings.TrimSpace(loopResult.resp.RawResponse)
 	}
