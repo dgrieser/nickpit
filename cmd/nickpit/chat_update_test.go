@@ -44,7 +44,10 @@ func TestLinkedFindingMessagesTrustScopeAndHistory(t *testing.T) {
 	}))
 	defer server.Close()
 	trigger := []glscm.DiscussionNote{
-		{ID: 9, AuthorID: 7},
+		{ID: 1, AuthorID: 7},
+		{ID: 5, AuthorID: 8, Body: "Earlier question"},
+		{AuthorID: 7, Body: "First fallback answer"},
+		{AuthorID: 7, Body: "Second fallback answer"},
 		{ID: 10, AuthorID: 8, Body: "Latest question"},
 		{ID: 11, AuthorID: 7, Body: "Update scheduled"},
 		{ID: 13, AuthorID: 8, Body: "Unrelated later question"},
@@ -53,7 +56,22 @@ func TestLinkedFindingMessagesTrustScopeAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 3 || !strings.Contains(messages[0].Content, "Previous thread evidence") || !strings.Contains(messages[1].Content, "Current evidence reply") || !strings.Contains(messages[2].Content, "Latest question") {
+	want := []struct {
+		role, content string
+	}{
+		{"user", "Previous thread evidence"},
+		{"user", "Earlier question"},
+		{"assistant", "First fallback answer"},
+		{"assistant", "Second fallback answer"},
+		{"user", "Current evidence reply"},
+		{"user", "Latest question"},
+	}
+	if len(messages) != len(want) {
 		t.Fatalf("unexpected linked transcript: %+v", messages)
+	}
+	for i, expected := range want {
+		if messages[i].Role != expected.role || !strings.Contains(messages[i].Content, expected.content) {
+			t.Fatalf("message %d = %+v, want role=%s content=%q", i, messages[i], expected.role, expected.content)
+		}
 	}
 }

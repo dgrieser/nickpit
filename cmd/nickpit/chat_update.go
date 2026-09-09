@@ -107,7 +107,8 @@ func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpd
 		}
 		published, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
 			Operation: u.job.ID,
-			Before:    req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA, Validate: u.validateJob,
+			Before:    req.Result, After: result.Review, BaseSHA: clean.DiffBaseSHA, HeadSHA: clean.DiffHeadSHA,
+			Validate: u.validateJob, OnStaged: u.markPlanStaged,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chat: publishing review update: %w", err)
@@ -132,11 +133,40 @@ func linkedFindingMessages(ctx context.Context, client *glscm.Client, project st
 	for _, id := range findingIDs {
 		wanted[id] = true
 	}
-	notes := map[int]glscm.DiscussionNote{}
-	add := func(items []glscm.DiscussionNote) {
+	type orderedNote struct {
+		note      glscm.DiscussionNote
+		anchor    int
+		synthetic bool
+		sequence  int
+	}
+	var notes []orderedNote
+	realNotes := map[int]int{}
+	sequence := 0
+	add := func(items []glscm.DiscussionNote, stopAtPending bool) {
+		anchor := 0
 		for _, note := range items {
-			if note.ID <= pending {
-				notes[note.ID] = note
+			if note.ID > 0 {
+				anchor = note.ID
+				if note.ID > pending {
+					continue
+				}
+				if index, exists := realNotes[note.ID]; exists {
+					notes[index].note = note
+				} else {
+					realNotes[note.ID] = len(notes)
+					notes = append(notes, orderedNote{note: note, anchor: note.ID, sequence: sequence})
+					sequence++
+				}
+				if stopAtPending && note.ID == pending {
+					break
+				}
+				continue
+			}
+			// Fallback replies have no GitLab discussion-note ID. Keep every reply
+			// beside the real note it followed instead of deduplicating them as ID 0.
+			if anchor > 0 && anchor <= pending {
+				notes = append(notes, orderedNote{note: note, anchor: anchor, synthetic: true, sequence: sequence})
+				sequence++
 			}
 		}
 	}
@@ -148,15 +178,23 @@ func linkedFindingMessages(ctx context.Context, client *glscm.Client, project st
 		if !ok || r != rid || !wanted[f] {
 			continue
 		}
-		add(d.Notes[1:])
+		add(d.Notes[1:], false)
 	}
 	if len(trigger) > 0 {
-		add(trigger[1:])
+		add(trigger[1:], true)
 	}
+	sort.SliceStable(notes, func(i, j int) bool {
+		if notes[i].anchor != notes[j].anchor {
+			return notes[i].anchor < notes[j].anchor
+		}
+		if notes[i].synthetic != notes[j].synthetic {
+			return !notes[i].synthetic
+		}
+		return notes[i].sequence < notes[j].sequence
+	})
 	ordered := make([]glscm.DiscussionNote, 0, len(notes))
-	for _, note := range notes {
-		ordered = append(ordered, note)
+	for _, item := range notes {
+		ordered = append(ordered, item.note)
 	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	return chatNotesToMessages(ordered, botUserID, controls), nil
 }

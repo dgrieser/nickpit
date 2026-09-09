@@ -220,8 +220,20 @@ func TestUpdateReviewRecoversPartialWrite(t *testing.T) {
 	after.Findings[0].Title = "Corrected title"
 	after.OverallExplanation = "Corrected verdict."
 	s.failNote = 1
-	if _, err := a.UpdateReview(context.Background(), "group/project", 456, updateRequest(before, after)); err == nil {
+	req := updateRequest(before, after)
+	staged := 0
+	req.OnStaged = func() error {
+		staged++
+		if s.visibleWrites != 0 {
+			t.Fatal("staged callback ran after visible writes")
+		}
+		return nil
+	}
+	if _, err := a.UpdateReview(context.Background(), "group/project", 456, req); err == nil {
 		t.Fatal("expected root write failure")
+	}
+	if staged != 1 {
+		t.Fatalf("staged callback count = %d", staged)
 	}
 	if got := reviewmd.ReviewResultsByID(ownedBodies(s.snapshot(), 7))[before.ReviewID]; got != nil {
 		t.Fatal("partial review exposed")

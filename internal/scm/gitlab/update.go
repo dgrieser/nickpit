@@ -23,6 +23,9 @@ type ReviewUpdateRequest struct {
 	// Validate rechecks the initiating note and response policy inside the
 	// publishing critical section, after all model work has completed.
 	Validate func(context.Context) error
+	// OnStaged checkpoints that the recovery transaction is active before any
+	// visible review post changes.
+	OnStaged func() error
 }
 
 type updateTarget struct {
@@ -191,6 +194,11 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	transaction.Items = append(transaction.Items, updateItem{Target: root, Body: body, Marker: marker})
 	if err := a.stageReviewUpdate(ctx, project, iid, transaction); err != nil {
 		return nil, err
+	}
+	if req.OnStaged != nil {
+		if err := req.OnStaged(); err != nil {
+			return nil, err
+		}
 	}
 	if err := a.applyReviewUpdate(ctx, project, iid, user.ID, transaction); err != nil {
 		return nil, err

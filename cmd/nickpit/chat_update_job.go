@@ -123,8 +123,8 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		if err := syncUpdateEyes(ctx, client, job, user.ID, true); err != nil {
 			return err
 		}
-		if job.Attempts >= 3 && job.Plan == nil {
-			job.Followup = updateFailed
+		if job.Attempts >= 3 && !updateJobPlanRecoverable(job) {
+			failUpdateJob(job)
 		} else {
 			done, err := a.attemptUpdateJob(ctx, profile, opts, client, store, job, user.ID)
 			if err != nil || done {
@@ -175,8 +175,8 @@ func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	if job.Attempts >= 3 && job.Plan == nil {
-		job.Followup = updateFailed
+	if job.Attempts >= 3 && !updateJobPlanRecoverable(job) {
+		failUpdateJob(job)
 		return false, nil
 	}
 	job.NextAttempt = time.Now().Add(time.Duration(min(job.Attempts, 6)) * 10 * time.Second)
@@ -187,6 +187,15 @@ func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts
 		err = fmt.Errorf("original review or question is unavailable")
 	}
 	return false, fmt.Errorf("update attempt incomplete: %w", err)
+}
+
+func updateJobPlanRecoverable(job *serve.UpdateJob) bool {
+	return job.Plan != nil && job.Plan.Staged
+}
+
+func failUpdateJob(job *serve.UpdateJob) {
+	job.Plan = nil
+	job.Followup = updateFailed
 }
 
 func finishUpdateJob(ctx context.Context, client *glscm.Client, store *serve.UpdateStore, job *serve.UpdateJob, bot int, opts chatOptions) error {
@@ -348,7 +357,10 @@ func (u *gitLabUpdateExecution) executeJob(ctx context.Context) error {
 		if plan.Evidence == u.job.Evidence && plan.HeadSHA == u.request.ReviewCtx.DiffHeadSHA && plan.BaseSHA == u.request.ReviewCtx.DiffBaseSHA &&
 			current.Revision == plan.Before.Revision && reflect.DeepEqual(current.Findings, plan.Before.Findings) &&
 			current.OverallCorrectness == plan.Before.OverallCorrectness && current.OverallExplanation == plan.Before.OverallExplanation {
-			_, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{Operation: u.job.ID, Before: plan.Before, After: plan.After, HeadSHA: plan.HeadSHA, BaseSHA: plan.BaseSHA, Validate: u.validateJob})
+			_, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
+				Operation: u.job.ID, Before: plan.Before, After: plan.After, HeadSHA: plan.HeadSHA, BaseSHA: plan.BaseSHA,
+				Validate: u.validateJob, OnStaged: u.markPlanStaged,
+			})
 			if err != nil {
 				return err
 			}
@@ -391,6 +403,14 @@ func (u *gitLabUpdateExecution) executeJob(ctx context.Context) error {
 		}
 	}
 	u.job.Followup, u.job.Plan = updateFollowup(outcome), nil
+	return u.store.Save(u.job)
+}
+
+func (u *gitLabUpdateExecution) markPlanStaged() error {
+	if u.job.Plan == nil {
+		return fmt.Errorf("update publication plan disappeared before staging")
+	}
+	u.job.Plan.Staged = true
 	return u.store.Save(u.job)
 }
 

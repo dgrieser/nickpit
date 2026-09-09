@@ -282,7 +282,9 @@ func TestUpdateJobExhaustedChecksDeliverFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	job := &serve.UpdateJob{ProjectPath: "g/p", IID: 1, BaseURL: server.URL, ReviewID: "review", DiscussionID: "thread", NoteID: 2, Attempts: 3, Reason: "Check verdict.", Question: "Check verdict."}
+	checkpoint := &model.ReviewResult{ReviewID: "review"}
+	job := &serve.UpdateJob{ProjectPath: "g/p", IID: 1, BaseURL: server.URL, ReviewID: "review", DiscussionID: "thread", NoteID: 2, Attempts: 3, Reason: "Check verdict.", Question: "Check verdict.",
+		Plan: &serve.UpdatePublication{Before: checkpoint, After: checkpoint, HeadSHA: "head", Followup: "Review updated."}}
 	job.SetID()
 	if err := store.Save(job); err != nil {
 		t.Fatal(err)
@@ -292,7 +294,7 @@ func TestUpdateJobExhaustedChecksDeliverFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err := store.Load(job.ID)
-	if err != nil || !loaded.Done || loaded.Followup != updateFailed {
+	if err != nil || !loaded.Done || loaded.Followup != updateFailed || loaded.Plan != nil {
 		t.Fatalf("failure not delivered durably: %+v %v", loaded, err)
 	}
 	if s.posts != 1 || !strings.Contains(s.notes[len(s.notes)-1].Body, updateFailed) {

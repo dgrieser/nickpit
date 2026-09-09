@@ -46,6 +46,7 @@ type UpdatePublication struct {
 	HeadSHA  string              `json:"head_sha"`
 	BaseSHA  string              `json:"base_sha"`
 	Followup string              `json:"followup"`
+	Staged   bool                `json:"staged,omitempty"`
 }
 
 func (j *UpdateJob) SetID() {
