@@ -107,7 +107,8 @@ type ChatConfig struct {
 	ExtraArgs      []string
 	// MaxConcurrent caps concurrent chat children; <=0 uses
 	// defaultMaxConcurrentChats.
-	MaxConcurrent int
+	MaxConcurrent       int
+	UpdateMaxConcurrent int
 }
 
 // Handler is the webhook HTTP endpoint. It only parses, authenticates, and
@@ -149,9 +150,11 @@ type Handler struct {
 	// httpServer.Shutdown's 5s budget is shorter than the 30s read timeouts, so
 	// a slow client can deliver a webhook after ShutdownChats started waiting —
 	// Add racing Wait is documented WaitGroup misuse; the flag refuses instead.
-	chatWG      sync.WaitGroup
-	chatAdmitMu sync.Mutex
-	chatClosed  bool
+	chatWG             sync.WaitGroup
+	chatAdmitMu        sync.Mutex
+	chatClosed         bool
+	updateStarted      bool
+	updatePollInterval time.Duration
 	// chatCtx roots all chat work in the daemon lifecycle; chatCancel tears it
 	// down on shutdown so in-flight children are terminated instead of
 	// outliving the daemon.

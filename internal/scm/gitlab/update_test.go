@@ -17,14 +17,15 @@ import (
 )
 
 type updateServer struct {
-	mu               sync.Mutex
-	server           *httptest.Server
-	discussions      []MRDiscussion
-	next             int
-	failNote         int
-	rejectPositions  bool
-	positionAttempts int
-	visibleWrites    int
+	mu                     sync.Mutex
+	server                 *httptest.Server
+	discussions            []MRDiscussion
+	next                   int
+	failNote               int
+	rejectPositions        bool
+	positionAttempts       int
+	visibleWrites          int
+	loseActivationResponse bool
 }
 
 func newUpdateServer(t *testing.T) (*updateServer, *Adapter, *model.ReviewResult) {
@@ -157,6 +158,13 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 			s.visibleWrites++
 		}
 		if tail == "/notes" {
+			for _, record := range reviewmd.CollectUpdateRecords(payload.Body) {
+				if record.Active && s.loseActivationResponse {
+					s.loseActivationResponse = false
+					http.Error(w, "activation response lost", 500)
+					return
+				}
+			}
 			write(noteJSON(n))
 		} else {
 			write(discussionJSON(d))

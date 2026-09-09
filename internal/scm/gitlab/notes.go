@@ -162,9 +162,12 @@ func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, d
 
 // DiscussionNote is one note within a discussion thread.
 type DiscussionNote struct {
-	ID         int
-	Body       string
-	System     bool
-	AuthorName string
-	AuthorID   int
+	ID int
+	// Synthetic fallback replies retain their source identity and question anchor.
+	FallbackNoteID int
+	AnsweredNoteID int
+	Body           string
+	System         bool
+	AuthorName     string
+	AuthorID       int
 }

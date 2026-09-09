@@ -284,7 +284,7 @@ func TestUpdateJobExhaustedChecksDeliverFailure(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	checkpoint := &model.ReviewResult{ReviewID: "review"}
 	job := &serve.UpdateJob{ProjectPath: "g/p", IID: 1, BaseURL: server.URL, ReviewID: "review", DiscussionID: "thread", NoteID: 2, Attempts: 3, Reason: "Check verdict.", Question: "Check verdict.",
-		Plan: &serve.UpdatePublication{Before: checkpoint, After: checkpoint, HeadSHA: "head", Followup: "Review updated."}}
+		Plan: &serve.UpdatePublication{Before: checkpoint, After: checkpoint, Evidence: "v2:unchanged", HeadSHA: "head", Followup: "Review updated."}}
 	job.SetID()
 	if err := store.Save(job); err != nil {
 		t.Fatal(err)
@@ -299,5 +299,41 @@ func TestUpdateJobExhaustedChecksDeliverFailure(t *testing.T) {
 	}
 	if s.posts != 1 || !strings.Contains(s.notes[len(s.notes)-1].Body, updateFailed) {
 		t.Fatal("missing failure follow-up")
+	}
+}
+
+func TestRecoverUpdateJobPlanChecksCommitBeforeDiscardingLegacyPlan(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "local legacy plan", true: "committed legacy plan"}[committed], func(t *testing.T) {
+			store, err := serve.NewUpdateStore(filepath.Join(t.TempDir(), "state"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			job := &serve.UpdateJob{ProjectPath: "g/p", IID: 1, ReviewID: "review", DiscussionID: "thread", NoteID: 2, Attempts: 3, ConflictRetries: 5,
+				Plan: &serve.UpdatePublication{Evidence: "old-fingerprint", Followup: "Saved update outcome."}}
+			job.SetID()
+			root, _ := reviewmd.NewRenderer("").ForReview("review").SummaryBodyCarried(&model.ReviewResult{ReviewID: "review"})
+			if committed {
+				root += "\n<!-- nickpit:update-item:" + job.ID + ":root -->"
+			}
+			s := &updateJobTestServer{notes: []glscm.DiscussionNote{{ID: 1, AuthorID: 7, Body: root}}}
+			server := httptest.NewServer(http.HandlerFunc(s.handle))
+			defer server.Close()
+			adapter := glscm.NewAdapter(glscm.NewClient(server.URL, "token"), "")
+			if err := adapter.RecoverReviewUpdates(context.Background(), "g/p", 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := recoverUpdateJobPlan(context.Background(), adapter, store, job); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := store.Load(job.ID)
+			if err != nil || loaded.Plan != nil || (loaded.Followup != "") != committed {
+				t.Fatalf("incorrect legacy recovery: %+v %v", loaded, err)
+			}
+			if committed && loaded.Followup != "Saved update outcome." {
+				t.Fatal("lost committed followup")
+			}
+		})
 	}
 }

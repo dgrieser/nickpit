@@ -16,6 +16,17 @@ type mrLockKey struct{ identity string }
 // child processes. Reentrant context admission avoids locking a nested write
 // twice. Locks are released by the OS on process exit, including crashes.
 func (c *Client) LockMR(ctx context.Context, project string, iid int) (context.Context, func(), error) {
+	return c.lockMR(ctx, project, iid, false)
+}
+
+// ErrLockBusy identifies normal nonblocking lock contention.
+var ErrLockBusy = fmt.Errorf("GitLab lock is busy")
+
+func (c *Client) TryLockMR(ctx context.Context, project string, iid int) (context.Context, func(), error) {
+	return c.lockMR(ctx, project, iid, true)
+}
+
+func (c *Client) lockMR(ctx context.Context, project string, iid int, nonblocking bool) (context.Context, func(), error) {
 	key := mrLockKey{fmt.Sprintf("%s/%s!%d", c.baseURL, project, iid)}
 	if held, _ := ctx.Value(key).(bool); held {
 		return ctx, func() {}, nil
@@ -51,6 +62,10 @@ func (c *Client) LockMR(ctx context.Context, project string, iid int) (context.C
 		}
 		if locked {
 			return context.WithValue(ctx, key, true), func() { _ = f.Close() }, nil
+		}
+		if nonblocking {
+			_ = f.Close()
+			return ctx, nil, ErrLockBusy
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {

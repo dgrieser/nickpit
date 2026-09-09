@@ -81,6 +81,36 @@ func TestUpdateStoreFailedWriteKeepsCheckpoint(t *testing.T) {
 	}
 }
 
+func TestUpdateStoreStableFIFOAndCanonicalMRKey(t *testing.T) {
+	store, err := NewUpdateStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	first := testUpdateJob()
+	second := *first
+	second.NoteID++
+	second.BaseURL += "/api/v4/"
+	second.SetID()
+	if first.MRKey() != second.MRKey() {
+		t.Fatal("equivalent GitLab hosts split the MR queue")
+	}
+	first.NextAttempt = time.Now().Add(time.Hour)
+	for _, job := range []*UpdateJob{first, &second} {
+		if err := store.Save(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := store.Unfinished()
+	if err != nil || len(jobs) != 2 || jobs[0].ID >= jobs[1].ID {
+		t.Fatalf("missing backoff job or unstable tie-break: %+v %v", jobs, err)
+	}
+	ready, err := store.Pending()
+	if err != nil || len(ready) != 1 || ready[0].ID != second.ID {
+		t.Fatalf("pending compatibility broken: %+v %v", ready, err)
+	}
+}
+
 type updateWorkerRunner struct{ started chan ChatSpec }
 
 func (r *updateWorkerRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {

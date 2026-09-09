@@ -1128,6 +1128,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
 	}, result.ContextOptions)
+	if execution != nil {
+		// Corrections consume only their selected discussion snapshot.
+		req.IncludeComments = false
+	}
 	// The checkout prepared for context preparation is kept until the reply is
 	// posted so the retrieval tools can read from it (the clone this reply
 	// already paid for context filters and toolchain capture). An explicit
@@ -1416,9 +1420,9 @@ func discussionWithFallbacks(ctx context.Context, client chatNoteClient, project
 // mergeFallbackReplies is the pure merge behind discussionWithFallbacks. Only
 // notes authored by the bot itself are trusted as fallback answers (markers are
 // encoded, not authenticated), and MRNotes returning the same note from both
-// the notes and discussions endpoints is de-duplicated on content.
+// the notes and discussions endpoints is de-duplicated by source identity.
 func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, discussionID string, botUserID int) []glscm.DiscussionNote {
-	replies := make(map[int][]string)
+	replies := make(map[int][]glscm.DiscussionNote)
 	dup := make(map[string]bool)
 	for _, note := range mrNotes {
 		if botUserID == 0 || note.AuthorID != botUserID {
@@ -1430,11 +1434,14 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 			}
 			body := reviewmd.StripMarkers(note.Body)
 			key := fmt.Sprintf("%d\x00%s", env.AnsweredNoteID, body)
+			if note.ID > 0 {
+				key = fmt.Sprintf("note:%d", note.ID)
+			}
 			if body == "" || dup[key] {
 				continue
 			}
 			dup[key] = true
-			replies[env.AnsweredNoteID] = append(replies[env.AnsweredNoteID], body)
+			replies[env.AnsweredNoteID] = append(replies[env.AnsweredNoteID], glscm.DiscussionNote{Body: body, AuthorID: botUserID, FallbackNoteID: note.ID, AnsweredNoteID: env.AnsweredNoteID})
 		}
 	}
 	if len(replies) == 0 {
@@ -1443,9 +1450,7 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 	merged := make([]glscm.DiscussionNote, 0, len(notes)+len(replies))
 	for _, note := range notes {
 		merged = append(merged, note)
-		for _, body := range replies[note.ID] {
-			merged = append(merged, glscm.DiscussionNote{Body: body, AuthorID: botUserID})
-		}
+		merged = append(merged, replies[note.ID]...)
 	}
 	return merged
 }

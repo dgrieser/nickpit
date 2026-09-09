@@ -2,13 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +15,10 @@ import (
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/serve"
 )
+
+var errUpdateDeferred = errors.New("update deferred")
+
+const updateConflicted = "I could not complete the review update because its evidence or review kept changing; please ask again in a new reply."
 
 const updateFailed = "I could not complete the review update after repeated failures; please ask again in a new reply."
 
@@ -92,7 +93,18 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 	}
 	defer func() { _ = store.Close() }()
 	client := glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken)
-	ctx, release, err := client.LockMR(ctx, "update-job/"+opts.updateJobID, 1)
+	ctx, unlockMR, err := client.TryLockMR(ctx, "update-execution/"+opts.repo, opts.mrID)
+	if errors.Is(err, glscm.ErrLockBusy) {
+		return errUpdateDeferred
+	}
+	if err != nil {
+		return err
+	}
+	defer unlockMR()
+	ctx, release, err := client.TryLockMR(ctx, "update-job/"+opts.updateJobID, 1)
+	if errors.Is(err, glscm.ErrLockBusy) {
+		return errUpdateDeferred
+	}
 	if err != nil {
 		return err
 	}
@@ -105,8 +117,24 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		return nil
 	}
 	if job.ProjectPath != opts.repo || job.IID != opts.mrID || job.DiscussionID != opts.replyDiscussion ||
-		strings.TrimRight(job.BaseURL, "/") != strings.TrimRight(profile.GitLabBaseURL, "/") {
+		glscm.NormalizeBaseURL(job.BaseURL) != glscm.NormalizeBaseURL(profile.GitLabBaseURL) {
 		return fmt.Errorf("update job does not match current invocation or GitLab host")
+	}
+	if job.NextAttempt.After(time.Now()) {
+		return errUpdateDeferred
+	}
+	queued, err := store.Unfinished()
+	if err != nil {
+		return err
+	}
+	for _, earlier := range queued {
+		if earlier.MRKey() != job.MRKey() {
+			continue
+		}
+		if earlier.ID != job.ID {
+			return errUpdateDeferred
+		}
+		break
 	}
 	user, err := client.CurrentUser(ctx)
 	if err != nil {
@@ -123,7 +151,8 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 		if err := syncUpdateEyes(ctx, client, job, user.ID, true); err != nil {
 			return err
 		}
-		if job.Attempts >= 3 && !updateJobPlanRecoverable(job) {
+		if job.Attempts >= 3 || job.ConflictRetries >= 5 {
+			// Remote recovery and commit detection above must succeed before retirement.
 			failUpdateJob(job)
 		} else {
 			done, err := a.attemptUpdateJob(ctx, profile, opts, client, store, job, user.ID)
@@ -143,25 +172,29 @@ func recoverUpdateJobPlan(ctx context.Context, adapter *glscm.Adapter, store *se
 		return nil
 	}
 	committed, err := adapter.ReviewUpdateCommitted(ctx, job.ProjectPath, job.IID, job.ReviewID, job.ID)
-	if err != nil || !committed {
+	if err != nil {
 		return err
 	}
-	job.Followup, job.Plan = job.Plan.Followup, nil
-	return store.Save(job)
+	if committed {
+		job.Followup, job.Plan = job.Plan.Followup, nil
+		return store.Save(job)
+	}
+	// The caller successfully recovered all activated transactions. A remaining
+	// plan is local, including one whose old fingerprint predates scoped evidence.
+	if job.Plan.Staged || !strings.HasPrefix(job.Plan.Evidence, "v2:") {
+		job.Plan = nil
+		return store.Save(job)
+	}
+	return nil
 }
 
 func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts chatOptions, client *glscm.Client, store *serve.UpdateStore, job *serve.UpdateJob, bot int) (bool, error) {
 	job.Attempts++
-	var err error
-	job.Evidence, err = updateEvidence(ctx, client, job.ProjectPath, job.IID, bot)
-	if err != nil {
-		return false, err
-	}
 	if err := store.Save(job); err != nil {
 		return false, err
 	}
 	opts.replyNote, opts.replyRequested = job.NoteID, job.Requested
-	err = a.runChatGitLabReply(ctx, profile, opts, &chatUpdateExecution{job: job, store: store})
+	err := a.runChatGitLabReply(ctx, profile, opts, &chatUpdateExecution{job: job, store: store})
 	if errors.Is(err, errChatReplySuppressed) {
 		if err := syncUpdateEyes(ctx, client, job, bot, false); err != nil {
 			return false, err
@@ -175,11 +208,9 @@ func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	if job.Attempts >= 3 && !updateJobPlanRecoverable(job) {
-		failUpdateJob(job)
-		return false, nil
-	}
-	job.NextAttempt = time.Now().Add(time.Duration(min(job.Attempts, 6)) * 10 * time.Second)
+	// Even at the limit defer retirement until the next invocation has recovered
+	// ambiguous staging writes and checked for a committed operation.
+	recordUpdateRetry(job, err, time.Now())
 	if saveErr := store.Save(job); saveErr != nil {
 		return false, saveErr
 	}
@@ -189,13 +220,25 @@ func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts
 	return false, fmt.Errorf("update attempt incomplete: %w", err)
 }
 
-func updateJobPlanRecoverable(job *serve.UpdateJob) bool {
-	return job.Plan != nil && job.Plan.Staged
+func recordUpdateRetry(job *serve.UpdateJob, err error, now time.Time) {
+	var conflict *glscm.UpdateConflict
+	counter := job.Attempts
+	if errors.As(err, &conflict) {
+		job.Attempts--
+		job.ConflictRetries++
+		counter = job.ConflictRetries
+		// Conflict checks precede staging.
+		job.Plan = nil
+	}
+	job.NextAttempt = now.Add(time.Duration(min(counter, 6)) * 10 * time.Second)
 }
 
 func failUpdateJob(job *serve.UpdateJob) {
 	job.Plan = nil
 	job.Followup = updateFailed
+	if job.ConflictRetries >= 5 {
+		job.Followup = updateConflicted
+	}
 }
 
 func finishUpdateJob(ctx context.Context, client *glscm.Client, store *serve.UpdateStore, job *serve.UpdateJob, bot int, opts chatOptions) error {
@@ -295,28 +338,6 @@ func validateUpdateResponsePolicy(ctx context.Context, client *glscm.Client, job
 	return nil
 }
 
-func updateEvidence(ctx context.Context, client *glscm.Client, project string, iid, bot int) (string, error) {
-	discussions, err := client.MRDiscussions(ctx, project, iid)
-	if err != nil {
-		return "", err
-	}
-	type evidence struct {
-		ID   int
-		Body string
-	}
-	var items []evidence
-	for _, discussion := range discussions {
-		for _, note := range discussion.Notes {
-			if note.AuthorID != bot && !note.System {
-				items = append(items, evidence{note.ID, note.Body})
-			}
-		}
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	raw, _ := json.Marshal(items)
-	return fmt.Sprintf("%x", sha256.Sum256(raw)), nil
-}
-
 func (u *gitLabUpdateExecution) validateJob(ctx context.Context) error {
 	client := u.adapter.Client()
 	notes, err := updateJobDiscussion(ctx, client, u.job, u.botUserID)
@@ -331,32 +352,41 @@ func (u *gitLabUpdateExecution) validateJob(ctx context.Context) error {
 	if err := validateUpdateResponsePolicy(ctx, client, u.job, u.botUserID, u.opts.replyMuteEmoji, u.controls, notes); err != nil {
 		return err
 	}
-	evidence, err := updateEvidence(ctx, client, u.project, u.iid, u.botUserID)
+	evidence, err := loadUpdateEvidence(ctx, client, u.job, u.botUserID, u.controls)
 	if err != nil {
 		return err
 	}
-	if evidence != u.job.Evidence {
-		return fmt.Errorf("comments changed during update evaluation; retry with fresh context")
+	if evidence.Fingerprint != u.job.Evidence {
+		return &glscm.UpdateConflict{Kind: "evidence"}
 	}
 	info, err := client.FetchMRPositionInfo(ctx, u.project, u.iid)
 	if err != nil {
 		return err
 	}
 	if info.DiffRefs.HeadSHA != u.request.ReviewCtx.DiffHeadSHA || info.DiffRefs.BaseSHA != u.request.ReviewCtx.DiffBaseSHA {
-		return fmt.Errorf("commits changed during update evaluation; retry with fresh context")
+		return &glscm.UpdateConflict{Kind: "MR diff"}
 	}
-	return nil
+	return u.adapter.ValidateReviewState(ctx, u.project, u.iid, u.request.Result)
 }
 
 func (u *gitLabUpdateExecution) executeJob(ctx context.Context) error {
+	snapshot, err := loadUpdateEvidence(ctx, u.adapter.Client(), u.job, u.botUserID, u.controls)
+	if err != nil {
+		return err
+	}
+	u.snapshot = snapshot
+	u.job.Evidence = snapshot.Fingerprint
+	u.request.Messages = snapshot.Messages
+	if err := u.store.Save(u.job); err != nil {
+		return err
+	}
 	if err := u.validateJob(ctx); err != nil {
 		return err
 	}
 	if plan := u.job.Plan; plan != nil {
 		current := u.request.Result
 		if plan.Evidence == u.job.Evidence && plan.HeadSHA == u.request.ReviewCtx.DiffHeadSHA && plan.BaseSHA == u.request.ReviewCtx.DiffBaseSHA &&
-			current.Revision == plan.Before.Revision && reflect.DeepEqual(current.Findings, plan.Before.Findings) &&
-			current.OverallCorrectness == plan.Before.OverallCorrectness && current.OverallExplanation == plan.Before.OverallExplanation {
+			glscm.SameReviewState(current, plan.Before) {
 			_, err := u.adapter.UpdateReview(ctx, u.project, u.iid, glscm.ReviewUpdateRequest{
 				Operation: u.job.ID, Before: plan.Before, After: plan.After, HeadSHA: plan.HeadSHA, BaseSHA: plan.BaseSHA,
 				Validate: u.validateJob, OnStaged: u.markPlanStaged,

@@ -244,6 +244,8 @@ type ServeChat struct {
 	// MaxConcurrent caps concurrent chat child processes; <=0 uses the built-in
 	// default (4).
 	MaxConcurrent int `yaml:"max_concurrent"`
+	// UpdateMaxConcurrent limits correction children separately from chat. Zero uses two.
+	UpdateMaxConcurrent int `yaml:"update_max_concurrent"`
 	// ExtraArgs are forwarded to chat children INSTEAD of review.extra_args.
 	// Absent, chat children inherit review.extra_args (root persistent flags
 	// like --profile apply to both commands); an explicit list — even an empty
@@ -477,6 +479,9 @@ func (c *ServeConfig) Validate() error {
 	}
 	if c.Chat.MaxConcurrent < 0 {
 		errs = append(errs, fmt.Errorf("chat.max_concurrent must be >= 0, got %d", c.Chat.MaxConcurrent))
+	}
+	if c.Chat.UpdateMaxConcurrent < 0 {
+		errs = append(errs, fmt.Errorf("chat.update_max_concurrent must be >= 0"))
 	}
 	normalizedPhrases := make(map[string]int, len(c.Chat.SkipPhrases))
 	chatCommands := map[string]bool{}

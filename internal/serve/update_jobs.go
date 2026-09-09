@@ -13,30 +13,32 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // UpdateJob contains no credentials or checkout paths. Workers resolve current
 // credentials/config and rebuild context. A prepared publication is checkpointed
 // before SCM writes, so recovery never needs to replay model decisions.
 type UpdateJob struct {
-	ID           string             `json:"id"`
-	ProjectPath  string             `json:"project_path"`
-	BaseURL      string             `json:"base_url"`
-	IID          int                `json:"iid"`
-	ReviewID     string             `json:"review_id"`
-	DiscussionID string             `json:"discussion_id"`
-	NoteID       int                `json:"note_id"`
-	Requested    bool               `json:"requested"`
-	FindingIDs   []string           `json:"finding_ids"`
-	Reason       string             `json:"reason"`
-	Question     string             `json:"question"`
-	Evidence     string             `json:"evidence,omitempty"`
-	Created      time.Time          `json:"created"`
-	Attempts     int                `json:"attempts"`
-	NextAttempt  time.Time          `json:"next_attempt"`
-	Done         bool               `json:"done"`
-	Followup     string             `json:"followup,omitempty"`
-	Plan         *UpdatePublication `json:"plan,omitempty"`
+	ID              string             `json:"id"`
+	ProjectPath     string             `json:"project_path"`
+	BaseURL         string             `json:"base_url"`
+	IID             int                `json:"iid"`
+	ReviewID        string             `json:"review_id"`
+	DiscussionID    string             `json:"discussion_id"`
+	NoteID          int                `json:"note_id"`
+	Requested       bool               `json:"requested"`
+	FindingIDs      []string           `json:"finding_ids"`
+	Reason          string             `json:"reason"`
+	Question        string             `json:"question"`
+	Evidence        string             `json:"evidence,omitempty"`
+	Created         time.Time          `json:"created"`
+	Attempts        int                `json:"attempts"`
+	ConflictRetries int                `json:"conflict_retries,omitempty"`
+	NextAttempt     time.Time          `json:"next_attempt"`
+	Done            bool               `json:"done"`
+	Followup        string             `json:"followup,omitempty"`
+	Plan            *UpdatePublication `json:"plan,omitempty"`
 }
 
 type UpdatePublication struct {
@@ -151,6 +153,19 @@ func (s *UpdateStore) Load(id string) (*UpdateJob, error) {
 }
 
 func (s *UpdateStore) Pending() ([]UpdateJob, error) {
+	jobs, err := s.Unfinished()
+	now := time.Now()
+	ready := jobs[:0]
+	for _, job := range jobs {
+		if !job.NextAttempt.After(now) {
+			ready = append(ready, job)
+		}
+	}
+	return ready, err
+}
+
+// Unfinished includes backoff jobs so their successors cannot overtake them.
+func (s *UpdateStore) Unfinished() ([]UpdateJob, error) {
 	dir, err := s.journal.root.Open(".")
 	if err != nil {
 		return nil, err
@@ -162,7 +177,6 @@ func (s *UpdateStore) Pending() ([]UpdateJob, error) {
 	}
 	var jobs []UpdateJob
 	var failures []error
-	now := time.Now()
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "update-") || !strings.HasSuffix(name, ".json") {
@@ -176,10 +190,20 @@ func (s *UpdateStore) Pending() ([]UpdateJob, error) {
 			failures = append(failures, fmt.Errorf("%s: %w", name, err))
 			continue
 		}
-		if !job.Done && !job.NextAttempt.After(now) {
+		if !job.Done {
 			jobs = append(jobs, *job)
 		}
 	}
-	sort.Slice(jobs, func(i, j int) bool { return jobs[i].Created.Before(jobs[j].Created) })
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].Created.Equal(jobs[j].Created) {
+			return jobs[i].ID < jobs[j].ID
+		}
+		return jobs[i].Created.Before(jobs[j].Created)
+	})
 	return jobs, errors.Join(failures...)
+}
+
+func (j UpdateJob) MRKey() string {
+	base := glscm.NormalizeBaseURL(j.BaseURL)
+	return fmt.Sprintf("%s\x00%s\x00%d", base, j.ProjectPath, j.IID)
 }

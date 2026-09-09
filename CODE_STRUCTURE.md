@@ -38,6 +38,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
 - `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
 - `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.
+- `cmd/nickpit/chat_update_evidence.go`: Selected-thread snapshots shared by correction prompts and freshness checks, with note cutoffs and anchored fallback replies.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
 - `internal/review/classify.go`: Stamps generated-file marks across the changed-file and diff-file views, plus symlink metadata from the reviewed head tree: marks (changed files, diff files and hunks) for sources whose diff carries no git file mode (GitHub), and link targets for any source whose patch shows none (a pure rename).
@@ -138,7 +139,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/update_jobs.go`: Strict atomic, fsynced correction-job checkpoints in the private serve state directory; no credentials or temporary checkout paths.
-- `internal/serve/update_worker.go`: Restart-resumable correction worker, separate from chat admission, resolving current group credentials and response policy.
+- `internal/serve/update_worker.go`: Bounded correction scheduler with strict per-MR ordering, separate chat capacity, and current credentials and response policy.
 - `cmd/nickpit/chat_update_job.go`: Durable enqueue returning scheduling status to chat, idempotent follow-up, fresh-evidence evaluation, and checkpointed GitLab publication recovery.
 - `internal/scm/reviewmd/update_reply.go`: Bot-owned asynchronous reply metadata binding late follow-ups to their original question.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.

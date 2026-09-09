@@ -98,6 +98,7 @@ chat:
   # the comment contains other text. No suppressors are configured by default.
   skip_phrases: []
   max_concurrent: 4   # concurrent chat child processes (<=0 uses the default 4)
+  update_max_concurrent: 2 # separate correction children; one active job per MR (0 uses 2)
   # extra_args replaces review.extra_args for chat children when present.
   # Absent (commented out) chat children inherit review.extra_args; an
   # explicit empty list [] forwards nothing.

@@ -3,13 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/review"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
-	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/serve"
 )
 
@@ -30,8 +28,9 @@ type gitLabChatUpdate struct {
 
 type gitLabUpdateExecution struct {
 	*gitLabChatUpdate
-	job   *serve.UpdateJob
-	store *serve.UpdateStore
+	job      *serve.UpdateJob
+	store    *serve.UpdateStore
+	snapshot *updateEvidenceSnapshot
 }
 
 func (u *gitLabChatUpdate) validate(ctx context.Context) error {
@@ -76,26 +75,17 @@ func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpd
 	}
 	req := u.request
 	req.UpdateReview = nil
-	var err error
-	req.Messages, err = linkedFindingMessages(ctx, u.adapter.Client(), u.project, u.iid, req.Result.ReviewID, signal.FindingIDs, u.triggerNotes, u.job.NoteID, u.botUserID, u.controls)
-	if err != nil {
-		return nil, err
-	}
+	req.Messages = u.snapshot.Messages
 	// Current findings are structured input. Do not send their previous rendered
 	// roots back as evidence after applying a correction in memory.
 	clean := *req.ReviewCtx
 	clean.Comments = nil
-	for _, comment := range req.ReviewCtx.Comments {
-		if !comment.IsReview {
-			comment.Body = reviewmd.StripMarkers(comment.Body)
-			clean.Comments = append(clean.Comments, comment)
-		}
-	}
 	req.ReviewCtx = &clean
 	result, err := u.engine.RunUpdateWorkflow(ctx, review.UpdateWorkflowRequest{
 		UpdateFindingsRequest: review.UpdateFindingsRequest{DiscussRequest: req, Signal: signal},
 		PriorityThreshold:     u.app.priorityThreshold, ConfidenceThreshold: u.app.confidenceThreshold,
 		DisablePatchSummary: u.profile.DisablePatchSummary,
+		InitiatingMessage:   u.snapshot.Question,
 	})
 	if err != nil {
 		return nil, err
@@ -122,79 +112,13 @@ func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpd
 // ownership. Only their replies enter the transcript, ordered once by note ID.
 // The triggering note remains last even if another thread gained replies later.
 func linkedFindingMessages(ctx context.Context, client *glscm.Client, project string, iid int, rid string, findingIDs []string, trigger []glscm.DiscussionNote, pending, botUserID int, controls chatMessageControls) ([]llm.Message, error) {
-	if len(findingIDs) == 0 {
-		return chatThreadToMessages(trigger, botUserID, controls), nil
-	}
-	discussions, err := client.MRDiscussions(ctx, project, iid)
-	if err != nil {
-		return nil, err
-	}
-	wanted := map[string]bool{}
-	for _, id := range findingIDs {
-		wanted[id] = true
-	}
-	type orderedNote struct {
-		note      glscm.DiscussionNote
-		anchor    int
-		synthetic bool
-		sequence  int
-	}
-	var notes []orderedNote
-	realNotes := map[int]int{}
-	sequence := 0
-	add := func(items []glscm.DiscussionNote, stopAtPending bool) {
-		anchor := 0
-		for _, note := range items {
-			if note.ID > 0 {
-				anchor = note.ID
-				if note.ID > pending {
-					continue
-				}
-				if index, exists := realNotes[note.ID]; exists {
-					notes[index].note = note
-				} else {
-					realNotes[note.ID] = len(notes)
-					notes = append(notes, orderedNote{note: note, anchor: note.ID, sequence: sequence})
-					sequence++
-				}
-				if stopAtPending && note.ID == pending {
-					break
-				}
-				continue
-			}
-			// Fallback replies have no GitLab discussion-note ID. Keep every reply
-			// beside the real note it followed instead of deduplicating them as ID 0.
-			if anchor > 0 && anchor <= pending {
-				notes = append(notes, orderedNote{note: note, anchor: anchor, synthetic: true, sequence: sequence})
-				sequence++
-			}
+	var discussions []glscm.MRDiscussion
+	if len(findingIDs) > 0 {
+		var err error
+		discussions, err = client.MRDiscussions(ctx, project, iid)
+		if err != nil {
+			return nil, err
 		}
 	}
-	for _, d := range discussions {
-		if len(d.Notes) == 0 || d.Notes[0].AuthorID != botUserID || reviewmd.StripMarkers(d.Notes[0].Body) == "" {
-			continue
-		}
-		r, f, ok := reviewmd.DetectThreadReview(d.Notes[0].Body)
-		if !ok || r != rid || !wanted[f] {
-			continue
-		}
-		add(d.Notes[1:], false)
-	}
-	if len(trigger) > 0 {
-		add(trigger[1:], true)
-	}
-	sort.SliceStable(notes, func(i, j int) bool {
-		if notes[i].anchor != notes[j].anchor {
-			return notes[i].anchor < notes[j].anchor
-		}
-		if notes[i].synthetic != notes[j].synthetic {
-			return !notes[i].synthetic
-		}
-		return notes[i].sequence < notes[j].sequence
-	})
-	ordered := make([]glscm.DiscussionNote, 0, len(notes))
-	for _, item := range notes {
-		ordered = append(ordered, item.note)
-	}
-	return chatNotesToMessages(ordered, botUserID, controls), nil
+	return collectUpdateEvidence(discussions, trigger, rid, findingIDs, pending, botUserID, controls).Messages, nil
 }

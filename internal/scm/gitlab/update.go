@@ -28,6 +28,33 @@ type ReviewUpdateRequest struct {
 	OnStaged func() error
 }
 
+// UpdateConflict identifies a stale evaluation, rather than an execution failure.
+type UpdateConflict struct{ Kind string }
+
+func (e *UpdateConflict) Error() string {
+	return fmt.Sprintf("update: %s changed during evaluation; retry with fresh context", e.Kind)
+}
+
+func SameReviewState(a, b *model.ReviewResult) bool {
+	return a != nil && b != nil && a.ReviewID == b.ReviewID && reviewStateHash(a) == reviewStateHash(b)
+}
+
+func (a *Adapter) ValidateReviewState(ctx context.Context, project string, iid int, before *model.ReviewResult) error {
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return err
+	}
+	discussions, err := a.client.MRDiscussions(ctx, project, iid)
+	if err != nil {
+		return err
+	}
+	current := reviewmd.ReviewResultsByID(ownedBodies(discussions, user.ID))[before.ReviewID]
+	if !SameReviewState(current, before) {
+		return &UpdateConflict{Kind: "review"}
+	}
+	return nil
+}
+
 type updateTarget struct {
 	DiscussionID string `json:"discussion_id"`
 	NoteID       int    `json:"note_id"`
@@ -74,15 +101,15 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		return nil, err
 	}
 	current := reviewmd.ReviewResultsByID(ownedBodies(discussions, user.ID))[req.Before.ReviewID]
-	if current == nil || reviewStateHash(current) != reviewStateHash(req.Before) {
-		return nil, fmt.Errorf("update: review changed during evaluation; retry with fresh context")
+	if !SameReviewState(current, req.Before) {
+		return nil, &UpdateConflict{Kind: "review"}
 	}
 	info, err := a.client.FetchMRPositionInfo(ctx, project, iid)
 	if err != nil {
 		return nil, err
 	}
 	if req.HeadSHA == "" || info.DiffRefs.HeadSHA != req.HeadSHA || (req.BaseSHA != "" && info.DiffRefs.BaseSHA != req.BaseSHA) {
-		return nil, fmt.Errorf("update: MR diff changed during evaluation; retry with fresh context")
+		return nil, &UpdateConflict{Kind: "MR diff"}
 	}
 	if req.Validate != nil {
 		if err := req.Validate(ctx); err != nil {

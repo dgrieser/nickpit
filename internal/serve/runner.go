@@ -26,6 +26,9 @@ const logDrainGrace = 2 * time.Second
 // later explicit request on that same note must remain eligible.
 const ChatNoPostExitCode = 3
 
+// UpdateDeferredExitCode leaves durable work queued without consuming an attempt.
+const UpdateDeferredExitCode = 4
+
 // ReviewSpec describes one review to execute in a child process.
 type ReviewSpec struct {
 	ProjectPath string

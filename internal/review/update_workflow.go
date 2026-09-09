@@ -13,6 +13,7 @@ import (
 
 type UpdateWorkflowRequest struct {
 	UpdateFindingsRequest
+	InitiatingMessage   string
 	PriorityThreshold   string
 	ConfidenceThreshold float64
 	DisablePatchSummary bool
@@ -71,11 +72,16 @@ func (e *Engine) RunUpdateWorkflow(ctx context.Context, req UpdateWorkflowReques
 		notes.WriteString("\n\nIndependent evidence assessment:\n")
 		notes.WriteString(report.ReviewCheck.Reason)
 	}
-	for _, message := range slices.Backward(req.Messages) {
-		if message.Role == "user" {
-			notes.WriteString("\n\nLatest author message:\n")
-			notes.WriteString(message.Content)
-			break
+	if req.InitiatingMessage != "" {
+		notes.WriteString("\n\nInitiating author message:\n")
+		notes.WriteString(req.InitiatingMessage)
+	} else {
+		for _, message := range slices.Backward(req.Messages) {
+			if message.Role == "user" {
+				notes.WriteString("\n\nLatest author message:\n")
+				notes.WriteString(message.Content)
+				break
+			}
 		}
 	}
 	verdictStep := e.stepContext(stages.Verdict.Config, baseReq)
@@ -85,6 +91,7 @@ func (e *Engine) RunUpdateWorkflow(ctx context.Context, req UpdateWorkflowReques
 		MaxReasoningSeconds: verdictStep.Req.MaxReasoningSeconds, DisableParallelToolCalls: verdictStep.Req.DisableParallelToolCalls,
 		DisablePatchSummary: verdictStep.Req.DisablePatchSummary, PriorityThreshold: req.PriorityThreshold,
 		ConfidenceThreshold: req.ConfidenceThreshold, ContextNotes: notes.String(),
+		ContextMessages: req.Messages,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("update workflow: verdict: %w", err)

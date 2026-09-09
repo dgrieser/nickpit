@@ -143,7 +143,7 @@ groups:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ChatEnabled() || cfg.Chat.MaxConcurrent != 0 || cfg.Chat.ExtraArgs != nil {
+	if !cfg.ChatEnabled() || cfg.Chat.MaxConcurrent != 0 || cfg.Chat.UpdateMaxConcurrent != 0 || cfg.Chat.ExtraArgs != nil {
 		t.Fatalf("chat defaults = %+v", cfg.Chat)
 	}
 	if cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "mute" || len(cfg.Chat.SkipPhrases) != 0 {
@@ -160,6 +160,7 @@ chat:
   mute_emoji: "no_bell"
   skip_phrases: ["nickpit skip", "NO BOT"]
   max_concurrent: 2
+  update_max_concurrent: 3
   extra_args: []
 `)
 	cfg, err = LoadServe(path)
@@ -171,6 +172,9 @@ chat:
 	}
 	if cfg.Chat.MaxConcurrent != 2 {
 		t.Fatalf("max_concurrent = %d", cfg.Chat.MaxConcurrent)
+	}
+	if cfg.Chat.UpdateMaxConcurrent != 3 {
+		t.Fatalf("update concurrency = %d", cfg.Chat.UpdateMaxConcurrent)
 	}
 	if !cfg.Chat.OptIn || cfg.ChatMuteEmojiName() != "no_bell" || len(cfg.Chat.SkipPhrases) != 2 {
 		t.Fatalf("chat response config = %+v", cfg.Chat)
@@ -523,6 +527,7 @@ func TestServeConfigValidate(t *testing.T) {
 		wantErr string
 	}{
 		{"no groups", `listen: ":8080"`, "at least one group"},
+		{"negative update concurrency", "chat:\n  update_max_concurrent: -1\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "chat.update_max_concurrent"},
 		{"empty token", "groups:\n  - path: p\n    webhook_secret: s\n", "token must not be empty"},
 		{"no credential", "groups:\n  - path: p\n    token: t\n", "either signing_token or webhook_secret must be set"},
 		{"bad signing token", "groups:\n  - path: p\n    token: t\n    signing_token: \"whsec_not!!base64\"\n", "not valid base64"},
