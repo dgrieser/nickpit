@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -88,7 +89,10 @@ func (h *Handler) StartUpdateWorker() {
 					defer cancel()
 					if h.responses != nil {
 						state, err := h.responses.State(ctx, group, job.ProjectPath, job.IID, job.DiscussionID)
-						if err != nil || !state.Allows(job.Requested) {
+						// Missing discussions need the child to recover publication before
+						// retiring the orphan. Other API failures and policy blocks wait.
+						missing := errors.Is(err, glscm.ErrDiscussionNotFound) || (err == nil && state.Missing)
+						if !missing && (err != nil || !state.Allows(job.Requested)) {
 							return
 						}
 					}

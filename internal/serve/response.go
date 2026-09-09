@@ -23,6 +23,7 @@ type ResponseConfig struct {
 // ThreadResponseState is the current effective state of one nickpit review
 // thread, assembled from config, persistent root metadata, and live reactions.
 type ThreadResponseState struct {
+	Missing      bool
 	Ours         bool
 	Root         gitlab.DiscussionNote
 	DiscussionID string
@@ -83,7 +84,11 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 	if err != nil {
 		return state, err
 	}
-	if len(notes) == 0 || notes[0].AuthorID != group.BotUserID {
+	if len(notes) == 0 {
+		state.Missing = true
+		return state, nil
+	}
+	if notes[0].AuthorID != group.BotUserID {
 		return state, nil
 	}
 	if _, _, ok := reviewmd.DetectThreadReview(notes[0].Body); !ok || reviewmd.StripMarkers(notes[0].Body) == "" {

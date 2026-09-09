@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,79 @@ import (
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
+
+func TestUpdateSchedulerAdmitsOrphanRecoveryButNotTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		admit  bool
+	}{
+		{"deleted", 404, true}, {"empty", 200, true},
+		{"forbidden", 403, false}, {"rate limited", 429, false}, {"temporary failure", 500, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := reviewmd.NewRenderer("").ForReview("review").SummaryBodyCarried(&model.ReviewResult{ReviewID: "review"})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/discussions/thread") {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"notes":[]}`))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"notes": []any{map[string]any{"id": 1, "body": root, "author": map[string]int{"id": 7}}}})
+			}))
+			defer server.Close()
+			dir := filepath.Join(t.TempDir(), "state")
+			store, err := NewUpdateStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			first := testUpdateJob()
+			first.BaseURL = server.URL
+			first.SetID()
+			next := *first
+			next.DiscussionID = "next-thread"
+			next.Created = first.Created.Add(time.Second)
+			next.SetID()
+			for _, job := range []*UpdateJob{first, &next} {
+				if err := store.Save(job); err != nil {
+					t.Fatal(err)
+				}
+			}
+			groups, groupErrors := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "token"}}, server.URL, func(context.Context, *glscm.Client) (int, error) { return 7, nil })
+			if len(groupErrors) != 0 {
+				t.Fatal(groupErrors)
+			}
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			runner := &scheduledUpdateRunner{started: make(chan ChatSpec, 2), release: make(chan string), store: store}
+			h := NewHandler(groups, nil, HandlerConfig{Responses: NewResponseController(ResponseConfig{Enabled: true}, log)}, runner, ChatConfig{BaseURL: server.URL, UpdateStateDir: dir}, log)
+			h.updatePollInterval = 10 * time.Millisecond
+			h.StartUpdateWorker()
+			defer h.ShutdownChats(0)
+			if !tc.admit {
+				select {
+				case s := <-runner.started:
+					t.Fatalf("transient failure admitted or bypassed: %+v", s)
+				case <-time.After(100 * time.Millisecond):
+				}
+				return
+			}
+			for _, want := range []string{first.ID, next.ID} {
+				select {
+				case s := <-runner.started:
+					if s.UpdateJobID != want {
+						t.Fatalf("wrong job: %s want %s", s.UpdateJobID, want)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("orphan blocked queue")
+				}
+				if want == first.ID {
+					runner.release <- "retired after recovery"
+				}
+			}
+		})
+	}
+}
 
 type scheduledUpdateRunner struct {
 	started chan ChatSpec

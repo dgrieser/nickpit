@@ -2,7 +2,9 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 )
 
@@ -128,6 +130,10 @@ func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote
 	return out, nil
 }
 
+// ErrDiscussionNotFound identifies a 404 from the discussion endpoint. Callers
+// must verify MR access before treating this as permanent deletion.
+var ErrDiscussionNotFound = errors.New("GitLab discussion not found")
+
 // DiscussionNotes returns the notes of a single discussion, in order (oldest
 // first). It powers reading back an existing chat thread.
 func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, discussionID string) ([]DiscussionNote, error) {
@@ -145,6 +151,10 @@ func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, d
 	}
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escaped, iid, url.PathEscape(discussionID))
 	if err := c.Get(ctx, path, &discussion); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %w", ErrDiscussionNotFound, err)
+		}
 		return nil, fmt.Errorf("gitlab: reading discussion: %w", err)
 	}
 	notes := make([]DiscussionNote, 0, len(discussion.Notes))

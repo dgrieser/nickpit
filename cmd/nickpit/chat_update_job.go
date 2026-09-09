@@ -147,6 +147,19 @@ func (a *app) runUpdateJob(ctx context.Context, profile config.Profile, opts cha
 	if err := recoverUpdateJobPlan(ctx, adapter, store, job); err != nil {
 		return err
 	}
+	// Recovery above also verifies access to the MR. Only then may a missing
+	// initiating discussion retire the job; no follow-up can be delivered there.
+	notes, err := client.DiscussionNotes(ctx, job.ProjectPath, job.IID, job.DiscussionID)
+	if errors.Is(err, glscm.ErrDiscussionNotFound) || (err == nil && len(notes) == 0) {
+		if err := syncUpdateEyes(ctx, client, job, user.ID, false); err != nil {
+			return err
+		}
+		job.Plan, job.Done = nil, true
+		return store.Save(job)
+	}
+	if err != nil {
+		return err
+	}
 	if job.Followup == "" {
 		if err := syncUpdateEyes(ctx, client, job, user.ID, true); err != nil {
 			return err

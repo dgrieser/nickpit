@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +18,94 @@ import (
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/serve"
 )
+
+func TestUpdateJobRetiresMissingDiscussionAfterRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		status        int
+		recoveryFails bool
+		committed     bool
+		retired       bool
+	}{
+		{"deleted", 404, false, false, true},
+		{"empty", 200, false, false, true},
+		{"committed", 404, false, true, true},
+		{"recovery failure", 404, true, false, false},
+		{"forbidden", 403, false, false, false},
+		{"rate limited", 429, false, false, false},
+		{"temporary failure", 500, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			store, err := serve.NewUpdateStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			s := &updateJobTestServer{}
+			recoveryRead, discussionRead := false, false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/discussions") {
+					recoveryRead = true
+					if tc.recoveryFails {
+						w.WriteHeader(500)
+						return
+					}
+				}
+				if strings.HasSuffix(r.URL.Path, "/discussions/thread") {
+					discussionRead = true
+					if !recoveryRead {
+						t.Error("checked orphan before recovery")
+					}
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"notes":[]}`))
+					return
+				}
+				s.handle(w, r)
+			}))
+			defer server.Close()
+			checkpoint := &model.ReviewResult{ReviewID: "review"}
+			job := &serve.UpdateJob{BaseURL: server.URL, ProjectPath: "g/p", IID: 1, ReviewID: "review", DiscussionID: "thread", NoteID: 2,
+				Plan: &serve.UpdatePublication{Before: checkpoint, After: checkpoint, HeadSHA: "head", Evidence: "v2:local", Followup: "Recovered outcome."}}
+			job.SetID()
+			root, _ := reviewmd.NewRenderer("").ForReview("review").SummaryBodyCarried(&model.ReviewResult{ReviewID: "review"})
+			if tc.committed {
+				root += fmt.Sprintf("\n<!-- nickpit:update-item:%s:root -->", job.ID)
+			}
+			s.notes = []glscm.DiscussionNote{{ID: 1, AuthorID: 7, Body: root}, {ID: 3, AuthorID: 7, Body: reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: job.ID, NoteID: 2, Phase: "scheduled"})}}
+			s.awards = []map[string]any{{"id": 77, "name": "eyes", "user": map[string]int{"id": 7}}}
+			if err := store.Save(job); err != nil {
+				t.Fatal(err)
+			}
+			err = (&app{}).runUpdateJob(context.Background(), config.Profile{GitLabBaseURL: server.URL}, chatOptions{repo: "g/p", mrID: 1, replyDiscussion: "thread", updateStateDir: dir, updateJobID: job.ID})
+			if (err == nil) != tc.retired {
+				t.Fatalf("unexpected result: %v", err)
+			}
+			loaded, loadErr := store.Load(job.ID)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if loaded.Done != tc.retired || loaded.Attempts != 0 || loaded.ConflictRetries != 0 {
+				t.Fatalf("incorrect retirement: %+v", loaded)
+			}
+			if tc.retired && (loaded.Plan != nil || len(s.awards) != 0) {
+				t.Fatal("retained local plan or pending reaction")
+			}
+			if !tc.retired && loaded.Plan == nil {
+				t.Fatal("discarded plan on transient failure")
+			}
+			if tc.committed && loaded.Followup != "Recovered outcome." {
+				t.Fatal("lost committed outcome")
+			}
+			if tc.recoveryFails && discussionRead {
+				t.Fatal("continued after failed recovery")
+			}
+			if s.posts != 0 {
+				t.Fatal("attempted orphan followup")
+			}
+		})
+	}
+}
 
 type updateJobTestServer struct {
 	awards          []map[string]any
