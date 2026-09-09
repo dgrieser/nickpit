@@ -2235,6 +2235,9 @@ func TestIsUserAbort(t *testing.T) {
 }
 
 func TestQuietExitCode(t *testing.T) {
+	if code, quiet := quietExitCode(context.Background(), fmt.Errorf("locked: %w", errUpdateDeferred)); !quiet || code != serve.UpdateDeferredExitCode {
+		t.Fatalf("deferred update exit = (%d, %v), want (%d, true)", code, quiet, serve.UpdateDeferredExitCode)
+	}
 	if code, quiet := quietExitCode(context.Background(), errChatReplySuppressed); !quiet || code != serve.ChatNoPostExitCode {
 		t.Fatalf("suppressed chat exit = (%d, %v), want (%d, true)", code, quiet, serve.ChatNoPostExitCode)
 	}

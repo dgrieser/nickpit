@@ -53,8 +53,6 @@ race: ## Run the race detector
 	go test -tags "$(GRAMMAR_TAGS)" -race ./...
 
 lint: ## Run golangci-lint, modernize analyzers included (install: https://golangci-lint.run/welcome/install/)
-	# A restored analysis cache loses staticcheck's fact that testing.Fatal never
-	# returns and then reports bogus SA5011 nil derefs, so always start cold.
 	golangci-lint cache clean
 	golangci-lint run ./...
 

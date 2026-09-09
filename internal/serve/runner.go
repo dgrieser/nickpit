@@ -26,6 +26,9 @@ const logDrainGrace = 2 * time.Second
 // later explicit request on that same note must remain eligible.
 const ChatNoPostExitCode = 3
 
+// UpdateDeferredExitCode leaves durable work queued without consuming an attempt.
+const UpdateDeferredExitCode = 4
+
 // ReviewSpec describes one review to execute in a child process.
 type ReviewSpec struct {
 	ProjectPath string
@@ -52,9 +55,11 @@ type ReviewRunner interface {
 // gates on the thread's root marker, runs the discussion agent, and posts the
 // reply back into the thread, so the daemon itself stays free of LLM logic.
 type ChatSpec struct {
-	ProjectPath  string
-	IID          int
-	DiscussionID string
+	UpdateStateDir string
+	UpdateJobID    string
+	ProjectPath    string
+	IID            int
+	DiscussionID   string
 	// NoteID is the triggering note; the child answers only when this note is
 	// still the latest pending user reply.
 	NoteID int
@@ -222,6 +227,12 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 	}
 	for _, phrase := range spec.SkipPhrases {
 		args = append(args, "--reply-skip-phrase", phrase)
+	}
+	if spec.UpdateStateDir != "" {
+		args = append(args, "--update-state-dir="+spec.UpdateStateDir)
+	}
+	if spec.UpdateJobID != "" {
+		args = append(args, "--run-update-job="+spec.UpdateJobID)
 	}
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)

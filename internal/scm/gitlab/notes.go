@@ -2,7 +2,9 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 )
 
@@ -88,6 +90,7 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 // MRNote is one merge-request note body plus its author, so callers can verify
 // carrier provenance before trusting embedded markers.
 type MRNote struct {
+	ID       int
 	Body     string
 	AuthorID int
 }
@@ -99,6 +102,7 @@ type MRNote struct {
 func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote, error) {
 	escaped := escapeProject(project)
 	type noteJSON struct {
+		ID     int    `json:"id"`
 		Body   string `json:"body"`
 		Author struct {
 			ID int `json:"id"`
@@ -110,7 +114,7 @@ func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote
 		return nil, fmt.Errorf("gitlab: listing MR notes: %w", err)
 	}
 	for _, note := range notes {
-		out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+		out = append(out, MRNote{ID: note.ID, Body: note.Body, AuthorID: note.Author.ID})
 	}
 	var discussions []struct {
 		Notes []noteJSON `json:"notes"`
@@ -120,11 +124,15 @@ func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote
 	}
 	for _, discussion := range discussions {
 		for _, note := range discussion.Notes {
-			out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+			out = append(out, MRNote{ID: note.ID, Body: note.Body, AuthorID: note.Author.ID})
 		}
 	}
 	return out, nil
 }
+
+// ErrDiscussionNotFound identifies a 404 from the discussion endpoint. Callers
+// must verify MR access before treating this as permanent deletion.
+var ErrDiscussionNotFound = errors.New("GitLab discussion not found")
 
 // DiscussionNotes returns the notes of a single discussion, in order (oldest
 // first). It powers reading back an existing chat thread.
@@ -143,6 +151,10 @@ func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, d
 	}
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escaped, iid, url.PathEscape(discussionID))
 	if err := c.Get(ctx, path, &discussion); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %w", ErrDiscussionNotFound, err)
+		}
 		return nil, fmt.Errorf("gitlab: reading discussion: %w", err)
 	}
 	notes := make([]DiscussionNote, 0, len(discussion.Notes))
@@ -160,9 +172,12 @@ func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, d
 
 // DiscussionNote is one note within a discussion thread.
 type DiscussionNote struct {
-	ID         int
-	Body       string
-	System     bool
-	AuthorName string
-	AuthorID   int
+	ID int
+	// Synthetic fallback replies retain their source identity and question anchor.
+	FallbackNoteID int
+	AnsweredNoteID int
+	Body           string
+	System         bool
+	AuthorName     string
+	AuthorID       int
 }

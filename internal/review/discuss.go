@@ -14,6 +14,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 // DiscussRequest drives a single turn of the discussion agent: a free-form,
@@ -22,6 +23,9 @@ import (
 // just answers the author. The caller owns the running conversation (Messages)
 // and appends the returned NewMessages to it between turns.
 type DiscussRequest struct {
+	// UpdateReview enables the correction tool for this discussion. The caller owns
+	// durable enqueue and follow-up delivery; chat receives scheduling status.
+	UpdateReview func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error)
 	// ReviewCtx carries the diff, changed files, commits, and toolchain that the
 	// reviewers saw. It is rebuilt from the current repo/MR at chat time.
 	ReviewCtx *model.ReviewContext
@@ -44,7 +48,8 @@ type DiscussRequest struct {
 	DisableParallelToolCalls bool
 
 	// Tools overrides the tool set. A nil slice enables all reviewer tools (the
-	// default); pass an empty non-nil slice to disable tools entirely.
+	// default); pass an empty non-nil slice to disable retrieval tools. The update
+	// tool is controlled separately by UpdateReview and MaxToolCalls.
 	Tools []llm.ToolDefinition
 
 	MaxToolCalls          int
@@ -97,6 +102,32 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if tools == nil {
 		tools = reviewerToolDefinitions()
 	}
+	// The update tool is request-scoped, even when supplied in an override.
+	tools = slices.DeleteFunc(slices.Clone(tools), func(tool llm.ToolDefinition) bool {
+		return tool.Name == toolcatalog.RequestReviewUpdate
+	})
+	var handlers map[string]func(context.Context, llm.ToolCall) (string, error)
+	hasReviewUpdate := req.UpdateReview != nil && req.MaxToolCalls >= 0
+	if hasReviewUpdate {
+		updateTool := reviewerToolDefinitions(toolcatalog.RequestReviewUpdate)[0]
+		tools = append(tools, updateTool)
+		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){toolcatalog.RequestReviewUpdate: func(ctx context.Context, call llm.ToolCall) (string, error) {
+			var signal ReviewUpdateSignal
+			if err := json.Unmarshal([]byte(call.Arguments), &signal); err != nil {
+				return `{"status":"error","message":"Invalid update arguments."}`, nil
+			}
+			if err := signal.Validate(req.Result); err != nil {
+				body, _ := json.Marshal(ReviewUpdateToolResult{Status: ReviewUpdateError, Message: err.Error()})
+				return string(body), nil
+			}
+			outcome, err := req.UpdateReview(ctx, signal)
+			if err != nil {
+				outcome = ReviewUpdateToolResult{Status: ReviewUpdateError, Message: "The update could not be scheduled."}
+			}
+			body, err := json.Marshal(outcome)
+			return string(body), err
+		}}
+	}
 	hasTools := len(tools) > 0
 
 	systemTemplate, err := e.loadPrompt("agent_discuss_system_prompt.tmpl")
@@ -105,8 +136,15 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	}
 	var toolInstructions string
 	if hasTools {
+		toolNames := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			if toolcatalog.ArgumentSchema(tool.Name) != "" {
+				toolNames = append(toolNames, tool.Name)
+			}
+		}
 		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
 			agentRole:                "discuss",
+			toolNames:                toolNames,
 			parallelToolCallGuidance: !req.DisableParallelToolCalls,
 		})
 		if err != nil {
@@ -183,6 +221,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		Progress:              progress,
 		Messages:              all,
 		Tools:                 tools,
+		ToolHandlers:          handlers,
 		Schema:                nil,
 		SchemaKind:            llm.SchemaKindText,
 		Model:                 e.config.Model,
@@ -295,10 +334,14 @@ type discussReviewPrompt struct {
 // on a shallow copy would mutate the caller's result (and a shallow strip would
 // leave their suggestions reachable).
 func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool) discussReviewPrompt {
-	findings := result.Findings
+	findings := make([]model.Finding, len(result.Findings))
+	for i, finding := range result.Findings {
+		findings[i] = finding
+		if finding.Resolution != nil {
+			findings[i] = model.Finding{ID: finding.ID, Resolution: finding.Resolution, Body: finding.Resolution.Reason}
+		}
+	}
 	if disableSuggestions {
-		findings = make([]model.Finding, len(result.Findings))
-		copy(findings, result.Findings)
 		for i := range findings {
 			if f := findings[i].Finalization; f != nil {
 				clone := *f
@@ -516,6 +559,9 @@ func discussOpener(result *model.ReviewResult, findingID string) string {
 	for _, f := range result.Findings {
 		if f.ID != findingID {
 			continue
+		}
+		if f.Resolution != nil {
+			return "This finding is resolved: " + f.Resolution.Reason
 		}
 		// Use the same summarization/finalization precedence as the published
 		// comment (reviewmd.FindingDisplay), so the opener names the title and

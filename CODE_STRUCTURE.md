@@ -31,6 +31,15 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
+- `internal/review/update.go`: Independent correction agent; validates selected-finding replacements and terminal resolutions, or assesses review-level disputes without generating verdicts, publishing, or exposing history.
+- `internal/review/update_summary.go`: Reuses default-workflow finding and overall summarization passes for corrections, including small-model routing and failure fallback, while preserving unchanged and resolved findings.
+- `internal/review/update_workflow.go`: Executes the embedded `workflows/update.yaml` correction stages. Durable jobs checkpoint its result before publishing.
+- `internal/workflow/update.go`: Loads the built-in correction YAML with the shared spec parser; no external override path.
+- `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
+- `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
+- `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.
+- `cmd/nickpit/chat_update_cli.go`: Invocation-scoped CLI correction coordinator and background runner, immutable conversation snapshots, shared GitLab execution locks, bounded retries and publication recovery, and local review revisions.
+- `cmd/nickpit/chat_update_evidence.go`: Selected-thread snapshots shared by correction prompts and freshness checks, with note cutoffs and anchored fallback replies.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
 - `internal/review/classify.go`: Stamps generated-file marks across the changed-file and diff-file views, plus symlink metadata from the reviewed head tree: marks (changed files, diff files and hunks) for sources whose diff carries no git file mode (GitHub), and link targets for any source whose patch shows none (a pure rename).
@@ -114,6 +123,9 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/savedreply.go`: Comment templates ("saved replies") per scope — user, project, or group: listing and prefix-scoped idempotent sync (create/update/prune, dry run).
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
+- `internal/scm/gitlab/update.go`: Original-review-scoped revision publishing, linked location replacements, durable pending updates, and crash recovery.
+- `internal/scm/gitlab/lock*.go`: Reentrant process-safe MR write locks shared by publishing, corrections, and response controls.
+- `internal/scm/reviewmd/history.go`: Bounded flat comment archives, hidden update/thread metadata, and highest-current-revision carrier selection.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
 - `internal/scm/reviewmd/response.go`: Visible GitLab response-mode footers plus hidden persistent thread-mute metadata and a rendered-policy fingerprint (so footers stamped under earlier settings are detectable), with stripping before LLM context assembly.
 
@@ -127,6 +139,10 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/serve/templates.go`: The note commands expressed as GitLab comment templates (names, bodies, prune prefix) so the comment box's template picker can offer them.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
+- `internal/serve/update_jobs.go`: Strict atomic, fsynced correction-job checkpoints in the private serve state directory; no credentials or temporary checkout paths.
+- `internal/serve/update_worker.go`: Bounded correction scheduler with strict per-MR ordering, separate chat capacity, and current credentials and response policy.
+- `cmd/nickpit/chat_update_job.go`: Durable enqueue returning scheduling status to chat, idempotent follow-up, fresh-evidence evaluation, and checkpointed GitLab publication recovery.
+- `internal/scm/reviewmd/update_reply.go`: Bot-owned asynchronous reply metadata binding late follow-ups to their original question.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
 - `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit gitlab mr --publish` (review) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.
 - `internal/serve/topics.go`: TTL + singleflight cache for project topics.
@@ -143,7 +159,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
 - `internal/filetype/language.go`: Unified file classification API (language detection, generated-file flags, trim eviction classes) backed by the mappings data.
 - `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
-- `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, and the full message transcript; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
+- `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, the full message transcript, and archived review revisions; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
 - `internal/clipboard/clipboard.go`: Cross-platform clipboard writes for `session --clipboard`: a per-GOOS chain of helper commands (`pbcopy`, `clip.exe` with UTF-16LE encoding, `wl-copy`/`xclip`/`xsel` ordered by session type, `termux-clipboard-set`) tried until one succeeds, bounded by a shared timeout.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
 - `internal/tools/catalog.go`: Tool catalog exposed to agents; describes each tool and its arguments to the model.
@@ -160,7 +176,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `prompts/`: Agent system prompts and shared prompt snippets.
 - `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts.
-- `workflows/`: Embedded workflow YAML definitions.
+- `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews and internal-only `update.yaml` for chat corrections.
 - `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, and styleguide detectors. All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
 - `assets/`: Static assets used by output or packaging.
 - `testdata/`: Fixtures and golden data used by tests.

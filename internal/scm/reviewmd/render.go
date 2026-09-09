@@ -185,6 +185,7 @@ func (b *carrierBudget) spend(decodedBytes int) {
 // to view the MR/PR could read out of the hidden comment, and reassembly never
 // needs it (the SCM URL comes from the profile at chat time).
 type ReviewEnvelope struct {
+	Revision               uint64    `json:"revision,omitempty"`
 	ReviewID               string    `json:"rid"`
 	CreatedAt              time.Time `json:"at,omitzero"`
 	OverallCorrectness     string    `json:"correctness,omitempty"`
@@ -255,6 +256,7 @@ func reviewMarkerWithSize(result *model.ReviewResult, contextOpts *model.Context
 		}
 	}
 	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
+		Revision:               result.Revision,
 		ReviewID:               result.ReviewID,
 		CreatedAt:              result.CreatedAt,
 		OverallCorrectness:     result.OverallCorrectness,
@@ -432,6 +434,7 @@ func scanMarkers(body, prefix string, fn func(raw string) bool) {
 // CollectReviewEnvelopes decodes the review carriers found in body, bounded by
 // the per-body carrier budget.
 func CollectReviewEnvelopes(body string) []ReviewEnvelope {
+	body = StripHistory(body)
 	var out []ReviewEnvelope
 	budget := &carrierBudget{}
 	scanMarkers(body, ReviewMarkerPrefix, func(raw string) bool {
@@ -452,6 +455,7 @@ func CollectReviewEnvelopes(body string) []ReviewEnvelope {
 // CollectFindingEnvelopes decodes the finding carriers found in body, bounded by
 // the per-body carrier budget.
 func CollectFindingEnvelopes(body string) []FindingEnvelope {
+	body = StripHistory(body)
 	var out []FindingEnvelope
 	budget := &carrierBudget{}
 	scanMarkers(body, FindingMarkerPrefix, func(raw string) bool {
@@ -476,6 +480,7 @@ func CollectFindingEnvelopes(body string) []FindingEnvelope {
 // envelope and shares the per-body decompression budget, so a hostile body cannot
 // force unbounded work.
 func DetectThreadReview(rootBody string) (reviewID, findingID string, ok bool) {
+	rootBody = StripHistory(rootBody)
 	budget := &carrierBudget{}
 	scanMarkers(rootBody, FindingMarkerPrefix, func(raw string) bool {
 		if !budget.allow() {
@@ -537,6 +542,7 @@ func UniqueFindingsByID(findings []model.Finding) []model.Finding {
 // model as opaque comment text; the raw bodies remain available separately for
 // carrier reassembly.
 func StripMarkers(s string) string {
+	s = StripHistory(s)
 	s = StripResponseFooter(s)
 	if !strings.Contains(s, MarkerOpen) {
 		// Trim like the marker path below does, so "was this body only
@@ -576,6 +582,9 @@ func StripMarkers(s string) string {
 // review, any chat-reply marker, or no decodable carrier at all means "not
 // stale".
 func IsStaleCarrierBody(body, currentReviewID string, protected map[string]struct{}) bool {
+	if len(CollectUpdateRecords(body)) > 0 {
+		return false
+	}
 	if currentReviewID == "" || StripMarkers(body) != "" {
 		return false
 	}
@@ -642,6 +651,7 @@ func RefReviewIDs(bodies []string) map[string]struct{} {
 // finding count (FindingsTotal) that the collected carriers do not reach are
 // omitted entirely — see the completeness gate below.
 func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
+	bodies = currentCarrierBodies(bodies)
 	byID := make(map[string]*model.ReviewResult)
 	seen := make(map[string]map[string]struct{})
 	expected := make(map[string]int)
@@ -666,6 +676,7 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 				continue
 			}
 			r := get(env.ReviewID)
+			r.Revision = env.Revision
 			r.CreatedAt = env.CreatedAt
 			r.OverallCorrectness = env.OverallCorrectness
 			r.OverallExplanation = env.OverallExplanation
@@ -754,6 +765,12 @@ type Priors struct {
 // ScanComment folds one existing comment body into p, collecting both its markers
 // and its finding fingerprints.
 func ScanComment(body string, p *Priors) {
+	body = StripHistory(body)
+	for _, env := range CollectFindingEnvelopes(body) {
+		if env.Finding.Resolution != nil {
+			return
+		}
+	}
 	if p == nil {
 		return
 	}
@@ -1062,6 +1079,14 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 // over. Publishers use carried=false to route the finding into the chunked
 // fallback carrier notes instead.
 func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix string) (string, bool) {
+	if finding.Resolution != nil {
+		body := fmt.Sprintf("![RESOLVED](%sresolved.svg)\n\n%s", r.assetBaseURL, EscapeQuickActions(Sanitize(finding.Resolution.Reason)))
+		marker := FindingMarker(r.reviewID, finding)
+		if marker != "" && len(body)+len(marker)+2 <= NoteMaxBytes {
+			return body + "\n\n" + marker, true
+		}
+		return body + "\n\n" + findingRefMarker(r.reviewID, finding.ID), false
+	}
 	title, body, rank, _ := FindingDisplay(finding)
 	fingerprint := FingerprintMarker(finding, title)
 	var b strings.Builder

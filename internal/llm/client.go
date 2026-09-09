@@ -2872,6 +2872,9 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	}
 	normalizeFindingSuggestions(parsed.Findings)
 	for i := range parsed.Findings {
+		// Only the dedicated correction pipeline owns persisted resolution state.
+		parsed.Findings[i].Resolution = nil
+		parsed.Findings[i].Revision = 0
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 		parsed.Findings[i].ConfidenceScore = model.NormalizeConfidence(parsed.Findings[i].ConfidenceScore)
 	}

@@ -97,7 +97,7 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		var discussions discussionsResponse
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions)
 		for _, discussion := range discussions {
-			for _, note := range discussion.Notes {
+			for noteIndex, note := range discussion.Notes {
 				// Strip hidden nickpit markers before the body enters prompt
 				// context: the carrier payloads are large opaque blobs that would
 				// waste model tokens and displace real comments during trimming.
@@ -111,6 +111,9 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 					Body:      body,
 					CreatedAt: note.CreatedAt,
 					ThreadID:  discussion.ID,
+				}
+				if noteIndex == 0 {
+					_, _, comment.IsReview = reviewmd.DetectThreadReview(note.Body)
 				}
 				if note.Position != nil {
 					comment.Path = note.Position.NewPath

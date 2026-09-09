@@ -401,3 +401,51 @@ func TestSessionWarningsToClipboard(t *testing.T) {
 		t.Fatalf("confirmation does not name the warnings: %q", out.String())
 	}
 }
+
+func TestSessionReviewHistoryOutput(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := session.NewStore(dir)
+	sess := saveSessionReview(t, store, "original version")
+	next, _ := sess.Result.Clone()
+	next.Revision = 1
+	next.Findings[0].Title = "corrected version"
+	if err := sess.RecordReviewUpdate(next, "Evidence explains correction."); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"raw", "markdown", "json"} {
+		for _, copy := range []bool{false, true} {
+			var out bytes.Buffer
+			a := &app{sessionDir: dir, outputFormat: format}
+			var copied string
+			a.clipboardCopy = func(_ context.Context, b []byte) (string, error) { copied = string(b); return "test", nil }
+			if err := a.runSessionTo(context.Background(), sessionOptions{sessionID: sess.ID, history: true, clipboard: copy}, nil, &out); err != nil {
+				t.Fatal(err)
+			}
+			text := out.String()
+			if copy {
+				text = copied
+			}
+			if !strings.Contains(text, "original version") || strings.Contains(text, "corrected version") || !strings.Contains(text, "Evidence explains correction") {
+				t.Fatalf("wrong history: %s", text)
+			}
+			if format == "json" {
+				var entries []session.ReviewRevision
+				if err := json.Unmarshal([]byte(text), &entries); err != nil || len(entries) != 1 {
+					t.Fatalf("%s %v", text, err)
+				}
+			}
+		}
+	}
+	var out bytes.Buffer
+	a := &app{sessionDir: dir}
+	if err := a.runSessionTo(context.Background(), sessionOptions{history: true, warnings: true}, nil, &out); err == nil {
+		t.Fatal("conflicting flags accepted")
+	}
+	a.outputFormat = "json"
+	if err := a.formatReviewHistory(&out, nil); err != nil || strings.TrimSpace(out.String()) != "[]" {
+		t.Fatalf("empty history: %q %v", out.String(), err)
+	}
+}

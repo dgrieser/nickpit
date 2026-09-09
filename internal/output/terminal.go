@@ -85,6 +85,10 @@ func (f *TerminalFormatter) SetWidth(n int) {
 }
 
 func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
+	// Formatting must not mutate saved reviews or archived snapshots.
+	copy := *result
+	copy.Findings = append([]model.Finding(nil), result.Findings...)
+	result = &copy
 	sortFindings(result.Findings)
 
 	var b strings.Builder
@@ -148,6 +152,16 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 // title/body/suggestions markdown. Confidence scores are deliberately not shown
 // here — they stay in the JSON output and the review envelope only.
 func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Finding) {
+	if finding.Resolution != nil {
+		b.WriteString(resolvedBadge(f.useANSI))
+		b.WriteString("\n\n")
+		b.WriteString(f.bold(findingLocation(finding)))
+		b.WriteString("\n\n")
+		b.WriteString(f.renderMarkdown(textsan.StripControl(finding.Resolution.Reason)))
+		b.WriteString("\n")
+		return
+	}
+
 	_, _, rank, _ := reviewmd.FindingDisplay(finding)
 	b.WriteString(priorityBadge(rank, f.useANSI))
 	b.WriteString("\n\n")

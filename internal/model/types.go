@@ -118,6 +118,8 @@ func ContextOptionsFromRequest(req ReviewRequest) *ContextOptions {
 }
 
 type ReviewResult struct {
+	// Revision advances when a saved or published review is corrected through chat.
+	Revision uint64 `json:"revision,omitempty"`
 	// ReviewID uniquely identifies a single completed review run. It is stamped
 	// once the pipeline finishes and is carried in the hidden SCM note markers so
 	// all findings and the overall verdict for one run can be regrouped later
@@ -384,6 +386,8 @@ type CommitSummary struct {
 }
 
 type Finding struct {
+	Revision   uint64             `json:"revision,omitempty"`
+	Resolution *FindingResolution `json:"resolution,omitempty"`
 	// ID is required at serialization boundaries; regenerate legacy artifacts
 	// that predate UUID finding IDs.
 	ID              string                `json:"id"`
@@ -401,6 +405,12 @@ type Finding struct {
 	// dropped findings; the merge step strips it before findings leave the
 	// step, so it never reaches results or posted reviews.
 	MergedFrom []string `json:"merged_from,omitempty"`
+}
+
+// FindingResolution is terminal within a review; a later review may report a
+// new finding independently. It does not control SCM discussion resolution.
+type FindingResolution struct {
+	Reason string `json:"reason"`
 }
 
 // StripSuggestions removes code suggestions from every finding.

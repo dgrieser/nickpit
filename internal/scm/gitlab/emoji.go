@@ -67,6 +67,12 @@ func (c *Client) ReplaceNoteEmoji(ctx context.Context, projectID, iid, noteID, u
 	return c.replaceEmoji(ctx, noteEmojiPath(projectID, iid, noteID), userID, add, remove)
 }
 
+// ReplaceNoteEmojiPath accepts a project path as well as a numeric ID.
+func (c *Client) ReplaceNoteEmojiPath(ctx context.Context, project string, iid, noteID, userID int, add string, remove ...string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%d/award_emoji", escapeProject(project), iid, noteID)
+	return c.replaceEmoji(ctx, path, userID, add, remove)
+}
+
 // ReplaceOwnMREmoji awards add and revokes every other reaction owned by
 // userID on the merge request, except explicitly kept names. It is intended
 // for awardables where this dedicated bot owns all status reactions; unlike a

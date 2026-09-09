@@ -121,13 +121,40 @@ func UpsertResponseFooter(body string, status ResponseStatus) string {
 	// Disabled chat renders no visible footer at all, but the hidden markers
 	// stay: they carry the persistent command-mute state and the policy
 	// fingerprint that lets SyncNewRoots skip already-reconciled roots.
-	if text := responseStatusText(status); text != "" {
+	resolved := false
+	for _, env := range CollectFindingEnvelopes(base) {
+		resolved = resolved || env.Finding.Resolution != nil
+	}
+	if text := responseStatusText(status); text != "" && !resolved {
 		b.WriteString("---\n\n*")
 		b.WriteString(text)
 		b.WriteString("*\n")
 	}
 	b.WriteString(responseFooterEnd)
 	return b.String()
+}
+
+// TransferResponseFooter keeps live command/policy metadata when a correction
+// replaces the review content. Resolved findings retain hidden controls only.
+func TransferResponseFooter(previous, current string) string {
+	previous = StripHistory(previous)
+	start := strings.Index(previous, responseFooterStart)
+	if start < 0 {
+		return current
+	}
+	end := strings.Index(previous[start:], responseFooterEnd)
+	if end < 0 {
+		return current
+	}
+	footer := previous[start : start+end+len(responseFooterEnd)]
+	for _, env := range CollectFindingEnvelopes(current) {
+		if env.Finding.Resolution != nil {
+			if visible := strings.Index(footer, "---\n"); visible >= 0 {
+				footer = footer[:visible] + responseFooterEnd
+			}
+		}
+	}
+	return StripResponseFooter(current) + "\n\n" + footer
 }
 
 func responseStatusText(status ResponseStatus) string {

@@ -30,6 +30,8 @@ import (
 )
 
 type chatOptions struct {
+	updateStateDir      string
+	updateJobID         string
 	sessionID           string
 	findingID           string
 	fromJSON            string
@@ -47,6 +49,11 @@ type chatOptions struct {
 	replySkipPhrases    []string
 }
 
+type chatUpdateExecution struct {
+	job   *serve.UpdateJob
+	store *serve.UpdateStore
+}
+
 // errChatReplySuppressed crosses the chat command boundary as
 // serve.ChatNoPostExitCode. It is distinct from both success (a reply was
 // posted or became superseded) and failure (the daemon should retry).
@@ -60,7 +67,9 @@ func (a *app) newChatCmd() *cobra.Command {
 		Long: "Start or resume a conversation about a completed review. With no " +
 			"question argument and an interactive terminal, chat runs a REPL; with a " +
 			"question it answers once and exits. Sessions are cached so they can be " +
-			"resumed with --session.",
+			"resumed with --session. Evidence-backed corrections run in the background; " +
+			"one-shot chat and /exit wait for pending updates. GitLab sessions also " +
+			"update the published review, while the conversation stays local.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runChat(cmd.Context(), opts, args)
 		},
@@ -69,6 +78,10 @@ func (a *app) newChatCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "Resume an existing session by id")
+	cmd.Flags().StringVar(&opts.updateStateDir, "update-state-dir", "", "Internal serve setting: durable update job directory")
+	cmd.Flags().StringVar(&opts.updateJobID, "run-update-job", "", "Internal serve setting: execute a durable update job")
+	_ = cmd.Flags().MarkHidden("update-state-dir")
+	_ = cmd.Flags().MarkHidden("run-update-job")
 	cmd.Flags().StringVar(&opts.findingID, "finding", "", "Focus the conversation on a specific finding id")
 	cmd.Flags().StringVar(&opts.fromJSON, "from-json", "", "Start a session from a saved review JSON file")
 	cmd.Flags().BoolVar(&opts.gitlab, "gitlab", false, "Start a session from a GitLab merge request (use with --url or --repo/--id)")
@@ -176,7 +189,10 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// post the reply back into the thread. This is what the serve daemon spawns,
 	// and it is directly runnable from the terminal too.
 	if opts.replyDiscussion != "" {
-		return a.runChatGitLabReply(ctx, profile, opts)
+		if opts.updateJobID != "" {
+			return a.runUpdateJob(ctx, profile, opts)
+		}
+		return a.runChatGitLabReply(ctx, profile, opts, nil)
 	}
 	// The store is opened only when this invocation loads from it or will
 	// persist turns. An explicitly ephemeral chat from an external source
@@ -265,9 +281,31 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// A session created in THIS invocation carries a host the user just chose
 	// (e.g. parsed from --url); a resumed session's stored host is checked
 	// against the active profile before the profile's token is sent to it.
-	source, retrievalEngine, err := a.chatSource(profile, sess.Source, created)
+	trustedHost := created
+	source, retrievalEngine, err := a.chatSource(profile, sess.Source, trustedHost)
 	if err != nil {
 		return err
+	}
+	if adapter, ok := source.(*glscm.Adapter); ok && !created {
+		if err := adapter.RecoverReviewUpdates(ctx, sess.Source.Repo, sess.Source.Identifier); err != nil {
+			return err
+		}
+		reviews, err := adapter.ReviewResults(ctx, sess.Source.Repo, sess.Source.Identifier)
+		if err != nil {
+			return err
+		}
+		if current := reviews[sess.ReviewID]; current != nil && !glscm.SameReviewState(sess.Result, current) {
+			restored, err := mergeCLIReviewState(sess.Result, current)
+			if err != nil {
+				return err
+			}
+			if err := sess.RecordReviewUpdate(restored, "Refreshed from the published GitLab review."); err != nil {
+				return err
+			}
+			sess.ContextOptions = restored.ContextOptions
+			sess.Context = nil
+			created = true // Persist the refreshed state below; host validation already ran.
+		}
 	}
 	engine, err := a.chatEngine(ctx, profile, source, retrievalEngine, logger)
 	if err != nil {
@@ -311,20 +349,92 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			return
 		}
 		if err := store.Save(sess); err != nil {
-			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
+			a.warnf("chat: could not save session (review and conversation changes may be lost on resume): %v", err)
 		}
 	}
 	if created || refreshed {
 		saveSession()
 	}
 
+	updates := &cliChatUpdates{completed: make(chan cliUpdateCompletion, 1)}
+	updates.run = func(ctx context.Context, input cliUpdateInput) cliUpdateCompletion {
+		return a.runCLIReviewUpdate(ctx, profile, input, trustedHost)
+	}
+	defer updates.stop()
+	refreshTools := false
+	var lastUpdateErr error
+	applyUpdate := func(completion cliUpdateCompletion) error {
+		updates.pending = false
+		message, applyErr := completion.Message, completion.Err
+		if completion.Result != nil && applyErr == nil {
+			applyErr = sess.RecordReviewUpdate(completion.Result, completion.Reason)
+			if applyErr == nil && completion.Result.ContextOptions != nil {
+				sess.ContextOptions = completion.Result.ContextOptions
+			}
+			if applyErr == nil && completion.Context != nil {
+				sess.Context = completion.Context
+				sess.ContextHeadSHA, sess.ContextBaseSHA = completion.Context.DiffHeadSHA, completion.Context.DiffBaseSHA
+				reviewCtx = completion.Context
+				co.release()
+				refreshTools = true
+			}
+		}
+		if applyErr != nil {
+			message = "Review update could not complete: " + applyErr.Error()
+		}
+		msg := session.FromLLM(llm.Message{Role: "assistant", Content: message})
+		msg.Tokens = &completion.Tokens
+		sess.Append(msg)
+		saveSession()
+		fmt.Fprintln(os.Stdout, "\n"+textsan.StripControl(message)) //nolint:errcheck // stdout write; correction has already completed
+		lastUpdateErr = applyErr
+		return applyErr
+	}
+	drainUpdate := func() {
+		select {
+		case completion := <-updates.completed:
+			_ = applyUpdate(completion)
+		default:
+		}
+	}
+	finishUpdate := func() error {
+		if !updates.pending {
+			return lastUpdateErr
+		}
+		select {
+		case completion := <-updates.completed:
+			return applyUpdate(completion)
+		case <-ctx.Done():
+			updates.stop()
+			select {
+			case completion := <-updates.completed:
+				_ = applyUpdate(completion)
+			default:
+			}
+			return ctx.Err()
+		}
+	}
 	turn := func(question string) error {
+		drainUpdate()
+		if refreshTools {
+			toolRoot = sess.Source.RepoRoot
+			if toolRoot == "" && model.ReviewMode(sess.Source.Mode) != model.ModeLocal && profile.MaxToolCalls >= 0 {
+				if err := a.chatEnsureCheckout(ctx, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions), &co); err != nil {
+					a.warnf("chat: could not refresh retrieval checkout: %v", err)
+				}
+				toolRoot = co.root
+			}
+			tools = chatToolset(toolRoot)
+			refreshTools = false
+		}
+
 		question = strings.TrimSpace(question)
 		if question == "" {
 			return nil
 		}
 		sess.Append(session.UserMessage(question))
 		res, err := engine.Discuss(ctx, review.DiscussRequest{
+			UpdateReview:             updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question}),
 			ReviewCtx:                reviewCtx,
 			Result:                   sess.Result,
 			PinnedFindingID:          sess.PinnedFindingID,
@@ -346,6 +456,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			err = fmt.Errorf("chat: discussion agent returned an empty reply")
 		}
 		if err != nil {
+			updates.discardReservation()
 			// Drop the unanswered question so a retried turn does not leave two
 			// consecutive user messages in the transcript.
 			sess.Messages = sess.Messages[:len(sess.Messages)-1]
@@ -358,17 +469,23 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		// LLM output is untrusted for terminal purposes: strip control characters
 		// so a reply cannot smuggle escape sequences into the user's terminal.
 		fmt.Fprintln(os.Stdout, textsan.StripControl(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
+		updates.start(ctx)
+		drainUpdate()
 		return nil
 	}
 
 	question := strings.TrimSpace(strings.Join(args, " "))
 	if question != "" {
-		return turn(question)
+		if err := turn(question); err != nil {
+			return err
+		}
+		return finishUpdate()
 	}
 	if !isTerminal(os.Stdin) {
 		return fmt.Errorf("chat: no question given and stdin is not a terminal; pass a question argument for one-shot use")
 	}
-	return a.chatREPL(ctx, sess, turn)
+	err = a.chatREPL(ctx, sess, turn, updates.completed, func(completion cliUpdateCompletion) { _ = applyUpdate(completion) })
+	return errors.Join(err, finishUpdate())
 }
 
 // chatREPL runs the interactive loop, printing session context and the pinned
@@ -378,7 +495,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 // fail with "context canceled" and the session would zombie until /exit. Every
 // value echoed here can originate outside this process (markers, saved JSON,
 // model output), so it is control-stripped before touching the terminal.
-func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error) error {
+func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error, completed <-chan cliUpdateCompletion, apply func(cliUpdateCompletion)) error {
 	fmt.Fprintf(os.Stderr, "Discussing review %s", textsan.StripControl(sess.ReviewID))
 	if sess.Source.Repo != "" {
 		fmt.Fprintf(os.Stderr, " on %s", textsan.StripControl(sess.Source.Repo))
@@ -404,7 +521,11 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 		for scanner.Scan() {
-			lines <- scanner.Text()
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
 		scanDone <- scanner.Err()
 	}()
@@ -416,6 +537,9 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 			return ctx.Err()
 		case err := <-scanDone:
 			return err // EOF or read error
+		case completion := <-completed:
+			apply(completion)
+			continue
 		case line = <-lines:
 		}
 		line = strings.TrimSpace(line)
@@ -585,6 +709,9 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	}
 	apiBaseURL := firstNonEmpty(baseURL, profile.GitLabBaseURL)
 	adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
+	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
+		return nil, err
+	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
@@ -947,9 +1074,8 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	if err != nil {
 		return nil, err
 	}
-	// No small client here on purpose: the discussion agent always runs the
-	// primary model (there is no workflow spec and therefore no "@small" step),
-	// so a second endpoint would be dead weight.
+	// Discussion uses the primary model. Callers running an update workflow
+	// additionally configure its small client for the summarization stage.
 	client := newLLMClient(profile, logger)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
@@ -964,7 +1090,7 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 // on the thread's root marker (a thread nickpit did not start is a quiet no-op),
 // reassembles the review by id from the MR notes, rebuilds the context from the
 // live MR, runs one discussion turn seeded with the thread, and posts the answer.
-func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, opts chatOptions) error {
+func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, opts chatOptions, execution *chatUpdateExecution) error {
 	project, mrID, baseURL := opts.repo, opts.mrID, ""
 	if strings.TrimSpace(opts.rawURL) != "" {
 		var err error
@@ -994,6 +1120,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return fmt.Errorf("chat: resolving token user for thread verification: %w", err)
 	}
 	botUserID := user.ID
+	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
+		return fmt.Errorf("chat: recovering pending review update: %w", err)
+	}
 
 	notes, err := discussionWithFallbacks(ctx, client, project, mrID, opts.replyDiscussion, botUserID)
 	if err != nil {
@@ -1011,6 +1140,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	reviewID, findingID, ok := reviewmd.DetectThreadReview(notes[0].Body)
 	if !ok {
 		return nil
+	}
+	if execution != nil && reviewID != execution.job.ReviewID {
+		return fmt.Errorf("update job's original review no longer matches thread")
 	}
 	allowed, err := gitLabThreadResponsesAllowed(ctx, client, project, mrID, notes, botUserID, opts.replyMuteEmoji)
 	if err != nil {
@@ -1054,6 +1186,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// bot already answered, the superseded invocation bows out so the thread gets
 	// exactly one answer covering the conversation instead of duplicates.
 	pending, pendingOK := latestPendingNote(notes, botUserID)
+	if execution != nil {
+		pending, pendingOK = execution.job.NoteID, true
+	}
 	if !pendingOK {
 		return nil
 	}
@@ -1074,6 +1209,12 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return errChatReplySuppressed
 	}
 	history := chatThreadToMessages(notes, botUserID, controls)
+	if findingID != "" {
+		history, err = linkedFindingMessages(ctx, client, project, mrID, reviewID, []string{findingID}, notes, pending, botUserID, controls)
+		if err != nil {
+			return err
+		}
+	}
 	if len(history) == 0 {
 		return nil
 	}
@@ -1081,6 +1222,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	engine, err := a.chatEngine(ctx, profile, adapter, retrieval.NewLocalEngine(), logger)
 	if err != nil {
 		return err
+	}
+	if execution != nil {
+		smallProfile := config.EffectiveSmallProfile(profile)
+		engine.SetSmallClient(newLLMClient(smallProfile, logger), smallProfile)
 	}
 	// Prepare the context through the review pipeline (filters, trimming,
 	// toolchain) rather than a raw fetch, so the chat never sees withheld files
@@ -1095,6 +1240,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
 	}, result.ContextOptions)
+	if execution != nil {
+		// Corrections consume only their selected discussion snapshot.
+		req.IncludeComments = false
+	}
 	// The checkout prepared for context preparation is kept until the reply is
 	// posted so the retrieval tools can read from it (the clone this reply
 	// already paid for context filters and toolchain capture). An explicit
@@ -1106,6 +1255,9 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	defer co.release()
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co, controls)
 	if err != nil {
+		if execution != nil {
+			return err
+		}
 		// A context-preparation failure (often a remote checkout that could not
 		// be cloned, or content filters/toolchain capture that could not read
 		// the MR) leaves the author's question unanswered. Post a reply so they
@@ -1125,7 +1277,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		toolRoot = co.root
 	}
 
-	res, err := engine.Discuss(ctx, review.DiscussRequest{
+	discussReq := review.DiscussRequest{
 		ReviewCtx:                reviewCtx,
 		Result:                   result,
 		PinnedFindingID:          findingID,
@@ -1139,8 +1291,23 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		MaxDuplicateToolCalls:    profile.MaxDuplicateToolCalls,
 		MaxOutputRetries:         profile.MaxOutputRetries,
 		MaxReasoningSeconds:      profile.MaxReasoningSeconds,
-	})
+	}
+	update := gitLabChatUpdate{app: a, engine: engine, adapter: adapter, profile: profile, opts: opts,
+		project: project, iid: mrID, botUserID: botUserID, pending: pending, controls: controls, request: discussReq, triggerNotes: notes}
+	defer func() {
+		if update.queuedRelease != nil {
+			update.queuedRelease()
+		}
+	}()
+	if execution != nil {
+		return (&gitLabUpdateExecution{gitLabChatUpdate: &update, job: execution.job, store: execution.store}).executeJob(ctx)
+	}
+	discussReq.UpdateReview = update.discussionUpdateHandler()
+	res, err := engine.Discuss(ctx, discussReq)
 	if err != nil {
+		if errors.Is(err, errChatReplySuperseded) {
+			return nil
+		}
 		return fmt.Errorf("chat: discussion agent: %w", err)
 	}
 	reply := strings.TrimSpace(res.Reply)
@@ -1152,7 +1319,19 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	return a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply)
+	var markers []string
+	if update.queuedJob != nil {
+		markers = append(markers, reviewmd.UpdateJobReplyMarker(reviewmd.UpdateJobReply{JobID: update.queuedJob.ID, NoteID: pending, Phase: "scheduled"}))
+	}
+	postErr := a.postChatReplyWithPolicy(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, opts.replyRequested, opts.replyMuteEmoji, controls, reply, markers...)
+	if update.queuedJob != nil {
+		// Also check after an uncertain POST: the reply may have landed. The
+		// durable worker retries missing reactions before evaluating the job.
+		if err := syncUpdateEyes(ctx, client, update.queuedJob, botUserID, true); err != nil {
+			a.logf(ctx, "chat: update progress reaction awaits retry: %v", err)
+		}
+	}
+	return postErr
 }
 
 type chatResponseClient interface {
@@ -1218,7 +1397,7 @@ func chatFreshTarget(ctx context.Context, client chatNoteClient, project string,
 	return fresh, nil
 }
 
-func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string) error {
+func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseClient, project string, mrID int, discussionID string, pending, botUserID int, requested bool, muteEmoji string, controls chatMessageControls, body string, markers ...string) error {
 	fresh, err := chatFreshTarget(ctx, client, project, mrID, discussionID, pending, botUserID, requested, controls)
 	if errors.Is(err, errChatReplySuperseded) {
 		return nil
@@ -1248,7 +1427,7 @@ func (a *app) postChatReplyWithPolicy(ctx context.Context, client chatResponseCl
 			return err
 		}
 	}
-	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body)
+	return a.postChatReplyUnchecked(ctx, client, project, mrID, discussionID, pending, body, markers...)
 }
 
 // chatNoteClient is the subset of the GitLab client the chat reply path uses:
@@ -1291,9 +1470,15 @@ func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project 
 
 // postChatReplyUnchecked performs the POST after its caller has completed all
 // required freshness and policy reads.
-func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string) error {
-	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
-	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
+func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending int, body string, markers ...string) error {
+	var posted strings.Builder
+	posted.WriteString(reviewmd.EscapeQuickActions(reviewmd.Sanitize(body)))
+	for _, marker := range markers {
+		posted.WriteString("\n\n")
+		posted.WriteString(marker)
+	}
+	postedBody := posted.String()
+	err := client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, postedBody)
 	if err == nil {
 		return nil
 	}
@@ -1302,7 +1487,7 @@ func (a *app) postChatReplyUnchecked(ctx context.Context, client chatNoteClient,
 		return err
 	}
 	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
-	noteBody := posted
+	noteBody := postedBody
 	if marker := reviewmd.ChatReplyMarker(discussionID, pending); marker != "" {
 		noteBody += "\n\n" + marker
 	}
@@ -1347,9 +1532,9 @@ func discussionWithFallbacks(ctx context.Context, client chatNoteClient, project
 // mergeFallbackReplies is the pure merge behind discussionWithFallbacks. Only
 // notes authored by the bot itself are trusted as fallback answers (markers are
 // encoded, not authenticated), and MRNotes returning the same note from both
-// the notes and discussions endpoints is de-duplicated on content.
+// the notes and discussions endpoints is de-duplicated by source identity.
 func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, discussionID string, botUserID int) []glscm.DiscussionNote {
-	replies := make(map[int][]string)
+	replies := make(map[int][]glscm.DiscussionNote)
 	dup := make(map[string]bool)
 	for _, note := range mrNotes {
 		if botUserID == 0 || note.AuthorID != botUserID {
@@ -1361,11 +1546,14 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 			}
 			body := reviewmd.StripMarkers(note.Body)
 			key := fmt.Sprintf("%d\x00%s", env.AnsweredNoteID, body)
+			if note.ID > 0 {
+				key = fmt.Sprintf("note:%d", note.ID)
+			}
 			if body == "" || dup[key] {
 				continue
 			}
 			dup[key] = true
-			replies[env.AnsweredNoteID] = append(replies[env.AnsweredNoteID], body)
+			replies[env.AnsweredNoteID] = append(replies[env.AnsweredNoteID], glscm.DiscussionNote{Body: body, AuthorID: botUserID, FallbackNoteID: note.ID, AnsweredNoteID: env.AnsweredNoteID})
 		}
 	}
 	if len(replies) == 0 {
@@ -1374,9 +1562,7 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 	merged := make([]glscm.DiscussionNote, 0, len(notes)+len(replies))
 	for _, note := range notes {
 		merged = append(merged, note)
-		for _, body := range replies[note.ID] {
-			merged = append(merged, glscm.DiscussionNote{Body: body, AuthorID: botUserID})
-		}
+		merged = append(merged, replies[note.ID]...)
 	}
 	return merged
 }
@@ -1386,11 +1572,19 @@ func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, 
 // the newest activity is the bot's own reply (the pending question was already
 // answered; answering again would duplicate) or the thread has no user notes.
 func latestPendingNote(notes []glscm.DiscussionNote, botUserID int) (noteID int, ok bool) {
+	answeredThrough := 0
 	for _, note := range slices.Backward(notes) {
 		if note.System {
 			continue
 		}
 		if botUserID != 0 && note.AuthorID == botUserID {
+			if reply := reviewmd.ReadUpdateJobReply(note.Body); reply.JobID != "" && reply.NoteID > 0 {
+				answeredThrough = max(answeredThrough, reply.NoteID)
+				continue
+			}
+			return 0, false
+		}
+		if note.ID <= answeredThrough {
 			return 0, false
 		}
 		return note.ID, true
@@ -1465,10 +1659,17 @@ func chatNoteDirectives(notes []glscm.DiscussionNote, noteID int, controls chatM
 }
 
 func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
+	if len(notes) == 0 {
+		return nil
+	}
+	return chatNotesToMessages(notes[1:], botUserID, controls...)
+}
+
+func chatNotesToMessages(notes []glscm.DiscussionNote, botUserID int, controls ...chatMessageControls) []llm.Message {
 	resolvedControls := resolveChatMessageControls(controls)
 	var msgs []llm.Message
-	for i, note := range notes {
-		if i == 0 || note.System {
+	for _, note := range notes {
+		if note.System {
 			continue
 		}
 		body := stripChatMessageControls(note.Body, resolvedControls)

@@ -18,6 +18,11 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	if result == nil {
 		return nil
 	}
+	ctx, unlock, err := a.client.LockMR(ctx, req.Repo, req.Identifier)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	info, err := a.client.FetchMRPositionInfo(ctx, req.Repo, req.Identifier)
 	if err != nil {
 		return fmt.Errorf("gitlab publish: fetch position info: %w", err)

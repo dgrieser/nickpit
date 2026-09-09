@@ -86,3 +86,10 @@ func correctnessBadge(correctness string, ansi bool) string {
 	}
 	return "[CORRECT]"
 }
+
+func resolvedBadge(ansi bool) string {
+	if ansi {
+		return ansiVerdictBadge("RESOLVED", GlyphCorrect, correctColor)
+	}
+	return "[RESOLVED]"
+}

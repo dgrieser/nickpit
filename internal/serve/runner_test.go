@@ -127,6 +127,23 @@ func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
 	}
 }
 
+func TestExecRunnerUpdateJobFlagsAreAuthoritative(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := ChatSpec{ProjectPath: "platform/api", IID: 7, DiscussionID: "thread", LogDir: t.TempDir(),
+		ExtraArgs: []string{"--run-update-job=wrong", "--update-state-dir=wrong"}, UpdateJobID: "job", UpdateStateDir: "/private/state"}
+	_, path, err := runner.RunChat(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "--run-update-job=wrong --update-state-dir=wrong --update-state-dir=/private/state --run-update-job=job") {
+		t.Fatalf("job target not pinned after extra arguments: %s", data)
+	}
+}
+
 func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {

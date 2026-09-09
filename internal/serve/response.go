@@ -23,6 +23,7 @@ type ResponseConfig struct {
 // ThreadResponseState is the current effective state of one nickpit review
 // thread, assembled from config, persistent root metadata, and live reactions.
 type ThreadResponseState struct {
+	Missing      bool
 	Ours         bool
 	Root         gitlab.DiscussionNote
 	DiscussionID string
@@ -83,7 +84,11 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 	if err != nil {
 		return state, err
 	}
-	if len(notes) == 0 || notes[0].AuthorID != group.BotUserID {
+	if len(notes) == 0 {
+		state.Missing = true
+		return state, nil
+	}
+	if notes[0].AuthorID != group.BotUserID {
 		return state, nil
 	}
 	if _, _, ok := reviewmd.DetectThreadReview(notes[0].Body); !ok || reviewmd.StripMarkers(notes[0].Body) == "" {
@@ -128,6 +133,11 @@ func hasHumanEmoji(awards []gitlab.AwardEmoji, name string, botUserID int) bool 
 func (c *ResponseController) SetCommandMuted(ctx context.Context, group *Group, project string, iid int, discussionID string, muted bool) (ThreadResponseState, error) {
 	unlock := c.locks.lock(c.lockKey(project, iid))
 	defer unlock()
+	ctx, release, err := lockResponseMR(ctx, group, project, iid)
+	if err != nil {
+		return ThreadResponseState{}, err
+	}
+	defer release()
 	state, err := c.stateLocked(ctx, group, project, iid, discussionID, nil)
 	if err != nil || !state.Ours {
 		return state, err
@@ -148,6 +158,11 @@ func (c *ResponseController) SetCommandMuted(ctx context.Context, group *Group, 
 func (c *ResponseController) SyncThread(ctx context.Context, group *Group, project string, iid int, discussionID string) error {
 	unlock := c.locks.lock(c.lockKey(project, iid))
 	defer unlock()
+	ctx, release, err := lockResponseMR(ctx, group, project, iid)
+	if err != nil {
+		return err
+	}
+	defer release()
 	state, err := c.stateLocked(ctx, group, project, iid, discussionID, nil)
 	if err != nil || !state.Ours {
 		return err
@@ -164,6 +179,11 @@ func (c *ResponseController) SyncThread(ctx context.Context, group *Group, proje
 func (c *ResponseController) SyncReactedRoot(ctx context.Context, group *Group, project string, iid int, discussionID string, noteID int) (bool, error) {
 	unlock := c.locks.lock(c.lockKey(project, iid))
 	defer unlock()
+	ctx, release, err := lockResponseMR(ctx, group, project, iid)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	state, err := c.stateLocked(ctx, group, project, iid, discussionID, nil)
 	if err != nil || !state.Ours || state.Root.ID != noteID {
 		return false, err
@@ -200,6 +220,11 @@ func (c *ResponseController) SyncNewRoots(ctx context.Context, group *Group, pro
 func (c *ResponseController) syncMR(ctx context.Context, group *Group, project string, iid int, onlyMissingFooter bool) error {
 	unlock := c.locks.lock(c.lockKey(project, iid))
 	defer unlock()
+	ctx, release, err := lockResponseMR(ctx, group, project, iid)
+	if err != nil {
+		return err
+	}
+	defer release()
 	discussions, err := group.Client.MRDiscussions(ctx, project, iid)
 	if err != nil {
 		return err
@@ -259,6 +284,13 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		}
 	}
 	return joinResponseErrors(errs)
+}
+
+func lockResponseMR(ctx context.Context, group *Group, project string, iid int) (context.Context, func(), error) {
+	if group == nil || group.Client == nil {
+		return ctx, func() {}, nil
+	}
+	return group.Client.LockMR(ctx, project, iid)
 }
 
 func joinResponseErrors(errs []error) error {

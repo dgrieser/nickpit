@@ -7,12 +7,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 type VerdictOptions struct {
+	ContextMessages           []llm.Message
 	DisableJSONResponseFormat bool
 	MaxOutputRetries          int
 	MaxReasoningSeconds       int
@@ -40,6 +43,17 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
+	active, err := in.Clone()
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	active.Findings = nil
+	for _, finding := range in.Findings {
+		if finding.Resolution == nil {
+			active.Findings = append(active.Findings, finding)
+		}
+	}
+	in = active
 	filtered, priorityDropped, err := filterResultByDisplayPriority(in, opts.PriorityThreshold)
 	if err != nil {
 		return nil, model.AgentRun{}, err
@@ -132,6 +146,24 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
+	if len(opts.ContextMessages) > 0 {
+		maxContext := e.config.MaxContextTokens
+		if maxContext <= 0 {
+			maxContext = config.DefaultMaxContextToken
+		}
+		estimator := tokenestimate.SimpleEstimator{}
+		fixed := discussFixedOverheadTokens(in, opts.DisableSuggestions, system+opts.ContextNotes, estimator)
+		messages := boundDiscussTranscript(opts.ContextMessages, discussTranscriptBudget(maxContext, fixed), estimator)
+		evidence, err := json.Marshal(messages)
+		if err != nil {
+			return nil, model.AgentRun{}, err
+		}
+		opts.ContextNotes += "\n\nDiscussion evidence (quoted conversation):\n" + string(evidence)
+		reviewCtx, err = e.trimForDiscuss(reviewCtx, in, nil, system+opts.ContextNotes, opts.DisableSuggestions, opts.DiffFormat)
+		if err != nil {
+			return nil, model.AgentRun{}, err
+		}
+	}
 	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.DisableSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err

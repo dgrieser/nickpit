@@ -100,13 +100,15 @@ type HandlerConfig struct {
 // (the daemon's config path, GitLab base URL, log dir, and any extra args). The
 // per-group token is taken from the matched group at spawn time.
 type ChatConfig struct {
-	ConfigPath string
-	BaseURL    string
-	LogDir     string
-	ExtraArgs  []string
+	UpdateStateDir string
+	ConfigPath     string
+	BaseURL        string
+	LogDir         string
+	ExtraArgs      []string
 	// MaxConcurrent caps concurrent chat children; <=0 uses
 	// defaultMaxConcurrentChats.
-	MaxConcurrent int
+	MaxConcurrent       int
+	UpdateMaxConcurrent int
 }
 
 // Handler is the webhook HTTP endpoint. It only parses, authenticates, and
@@ -148,9 +150,11 @@ type Handler struct {
 	// httpServer.Shutdown's 5s budget is shorter than the 30s read timeouts, so
 	// a slow client can deliver a webhook after ShutdownChats started waiting —
 	// Add racing Wait is documented WaitGroup misuse; the flag refuses instead.
-	chatWG      sync.WaitGroup
-	chatAdmitMu sync.Mutex
-	chatClosed  bool
+	chatWG             sync.WaitGroup
+	chatAdmitMu        sync.Mutex
+	chatClosed         bool
+	updateStarted      bool
+	updatePollInterval time.Duration
 	// chatCtx roots all chat work in the daemon lifecycle; chatCancel tears it
 	// down on shutdown so in-flight children are terminated instead of
 	// outliving the daemon.
@@ -867,6 +871,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	}
 
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
+		UpdateStateDir: h.chatCfg.UpdateStateDir,
 		ProjectPath:    projectPath,
 		IID:            decision.IID,
 		DiscussionID:   decision.DiscussionID,
