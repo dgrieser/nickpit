@@ -117,22 +117,29 @@ func (a *app) runSessionTo(ctx context.Context, opts sessionOptions, args []stri
 		subject = "review history"
 		render = func(w io.Writer, _ *model.ReviewResult) error { return a.formatReviewHistory(w, sess.ReviewHistory) }
 	}
-	if opts.clipboard {
-		return a.copySessionToClipboard(ctx, sess, w, render, subject)
+	origin := "session " + textsan.StripControl(sess.ID)
+	if err := a.emitReview(ctx, w, opts.clipboard, subject, origin, func(out io.Writer) error {
+		return render(out, sess.Result)
+	}); err != nil {
+		return fmt.Errorf("session: %w", err)
 	}
-	return render(w, sess.Result)
+	return nil
 }
 
-// copySessionToClipboard renders the session in the selected --output format
-// and hands it to the platform clipboard helper, printing a one-line
-// confirmation instead of the content itself. Rendering into a buffer (not a
-// *os.File) makes the formatter pick the unstyled form, so the clipboard
-// carries Markdown or JSON source rather than terminal escapes. subject names
-// what was copied (review or warnings) in that confirmation.
-func (a *app) copySessionToClipboard(ctx context.Context, sess *session.Session, w io.Writer,
-	render func(io.Writer, *model.ReviewResult) error, subject string) error {
+// emitReview prints rendered review output, or — with clip — hands it to the
+// platform clipboard helper and prints a one-line confirmation instead of the
+// content itself. Rendering into a buffer (not a *os.File) makes the formatter
+// pick the unstyled form, so the clipboard carries Markdown or JSON source
+// rather than terminal escapes. subject names what was copied (review or
+// warnings) and origin where it came from ("session abc123", "GitLab MR
+// grp/proj!42") in that confirmation.
+func (a *app) emitReview(ctx context.Context, w io.Writer, clip bool, subject, origin string,
+	render func(io.Writer) error) error {
+	if !clip {
+		return render(w)
+	}
 	var buf bytes.Buffer
-	if err := render(&buf, sess.Result); err != nil {
+	if err := render(&buf); err != nil {
 		return err
 	}
 	copyFn := a.clipboardCopy
@@ -141,14 +148,14 @@ func (a *app) copySessionToClipboard(ctx context.Context, sess *session.Session,
 	}
 	helper, err := copyFn(ctx, buf.Bytes())
 	if err != nil {
-		return fmt.Errorf("session: %w", err)
+		return err
 	}
-	if _, err := fmt.Fprintf(w, "Copied %s of session %s to the clipboard (%d bytes) via %s.\n",
-		subject, textsan.StripControl(sess.ID), buf.Len(), helper); err != nil {
+	if _, err := fmt.Fprintf(w, "Copied %s of %s to the clipboard (%d bytes) via %s.\n",
+		subject, origin, buf.Len(), helper); err != nil {
 		// The clipboard already holds the content; a confirmation that could not be
 		// written (closed pipe, full disk) is not a failed copy, so warn instead of
 		// reporting the command as failed.
-		a.warnf("session: could not print the clipboard confirmation: %v", err)
+		a.warnf("could not print the clipboard confirmation: %v", err)
 	}
 	return nil
 }

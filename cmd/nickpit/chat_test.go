@@ -400,7 +400,7 @@ func TestPickReviewPrefersNewest(t *testing.T) {
 		Findings: []model.Finding{{ID: "f4"}}}
 	reviews := map[string]*model.ReviewResult{"aaa": old, "zzz": newer}
 
-	got, err := pickReview(reviews, "")
+	got, err := pickReview(reviews, "", "merge request")
 	if err != nil {
 		t.Fatalf("pickReview: %v", err)
 	}
@@ -409,14 +409,14 @@ func TestPickReviewPrefersNewest(t *testing.T) {
 		t.Fatalf("picked %q, want the newest review zzz", got.ReviewID)
 	}
 	// Explicit id always wins.
-	got, err = pickReview(reviews, "aaa")
+	got, err = pickReview(reviews, "aaa", "merge request")
 	if err != nil || got.ReviewID != "aaa" {
 		t.Fatalf("explicit id pick = %v, %v", got, err)
 	}
 	// Untimestamped legacy markers lose to any timestamped review.
 	legacy := &model.ReviewResult{ReviewID: "leg", Findings: []model.Finding{{ID: "x"}, {ID: "y"}}}
 	reviews["leg"] = legacy
-	got, err = pickReview(reviews, "")
+	got, err = pickReview(reviews, "", "merge request")
 	if err != nil || got.ReviewID != "zzz" {
 		t.Fatalf("legacy pick = %v, %v; want zzz", got, err)
 	}

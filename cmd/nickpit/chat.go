@@ -716,9 +716,9 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
 	}
-	result, err := pickReview(reviews, opts.reviewID)
+	result, err := pickReview(reviews, opts.reviewID, "merge request")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("chat: %w", err)
 	}
 	sess := session.New()
 	sess.Result = result
@@ -744,22 +744,23 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	return sess, nil
 }
 
-// pickReview selects one review from those reassembled on an MR. An explicit id
+// pickReview selects one review from those reassembled on a merge/pull request,
+// which noun names in its errors (the caller adds its own command prefix). An explicit id
 // wins; otherwise the NEWEST review by its carried creation timestamp is chosen
 // — after a re-review the latest run is what the user wants to discuss, even
 // when it has fewer findings than an older run. Reviews without a timestamp
 // (markers written before timestamps existed) lose to any timestamped review;
 // remaining ties fall back to most findings, then lexicographic id, for
 // determinism.
-func pickReview(reviews map[string]*model.ReviewResult, reviewID string) (*model.ReviewResult, error) {
+func pickReview(reviews map[string]*model.ReviewResult, reviewID, noun string) (*model.ReviewResult, error) {
 	if len(reviews) == 0 {
-		return nil, fmt.Errorf("chat: no complete nickpit review found on the merge request (no markers, or a publish is still in progress)")
+		return nil, fmt.Errorf("no complete nickpit review found on the %s (no markers, or a publish is still in progress)", noun)
 	}
 	if reviewID != "" {
 		if r, ok := reviews[reviewID]; ok {
 			return r, nil
 		}
-		return nil, fmt.Errorf("chat: review id %q not found on the merge request (or its carrier data is incomplete)", reviewID)
+		return nil, fmt.Errorf("review id %q not found on the %s (or its carrier data is incomplete)", reviewID, noun)
 	}
 	ids := make([]string, 0, len(reviews))
 	for id := range reviews {
