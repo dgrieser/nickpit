@@ -427,6 +427,10 @@ nickpit gitlab mr --url https://gitlab.example.com/group/project/-/merge_request
 
 # Review a GitLab MR and post the result back as comments (summary + one per finding)
 nickpit gitlab mr --repo group/project --id 456 --publish
+
+# Read a published review back from the PR/MR — print it, or copy it to the clipboard
+nickpit github feedback --url https://github.com/owner/repo/pull/123
+nickpit gitlab feedback --url https://gitlab.example.com/group/project/-/merge_requests/456 --clipboard
 ```
 
 ### Publishing
@@ -434,6 +438,30 @@ nickpit gitlab mr --repo group/project --id 456 --publish
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
+
+### Reading a Published Review Back 📋
+
+`nickpit github feedback` and `nickpit gitlab feedback` print a review NickPit already published on a PR/MR — reassembled from the same hidden markers a chat uses, so there is no re-review, no LLM call, and no local session needed. That is how feedback posted by the [serve daemon](#gitlab-webhook-daemon) or from another machine gets onto your terminal, and with `--clipboard` into an editor or coding agent.
+
+The request is selected exactly as in the review commands: `--url`, or `--repo` plus `--id`. Output uses the normal review formats (`-o markdown|json|raw`), and `--clipboard` copies instead of printing, with the same helper chain and unstyled payload as [`nickpit session --clipboard`](#discuss-a-review-chat-). The command is read-only — nothing is posted or changed on the PR/MR.
+
+When a request carries several reviews the newest is printed; `--list` shows them all (newest first, with publish time, revision, finding count, verdict, model and NickPit version) and `--review-id` picks one. Only markers in comments authored by the token's own user are trusted, so a marker planted by another commenter is ignored — on GitHub this needs a token whose `/user` resolves, which rules out a GitHub App installation token.
+
+```bash
+# Print the newest review published on a PR/MR
+nickpit github feedback --repo owner/repo --id 123
+nickpit gitlab feedback --repo group/project --id 456
+
+# Copy it to the clipboard instead of printing it
+nickpit gitlab feedback --repo group/project --id 456 --clipboard
+
+# List the reviews on the MR, then print a specific one
+nickpit gitlab feedback --repo group/project --id 456 --list
+nickpit gitlab feedback --repo group/project --id 456 --review-id <review-id>
+
+# Machine-readable, e.g. to hand the findings to another tool
+nickpit github feedback --repo owner/repo --id 123 --output json
+```
 
 ## Discuss a Review (Chat) 💬
 

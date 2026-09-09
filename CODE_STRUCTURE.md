@@ -6,6 +6,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `cmd/nickpit/main.go`: Main CLI entry point. Defines commands, flags, profile loading, workflow execution, local review modes, SCM review modes, output selection, publishing, seed-finding handling, and post-review chat-session persistence.
 - `cmd/nickpit/chat.go`: `nickpit chat` command. Starts or resumes a discussion session (from a saved review JSON, a GitLab MR's markers, or the latest/last session), prefers the session's cached prepared context and recreates the diff through the review pipeline when the MR gained commits, and drives the discussion agent interactively (REPL) or one-shot. `--reply-discussion` is the non-interactive GitLab thread-reply mode (read a thread, gate on its root marker, answer only the latest note, post the reply back) that the serve daemon spawns and the terminal can run directly.
+- `cmd/nickpit/feedback_cmd.go`: `nickpit gitlab feedback` / `nickpit github feedback`. Reads the reviews NickPit published on an MR/PR back from their hidden carrier markers (no LLM, no session, read-only) and prints one, copies it to the clipboard, or lists the reviews the request carries.
 - `cmd/nickpit/gitlab_templates.go`: `nickpit gitlab templates sync|list`. Resolves comment-template scopes (user, group, project, or every group in a serve config with its own token) and converges them on the command templates.
 - `cmd/nickpit-config-example/main.go`: Generator binary that prints the example config from `internal/config`.
 - `cmd/nickpit-workflow-example/main.go`: Generator binary that prints the embedded example workflow.
@@ -109,11 +110,12 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/modes.go`: Git file-mode lookups: symlinks (with their blob names) in a given commit tree (`ls-tree`, literal pathspecs), post-change modes plus blob names from a `--raw` listing, and verbatim blob reads, so symlinks are recognized — and their targets recoverable — independently of how a worktree materialized them.
 - `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
-- `internal/scm/github/adapter.go`: GitHub adapter wiring.
+- `internal/scm/github/adapter.go`: GitHub adapter wiring, plus reassembly of published reviews from the carrier markers on the PR's reviews, review comments, and issue comments (author-verified).
 - `internal/scm/github/client.go`: GitHub API client.
 - `internal/scm/github/pr.go`: Pull request loading and review source construction.
 - `internal/scm/github/position.go`: GitHub inline-comment position mapping.
 - `internal/scm/github/publish.go`: GitHub review/comment publishing.
+- `internal/scm/github/user.go`: Authenticated token owner lookup, used to verify carrier-marker authorship.
 - `internal/scm/gitlab/adapter.go`: GitLab adapter wiring.
 - `internal/scm/gitlab/client.go`: GitLab API client.
 - `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).

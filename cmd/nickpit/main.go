@@ -958,6 +958,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 	prCmd.Flags().StringVar(&rawURL, "url", "", "GitHub pull request URL")
 	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
 	cmd.AddCommand(prCmd)
+	cmd.AddCommand(a.newGitHubFeedbackCmd())
 	return cmd
 }
 
@@ -1039,6 +1040,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	mrCmd.Flags().StringVar(&rawURL, "url", "", "GitLab merge request URL")
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	cmd.AddCommand(mrCmd)
+	cmd.AddCommand(a.newGitLabFeedbackCmd())
 	cmd.AddCommand(a.newGitLabServeCmd())
 	cmd.AddCommand(a.newGitLabTemplatesCmd())
 	return cmd
