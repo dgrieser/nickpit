@@ -14,6 +14,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 // DiscussRequest drives a single turn of the discussion agent: a free-form,
@@ -47,7 +48,8 @@ type DiscussRequest struct {
 	DisableParallelToolCalls bool
 
 	// Tools overrides the tool set. A nil slice enables all reviewer tools (the
-	// default); pass an empty non-nil slice to disable tools entirely.
+	// default); pass an empty non-nil slice to disable retrieval tools. The update
+	// tool is controlled separately by UpdateReview and MaxToolCalls.
 	Tools []llm.ToolDefinition
 
 	MaxToolCalls          int
@@ -100,12 +102,16 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if tools == nil {
 		tools = reviewerToolDefinitions()
 	}
+	// The update tool is request-scoped, even when supplied in an override.
+	tools = slices.DeleteFunc(slices.Clone(tools), func(tool llm.ToolDefinition) bool {
+		return tool.Name == toolcatalog.RequestReviewUpdate
+	})
 	var handlers map[string]func(context.Context, llm.ToolCall) (string, error)
 	hasReviewUpdate := req.UpdateReview != nil && req.MaxToolCalls >= 0
 	if hasReviewUpdate {
-		updateTool := reviewUpdateTool()
-		tools = append(append([]llm.ToolDefinition(nil), tools...), updateTool)
-		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){reviewUpdateToolName: func(ctx context.Context, call llm.ToolCall) (string, error) {
+		updateTool := reviewerToolDefinitions(toolcatalog.RequestReviewUpdate)[0]
+		tools = append(tools, updateTool)
+		handlers = map[string]func(context.Context, llm.ToolCall) (string, error){toolcatalog.RequestReviewUpdate: func(ctx context.Context, call llm.ToolCall) (string, error) {
 			var signal ReviewUpdateSignal
 			if err := json.Unmarshal([]byte(call.Arguments), &signal); err != nil {
 				return `{"status":"error","message":"Invalid update arguments."}`, nil
@@ -130,8 +136,15 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	}
 	var toolInstructions string
 	if hasTools {
+		toolNames := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			if toolcatalog.ArgumentSchema(tool.Name) != "" {
+				toolNames = append(toolNames, tool.Name)
+			}
+		}
 		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
 			agentRole:                "discuss",
+			toolNames:                toolNames,
 			parallelToolCallGuidance: !req.DisableParallelToolCalls,
 		})
 		if err != nil {
@@ -173,14 +186,12 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		Pinned                     bool
 		HasTools                   bool
-		HasReviewUpdate            bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		ContextJSON                string
 	}{
 		Pinned:                     pinned,
 		HasTools:                   hasTools,
-		HasReviewUpdate:            hasReviewUpdate,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		ContextJSON:                contextJSON,

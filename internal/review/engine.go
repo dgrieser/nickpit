@@ -2386,13 +2386,17 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 type toolInstructionsConfig struct {
 	agentRole                string
 	parallelToolCallGuidance bool
-	toolNames                []string
+	toolNames                []string // nil selects defaults; empty selects no catalog tools
 }
 
 func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, error) {
 	template, err := e.loadPrompt("tool_instructions.tmpl")
 	if err != nil {
 		return "", err
+	}
+	var listing string
+	if config.toolNames == nil || len(config.toolNames) > 0 {
+		listing = toolInstructionsListing(config.toolNames...)
 	}
 	rendered, err := llm.RenderPrompt(template, struct {
 		AgentRole                string
@@ -2401,7 +2405,7 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 	}{
 		AgentRole:                config.agentRole,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
-		ToolListing:              toolInstructionsListing(config.toolNames...),
+		ToolListing:              listing,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)

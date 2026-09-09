@@ -10,17 +10,22 @@ import (
 	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
+// RequestReviewUpdate names the opt-in discussion tool for scheduling corrections.
+const RequestReviewUpdate = "request_review_update"
+
 type catalogEntry struct {
 	Name               string
 	APIDescription     string
 	ListingDescription string
 	Note               string // optional
+	ExplicitOnly       bool   // excluded from default tool selections
 	Parameters         []CatalogParameter
 }
 
 type CatalogParameter struct {
 	Name        string
 	Type        string
+	ItemsType   string // element type for array parameters
 	Description string
 	Example     string
 	Required    bool
@@ -128,6 +133,17 @@ var catalogDefinition = []catalogEntry{
 			{Name: "max_commits", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits of a range to return; defaults to %d", toollimits.DefaultGitShowCommits), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxGitShowCommits)},
 		},
 	},
+	{
+		Name:               RequestReviewUpdate,
+		ExplicitOnly:       true,
+		APIDescription:     "Schedule an update of findings using their IDs and a concrete reason written in English; use an empty list for an overall review update",
+		ListingDescription: "with affected `finding_ids` and a concrete `reason` when evidence warrants a correction; use an empty finding list for a disputed overall assessment and explain the evidence",
+		Note:               "ALWAYS write the reason in English. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
+		Parameters: []CatalogParameter{
+			{Name: "finding_ids", Type: "array", ItemsType: "string", Description: "Affected finding IDs; pass an empty list for an overall review update", Example: `["<finding ID>"]`, Required: true},
+			{Name: "reason", Type: "string", Description: "Concrete evidence supporting the correction, written in English", Example: `"<evidence in English>"`, Required: true},
+		},
+	},
 }
 
 var errorDefinitions = map[string]errorDefinition{
@@ -151,6 +167,8 @@ func callHierarchyParameters() []CatalogParameter {
 	}
 }
 
+// Definitions returns selected tools in catalog order. With no names, it returns
+// default tools only; request-scoped tools must be selected explicitly.
 func Definitions(names ...string) ([]llm.ToolDefinition, error) {
 	entries, err := selectEntries(names...)
 	if err != nil {
@@ -167,6 +185,7 @@ func Definitions(names ...string) ([]llm.ToolDefinition, error) {
 	return definitions, nil
 }
 
+// InstructionsListing uses the same selection rules as Definitions.
 func InstructionsListing(names ...string) (string, error) {
 	entries, err := selectEntries(names...)
 	if err != nil {
@@ -177,7 +196,7 @@ func InstructionsListing(names ...string) (string, error) {
 		builder.WriteString(entry.listingLine())
 		builder.WriteByte('\n')
 	}
-	builder.WriteString("Tool results may be truncated to the configured size limit; when `truncated` is true, narrow the path, range, depth, or result count and retry.\n")
+	builder.WriteString("Retrieval tool results may be truncated to the configured size limit; when `truncated` is true, narrow the path, range, depth, or result count and retry.\n")
 	return strings.TrimRight(builder.String(), "\n"), nil
 }
 
@@ -214,7 +233,13 @@ func ErrorMessage(data ErrorData) string {
 
 func selectEntries(names ...string) ([]catalogEntry, error) {
 	if len(names) == 0 {
-		return append([]catalogEntry(nil), catalogDefinition...), nil
+		entries := make([]catalogEntry, 0, len(catalogDefinition))
+		for _, entry := range catalogDefinition {
+			if !entry.ExplicitOnly {
+				entries = append(entries, entry)
+			}
+		}
+		return entries, nil
 	}
 	wanted := make(map[string]struct{}, len(names))
 	for _, name := range names {
@@ -277,6 +302,9 @@ func (entry catalogEntry) parametersSchema() map[string]any {
 		property := map[string]any{
 			"type":        parameter.Type,
 			"description": parameter.Description,
+		}
+		if parameter.ItemsType != "" {
+			property["items"] = map[string]any{"type": parameter.ItemsType}
 		}
 		if parameter.Minimum != nil {
 			property["minimum"] = *parameter.Minimum

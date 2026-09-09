@@ -18,8 +18,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
-const reviewUpdateToolName = "request_review_update"
-
 type ReviewUpdateStatus string
 
 const (
@@ -93,13 +91,6 @@ type ReviewUpdateCheck struct {
 
 func (r FindingUpdateReport) ReviewCorrectionWarranted() bool {
 	return r.ReviewCheck != nil && r.ReviewCheck.Action == "correction_warranted"
-}
-
-func reviewUpdateTool() llm.ToolDefinition {
-	return llm.ToolDefinition{Name: reviewUpdateToolName,
-		Description: "Schedule an update of findings using their IDs and a concrete reason written in English; use an empty list for an overall review update. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
-		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"finding_ids":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}},"required":["finding_ids","reason"]}`),
-	}
 }
 
 type UpdateFindingsRequest struct {

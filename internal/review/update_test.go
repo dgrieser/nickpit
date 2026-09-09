@@ -11,6 +11,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 type updateTestLLM struct {
@@ -132,40 +133,79 @@ func TestUpdateSuggestionsOmissionPreservesAndEmptyClears(t *testing.T) {
 }
 
 func TestDiscussUpdateInstructionsMatchToolRegistration(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		callback bool
-		maxTools int
-		want     bool
+	for _, override := range []struct {
+		name          string
+		tools         []llm.ToolDefinition
+		wantRetrieval []string
 	}{
-		{"terminal", false, 0, false},
-		{"gitlab", true, 0, true},
-		{"tools disabled", true, -1, false},
+		{"defaults", nil, []string{"inspect_file", "list_files", "search", "find_callers", "find_callees", "find_references", "git_log", "git_show"}},
+		{"empty", []llm.ToolDefinition{}, nil},
+		{"subset", reviewerToolDefinitions("search"), []string{"search"}},
+		{"update override", reviewerToolDefinitions(toolcatalog.RequestReviewUpdate), nil},
+		{"unknown override", []llm.ToolDefinition{{Name: "custom"}}, nil},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: "Answer."}}}
-			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
-			req := DiscussRequest{Result: &model.ReviewResult{}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Explain."}}, Tools: []llm.ToolDefinition{}, MaxToolCalls: tc.maxTools}
-			if tc.callback {
-				req.UpdateReview = func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error) {
-					t.Fatal("unexpected update call")
-					return ReviewUpdateToolResult{}, nil
-				}
-			}
-			if _, err := e.Discuss(context.Background(), req); err != nil {
-				t.Fatal(err)
-			}
-			request := client.requests[0]
-			registered := false
-			for _, tool := range request.Tools {
-				registered = registered || tool.Name == reviewUpdateToolName
-			}
-			prompt := request.Messages[0].Content
-			if registered != tc.want || strings.Contains(prompt, reviewUpdateToolName) != tc.want {
-				t.Fatalf("tool=%v instructions=%v want=%v", registered, strings.Contains(prompt, reviewUpdateToolName), tc.want)
-			}
-			if strings.Contains(prompt, "is available and evidence") {
-				t.Fatal("availability check reached agent")
+		t.Run(override.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name     string
+				callback bool
+				maxTools int
+				want     bool
+			}{
+				{"terminal", false, 0, false},
+				{"gitlab", true, 0, true},
+				{"tools disabled", true, -1, false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: "Answer."}}}
+					e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+					req := DiscussRequest{Result: &model.ReviewResult{}, ReviewCtx: &model.ReviewContext{}, Messages: []llm.Message{{Role: "user", Content: "Explain."}}, Tools: override.tools, MaxToolCalls: tc.maxTools}
+					if tc.callback {
+						req.UpdateReview = func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error) {
+							t.Fatal("unexpected update call")
+							return ReviewUpdateToolResult{}, nil
+						}
+					}
+					if _, err := e.Discuss(context.Background(), req); err != nil {
+						t.Fatal(err)
+					}
+					request := client.requests[0]
+					registered := false
+					for _, tool := range request.Tools {
+						registered = registered || tool.Name == toolcatalog.RequestReviewUpdate
+					}
+					prompt := request.Messages[0].Content
+					if registered != tc.want || strings.Contains(prompt, toolcatalog.RequestReviewUpdate) != tc.want {
+						t.Fatalf("tool=%v instructions=%v want=%v", registered, strings.Contains(prompt, toolcatalog.RequestReviewUpdate), tc.want)
+					}
+					count := 0
+					for _, tool := range request.Tools {
+						if tool.Name == toolcatalog.RequestReviewUpdate {
+							count++
+						}
+					}
+					if count > 1 {
+						t.Fatal("duplicate update definition")
+					}
+					for _, name := range []string{"inspect_file", "list_files", "search", "find_callers", "find_callees", "find_references", "git_log", "git_show"} {
+						want := false
+						for _, enabled := range override.wantRetrieval {
+							want = want || enabled == name
+						}
+						if strings.Contains(prompt, "- `"+name+"` tool") != want {
+							t.Errorf("listing for %s does not match override", name)
+						}
+					}
+					if tc.want {
+						for _, guidance := range []string{"ALWAYS write the reason in English", "scheduled, not completed", "empty finding list"} {
+							if !strings.Contains(prompt, guidance) {
+								t.Errorf("missing guidance %q", guidance)
+							}
+						}
+					}
+					if strings.Contains(prompt, "is available and evidence") {
+						t.Fatal("availability check reached agent")
+					}
+				})
 			}
 		})
 	}
@@ -175,7 +215,7 @@ func TestDiscussUpdateToolReturnsStatusAndContinues(t *testing.T) {
 	for _, status := range []ReviewUpdateStatus{ReviewUpdateScheduled, ReviewUpdateQueueFailed, ReviewUpdateError} {
 		t.Run(string(status), func(t *testing.T) {
 			client := &updateTestLLM{responses: []*llm.ReviewResponse{
-				{ToolCalls: []llm.ToolCall{{ID: "call", Name: reviewUpdateToolName, Arguments: `{"finding_ids":["finding"],"reason":"Guard proves it safe."}`}}},
+				{ToolCalls: []llm.ToolCall{{ID: "call", Name: toolcatalog.RequestReviewUpdate, Arguments: `{"finding_ids":["finding"],"reason":"Guard proves it safe."}`}}},
 				{RawResponse: "I checked the evidence and scheduled an update."},
 			}}
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})

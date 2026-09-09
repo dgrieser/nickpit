@@ -9,6 +9,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 func TestReviewDisputeRequiresIndependentAssessment(t *testing.T) {
@@ -57,7 +58,7 @@ func TestReviewDisputeRequiresIndependentAssessment(t *testing.T) {
 }
 
 func TestReviewUpdateToolOnlySignalsDispute(t *testing.T) {
-	tool := reviewUpdateTool()
+	tool := reviewerToolDefinitions(toolcatalog.RequestReviewUpdate)[0]
 	if strings.Contains(string(tool.Parameters), "refresh_verdict") || strings.Contains(tool.Description, "refresh_verdict") {
 		t.Fatal("chat tool exposes verdict orchestration")
 	}
