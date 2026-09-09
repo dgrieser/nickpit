@@ -27,8 +27,8 @@ type UpdateWorkflowResult struct {
 
 // RunUpdateWorkflow executes workflows/update.yaml, the built-in correction workflow:
 // update -> (when warranted) verdict -> summarize. It deliberately accepts no
-// workflow spec or step overrides. SCM publication belongs to the durable job,
-// which checkpoints this result before writing any comments.
+// workflow spec or step overrides. Publication belongs to the caller: the
+// durable GitLab job or the invocation-scoped CLI worker.
 func (e *Engine) RunUpdateWorkflow(ctx context.Context, req UpdateWorkflowRequest) (*UpdateWorkflowResult, error) {
 	stages := workflow.UpdateStages()
 	// Clone normalizes legacy location fields just as UpdateFindings does;

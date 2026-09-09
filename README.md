@@ -441,6 +441,12 @@ After a review you can talk to an agent about it. The discussion agent gets the 
 
 In GitLab, point out a mistake or a fix in a review thread. NickPit can schedule an update, check it against the current code, and follow up in the same thread. Findings and the overall verdict are updated when the evidence supports a correction. Resolved findings show a badge and a short explanation; previous versions stay in a collapsible history section.
 
+CLI chat supports the same evidence-based corrections. One update can run in the background per session while you continue the conversation. The update uses the conversation through the question that requested it; later messages apply to later requests. Completion appears in the terminal and becomes part of the saved conversation. One-shot chat, `/exit`, and EOF wait for pending work; Ctrl+C cancels it. There is no detached worker or daemon requirement.
+
+For GitLab-backed sessions, corrections also update the existing published review, preserving GitLab's revision history and recovery behavior. The terminal conversation is not posted to the MR. Local and GitHub-backed sessions update their saved review only. `--no-session` keeps changes in memory (GitLab publication still applies), and imported JSON files are never overwritten. Updates require tools to be enabled; `max_tool_calls: -1` disables the update tool too.
+
+CLI corrections keep previous review versions in session history. Use `nickpit session --history` to print archived versions, oldest first, with their replacement time and correction reason; `--output json`, `--output raw`, and `--clipboard` work with history too. Default session output shows the current review and marks resolved findings with their resolution reason. History covers versions observed by that session, not older GitLab comment history. A failed session save is reported separately from a successful GitLab publication.
+
 A new commit alone doesn't trigger an update.
 
 An 👀 reaction on NickPit's reply means an update is pending. It disappears when NickPit follows up.
@@ -466,6 +472,10 @@ nickpit chat --session <session-id>
 # Print the review stored in a previous session (latest when omitted)
 nickpit session [session-id]
 nickpit session --session <session-id> --output json
+
+# Inspect previous review versions after chat corrections
+nickpit session [session-id] --history
+nickpit session [session-id] --history --output json
 
 # Copy that review to the system clipboard instead of printing it
 nickpit session [session-id] --clipboard

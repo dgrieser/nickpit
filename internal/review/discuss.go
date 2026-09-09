@@ -23,7 +23,7 @@ import (
 // just answers the author. The caller owns the running conversation (Messages)
 // and appends the returned NewMessages to it between turns.
 type DiscussRequest struct {
-	// UpdateReview enables the GitLab-only correction tool. The caller owns
+	// UpdateReview enables the correction tool for this discussion. The caller owns
 	// durable enqueue and follow-up delivery; chat receives scheduling status.
 	UpdateReview func(context.Context, ReviewUpdateSignal) (ReviewUpdateToolResult, error)
 	// ReviewCtx carries the diff, changed files, commits, and toolchain that the

@@ -67,7 +67,9 @@ func (a *app) newChatCmd() *cobra.Command {
 		Long: "Start or resume a conversation about a completed review. With no " +
 			"question argument and an interactive terminal, chat runs a REPL; with a " +
 			"question it answers once and exits. Sessions are cached so they can be " +
-			"resumed with --session.",
+			"resumed with --session. Evidence-backed corrections run in the background; " +
+			"one-shot chat and /exit wait for pending updates. GitLab sessions also " +
+			"update the published review, while the conversation stays local.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runChat(cmd.Context(), opts, args)
 		},
@@ -279,9 +281,31 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// A session created in THIS invocation carries a host the user just chose
 	// (e.g. parsed from --url); a resumed session's stored host is checked
 	// against the active profile before the profile's token is sent to it.
-	source, retrievalEngine, err := a.chatSource(profile, sess.Source, created)
+	trustedHost := created
+	source, retrievalEngine, err := a.chatSource(profile, sess.Source, trustedHost)
 	if err != nil {
 		return err
+	}
+	if adapter, ok := source.(*glscm.Adapter); ok && !created {
+		if err := adapter.RecoverReviewUpdates(ctx, sess.Source.Repo, sess.Source.Identifier); err != nil {
+			return err
+		}
+		reviews, err := adapter.ReviewResults(ctx, sess.Source.Repo, sess.Source.Identifier)
+		if err != nil {
+			return err
+		}
+		if current := reviews[sess.ReviewID]; current != nil && !glscm.SameReviewState(sess.Result, current) {
+			restored, err := mergeCLIReviewState(sess.Result, current)
+			if err != nil {
+				return err
+			}
+			if err := sess.RecordReviewUpdate(restored, "Refreshed from the published GitLab review."); err != nil {
+				return err
+			}
+			sess.ContextOptions = restored.ContextOptions
+			sess.Context = nil
+			created = true // Persist the refreshed state below; host validation already ran.
+		}
 	}
 	engine, err := a.chatEngine(ctx, profile, source, retrievalEngine, logger)
 	if err != nil {
@@ -325,20 +349,92 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			return
 		}
 		if err := store.Save(sess); err != nil {
-			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
+			a.warnf("chat: could not save session (review and conversation changes may be lost on resume): %v", err)
 		}
 	}
 	if created || refreshed {
 		saveSession()
 	}
 
+	updates := &cliChatUpdates{completed: make(chan cliUpdateCompletion, 1)}
+	updates.run = func(ctx context.Context, input cliUpdateInput) cliUpdateCompletion {
+		return a.runCLIReviewUpdate(ctx, profile, input, trustedHost)
+	}
+	defer updates.stop()
+	refreshTools := false
+	var lastUpdateErr error
+	applyUpdate := func(completion cliUpdateCompletion) error {
+		updates.pending = false
+		message, applyErr := completion.Message, completion.Err
+		if completion.Result != nil && applyErr == nil {
+			applyErr = sess.RecordReviewUpdate(completion.Result, completion.Reason)
+			if applyErr == nil && completion.Result.ContextOptions != nil {
+				sess.ContextOptions = completion.Result.ContextOptions
+			}
+			if applyErr == nil && completion.Context != nil {
+				sess.Context = completion.Context
+				sess.ContextHeadSHA, sess.ContextBaseSHA = completion.Context.DiffHeadSHA, completion.Context.DiffBaseSHA
+				reviewCtx = completion.Context
+				co.release()
+				refreshTools = true
+			}
+		}
+		if applyErr != nil {
+			message = "Review update could not complete: " + applyErr.Error()
+		}
+		msg := session.FromLLM(llm.Message{Role: "assistant", Content: message})
+		msg.Tokens = &completion.Tokens
+		sess.Append(msg)
+		saveSession()
+		fmt.Fprintln(os.Stdout, "\n"+textsan.StripControl(message)) //nolint:errcheck // stdout write; correction has already completed
+		lastUpdateErr = applyErr
+		return applyErr
+	}
+	drainUpdate := func() {
+		select {
+		case completion := <-updates.completed:
+			_ = applyUpdate(completion)
+		default:
+		}
+	}
+	finishUpdate := func() error {
+		if !updates.pending {
+			return lastUpdateErr
+		}
+		select {
+		case completion := <-updates.completed:
+			return applyUpdate(completion)
+		case <-ctx.Done():
+			updates.stop()
+			select {
+			case completion := <-updates.completed:
+				_ = applyUpdate(completion)
+			default:
+			}
+			return ctx.Err()
+		}
+	}
 	turn := func(question string) error {
+		drainUpdate()
+		if refreshTools {
+			toolRoot = sess.Source.RepoRoot
+			if toolRoot == "" && model.ReviewMode(sess.Source.Mode) != model.ModeLocal && profile.MaxToolCalls >= 0 {
+				if err := a.chatEnsureCheckout(ctx, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions), &co); err != nil {
+					a.warnf("chat: could not refresh retrieval checkout: %v", err)
+				}
+				toolRoot = co.root
+			}
+			tools = chatToolset(toolRoot)
+			refreshTools = false
+		}
+
 		question = strings.TrimSpace(question)
 		if question == "" {
 			return nil
 		}
 		sess.Append(session.UserMessage(question))
 		res, err := engine.Discuss(ctx, review.DiscussRequest{
+			UpdateReview:             updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question}),
 			ReviewCtx:                reviewCtx,
 			Result:                   sess.Result,
 			PinnedFindingID:          sess.PinnedFindingID,
@@ -360,6 +456,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			err = fmt.Errorf("chat: discussion agent returned an empty reply")
 		}
 		if err != nil {
+			updates.discardReservation()
 			// Drop the unanswered question so a retried turn does not leave two
 			// consecutive user messages in the transcript.
 			sess.Messages = sess.Messages[:len(sess.Messages)-1]
@@ -372,17 +469,23 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		// LLM output is untrusted for terminal purposes: strip control characters
 		// so a reply cannot smuggle escape sequences into the user's terminal.
 		fmt.Fprintln(os.Stdout, textsan.StripControl(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
+		updates.start(ctx)
+		drainUpdate()
 		return nil
 	}
 
 	question := strings.TrimSpace(strings.Join(args, " "))
 	if question != "" {
-		return turn(question)
+		if err := turn(question); err != nil {
+			return err
+		}
+		return finishUpdate()
 	}
 	if !isTerminal(os.Stdin) {
 		return fmt.Errorf("chat: no question given and stdin is not a terminal; pass a question argument for one-shot use")
 	}
-	return a.chatREPL(ctx, sess, turn)
+	err = a.chatREPL(ctx, sess, turn, updates.completed, func(completion cliUpdateCompletion) { _ = applyUpdate(completion) })
+	return errors.Join(err, finishUpdate())
 }
 
 // chatREPL runs the interactive loop, printing session context and the pinned
@@ -392,7 +495,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 // fail with "context canceled" and the session would zombie until /exit. Every
 // value echoed here can originate outside this process (markers, saved JSON,
 // model output), so it is control-stripped before touching the terminal.
-func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error) error {
+func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error, completed <-chan cliUpdateCompletion, apply func(cliUpdateCompletion)) error {
 	fmt.Fprintf(os.Stderr, "Discussing review %s", textsan.StripControl(sess.ReviewID))
 	if sess.Source.Repo != "" {
 		fmt.Fprintf(os.Stderr, " on %s", textsan.StripControl(sess.Source.Repo))
@@ -418,7 +521,11 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 		for scanner.Scan() {
-			lines <- scanner.Text()
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
 		scanDone <- scanner.Err()
 	}()
@@ -430,6 +537,9 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 			return ctx.Err()
 		case err := <-scanDone:
 			return err // EOF or read error
+		case completion := <-completed:
+			apply(completion)
+			continue
 		case line = <-lines:
 		}
 		line = strings.TrimSpace(line)
@@ -599,6 +709,9 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	}
 	apiBaseURL := firstNonEmpty(baseURL, profile.GitLabBaseURL)
 	adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
+	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
+		return nil, err
+	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
@@ -961,9 +1074,8 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	if err != nil {
 		return nil, err
 	}
-	// No small client here on purpose: the discussion agent always runs the
-	// primary model (there is no workflow spec and therefore no "@small" step),
-	// so a second endpoint would be dead weight.
+	// Discussion uses the primary model. Callers running an update workflow
+	// additionally configure its small client for the summarization stage.
 	client := newLLMClient(profile, logger)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)

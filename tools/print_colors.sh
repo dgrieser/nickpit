@@ -492,6 +492,7 @@ badge_row "$(badge '255;7;58'   '    BLOCKING    ')"     'P0 #FF073A' 'priority 
 badge_row "$(badge '251;20;139' '      HIGH      ')"     'P1 #FB148B' 'priority rank 1'
 badge_row "$(badge '255;81;0'   '     MEDIUM     ')"     'P2 #FF5100' 'priority rank 2'
 badge_row "$(badge '255;234;0'  '      LOW       ')"     'P3 #FFEA00' 'priority rank 3'
+badge_row "$(verdict_badge '0;255;13' 'RESOLVED' '✓')"   'resolved'   'resolved finding: location and resolution reason only'
 badge_row "$(verdict_badge '0;255;13' 'CORRECT' '✓')"    'correct'    'overall verdict: correct'
 badge_row "$(verdict_badge '255;7;58' 'INCORRECT' 'x')"  'incorrect'  'overall verdict: incorrect'
 printf '  %s\n' "$(grey 'fixed 16-column width, mirroring the published badge SVGs in assets/; verdict glyph bold, "x" ASCII so it never overflows its cell')"

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -72,6 +73,13 @@ type Message struct {
 	Tokens     *model.TokenUsage `json:"tokens,omitempty"`
 }
 
+// ReviewRevision archives the review replaced by a successful correction.
+type ReviewRevision struct {
+	Result     *model.ReviewResult `json:"result"`
+	ReplacedAt time.Time           `json:"replaced_at"`
+	Reason     string              `json:"reason"`
+}
+
 // Session is one resumable discussion.
 type Session struct {
 	Version         int       `json:"version"`
@@ -98,7 +106,8 @@ type Session struct {
 
 	// Messages is the full conversation transcript (user, assistant, and tool
 	// messages), in order.
-	Messages []Message `json:"messages"`
+	Messages      []Message        `json:"messages"`
+	ReviewHistory []ReviewRevision `json:"review_history,omitempty"`
 
 	// loadedUpdatedAt is the UpdatedAt read from disk by Load, used by Save for
 	// optimistic concurrency: two processes resuming the same session (e.g. two
@@ -121,6 +130,28 @@ func New() *Session {
 // Append adds messages to the transcript.
 func (s *Session) Append(msgs ...Message) {
 	s.Messages = append(s.Messages, msgs...)
+}
+
+// RecordReviewUpdate replaces the current review without retaining mutable aliases.
+// The caller applies context and transcript changes before saving the session.
+func (s *Session) RecordReviewUpdate(result *model.ReviewResult, reason string) error {
+	if s.Result == nil || result == nil || s.Result.ReviewID != result.ReviewID {
+		return fmt.Errorf("session: correction does not match the current review")
+	}
+	before, err := s.Result.Clone()
+	if err != nil {
+		return err
+	}
+	after, err := result.Clone()
+	if err != nil {
+		return err
+	}
+	if reflect.DeepEqual(before, after) {
+		return nil
+	}
+	s.ReviewHistory = append(s.ReviewHistory, ReviewRevision{Result: before, ReplacedAt: time.Now().UTC(), Reason: reason})
+	s.Result = after
+	return nil
 }
 
 // Conversation returns the transcript as llm messages for the discussion agent.

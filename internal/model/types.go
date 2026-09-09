@@ -118,7 +118,7 @@ func ContextOptionsFromRequest(req ReviewRequest) *ContextOptions {
 }
 
 type ReviewResult struct {
-	// Revision advances when a published review is corrected through chat.
+	// Revision advances when a saved or published review is corrected through chat.
 	Revision uint64 `json:"revision,omitempty"`
 	// ReviewID uniquely identifies a single completed review run. It is stamped
 	// once the pipeline finishes and is carried in the hidden SCM note markers so

@@ -38,6 +38,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/custom_tools.go`: Serial mutation callbacks alongside batched retrieval tools in the shared agent loop.
 - `internal/llm/update_schema.go`: Structured correction decisions using standard finding fields, excluding code-owned revision and provenance state.
 - `cmd/nickpit/chat_update.go`: GitLab chat correction callback, linked discussion evidence, freshness checks, and existing verdict-agent orchestration.
+- `cmd/nickpit/chat_update_cli.go`: Invocation-scoped CLI correction coordinator and background runner, immutable conversation snapshots, shared GitLab execution locks, bounded retries and publication recovery, and local review revisions.
 - `cmd/nickpit/chat_update_evidence.go`: Selected-thread snapshots shared by correction prompts and freshness checks, with note cutoffs and anchored fallback replies.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
 - `internal/review/context_filter.go`: Context trimming and file filtering before prompts are built.
@@ -158,7 +159,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
 - `internal/filetype/language.go`: Unified file classification API (language detection, generated-file flags, trim eviction classes) backed by the mappings data.
 - `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
-- `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, and the full message transcript; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
+- `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, the full message transcript, and archived review revisions; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
 - `internal/clipboard/clipboard.go`: Cross-platform clipboard writes for `session --clipboard`: a per-GOOS chain of helper commands (`pbcopy`, `clip.exe` with UTF-16LE encoding, `wl-copy`/`xclip`/`xsel` ordered by session type, `termux-clipboard-set`) tried until one succeeds, bounded by a shared timeout.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
 - `internal/tools/catalog.go`: Tool catalog exposed to agents; describes each tool and its arguments to the model.
