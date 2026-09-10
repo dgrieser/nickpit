@@ -347,14 +347,23 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 		if err := sc.Engine.reviewerInitial(mainCtx, session, sc.Req, mineBudget, mine.Engine, mine.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed
 			// initial pass instead of discarding it with a bare failed result.
-			// Store NO session: the initial pass never populated it, so a later
-			// nudge/reasoning-extract step must reject the failed group rather
-			// than dereference a nil response.
+			// A budget-closed session prevents later rounds from reopening it;
+			// ordinary initial failures still expose no usable session.
 			sc.Engine.logf(ctx, "Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
 			res := session.partialResult(sc.Req)
 			res.run.Status = model.AgentRunStatusFailed
-			res.run.Error = err.Error()
-			st.setGroup(vectorID, res, nil)
+			if session.latestResp != nil {
+				res = session.result(sc.Req)
+				res.run.Status = model.AgentRunStatusPartial
+			}
+			if !session.budgetError {
+				res.run.Error = err.Error()
+			}
+			var retained *reviewerSession
+			if session.latestResp != nil || session.budgetStop != nil {
+				retained = session
+			}
+			st.setGroup(vectorID, res, retained)
 			return nil
 		}
 		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req, compileBudget, compile.Engine, compile.Req, nudgeBudget, nudge.Engine, nudge.Req); err != nil {
@@ -398,6 +407,9 @@ func (e *Engine) extractStepFunc(vectorID string) stepFunc {
 			st.addWarningf("Skipped reasoning-extract:%s because review:%s did not complete successfully", vectorID, vectorID)
 			return nil
 		}
+		if sess.budgetStop != nil {
+			return nil
+		}
 		delta, err := sc.Engine.reviewerComputeExtractDelta(ctx, sess, sc.Req)
 		if err != nil {
 			return err
@@ -418,6 +430,10 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 		}
 		if sess == nil {
 			st.addWarningf("Skipped nudge:%s because review:%s did not complete successfully", vectorID, vectorID)
+			return nil
+		}
+		if sess.budgetStop != nil || sess.stopBeforeNudge(ctx) {
+			st.setGroup(vectorID, sess.result(sc.Req), sess)
 			return nil
 		}
 		if sess.findingLimitReached() {

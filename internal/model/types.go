@@ -194,12 +194,22 @@ type AgentRun struct {
 	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
 	// Status is one of AgentRunStatus*. Empty = implicit ok (preserves
 	// backward compatibility with pre-failure-tolerance consumers).
-	Status string `json:"status,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Status     string      `json:"status,omitempty"`
+	Error      string      `json:"error,omitempty"`
+	BudgetStop *BudgetStop `json:"budget_stop,omitempty"`
 	// InvalidResponse preserves the final malformed model output separately
 	// from Error. Warnings remain concise while persisted sessions retain enough
 	// evidence to diagnose failed lenient-JSON recovery.
 	InvalidResponse *InvalidResponseDiagnostic `json:"invalid_response,omitempty"`
+}
+
+// BudgetStop describes a reviewer closed by its wall-clock budget. Findings
+// already returned remain usable even when further rounds were omitted.
+type BudgetStop struct {
+	Reason     string `json:"reason"` // finalized or deadline
+	Scope      string `json:"scope"`
+	Phase      string `json:"phase"`
+	NudgeIndex int    `json:"nudge_index,omitempty"`
 }
 
 type InvalidResponseDiagnostic struct {

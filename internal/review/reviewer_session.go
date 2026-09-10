@@ -35,6 +35,14 @@ type reviewerSession struct {
 	extractorTokens     model.TokenUsage
 	extractorToolCalls  int
 	extractorDuplicates int
+	minedTraces         map[string]bool
+	reasoningTraces     []string
+	collectCancel       context.CancelFunc
+	mineEngine          *Engine
+	mineReq             model.ReviewRequest
+	mineBudget          timeBudgetStarter
+	budgetStop          *model.BudgetStop
+	budgetError         bool
 
 	// running result, accumulated across the initial pass and nudge rounds.
 	totalFindings    []model.Finding
@@ -64,7 +72,8 @@ type reviewerSession struct {
 
 	// initLoop preserves the initial-pass telemetry so partialResult can report
 	// it when the initial loop itself fails.
-	initLoop agentLoopResult
+	initLoop   agentLoopResult
+	initialErr error
 
 	// started anchors the session's total runtime (initial pass through nudges
 	// and reasoning extraction). Wall clock: spec-driven sessions advanced by
@@ -162,6 +171,7 @@ func (e *Engine) newReviewerSession(agent agentSpec, req model.ReviewRequest, co
 		agent:           agent,
 		extractEnabled:  extractEnabled,
 		cachedUpdateLen: -1,
+		minedTraces:     make(map[string]bool),
 		started:         time.Now(),
 	}
 }
@@ -199,11 +209,11 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 			e.logf(ctx, "Reasoning collect findings failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
 			return
 		}
-		if strings.TrimSpace(list) == "" {
-			return
-		}
 		s.mu.Lock()
-		s.collectedLists = append(s.collectedLists, list)
+		s.minedTraces[reasoning] = true
+		if strings.TrimSpace(list) != "" {
+			s.collectedLists = append(s.collectedLists, list)
+		}
 		s.mu.Unlock()
 	})
 }
@@ -212,6 +222,11 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 // when enabled, and populates the session. The reasoning-collect goroutines are
 // awaited before returning so collectedLists is frozen for later extraction.
 func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
+	s.mineEngine, s.mineReq, s.mineBudget = mineEngine, mineReq, mineBudget
+	collectCtx, collectCancel := context.WithCancel(mineBudget.ctx)
+	s.collectCancel = collectCancel
+	defer collectCancel()
+	mineBudget.ctx = collectCtx
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
 	loopReq.ValidateResponse = s.responseValidator(nil)
@@ -220,10 +235,11 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
 		}
 	}
-	loopResult, err := e.runAgentLoop(ctx, loopReq)
+	loopResult, err := e.runReviewerRound(ctx, s, loopReq, req, "review", 0, "")
 	s.collectWG.Wait()
 	s.initLoop = loopResult
-	if err != nil {
+	s.initialErr = err
+	if err != nil && (loopResult.resp == nil || s.budgetStop == nil) {
 		return err
 	}
 	if loopResult.resp == nil {
@@ -245,7 +261,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	s.contentMessages = append([]string(nil), loopResult.contentMessages...)
 	s.toolMessages = append([]llm.Message(nil), loopResult.toolMessages...)
 	s.toolCallHistory = append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
-	return nil
+	return err
 }
 
 // reviewerComputeExtractDelta runs the reasoning UpdateFindings extractor over
@@ -254,6 +270,9 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 // recomputed when findings grew. Returns "" (no error) when extraction is
 // disabled or produced nothing.
 func (e *Engine) reviewerComputeExtractDelta(ctx context.Context, s *reviewerSession, req model.ReviewRequest) (string, error) {
+	if s.budgetStop != nil {
+		return "", nil
+	}
 	s.collectWG.Wait()
 	reasoningFindings := ""
 	if combined := s.combinedCollectedList(); combined != "" {
@@ -303,6 +322,9 @@ func warnNudgePhaseStopped(ctx context.Context, reviewer, phase string, complete
 }
 
 func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession, iterIdx, total int, nudgeName, formattedReasoningFindings string, req model.ReviewRequest) bool {
+	if s.budgetStop != nil || s.stopBeforeNudge(nudgeCtx) {
+		return false
+	}
 	if s.nudgeState == nil {
 		s.nudgeState = newAgentLoopState()
 	}
@@ -345,11 +367,16 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
 	loopReq.State = s.nudgeState
 	loopReq.OnReasoningTrace = nil
-	sub, err := e.runAgentLoop(nudgeCtx, loopReq)
+	sub, err := e.runReviewerRound(nudgeCtx, s, loopReq, req, "nudge", iterIdx+1, formattedReasoningFindings)
+	s.totalTokens = addTokenUsage(s.totalTokens, sub.tokensUsed)
+	s.totalToolCalls += sub.toolCalls
+	s.totalDuplicates += sub.duplicateToolCalls
 	if err != nil {
 		s.nudgeErr = fmt.Errorf("nudge %d: %w", iterIdx+1, err)
 		e.logf(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", iterIdx+1, total, err)
-		return false
+		if sub.resp == nil || s.budgetStop == nil {
+			return false
+		}
 	}
 	if sub.resp == nil {
 		s.nudgeErr = fmt.Errorf("nudge %d: agent %s returned no response", iterIdx+1, s.agent.name)
@@ -365,9 +392,6 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 		})
 	}
 	e.logf(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))
-	s.totalTokens = addTokenUsage(s.totalTokens, sub.tokensUsed)
-	s.totalToolCalls += sub.toolCalls
-	s.totalDuplicates += sub.duplicateToolCalls
 	s.latestResp = sub.resp
 	s.latestReasoning = sub.reasoningEffort
 	if sub.reasoningEffort != "" {
@@ -377,7 +401,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	s.toolMessages = append(s.toolMessages, sub.toolMessages...)
 	s.toolCallHistory = append(s.toolCallHistory, sub.toolCallHistory...)
 	s.nudgeTurns++
-	return true
+	return err == nil
 }
 
 // reviewerNudgeBaseMessages removes completed assistant answers while retaining
@@ -407,6 +431,9 @@ func (s *reviewerSession) findingLimitReached() bool {
 // not a hard error), matching the legacy behavior.
 func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileBudget timeBudgetStarter, compileEngine *Engine, compileReq model.ReviewRequest, nudgeBudget timeBudgetStarter, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
+		if s.budgetStop != nil || s.stopBeforeNudge(ctx) {
+			return nil
+		}
 		if s.findingLimitReached() {
 			e.logf(ctx, "Nudge phase skipped, finding limit reached: limit=%d completed=%d/%d", s.agent.maxFindings, i, req.NudgeCount)
 			return nil
@@ -431,6 +458,9 @@ func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req mod
 		if err != nil {
 			return err
 		}
+		if s.stopBeforeNudge(ctx) {
+			return nil
+		}
 		nudgeCtxBase, nudgeCancel := nudgeBudget.startOrCanceled()
 		if nudgeCtxBase.Err() != nil {
 			nudgeCancel()
@@ -448,6 +478,9 @@ func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req mod
 			break
 		}
 		nudgeCancel()
+		if s.budgetStop != nil {
+			return nil
+		}
 		if !req.ForceAllNudges && len(s.totalFindings) == previousFindings {
 			e.logf(ctx, "Nudge phase stopped after zero-yield round: completed=%d/%d", i+1, req.NudgeCount)
 			return nil
@@ -480,15 +513,22 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 		ToolCalls:             s.totalToolCalls + toolCalls,
 		DuplicateToolCalls:    s.totalDuplicates + duplicates,
 		TokensUsed:            addTokenUsage(s.totalTokens, tokens),
+		BudgetStop:            s.budgetStop,
 	}
 	runErrors := make([]string, 0, 1+len(s.validationErrors))
-	if s.nudgeErr != nil {
+	if s.initialErr != nil && !s.budgetError {
+		runErrors = append(runErrors, s.initialErr.Error())
+	}
+	if s.nudgeErr != nil && !s.budgetError {
 		runErrors = append(runErrors, s.nudgeErr.Error())
 	}
 	runErrors = append(runErrors, s.validationErrors...)
 	if len(runErrors) > 0 {
 		run.Status = model.AgentRunStatusPartial
 		run.Error = strings.Join(runErrors, "; ")
+	}
+	if s.budgetStop != nil {
+		run.Status = model.AgentRunStatusPartial
 	}
 	run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
 	return agentResult{
@@ -506,6 +546,17 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 // loop fails before the session was populated.
 func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
 	result := partialAgentResult(s.agent, req, s.initLoop)
+	result.run.BudgetStop = s.budgetStop
+	if s.initialErr != nil && !s.budgetError {
+		result.run.Error = s.initialErr.Error()
+	}
+	if s.budgetStop != nil {
+		result.run.Status = model.AgentRunStatusFailed
+	}
+	tokens, calls, duplicates := s.extractorTotals()
+	result.run.TokensUsed = addTokenUsage(result.run.TokensUsed, tokens)
+	result.run.ToolCalls += calls
+	result.run.DuplicateToolCalls += duplicates
 	result.run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
 	return result
 }
