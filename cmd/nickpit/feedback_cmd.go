@@ -58,7 +58,7 @@ func (a *app) newGitLabFeedbackCmd() *cobra.Command {
 		Short: "Print or copy the review NickPit published on a merge request",
 		Long:  fmt.Sprintf(feedbackLong, "merge request", "merge request"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			target, err := a.resolveRequestTarget(feedbackSelectors(opts), parseGitLabMRURL, "", "merge request")
+			target, err := a.resolveRequestTarget(feedbackSelectors(cmd, opts), parseGitLabMRURL, "", "merge request")
 			if err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func (a *app) newGitHubFeedbackCmd() *cobra.Command {
 		Short: "Print or copy the review NickPit published on a pull request",
 		Long:  fmt.Sprintf(feedbackLong, "pull request", "pull request"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			target, err := a.resolveRequestTarget(feedbackSelectors(opts), parseGitHubPRURLTarget, "", "pull request")
+			target, err := a.resolveRequestTarget(feedbackSelectors(cmd, opts), parseGitHubPRURLTarget, "", "pull request")
 			if err != nil {
 				return err
 			}
@@ -152,9 +152,16 @@ func (a *app) newGitHubFeedbackCmd() *cobra.Command {
 }
 
 // feedbackSelectors projects the feedback flags onto the selector set every
-// MR/PR-addressed command resolves the same way.
-func feedbackSelectors(opts feedbackOptions) requestSelectors {
-	return requestSelectors{repo: opts.repo, id: opts.id, rawURL: opts.rawURL, pick: opts.pick}
+// MR/PR-addressed command resolves the same way, carrying cobra's flag-presence
+// state so an explicitly supplied default still counts as supplied.
+func feedbackSelectors(cmd *cobra.Command, opts feedbackOptions) requestSelectors {
+	return requestSelectors{
+		repo:    opts.repo,
+		id:      opts.id,
+		rawURL:  opts.rawURL,
+		pick:    opts.pick,
+		changed: cmd.Flags().Changed,
+	}
 }
 
 func addFeedbackFlags(cmd *cobra.Command, opts *feedbackOptions, repoUsage, idUsage, urlUsage, noun string) {

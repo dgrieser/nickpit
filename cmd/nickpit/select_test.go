@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -88,6 +89,38 @@ func TestResolveRequestTargetFlagPolicy(t *testing.T) {
 			wantErr: "--id must be a positive integer",
 		},
 		{
+			// Flag presence, not the value: --id=0 was supplied, so it conflicts
+			// with --url and does not read as "no id given".
+			name:    "url with an explicit zero id",
+			app:     &app{},
+			sel:     requestSelectors{rawURL: mrURL, changed: changedFlags("url", "id")},
+			wantErr: "--url can not be combined with --id",
+		},
+		{
+			name:    "url with an explicit empty repo",
+			app:     &app{},
+			sel:     requestSelectors{rawURL: mrURL, changed: changedFlags("url", "repo")},
+			wantErr: "--url can not be combined with --repo",
+		},
+		{
+			name:    "explicit empty url with an id",
+			app:     &app{},
+			sel:     requestSelectors{id: 42, changed: changedFlags("url", "id")},
+			wantErr: "--url can not be combined with --id",
+		},
+		{
+			name:    "explicit zero id in a terminal",
+			app:     interactiveApp(0, nil),
+			sel:     requestSelectors{repo: "grp/proj", changed: changedFlags("id")},
+			wantErr: "--id must be a positive integer",
+		},
+		{
+			name:    "select with an explicit zero id",
+			app:     interactiveApp(0, nil),
+			sel:     requestSelectors{repo: "grp/proj", pick: true, changed: changedFlags("id")},
+			wantErr: "--select can not be combined with --id",
+		},
+		{
 			name:       "url wins alone",
 			app:        &app{},
 			sel:        requestSelectors{rawURL: mrURL},
@@ -136,6 +169,11 @@ func TestResolveRequestTargetFlagPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// changedFlags fakes cobra's Flags().Changed for the named flags.
+func changedFlags(names ...string) func(string) bool {
+	return func(flag string) bool { return slices.Contains(names, flag) }
 }
 
 func TestResolveRequestTargetPrefixesErrors(t *testing.T) {
@@ -741,8 +779,10 @@ func TestPickCommitRangeOverTheRootCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if base != git.EmptyTreeSHA {
-		t.Fatalf("base = %q, want git's empty tree", base)
+	// The empty tree of this repository, not a hard-coded SHA-1 one: a
+	// SHA-256 repository has a different id for it.
+	if want := gitTestOutput(t, dir, "hash-object", "-t", "tree", os.DevNull); base != want {
+		t.Fatalf("base = %q, want the repository's empty tree %q", base, want)
 	}
 	if head != gitTestOutput(t, dir, "rev-parse", "HEAD") {
 		t.Fatalf("head = %q, want the only commit", head)

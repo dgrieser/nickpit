@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +41,27 @@ type CommitRef struct {
 	Parent string
 }
 
-// EmptyTreeSHA is git's empty tree, the base a root commit is diffed against:
-// it has no parent, and every git repository resolves this hash.
-const EmptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+// EmptyTree is git's empty tree in this repository: the base a root commit is
+// diffed against, since it has no parent. The id depends on the repository's
+// object format — a SHA-256 repository has a different empty tree than a
+// SHA-1 one — so it is asked for rather than hard-coded. `hash-object` without
+// -w only computes the id; git resolves the empty tree of its active hash
+// algorithm whether or not the object was ever written.
+func EmptyTree(ctx context.Context, repoRoot string) (string, error) {
+	return emptyTree(ctx, ExecRunner{RepoRoot: repoRoot})
+}
+
+func emptyTree(ctx context.Context, runner Runner) (string, error) {
+	out, err := runner.Run(ctx, "hash-object", "-t", "tree", os.DevNull)
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(out)
+	if id == "" {
+		return "", fmt.Errorf("git: empty tree id came back empty")
+	}
+	return id, nil
+}
 
 // CurrentBranch returns the checked-out branch of repoRoot. A detached HEAD has
 // no branch and yields an error.

@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -166,5 +167,32 @@ func TestSplitBranchRef(t *testing.T) {
 func TestUnixTimeIgnoresGarbage(t *testing.T) {
 	if got := unixTime("not-a-number"); !got.IsZero() {
 		t.Fatalf("unixTime = %s, want the zero time", got)
+	}
+}
+
+// The empty tree comes from the repository, because its id depends on the
+// object format: a SHA-256 repository has a different one than a SHA-1 one.
+func TestEmptyTreeAsksTheRepository(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{
+		joinArgs([]string{"hash-object", "-t", "tree", os.DevNull}): "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321\n",
+	}}
+	got, err := emptyTree(context.Background(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" {
+		t.Fatalf("empty tree = %q", got)
+	}
+	// A git that answers nothing is a failure, not an empty base ref that would
+	// turn into a broken revision range.
+	if _, err := emptyTree(context.Background(), &stubGitRunner{}); err == nil {
+		t.Fatal("expected an error for an empty answer")
+	}
+	want := errors.New("boom")
+	failing := &stubGitRunner{errors: map[string]error{
+		joinArgs([]string{"hash-object", "-t", "tree", os.DevNull}): want,
+	}}
+	if _, err := emptyTree(context.Background(), failing); !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -41,11 +42,23 @@ const requestSelectNote = "the project comes from --repo or the git remote of th
 // surface (stderr) must both be terminals, so piped, redirected and
 // daemon-spawned runs keep failing with their non-interactive error instead of
 // waiting for a keypress nobody can send.
+//
+// The check is the picker's own (a tty ioctl), not "is a character device":
+// /dev/null is a character device, so a cron or daemon run with stdin and
+// stderr on it would otherwise reach the picker — after listing the open
+// requests over the API — only to fail there instead of reporting the missing
+// --id up front.
 func (a *app) interactiveSelect() bool {
 	if a.selectFn != nil || a.selectRangeFn != nil {
 		return true
 	}
-	return isTerminal(os.Stdin) && isTerminal(os.Stderr)
+	return isInteractiveTerminal(os.Stdin) && isInteractiveTerminal(os.Stderr)
+}
+
+// isInteractiveTerminal reports whether f is a terminal a person could be
+// watching, the same test pick.Select gates on.
+func isInteractiveTerminal(f *os.File) bool {
+	return f != nil && term.IsTerminal(int(f.Fd()))
 }
 
 // selectOne draws opts and returns the chosen index. The picker reads keys from
@@ -92,6 +105,22 @@ type requestSelectors struct {
 	// pick is --select: draw the list even where a target could be resolved
 	// without it.
 	pick bool
+	// changed reports whether a selector flag was actually passed, so an
+	// explicitly supplied default — `--url … --id=0`, `--url … --repo=''`,
+	// `--url='' --id=42` — still hits the exclusivity policy instead of
+	// slipping through as "unset". nil compares values instead, which is what
+	// a caller without a cobra command needs (chat validates its own flags
+	// that way).
+	changed func(flag string) bool
+}
+
+// given reports whether a selector was supplied: by flag presence where the
+// caller could tell us, by value otherwise.
+func (sel requestSelectors) given(flag string, hasValue bool) bool {
+	if sel.changed != nil {
+		return sel.changed(flag)
+	}
+	return hasValue
 }
 
 // resolveRequestTarget applies the selector policy those commands share.
@@ -116,11 +145,15 @@ func (a *app) resolveRequestTarget(sel requestSelectors, parse func(string) (str
 		return requestTarget{}, fmt.Errorf(format, args...)
 	}
 	target := requestTarget{Repo: sel.repo, ID: sel.id}
-	if sel.rawURL != "" {
-		if sel.id != 0 {
+	urlGiven := sel.given("url", sel.rawURL != "")
+	idGiven := sel.given("id", sel.id != 0)
+	repoGiven := sel.given("repo", sel.repo != "")
+	switch {
+	case urlGiven:
+		if idGiven {
 			return fail("--url can not be combined with --id")
 		}
-		if sel.repo != "" {
+		if repoGiven {
 			return fail("--url can not be combined with --repo")
 		}
 		if sel.pick {
@@ -130,22 +163,22 @@ func (a *app) resolveRequestTarget(sel requestSelectors, parse func(string) (str
 		if target.Repo, target.ID, target.BaseURL, err = parse(sel.rawURL); err != nil {
 			return requestTarget{}, err
 		}
-	} else if sel.pick {
-		if sel.id != 0 {
+	case sel.pick:
+		if idGiven {
 			return fail("--%s can not be combined with --id", selectFlagName)
 		}
 		if !a.interactiveSelect() {
 			return fail("--%s needs a terminal; pass --id or --url instead", selectFlagName)
 		}
 		// Left at 0: the caller picks once its client exists.
-	} else if target.ID != 0 {
-		// A negative id is never a request, on a terminal no less than in a
-		// script: only a missing id (0) defers to the picker, so -1 must fail
-		// here rather than reach the API as request "-1".
-		if target.ID < 0 {
+	case idGiven:
+		// An id that was passed has to be a request; only a missing one defers
+		// to the picker, so --id=0 and --id=-1 fail here rather than reach the
+		// API as request "0" or "-1".
+		if target.ID <= 0 {
 			return fail("--id must be a positive integer")
 		}
-	} else if !a.interactiveSelect() {
+	case !a.interactiveSelect():
 		return fail("--id must be a positive integer (pass --url instead, or run in a terminal to pick an open %s from a list)", noun)
 	}
 	if target.Repo == "" {
@@ -583,13 +616,17 @@ func commitOptions(title string, items []pick.Item) pick.Options {
 }
 
 // baseOf is the ref a review diffs from to include commit: its first parent,
-// or git's empty tree when there is none, so selecting down to a repository's
-// first commit reviews that commit instead of failing.
-func baseOf(commit git.CommitRef) string {
-	if commit.Parent == "" {
-		return git.EmptyTreeSHA
+// or this repository's empty tree when there is none, so selecting down to a
+// repository's first commit reviews that commit instead of failing.
+func baseOf(ctx context.Context, repoRoot string, commit git.CommitRef) (string, error) {
+	if commit.Parent != "" {
+		return commit.Parent, nil
 	}
-	return commit.Parent
+	empty, err := git.EmptyTree(ctx, repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolving the empty tree to diff the first commit against: %w", err)
+	}
+	return empty, nil
 }
 
 // pickCommitRange asks for both ends of a range in one list: the range is
@@ -608,6 +645,10 @@ func (a *app) pickCommitRange(ctx context.Context, repoRoot string) (string, str
 		return "", "", err
 	}
 	head, first := commits[newest], commits[oldest]
+	base, err := baseOf(ctx, repoRoot, first)
+	if err != nil {
+		return "", "", err
+	}
 	if newest == oldest {
 		a.printSelection("Commit to review ", head.ShortSHA, pick.StyleHash,
 			" "+textsan.StripControl(head.Subject))
@@ -615,7 +656,7 @@ func (a *app) pickCommitRange(ctx context.Context, repoRoot string) (string, str
 		a.printSelection("Commits to review ", first.ShortSHA+".."+head.ShortSHA, pick.StyleHash,
 			fmt.Sprintf(" · %d commits", oldest-newest+1))
 	}
-	return baseOf(first), head.SHA, nil
+	return base, head.SHA, nil
 }
 
 // pickCommitStart asks for the oldest commit to review when the head is already
@@ -630,9 +671,13 @@ func (a *app) pickCommitStart(ctx context.Context, repoRoot, rev string) (string
 		return "", err
 	}
 	first := commits[index]
+	base, err := baseOf(ctx, repoRoot, first)
+	if err != nil {
+		return "", err
+	}
 	a.printSelection("First commit ", first.ShortSHA, pick.StyleHash,
 		" "+textsan.StripControl(first.Subject))
-	return baseOf(first), nil
+	return base, nil
 }
 
 // freshAge is how recent a timestamp has to be for its column to be coloured:
@@ -678,7 +723,7 @@ func (a *app) printSelection(prefix, highlight, highlightStyle, suffix string) {
 		return
 	}
 	_, noColor := os.LookupEnv("NO_COLOR")
-	writeSelection(os.Stderr, isTerminal(os.Stderr) && !noColor, prefix, highlight, highlightStyle, suffix)
+	writeSelection(os.Stderr, isInteractiveTerminal(os.Stderr) && !noColor, prefix, highlight, highlightStyle, suffix)
 }
 
 // writeSelection renders the confirmation, styled or plain.

@@ -926,10 +926,11 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		Short: "Review a GitHub PR",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target, err := a.resolveRequestTarget(requestSelectors{
-				repo:   repo,
-				id:     pr,
-				rawURL: rawURL,
-				pick:   selectPR,
+				repo:    repo,
+				id:      pr,
+				rawURL:  rawURL,
+				pick:    selectPR,
+				changed: cmd.Flags().Changed,
 			}, parseGitHubPRURLTarget, "", "pull request")
 			if err != nil {
 				return err
@@ -1008,10 +1009,11 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		Short: "Review a GitLab merge request",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target, err := a.resolveRequestTarget(requestSelectors{
-				repo:   project,
-				id:     mr,
-				rawURL: rawURL,
-				pick:   selectMR,
+				repo:    project,
+				id:      mr,
+				rawURL:  rawURL,
+				pick:    selectMR,
+				changed: cmd.Flags().Changed,
 			}, parseGitLabMRURL, "", "merge request")
 			if err != nil {
 				return err
