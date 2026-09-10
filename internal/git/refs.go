@@ -34,7 +34,15 @@ type CommitRef struct {
 	Subject  string
 	Author   string
 	Date     time.Time
+	// Parent is the commit's first parent, empty for a root commit. A range
+	// picker needs it: "base..head" excludes its base, so reviewing a commit
+	// means diffing from its parent.
+	Parent string
 }
+
+// EmptyTreeSHA is git's empty tree, the base a root commit is diffed against:
+// it has no parent, and every git repository resolves this hash.
+const EmptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 // CurrentBranch returns the checked-out branch of repoRoot. A detached HEAD has
 // no branch and yields an error.
@@ -69,7 +77,7 @@ func defaultBranch(ctx context.Context, runner Runner) (string, error) {
 // anything else could be fooled by a crafted commit message.
 const (
 	branchRefFormat = "%(refname:short)%00%(refname)%00%(symref)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)"
-	commitRefFormat = "%H%x00%h%x00%ct%x00%an%x00%s"
+	commitRefFormat = "%H%x00%h%x00%ct%x00%an%x00%P%x00%s"
 )
 
 // Branches lists the local and remote-tracking branches of repoRoot, newest
@@ -155,16 +163,22 @@ func commits(ctx context.Context, runner Runner, rev string, limit int) ([]Commi
 	var commits []CommitRef
 	for line := range strings.SplitSeq(strings.TrimRight(out, "\n"), "\n") {
 		fields := strings.Split(line, "\x00")
-		if len(fields) < 5 || fields[0] == "" {
+		if len(fields) < 6 || fields[0] == "" {
 			continue
 		}
-		commits = append(commits, CommitRef{
+		commit := CommitRef{
 			SHA:      fields[0],
 			ShortSHA: fields[1],
 			Date:     unixTime(fields[2]),
 			Author:   fields[3],
-			Subject:  fields[4],
-		})
+			Subject:  fields[5],
+		}
+		// %P lists every parent; a merge's first parent is the one its range
+		// follows, which is the same side `git diff a..b` walks.
+		if first, _, _ := strings.Cut(fields[4], " "); first != "" {
+			commit.Parent = first
+		}
+		commits = append(commits, commit)
 	}
 	return commits, nil
 }

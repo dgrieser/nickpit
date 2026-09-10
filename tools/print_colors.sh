@@ -567,6 +567,30 @@ printf '      %s  %s  %s  %s\n\n' \
   "$(pick_cell '38;5;218' 'nabrams      ')" \
   "$(pick_cell '38;5;244' '2mo')"
 
+# The commit picker selects a range: the first Enter opens it, moving covers
+# the commits between, and the same background carries the whole span so it
+# reads as one block. The title line counts what is covered and names its ends.
+printf '  %s%s%s%s%s%s\n' "$(s '1;38;5;255' 'Commits to review:')" \
+  "$(s '38;5;244' ' 3 commits')" "$(s '38;5;244' ' · ')" \
+  "$(s '38;5;117' 'd077dba')" "$(s '38;5;244' '..')" "$(s '38;5;117' '82a6dbd')"
+printf '  %s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;71' '82a6dbd')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;120' 'feat')$(pick_cell_on '38;5;244' '(')$(pick_cell_on '38;5;116' 'scm')$(pick_cell_on '38;5;244' '):')$(pick_cell_on '38;5;189' ' interactive selection')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;177' 'David Grieser')" "$(pick_gap_on)$(pick_cell_on '38;5;156' '40m')"
+printf '  %s%s%s%s%s%s%s\n' \
+  "$(s "$PICK_CURSOR" '  ')" \
+  "$(pick_cell_on '38;5;71' '28bfd1e')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;189' 'Merge pull request #159')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;177' 'David Grieser')" "$(pick_gap_on)$(pick_cell_on '38;5;244' '20h')"
+printf '      %s  %s  %s  %s\n' \
+  "$(pick_cell '38;5;71' 'a8cbc3e')" \
+  "$(pick_cell '38;5;189' 'Merge pull request #158')" \
+  "$(pick_cell '38;5;177' 'David Grieser')" \
+  "$(pick_cell '38;5;244' '21h')"
+printf '  %s\n' "$(s '38;5;244' '2 of 20')"
+printf '  %s\n\n' "$(s '38;5;242' '↑/↓ extend · PgUp/PgDn page · Enter selects the range · Esc drops it')"
+
 swatch '1;38;5;255' 'styleTitle'      'the title line, and the ❯ cursor marker'
 swatch '48;2;69;56;86' 'styleCursorRow' 'background of the selected row, repeated on every segment — liveAgentPastelRGB lavender at 35%'
 swatch '38;5;118'   'StyleIdentifier' 'MR/PR number — progressColorNumberGreen'

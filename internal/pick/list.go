@@ -2,6 +2,7 @@ package pick
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -108,11 +109,17 @@ type list struct {
 	priorities []int
 	color      bool
 	visible    int
+	// rangeMode turns the list into a range selection, and unit names what its
+	// summary counts.
+	rangeMode bool
+	unit      string
 
 	filter  []rune
 	matches []int
 	cursor  int
-	top     int
+	// anchor is the row an open range started on, -1 while none is open.
+	anchor int
+	top    int
 }
 
 func newList(opts Options, height int, color bool) *list {
@@ -124,6 +131,9 @@ func newList(opts Options, height int, color bool) *list {
 		kinds:       opts.ColumnKinds,
 		detailStyle: firstStyle(opts.DetailStyle, StyleDetail),
 		priorities:  opts.ColumnPriority,
+		rangeMode:   opts.Range,
+		unit:        opts.RangeUnit,
+		anchor:      -1,
 		color:       color,
 		visible:     visibleRows(opts.MaxVisible, height),
 	}
@@ -184,11 +194,51 @@ func (l *list) resize(maxVisible, height int) {
 	l.scrollToCursor()
 }
 
+// selected is the index into the caller's items, or -1 when the filter matches
+// nothing.
 func (l *list) selected() int {
 	if l.cursor < 0 || l.cursor >= len(l.matches) {
 		return -1
 	}
 	return l.matches[l.cursor]
+}
+
+// selectedRange is the pair of item indexes the list ends on, ordered as the
+// rows are (first is the higher row). Outside range mode both are the cursor.
+func (l *list) selectedRange() (int, int) {
+	first := l.selected()
+	if !l.rangeMode || l.anchor < 0 {
+		return first, first
+	}
+	low, high := min(l.anchor, l.cursor), max(l.anchor, l.cursor)
+	return l.matches[low], l.matches[high]
+}
+
+// inSpan reports whether a row lies inside the open range, which is what the
+// highlight covers while the second end is being chosen.
+func (l *list) inSpan(position int) bool {
+	if l.anchor < 0 {
+		return position == l.cursor
+	}
+	return position >= min(l.anchor, l.cursor) && position <= max(l.anchor, l.cursor)
+}
+
+// spanSize is how many rows the open range covers, 0 while none is open.
+func (l *list) spanSize() int {
+	if l.anchor < 0 {
+		return 0
+	}
+	return max(l.anchor, l.cursor) - min(l.anchor, l.cursor) + 1
+}
+
+// indexOf finds a value in a match set, -1 when it is gone.
+func indexOf(matches []int, item int) int {
+	for i, candidate := range matches {
+		if candidate == item {
+			return i
+		}
+	}
+	return -1
 }
 
 func (l *list) apply(k key) action {
@@ -197,8 +247,27 @@ func (l *list) apply(k key) action {
 		if l.selected() < 0 {
 			return actionNone
 		}
+		if l.rangeMode && l.anchor < 0 {
+			// The first Enter opens the range instead of ending the list, and
+			// the filter goes with it: a row hidden between the two ends would
+			// end up inside a range nobody could see.
+			item := l.selected()
+			l.anchor = l.cursor
+			if len(l.filter) > 0 {
+				l.setFilter(nil)
+				l.anchor = max(indexOf(l.matches, item), 0)
+				l.cursor = l.anchor
+				l.scrollToCursor()
+			}
+			return actionNone
+		}
 		return actionSelect
 	case keyAbort:
+		if l.anchor >= 0 {
+			// Esc closes an open range before it leaves the list.
+			l.anchor = -1
+			return actionNone
+		}
 		return actionAbort
 	case keyUp:
 		l.move(-1)
@@ -213,6 +282,10 @@ func (l *list) apply(k key) action {
 	case keyEnd:
 		l.move(len(l.matches))
 	case keyBackspace:
+		if l.anchor >= 0 {
+			// The visible set is frozen while a range is open.
+			return actionNone
+		}
 		if len(l.filter) == 0 {
 			// Backspace on an empty filter is the second way out, for
 			// terminals that swallow Esc.
@@ -220,11 +293,13 @@ func (l *list) apply(k key) action {
 		}
 		l.setFilter(l.filter[:len(l.filter)-1])
 	case keyClearFilter:
-		if len(l.filter) > 0 {
+		if l.anchor < 0 && len(l.filter) > 0 {
 			l.setFilter(nil)
 		}
 	case keyRune:
-		l.setFilter(append(l.filter, k.rune))
+		if l.anchor < 0 {
+			l.setFilter(append(l.filter, k.rune))
+		}
 	}
 	return actionNone
 }
@@ -422,22 +497,37 @@ func (l *list) render(width int) []string {
 		lines = append(lines, l.styled(styleNoMatch, truncate("  no match", width)))
 	}
 	lines = append(lines, l.styled(stylePosition, truncate(l.filterLine(), width)))
-	lines = append(lines, l.styled(styleHint, hint(width)))
+	lines = append(lines, l.styled(styleHint, l.hint(width)))
 	return lines
 }
 
 const (
 	longHint  = "↑/↓ move · PgUp/PgDn page · type to filter · Ctrl-U clear · Enter select · Esc abort"
 	shortHint = "↑/↓ move · type to filter · Enter select · Esc abort"
+	// The range hints replace them once a range can be, or has been, opened:
+	// Enter means something else there, and the filter is out of play while the
+	// range is open.
+	longRangeHint  = "↑/↓ move · PgUp/PgDn page · type to filter · Enter opens the range · Esc abort"
+	shortRangeHint = "↑/↓ move · type to filter · Enter opens the range · Esc abort"
+	longSpanHint   = "↑/↓ extend · PgUp/PgDn page · Enter selects the range · Esc drops it"
+	shortSpanHint  = "↑/↓ extend · Enter selects · Esc drops the range"
 )
 
-// hint states the keys, in as much detail as the terminal has room for: a
-// truncated key list is worse than a shorter complete one.
-func hint(width int) string {
-	if displayWidth(longHint) <= width {
-		return longHint
+// hint states the keys of the state the list is in, in as much detail as the
+// terminal has room for: a truncated key list is worse than a shorter complete
+// one.
+func (l *list) hint(width int) string {
+	long, short := longHint, shortHint
+	switch {
+	case l.anchor >= 0:
+		long, short = longSpanHint, shortSpanHint
+	case l.rangeMode:
+		long, short = longRangeHint, shortRangeHint
 	}
-	return truncate(shortHint, width)
+	if displayWidth(long) <= width {
+		return long
+	}
+	return truncate(short, width)
 }
 
 func (l *list) filterLine() string {
@@ -455,6 +545,9 @@ func (l *list) filterLine() string {
 // behind a column the row had to shorten.
 func (l *list) renderTitle(width int) string {
 	segments := []segment{{l.title, styleTitle}}
+	if l.anchor >= 0 {
+		return l.emitRow(append(segments, l.spanSegments()...), width, false)
+	}
 	if index := l.selected(); index >= 0 && l.items[index].Detail != "" {
 		segments = append(segments, segment{" ", l.detailStyle})
 		// The detail is the full value a column had to shorten — a ref, in
@@ -462,6 +555,32 @@ func (l *list) renderTitle(width int) string {
 		segments = append(segments, refSegments(l.items[index].Detail, l.detailStyle)...)
 	}
 	return l.emitRow(segments, width, false)
+}
+
+// spanSegments summarises an open range after the title: how many rows it
+// covers, and the details of its two ends, so what is about to be selected is
+// readable without counting rows.
+func (l *list) spanSegments() []segment {
+	size := l.spanSize()
+	count := strconv.Itoa(size)
+	if l.unit != "" {
+		count += " " + l.unit
+		if size != 1 {
+			count += "s"
+		}
+	}
+	segments := []segment{{" " + count, stylePosition}}
+	first, last := l.selectedRange()
+	from, to := l.items[last].Detail, l.items[first].Detail
+	if from == "" || to == "" {
+		return segments
+	}
+	// Oldest first, the way a range is written: "base..head".
+	segments = append(segments, segment{" · ", StyleSeparator})
+	segments = append(segments, refSegments(from, l.detailStyle)...)
+	segments = append(segments, segment{"..", StyleSeparator})
+	segments = append(segments, refSegments(to, l.detailStyle)...)
+	return segments
 }
 
 // firstStyle returns the caller's style, or the fallback when it gave none.
@@ -482,9 +601,11 @@ type segment struct {
 
 func (l *list) renderRow(position, width int, widths []int) string {
 	item := l.items[l.matches[position]]
-	cursor := position == l.cursor
+	// The highlight covers every row of an open range, so the span is visible
+	// as one block; the marker stays on the row the keys move.
+	highlight := l.inSpan(position)
 	segments := make([]segment, 0, 2*len(item.Cells)+2)
-	if cursor {
+	if position == l.cursor {
 		segments = append(segments, segment{cursorMarker, styleCursorMark})
 	} else {
 		segments = append(segments, segment{strings.Repeat(" ", displayWidth(cursorMarker)), ""})
@@ -501,7 +622,7 @@ func (l *list) renderRow(position, width int, widths []int) string {
 		}
 		segments = append(segments, cellSegments(l.columnKind(i), text, l.cellStyle(item, i))...)
 	}
-	return l.emitRow(segments, width, cursor)
+	return l.emitRow(segments, width, highlight)
 }
 
 // gapBefore is the space between column i-1 and column i: a single space after

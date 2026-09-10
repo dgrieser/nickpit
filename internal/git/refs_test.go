@@ -74,8 +74,9 @@ func TestBranchesSubjectWithSeparatorLookalikes(t *testing.T) {
 func TestCommitsParsesLogRecords(t *testing.T) {
 	runner := &stubGitRunner{outputs: map[string]string{
 		joinArgs([]string{"log", "--max-count=2", "--format=" + commitRefFormat, "HEAD"}): strings.Join([]string{
-			"1111111111111111111111111111111111111111\x001111111\x001757000000\x00Alice\x00feat(cli): add a picker",
-			"2222222222222222222222222222222222222222\x002222222\x001756000000\x00Bob\x00fix(llm): retry on 429",
+			"1111111111111111111111111111111111111111\x001111111\x001757000000\x00Alice\x002222222222222222222222222222222222222222 3333333333333333333333333333333333333333\x00feat(cli): add a picker",
+			// A root commit lists no parent.
+			"2222222222222222222222222222222222222222\x002222222\x001756000000\x00Bob\x00\x00fix(llm): retry on 429",
 		}, "\n") + "\n",
 	}}
 	commits, err := commits(context.Background(), runner, "", 2)
@@ -93,6 +94,13 @@ func TestCommitsParsesLogRecords(t *testing.T) {
 	}
 	if !commits[1].Date.Equal(time.Unix(1756000000, 0)) {
 		t.Fatalf("second commit date = %s", commits[1].Date)
+	}
+	// A merge follows its first parent, which is the side a range walks.
+	if commits[0].Parent != "2222222222222222222222222222222222222222" {
+		t.Fatalf("first parent = %q", commits[0].Parent)
+	}
+	if commits[1].Parent != "" {
+		t.Fatalf("root commit parent = %q, want none", commits[1].Parent)
 	}
 }
 

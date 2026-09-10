@@ -264,14 +264,25 @@ func TestRenderKeepsTrailingColumnsVisible(t *testing.T) {
 }
 
 func TestHintShortensForNarrowTerminals(t *testing.T) {
-	if got := hint(200); got != longHint {
+	l := newList(Options{Items: scriptedItems}, 24, false)
+	if got := l.hint(200); got != longHint {
 		t.Fatalf("hint = %q, want the full key list", got)
 	}
-	if got := hint(60); got != shortHint {
+	if got := l.hint(60); got != shortHint {
 		t.Fatalf("hint = %q, want the short key list", got)
 	}
-	if got := hint(20); displayWidth(got) > 20 {
+	if got := l.hint(20); displayWidth(got) > 20 {
 		t.Fatalf("hint = %q, want it truncated to the width", got)
+	}
+	// A range list says what Enter does there, and says it again once a range
+	// is open.
+	r := newList(Options{Items: scriptedItems, Range: true}, 24, false)
+	if got := r.hint(200); got != longRangeHint {
+		t.Fatalf("hint = %q, want the range key list", got)
+	}
+	r.apply(key{kind: keyEnter})
+	if got := r.hint(200); got != longSpanHint {
+		t.Fatalf("hint = %q, want the open-range key list", got)
 	}
 }
 
@@ -342,7 +353,13 @@ func (s *scriptedInput) grace() []byte {
 
 func selectScripted(t *testing.T, items []Item, source input) (int, error) {
 	t.Helper()
-	state := newList(Options{Title: "t", Items: items}, 24, false)
+	first, _, err := selectRangeScripted(t, Options{Title: "t", Items: items}, source)
+	return first, err
+}
+
+func selectRangeScripted(t *testing.T, opts Options, source input) (int, int, error) {
+	t.Helper()
+	state := newList(opts, 24, false)
 	return selectFrom(state, &renderer{w: &strings.Builder{}}, func() (int, int) { return 80, 24 }, 0, source)
 }
 
@@ -766,5 +783,133 @@ func TestRenderRowPaintsCommitPrefixAndRef(t *testing.T) {
 		if !strings.Contains(row, want) {
 			t.Fatalf("row = %q, want %q", row, want)
 		}
+	}
+}
+
+func rangeItems() []Item {
+	return []Item{
+		{Cells: []string{"e796cdf", "fix: newest"}, Detail: "e796cdf"},
+		{Cells: []string{"91ecb94", "feat: middle"}, Detail: "91ecb94"},
+		{Cells: []string{"1a2b3c4", "chore: oldest"}, Detail: "1a2b3c4"},
+	}
+}
+
+// The first Enter opens the range, moving covers the rows between, and the
+// second Enter ends the list on both ends — ordered as the rows are.
+func TestSelectRangeAnchorsThenExtends(t *testing.T) {
+	source := &scriptedInput{chunks: [][]byte{[]byte("\r"), []byte("\x1b[B"), []byte("\r")}}
+	first, last, err := selectRangeScripted(t, Options{Title: "t", Items: rangeItems(), Range: true}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 0 || last != 1 {
+		t.Fatalf("range = %d..%d, want the first two rows", first, last)
+	}
+	// Extending upward from a lower row yields the same pair, so the caller
+	// never has to order them.
+	source = &scriptedInput{chunks: [][]byte{[]byte("\x1b[B\x1b[B"), []byte("\r"), []byte("\x1b[A"), []byte("\r")}}
+	first, last, err = selectRangeScripted(t, Options{Title: "t", Items: rangeItems(), Range: true}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 1 || last != 2 {
+		t.Fatalf("range = %d..%d, want rows 1 and 2", first, last)
+	}
+	// A range of one row is a single choice, which is what Enter twice means.
+	source = &scriptedInput{chunks: [][]byte{[]byte("\r"), []byte("\r")}}
+	if first, last, err = selectRangeScripted(t, Options{Items: rangeItems(), Range: true}, source); err != nil || first != 0 || last != 0 {
+		t.Fatalf("range = %d..%d, err = %v; want row 0 twice", first, last, err)
+	}
+}
+
+// Esc closes an open range before it leaves the list, so a mis-anchored range
+// costs one keypress, not the whole selection.
+func TestSelectRangeEscapeClosesTheRangeFirst(t *testing.T) {
+	source := &scriptedInput{chunks: [][]byte{
+		[]byte("\r"),     // open the range on row 0
+		[]byte("\x1b[B"), // extend
+		[]byte("\x1b"),   // drop the range
+		[]byte("\x1b[B"), // move on
+		[]byte("\r"),     // open a new range on row 2
+		[]byte("\r"),     // and take it
+	}}
+	first, last, err := selectRangeScripted(t, Options{Items: rangeItems(), Range: true}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 2 || last != 2 {
+		t.Fatalf("range = %d..%d, want the row the second range opened on", first, last)
+	}
+	// With no range open, Esc still leaves the list.
+	if _, _, err := selectRangeScripted(t, Options{Items: rangeItems(), Range: true},
+		&scriptedInput{chunks: [][]byte{[]byte("\x1b")}}); !errors.Is(err, ErrAborted) {
+		t.Fatalf("err = %v, want ErrAborted", err)
+	}
+}
+
+// Without Options.Range a single Enter still ends the list, and both results
+// are that row.
+func TestSelectRangeWithoutRangeMode(t *testing.T) {
+	first, last, err := selectRangeScripted(t, Options{Items: rangeItems()},
+		&scriptedInput{chunks: [][]byte{[]byte("\x1b[B"), []byte("\r")}})
+	if err != nil || first != 1 || last != 1 {
+		t.Fatalf("range = %d..%d, err = %v; want row 1 twice", first, last, err)
+	}
+}
+
+// A filter may find the first end, but it cannot survive the range: a hidden
+// row between the ends would be reviewed without ever being shown.
+func TestSelectRangeClearsTheFilterOnAnchor(t *testing.T) {
+	l := newList(Options{Items: rangeItems(), Range: true}, 24, false)
+	l.setFilter([]rune("oldest"))
+	if len(l.matches) != 1 {
+		t.Fatalf("matches = %d, want the filter to have narrowed the list", len(l.matches))
+	}
+	l.apply(key{kind: keyEnter})
+	if len(l.filter) != 0 || len(l.matches) != 3 {
+		t.Fatalf("filter = %q over %d matches, want it cleared", string(l.filter), len(l.matches))
+	}
+	// The anchor followed its row through the reset.
+	if first, last := l.selectedRange(); first != 2 || last != 2 {
+		t.Fatalf("range = %d..%d, want the row the filter had found", first, last)
+	}
+	// Typing does not reopen the filter while the range is open.
+	l.apply(key{kind: keyRune, rune: 'x'})
+	l.apply(key{kind: keyClearFilter})
+	l.apply(key{kind: keyBackspace})
+	if len(l.filter) != 0 || len(l.matches) != 3 {
+		t.Fatalf("filter = %q over %d matches, want the visible set frozen", string(l.filter), len(l.matches))
+	}
+}
+
+// The whole span is highlighted, so the range reads as one block, and the title
+// line says how much it covers.
+func TestRenderShowsTheOpenSpan(t *testing.T) {
+	l := newList(Options{Title: "Commits to review:", Items: rangeItems(), Range: true, RangeUnit: "commit"}, 24, true)
+	l.apply(key{kind: keyEnter})
+	l.apply(key{kind: keyDown})
+	lines := l.render(100)
+	if !strings.Contains(lines[0], "2 commits") {
+		t.Fatalf("title = %q, want the span size", lines[0])
+	}
+	// One row is one commit, not "1 commits".
+	l.apply(key{kind: keyUp})
+	if title := l.render(100)[0]; !strings.Contains(title, "1 commit\x1b") {
+		t.Fatalf("title = %q, want a singular count", title)
+	}
+	if !strings.Contains(lines[0], "1a2b3c4") && !strings.Contains(lines[0], "91ecb94") {
+		t.Fatalf("title = %q, want the ends of the span", lines[0])
+	}
+	for _, row := range lines[1:3] {
+		if !strings.Contains(row, styleCursorRow) {
+			t.Fatalf("row = %q, want it inside the highlight", row)
+		}
+	}
+	if strings.Contains(lines[3], styleCursorRow) {
+		t.Fatalf("row = %q, want it outside the highlight", lines[3])
+	}
+	// The marker stays on the row the keys move.
+	if !strings.Contains(lines[2], cursorMarker) || strings.Contains(lines[1], cursorMarker) {
+		t.Fatalf("rows = %q / %q, want the marker on the cursor row only", lines[1], lines[2])
 	}
 }

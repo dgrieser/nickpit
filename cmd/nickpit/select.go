@@ -42,7 +42,7 @@ const requestSelectNote = "the project comes from --repo or the git remote of th
 // daemon-spawned runs keep failing with their non-interactive error instead of
 // waiting for a keypress nobody can send.
 func (a *app) interactiveSelect() bool {
-	if a.selectFn != nil {
+	if a.selectFn != nil || a.selectRangeFn != nil {
 		return true
 	}
 	return isTerminal(os.Stdin) && isTerminal(os.Stderr)
@@ -52,10 +52,26 @@ func (a *app) interactiveSelect() bool {
 // stdin and draws on stderr, keeping stdout free for the review output the
 // command writes afterwards.
 func (a *app) selectOne(opts pick.Options) (int, error) {
-	if a.selectFn != nil {
-		return a.selectFn(opts)
+	first, _, err := a.selectRange(opts)
+	return first, err
+}
+
+// selectRange draws opts and returns the ends of the chosen range, which are
+// the same row unless opts.Range is set.
+func (a *app) selectRange(opts pick.Options) (int, int, error) {
+	if a.selectRangeFn != nil {
+		return a.selectRangeFn(opts)
 	}
-	return pick.Select(os.Stdin, os.Stderr, opts)
+	if a.selectFn != nil {
+		index, err := a.selectFn(opts)
+		if err != nil {
+			return -1, -1, err
+		}
+		// A seam that answers with one row means a range of that one row, so a
+		// range prompt stays answerable without a terminal.
+		return index, index, nil
+	}
+	return pick.SelectRange(os.Stdin, os.Stderr, opts)
 }
 
 // requestTarget addresses one merge request or pull request. An ID of 0 means
@@ -210,29 +226,27 @@ func (a *app) pickLocalRefs(ctx context.Context, submode, repoRoot string, expli
 			*refs.head = chosen
 		}
 	case "commits":
-		// The head is resolved first because the base list is taken from the
-		// head's history: offering the checked-out branch's commits under an
-		// explicit `--to release` would let an unrelated — or invalid — range
-		// be picked.
-		if explicit && !headSet {
-			chosen, err := a.pickCommit(ctx, repoRoot, *refs.head,
-				"Head commit — the last commit of the range to review")
+		if *refs.base != "" || !prompt {
+			// An explicit --from settles the range; nothing to ask.
+			return nil
+		}
+		if headSet {
+			// The head is fixed, so only the other end is open: pick the oldest
+			// commit to review out of that head's history.
+			base, err := a.pickCommitStart(ctx, repoRoot, *refs.head)
 			if err != nil {
 				return err
 			}
-			*refs.head = chosen
+			*refs.base = base
+			return nil
 		}
-		// The range is base..head, so the base commit is the last one NOT
-		// reviewed. Say so: picking the first commit of the work instead
-		// silently drops it from the review.
-		if *refs.base == "" && prompt {
-			chosen, err := a.pickCommit(ctx, repoRoot, *refs.head,
-				"Base commit — the last commit BEFORE the range to review")
-			if err != nil {
-				return err
-			}
-			*refs.base = chosen
+		// Both ends are open: one list, where the range is marked out on the
+		// commits themselves.
+		base, head, err := a.pickCommitRange(ctx, repoRoot)
+		if err != nil {
+			return err
 		}
+		*refs.base, *refs.head = base, head
 	}
 	return nil
 }
@@ -526,20 +540,22 @@ func (a *app) pickBranch(ctx context.Context, repoRoot string, prompt branchProm
 // a review should start from, few enough to stay scrollable.
 const maxPickedCommits = 100
 
-// pickCommit offers the newest commits reachable from rev (HEAD when empty) and
-// returns the chosen full SHA — full, not abbreviated, so the recorded range
-// stays unambiguous as the repository grows.
-func (a *app) pickCommit(ctx context.Context, repoRoot, rev, title string) (string, error) {
+// commitList loads the newest commits reachable from rev (HEAD when empty) and
+// the picker rows for them.
+func commitList(ctx context.Context, repoRoot, rev string) ([]git.CommitRef, []pick.Item, error) {
 	commits, err := git.Commits(ctx, repoRoot, rev, maxPickedCommits)
 	if err != nil {
-		return "", fmt.Errorf("listing commits: %w", err)
+		return nil, nil, fmt.Errorf("listing commits: %w", err)
 	}
 	if len(commits) == 0 {
-		return "", fmt.Errorf("no commits found in %s", repoRoot)
+		return nil, nil, fmt.Errorf("no commits found in %s", repoRoot)
 	}
 	items := make([]pick.Item, len(commits))
 	for i, commit := range commits {
 		items[i] = pick.Item{
+			// The short SHA again, so the span summary in the title line can
+			// name the ends of an open range.
+			Detail: commit.ShortSHA,
 			Cells: []string{
 				commit.ShortSHA,
 				textsan.StripControl(commit.Subject),
@@ -553,19 +569,70 @@ func (a *app) pickCommit(ctx context.Context, repoRoot, rev, title string) (stri
 			}),
 		}
 	}
-	index, err := a.selectOne(pick.Options{
+	return commits, items, nil
+}
+
+// commitOptions are the picker settings both commit prompts share.
+func commitOptions(title string, items []pick.Item) pick.Options {
+	return pick.Options{
 		Title:       title,
 		Items:       items,
 		CellStyles:  []string{pick.StyleHash, pick.StyleText, pick.StyleAuthor, pick.StyleAge},
 		ColumnKinds: []pick.ColumnKind{pick.KindPlain, pick.KindMessage},
-	})
+	}
+}
+
+// baseOf is the ref a review diffs from to include commit: its first parent,
+// or git's empty tree when there is none, so selecting down to a repository's
+// first commit reviews that commit instead of failing.
+func baseOf(commit git.CommitRef) string {
+	if commit.Parent == "" {
+		return git.EmptyTreeSHA
+	}
+	return commit.Parent
+}
+
+// pickCommitRange asks for both ends of a range in one list: the range is
+// marked out on the commits to review, and the exclusive base a review records
+// is derived from the oldest of them. Returns the base and head refs.
+func (a *app) pickCommitRange(ctx context.Context, repoRoot string) (string, string, error) {
+	commits, items, err := commitList(ctx, repoRoot, "")
+	if err != nil {
+		return "", "", err
+	}
+	options := commitOptions("Commits to review:", items)
+	options.Range = true
+	options.RangeUnit = "commit"
+	newest, oldest, err := a.selectRange(options)
+	if err != nil {
+		return "", "", err
+	}
+	head, first := commits[newest], commits[oldest]
+	if newest == oldest {
+		a.printSelection("Commit to review ", head.ShortSHA, pick.StyleHash,
+			" "+textsan.StripControl(head.Subject))
+	} else {
+		a.printSelection("Commits to review ", first.ShortSHA+".."+head.ShortSHA, pick.StyleHash,
+			fmt.Sprintf(" · %d commits", oldest-newest+1))
+	}
+	return baseOf(first), head.SHA, nil
+}
+
+// pickCommitStart asks for the oldest commit to review when the head is already
+// fixed (an explicit --to), and returns the base ref for it.
+func (a *app) pickCommitStart(ctx context.Context, repoRoot, rev string) (string, error) {
+	commits, items, err := commitList(ctx, repoRoot, rev)
 	if err != nil {
 		return "", err
 	}
-	chosen := commits[index]
-	a.printSelection("Selected commit ", chosen.ShortSHA, pick.StyleHash,
-		" "+textsan.StripControl(chosen.Subject))
-	return chosen.SHA, nil
+	index, err := a.selectOne(commitOptions("First commit to review:", items))
+	if err != nil {
+		return "", err
+	}
+	first := commits[index]
+	a.printSelection("First commit ", first.ShortSHA, pick.StyleHash,
+		" "+textsan.StripControl(first.Subject))
+	return baseOf(first), nil
 }
 
 // freshAge is how recent a timestamp has to be for its column to be coloured:

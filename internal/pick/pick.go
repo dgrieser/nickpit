@@ -59,6 +59,15 @@ type Options struct {
 	CellStyles []string
 	// DetailStyle colours Item.Detail in the title line; StyleDetail when empty.
 	DetailStyle string
+	// Range turns the list into a range selection: the first Enter opens the
+	// range on the row under the cursor, moving then covers the rows between,
+	// and the second Enter ends the list on both ends. Esc closes an open range
+	// before it leaves the list. Use SelectRange to read the pair back.
+	Range bool
+	// RangeUnit names what the range covers, in the singular ("commit"), for
+	// the summary the title line shows while the range is open; the picker
+	// appends an "s" for any count but one.
+	RangeUnit string
 	// ColumnKinds says what each column holds, indexed like Item.Cells, so the
 	// picker can paint inside a cell: a KindMessage column has its
 	// conventional-commit prefix taken apart, a KindRef column its separators
@@ -126,11 +135,20 @@ var ErrNotATerminal = errors.New("not a terminal")
 // restored before returning, including on error, and the drawn block is erased
 // so the caller's own output starts on a clean line.
 func Select(in, out *os.File, opts Options) (int, error) {
+	first, _, err := SelectRange(in, out, opts)
+	return first, err
+}
+
+// SelectRange is Select for a list that ends on two rows: with Options.Range it
+// returns the ends of the chosen range as indexes into opts.Items, ordered as
+// the rows are — first is the higher row, last the lower one. Without
+// Options.Range both results are the single chosen row.
+func SelectRange(in, out *os.File, opts Options) (int, int, error) {
 	if len(opts.Items) == 0 {
-		return -1, ErrNoItems
+		return -1, -1, ErrNoItems
 	}
 	if in == nil || out == nil || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
-		return -1, ErrNotATerminal
+		return -1, -1, ErrNotATerminal
 	}
 	_, height := terminalSize(out)
 	_, noColor := os.LookupEnv("NO_COLOR")
@@ -138,7 +156,7 @@ func Select(in, out *os.File, opts Options) (int, error) {
 
 	previous, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
-		return -1, fmt.Errorf("pick: switching the terminal to raw mode: %w", err)
+		return -1, -1, fmt.Errorf("pick: switching the terminal to raw mode: %w", err)
 	}
 	screen := &renderer{w: out}
 	defer func() {
@@ -150,7 +168,7 @@ func Select(in, out *os.File, opts Options) (int, error) {
 		_ = term.Restore(int(in.Fd()), previous)
 	}()
 	if _, err := io.WriteString(out, hideCursor); err != nil {
-		return -1, err
+		return -1, -1, err
 	}
 
 	return selectFrom(state, screen, func() (int, int) { return terminalSize(out) }, opts.MaxVisible, &fileInput{file: in})
@@ -165,13 +183,13 @@ type input interface {
 }
 
 // selectFrom drives the list until a key selects or aborts.
-func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisible int, source input) (int, error) {
+func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisible int, source input) (int, int, error) {
 	var pending []byte
 	for {
 		width, height := size()
 		state.resize(maxVisible, height)
 		if err := screen.draw(state.render(width)); err != nil {
-			return -1, err
+			return -1, -1, err
 		}
 		chunk, readErr := source.read()
 		pending = append(pending, chunk...)
@@ -195,16 +213,17 @@ func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisibl
 			pending = pending[consumed:]
 			switch state.apply(k) {
 			case actionSelect:
-				return state.selected(), nil
+				first, last := state.selectedRange()
+				return first, last, nil
 			case actionAbort:
-				return -1, ErrAborted
+				return -1, -1, ErrAborted
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return -1, ErrAborted
+				return -1, -1, ErrAborted
 			}
-			return -1, fmt.Errorf("pick: reading the terminal: %w", readErr)
+			return -1, -1, fmt.Errorf("pick: reading the terminal: %w", readErr)
 		}
 	}
 }

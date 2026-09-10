@@ -263,6 +263,9 @@ type app struct {
 	// (pick.Select on stdin/stderr). A seam so tests can choose a row — and
 	// count as interactive — without a terminal.
 	selectFn func(opts pick.Options) (int, error)
+	// selectRangeFn answers a range pick; nil falls back to selectFn, whose
+	// single row stands for a range of one.
+	selectRangeFn func(opts pick.Options) (int, int, error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -875,7 +878,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	}
 	switch submode {
 	case "commits":
-		cmd.Flags().StringVar(&from, "from", "", "Base commit (omit in a terminal to pick it from the log)")
+		cmd.Flags().StringVar(&from, "from", "", "Base commit, excluded from the review (omit in a terminal to pick the commits to review from the log)")
 		cmd.Flags().StringVar(&to, "to", "HEAD", "Head commit")
 		registerGitRefCompletion(cmd, "from", a, true)
 		registerGitRefCompletion(cmd, "to", a, true)

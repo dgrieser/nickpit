@@ -697,28 +697,92 @@ func TestPickLocalRefsKeepsExplicitRefs(t *testing.T) {
 }
 
 // `git commits` without --from cannot run at all, so the base commit is picked
-// even without --select — but only where a list can be drawn.
+// even without --select — but only where a list can be drawn. The base list
+// starts below the head: a range whose base is its own head reviews nothing,
+// and the log being newest-first is exactly where the cursor would land.
 func TestPickLocalRefsCommitsModeImplicitBase(t *testing.T) {
 	dir := newTestRepo(t)
+	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "second")
+	head := gitTestOutput(t, dir, "rev-parse", "HEAD")
+	parent := gitTestOutput(t, dir, "rev-parse", "HEAD~1")
+
 	from, to := "", "HEAD"
-	if err := interactiveApp(0, nil).pickLocalRefs(context.Background(), "commits", dir, false, false, true,
+	if err := interactiveApp(0, nil).pickLocalRefs(context.Background(), "commits", dir, false, false, false,
 		localRefs{base: &from, head: &to}); err != nil {
 		t.Fatal(err)
 	}
-	if len(from) != 40 {
-		t.Fatalf("from = %q, want the full SHA of the picked commit", from)
+	// A range of the one row the seam answers with: the newest commit, whose
+	// base is its parent.
+	if from != parent {
+		t.Fatalf("from = %q, want the head's parent %q so accepting reviews the head commit", from, parent)
 	}
-	if to != "HEAD" {
-		t.Fatalf("to = %q, want the explicit head kept", to)
+	if from == head {
+		t.Fatalf("from = %q, want a base that is not the range head", from)
+	}
+	if to != head {
+		t.Fatalf("to = %q, want the chosen head %q recorded", to, head)
 	}
 
 	from, to = "", "HEAD"
-	if err := (&app{}).pickLocalRefs(context.Background(), "commits", dir, false, false, true,
+	if err := (&app{}).pickLocalRefs(context.Background(), "commits", dir, false, false, false,
 		localRefs{base: &from, head: &to}); err != nil {
 		t.Fatal(err)
 	}
-	if from != "" {
-		t.Fatalf("from = %q, want no picker without a terminal", from)
+	if from != "" || to != "HEAD" {
+		t.Fatalf("from = %q, to = %q; want no picker without a terminal", from, to)
+	}
+}
+
+// A repository's first commit has no parent, so the base is git's empty tree
+// and the commit is reviewed instead of the range failing.
+func TestPickCommitRangeOverTheRootCommit(t *testing.T) {
+	dir := newTestRepo(t)
+	base, head, err := interactiveApp(0, nil).pickCommitRange(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != git.EmptyTreeSHA {
+		t.Fatalf("base = %q, want git's empty tree", base)
+	}
+	if head != gitTestOutput(t, dir, "rev-parse", "HEAD") {
+		t.Fatalf("head = %q, want the only commit", head)
+	}
+}
+
+// Both ends open: one list, the range marked out on the commits to review, and
+// the exclusive base derived from the oldest of them.
+func TestPickCommitRangeCoversTheChosenCommits(t *testing.T) {
+	dir := newTestRepo(t)
+	for _, message := range []string{"second", "third", "fourth"} {
+		runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", message)
+	}
+	var captured pick.Options
+	a := &app{selectRangeFn: func(opts pick.Options) (int, int, error) {
+		captured = opts
+		// Rows 0..1: the two newest commits.
+		return 0, 1, nil
+	}}
+	base, head, err := a.pickCommitRange(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !captured.Range || captured.RangeUnit != "commit" {
+		t.Fatalf("options = %+v, want a range prompt counting commits", captured)
+	}
+	if captured.Title != "Commits to review:" {
+		t.Fatalf("title = %q", captured.Title)
+	}
+	// The span's oldest commit is reviewed too, so the recorded base is its
+	// parent — HEAD~2 for a range of the two newest commits.
+	if want := gitTestOutput(t, dir, "rev-parse", "HEAD~2"); base != want {
+		t.Fatalf("base = %q, want %q", base, want)
+	}
+	if want := gitTestOutput(t, dir, "rev-parse", "HEAD"); head != want {
+		t.Fatalf("head = %q, want %q", head, want)
+	}
+	// Every row carries its short SHA as the detail the span summary names.
+	if captured.Items[0].Detail != gitTestOutput(t, dir, "rev-parse", "--short", "HEAD") {
+		t.Fatalf("detail = %q, want the short SHA", captured.Items[0].Detail)
 	}
 }
 
@@ -734,41 +798,50 @@ func TestPickLocalRefsCommitsBaseFollowsTheExplicitHead(t *testing.T) {
 	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "main only")
 	mainHead := gitTestOutput(t, dir, "rev-parse", "HEAD")
 
+	releaseParent := gitTestOutput(t, dir, "rev-parse", "release~1")
+
+	var captured pick.Options
 	from, to := "", "release"
-	if err := interactiveApp(0, nil).pickLocalRefs(context.Background(), "commits", dir, false, false, true,
+	if err := interactiveApp(0, &captured).pickLocalRefs(context.Background(), "commits", dir, false, false, true,
 		localRefs{base: &from, head: &to}); err != nil {
 		t.Fatal(err)
 	}
-	if from != releaseHead {
-		t.Fatalf("base = %q, want the head of the --to branch %q", from, releaseHead)
+	// A fixed head leaves one end open, so the prompt asks for the first commit
+	// to review out of that head's history — and its parent is the base.
+	if captured.Title != "First commit to review:" || captured.Range {
+		t.Fatalf("options = %+v, want the single-end prompt", captured)
 	}
-	if from == mainHead {
-		t.Fatalf("base = %q, want a commit of the range's history, not of the checkout", from)
+	if from != releaseParent {
+		t.Fatalf("base = %q, want the parent of the --to branch %q", from, releaseParent)
+	}
+	if from == releaseHead || from == mainHead {
+		t.Fatalf("base = %q, want neither the range head nor a commit of the checkout", from)
 	}
 	if to != "release" {
 		t.Fatalf("head = %q, want the explicit --to kept", to)
 	}
 }
 
-// With --select and no --to, the head is chosen first: the base list depends on
-// it.
-func TestPickLocalRefsCommitsAsksForTheHeadFirst(t *testing.T) {
+// With both ends open there is one prompt, not two: the range is chosen on the
+// commits themselves.
+func TestPickLocalRefsCommitsAsksOnce(t *testing.T) {
 	dir := newTestRepo(t)
 	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "second")
+	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "third")
 	var titles []string
-	a := &app{selectFn: func(opts pick.Options) (int, error) {
+	a := &app{selectRangeFn: func(opts pick.Options) (int, int, error) {
 		titles = append(titles, opts.Title)
-		return 0, nil
+		return 0, 1, nil
 	}}
 	from, to := "", "HEAD"
 	if err := a.pickLocalRefs(context.Background(), "commits", dir, true, false, false,
 		localRefs{base: &from, head: &to}); err != nil {
 		t.Fatal(err)
 	}
-	if len(titles) != 2 || !strings.HasPrefix(titles[0], "Head commit") || !strings.HasPrefix(titles[1], "Base commit") {
-		t.Fatalf("prompts = %q, want the head asked before the base", titles)
+	if len(titles) != 1 || titles[0] != "Commits to review:" {
+		t.Fatalf("prompts = %q, want a single range prompt", titles)
 	}
-	if len(to) != 40 || len(from) != 40 {
+	if len(from) != 40 || len(to) != 40 {
 		t.Fatalf("from = %q, to = %q; want both resolved to full SHAs", from, to)
 	}
 }
