@@ -29,6 +29,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/output"
+	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
@@ -258,6 +259,10 @@ type app struct {
 	// clipboardCopy writes text to the system clipboard; nil means
 	// clipboard.Copy. A seam so tests need no clipboard helper installed.
 	clipboardCopy func(ctx context.Context, data []byte) (string, error)
+	// selectFn answers an interactive pick; nil means the real terminal picker
+	// (pick.Select on stdin/stderr). A seam so tests can choose a row — and
+	// count as interactive — without a terminal.
+	selectFn func(opts pick.Options) (int, error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -286,6 +291,11 @@ func main() {
 // release the note's dedup mark.
 func quietExitCode(ctx context.Context, err error) (int, bool) {
 	if isUserAbort(ctx, err) {
+		return 130, true
+	}
+	// A dismissed picker (Esc, Ctrl-C) is a deliberate "never mind", not a
+	// failure: same treatment as an interrupted run.
+	if errors.Is(err, pick.ErrAborted) {
 		return 130, true
 	}
 	if errors.Is(err, errChatReplySuppressed) {
@@ -807,12 +817,25 @@ func (a *app) newGitCmd() *cobra.Command {
 
 func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	var from, to, base, head string
+	var selectRefs bool
 	cmd := &cobra.Command{
 		Use:   submode,
 		Short: localReviewShort(submode),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
+				return err
+			}
+			// The two range submodes name their refs differently (--base/--head
+			// for branches, --from/--to for commits) but resolve to one pair.
+			baseRef, headRef := &base, &head
+			baseSet, headSet := cmd.Flags().Changed("base"), cmd.Flags().Changed("head")
+			if submode == "commits" {
+				baseRef, headRef = &from, &to
+				baseSet, headSet = cmd.Flags().Changed("from"), cmd.Flags().Changed("to")
+			}
+			if err := a.pickLocalRefs(cmd.Context(), submode, repoRoot, selectRefs, baseSet, headSet,
+				localRefs{base: baseRef, head: headRef}); err != nil {
 				return err
 			}
 			profileName, profile, err := a.loadProfileForSpec()
@@ -852,15 +875,18 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	}
 	switch submode {
 	case "commits":
-		cmd.Flags().StringVar(&from, "from", "", "Base commit")
+		cmd.Flags().StringVar(&from, "from", "", "Base commit (omit in a terminal to pick it from the log)")
 		cmd.Flags().StringVar(&to, "to", "HEAD", "Head commit")
 		registerGitRefCompletion(cmd, "from", a, true)
 		registerGitRefCompletion(cmd, "to", a, true)
+		addSelectFlag(cmd, &selectRefs, "the commit range", "")
 	case "branch":
 		cmd.Flags().StringVar(&base, "base", "", "Base branch, e.g. the target branch; usually main or master")
 		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch, e.g. the source branch; usually the branch to review")
 		registerGitRefCompletion(cmd, "base", a, false)
 		registerGitRefCompletion(cmd, "head", a, false)
+		addSelectFlag(cmd, &selectRefs, "the branches to compare",
+			"a terminal asks for them even without this flag, which only refuses to fall back to the default pair")
 	}
 	return cmd
 }
@@ -887,6 +913,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 	var pr int
 	var rawURL string
 	var publish bool
+	var selectPR bool
 	cmd := &cobra.Command{
 		Use:   "github",
 		Short: "Review GitHub pull requests",
@@ -895,34 +922,34 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		Use:   "pr",
 		Short: "Review a GitHub PR",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("url") {
-				if cmd.Flags().Changed("id") {
-					return fmt.Errorf("--url can not be combined with --id")
-				}
-				if cmd.Flags().Changed("repo") {
-					return fmt.Errorf("--url can not be combined with --repo")
-				}
-				var err error
-				repo, pr, err = parseGitHubPRURL(rawURL)
-				if err != nil {
-					return err
-				}
-			} else {
-				if pr <= 0 {
-					return fmt.Errorf("--id must be a positive integer")
-				}
+			target, err := a.resolveRequestTarget(requestSelectors{
+				repo:   repo,
+				id:     pr,
+				rawURL: rawURL,
+				pick:   selectPR,
+			}, parseGitHubPRURLTarget, "", "pull request")
+			if err != nil {
+				return err
 			}
-			if repo == "" {
-				repo = inferRepo()
-				if repo == "" {
-					return fmt.Errorf("--repo is required (could not infer from git remote)")
-				}
-			}
+			repo = target.Repo
 			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
-			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
+			client := ghscm.NewClient("", profile.GitHubToken)
+			if target.ID == 0 {
+				if target.ID, err = a.pickOpenRequest(cmd.Context(), target.Repo, openRequestList{
+					noun:   "pull request",
+					marker: "#",
+					list: func(ctx context.Context) ([]model.OpenRequest, error) {
+						return client.ListOpenPRs(ctx, target.Repo)
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			pr = target.ID
+			source := ghscm.NewAdapter(client, profile.AssetBaseURL)
 			req := model.ReviewRequest{
 				Mode:                      model.ModeGitHub,
 				Workdir:                   profile.Workdir,
@@ -954,8 +981,9 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		},
 	}
 	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name (inferred from git remote if omitted)")
-	prCmd.Flags().IntVar(&pr, "id", 0, "Pull request number")
+	prCmd.Flags().IntVar(&pr, "id", 0, "Pull request number (omit in a terminal to pick an open PR from a list)")
 	prCmd.Flags().StringVar(&rawURL, "url", "", "GitHub pull request URL")
+	addSelectFlag(prCmd, &selectPR, "an open pull request", requestSelectNote)
 	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
 	cmd.AddCommand(prCmd)
 	cmd.AddCommand(a.newGitHubFeedbackCmd())
@@ -967,6 +995,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	var mr int
 	var rawURL string
 	var publish bool
+	var selectMR bool
 	cmd := &cobra.Command{
 		Use:   "gitlab",
 		Short: "Review GitLab merge requests",
@@ -975,36 +1004,40 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		Use:   "mr",
 		Short: "Review a GitLab merge request",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("url") {
-				if cmd.Flags().Changed("id") {
-					return fmt.Errorf("--url can not be combined with --id")
-				}
-				if cmd.Flags().Changed("repo") {
-					return fmt.Errorf("--url can not be combined with --repo")
-				}
-				var gitlabBaseURL string
-				var err error
-				project, mr, gitlabBaseURL, err = parseGitLabMRURL(rawURL)
-				if err != nil {
-					return err
-				}
-				a.gitlabBaseURL = gitlabBaseURL
-			} else {
-				if mr <= 0 {
-					return fmt.Errorf("--id must be a positive integer")
-				}
+			target, err := a.resolveRequestTarget(requestSelectors{
+				repo:   project,
+				id:     mr,
+				rawURL: rawURL,
+				pick:   selectMR,
+			}, parseGitLabMRURL, "", "merge request")
+			if err != nil {
+				return err
 			}
-			if project == "" {
-				project = inferRepo()
-				if project == "" {
-					return fmt.Errorf("--repo is required (could not infer from git remote)")
-				}
+			project = target.Repo
+			// Set before loading the profile: the profile takes the URL host as
+			// a CLI override, so a --url on another host reaches the client
+			// through the profile like every other setting.
+			if target.BaseURL != "" {
+				a.gitlabBaseURL = target.BaseURL
 			}
 			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
-			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken), profile.AssetBaseURL)
+			client := glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken)
+			if target.ID == 0 {
+				if target.ID, err = a.pickOpenRequest(cmd.Context(), target.Repo, openRequestList{
+					noun:   "merge request",
+					marker: "!",
+					list: func(ctx context.Context) ([]model.OpenRequest, error) {
+						return client.ListOpenMRs(ctx, target.Repo)
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			mr = target.ID
+			source := glscm.NewAdapter(client, profile.AssetBaseURL)
 			req := model.ReviewRequest{
 				Mode:                      model.ModeGitLab,
 				Workdir:                   profile.Workdir,
@@ -1036,8 +1069,9 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		},
 	}
 	mrCmd.Flags().StringVar(&project, "repo", "", "GitLab project group/name (inferred from git remote if omitted)")
-	mrCmd.Flags().IntVar(&mr, "id", 0, "Merge request IID")
+	mrCmd.Flags().IntVar(&mr, "id", 0, "Merge request IID (omit in a terminal to pick an open MR from a list)")
 	mrCmd.Flags().StringVar(&rawURL, "url", "", "GitLab merge request URL")
+	addSelectFlag(mrCmd, &selectMR, "an open merge request", requestSelectNote)
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	cmd.AddCommand(mrCmd)
 	cmd.AddCommand(a.newGitLabFeedbackCmd())

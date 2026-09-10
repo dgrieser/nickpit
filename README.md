@@ -166,7 +166,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 ### 🔋 Everything else you'd expect, plus some you wouldn't
 
 - **Local review modes**: uncommitted changes, commit ranges, branch diffs.
-- **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
+- **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id`, by URL, or [picked from a list](#pick-the-mrpr-branch-or-commit-interactively-) in a checkout of the repository.
 - **Diff filters**: regex include/exclude by path *and* by file content.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Rendered terminal, raw Markdown, and JSON output**, live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
@@ -391,7 +391,8 @@ profiles:
 ## Usage
 
 ```bash
-# Review current branch in current directory against default branch
+# Review a branch pair — on a terminal both refs are picked from a list,
+# preselected as default branch → current branch; non-interactively that pair is used as is
 nickpit git branch
 
 # Review current branch in specified directory against default branch
@@ -413,6 +414,13 @@ nickpit git staged
 # Review unstaged tracked changes only
 nickpit git unstaged
 
+# Pick one of the repository's open MRs/PRs instead of naming it (in a checkout, on a terminal)
+nickpit gitlab mr
+nickpit github pr
+
+# Pick the commit range from the log (--from is required, so it is asked for)
+nickpit git commits
+
 # Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
 nickpit github pr --repo owner/repo --id 123 --workdir ~/src/repo
@@ -433,6 +441,33 @@ nickpit github feedback --url https://github.com/owner/repo/pull/123
 nickpit gitlab feedback --url https://gitlab.example.com/group/project/-/merge_requests/456 --clipboard
 ```
 
+### Pick the MR/PR, Branch or Commit Interactively 🎯
+
+Every command that addresses a merge request or pull request — `gitlab mr`, `github pr`, `gitlab feedback`, `github feedback`, `chat --gitlab` — can pick it from a list instead of taking `--repo`/`--id`/`--url`. In a checkout of the repository, on a terminal, just leave the identifier out:
+
+```bash
+# Open MRs of the project the origin remote points at, newest activity first
+nickpit gitlab mr
+
+# Same for GitHub, and for the read-back and chat commands
+nickpit github pr
+nickpit gitlab feedback
+nickpit chat --gitlab
+
+# Force the list even where a target could be resolved without it
+nickpit gitlab mr --select
+```
+
+The project comes from `--repo` or, without it, from the `origin` remote of the current directory — which is why this works only inside a checkout. The list shows the open requests (drafts included and labeled), and the one whose source branch is the checked-out branch is starred `★` and preselected, so the common case is one keypress. Typing filters the list, and it matches the branch names too even though they are not shown. A merged or closed request is not listed; address those with `--id` or `--url` as before.
+
+Local reviews pick refs the same way. `nickpit git branch` always asks on a terminal — the head prompt opens on the newest branch when the base is the branch you are on, since reviewing a branch against itself is an empty diff — with one row per branch — a local branch and its remote-tracking refs (`main`, `origin/main`, `origin`'s HEAD alias) are folded into one, and a branch that exists only on a remote is named by that ref — with the checked-out branch starred `★` in its own column and the command's own defaults preselected — the default branch as the base, the checked-out branch as the head — so accepting both prompts reproduces exactly what the command does without a terminal. A folded row resolves to the side the prompt is for: the base takes the remote-tracking ref (what `--base main` resolves to anyway), the head the local branch. That holds on the default branch too, where the pair is `origin/main..main`: the commits not pushed yet. `nickpit git commits` asks for the base commit (`--from` is required, so there is nothing to fall back to) and lists it from the range's head, so an explicit `--to release` offers release's history and not the checkout's; `--select` also asks for the head. Selectors given on the command line are kept, so `nickpit git branch --base main` only asks for the head branch.
+
+Keys: `↑`/`↓` (or `Ctrl-P`/`Ctrl-N`) move, `PgUp`/`PgDn` page, `Home`/`End` jump, typing filters (`Ctrl-U` clears the filter), `Enter` selects, and `Esc`/`Ctrl-C` aborts without running anything (exit code 130). The list is drawn on stderr, so the review output on stdout stays exactly what it is with `--id`.
+
+Rows are coloured like the progress lines of the same run, in the palette `tools/print_colors.sh` documents: identifiers green, messages in a pale lavender, a stable colour per person so a list can be scanned by who wrote what, ages grey and green while still inside the hour. Two rules paint inside a cell, the same ones the `git-color` dev helper applies to a `git log`: a conventional-commit prefix is taken apart (`feat` green, `(scope)` turquoise, the punctuation and a `!` for a breaking change stepping out of the text), and the `/` separators of a branch name fade back the way a progress line renders `head → base`. In a branch list green is reserved for the default branch. The selected row carries a highlight bar — the live dashboard's lavender pastel, dimmed the way a progress bar dims its unfilled half — and the title line spells out its full value after the prompt — `Base to review against: origin/feat/tree-sitter-parse-cap-and-cache` — so the name column is free to be the first thing shortened when the row does not fit, and the tip message keeps the room. The two branch prompts wear the aqua green and gold a progress line paints `base → head` in, so `Base to review against:` and `Branch to review:` are never confused. The pick is confirmed on stderr in italic grey with the chosen ref in that same colour, and `NO_COLOR` keeps every layout while dropping the colour.
+
+Nothing changes without a terminal: piped, redirected and daemon-spawned runs keep the non-interactive behaviour — the same "`--id` must be a positive integer" error for a request, the command's default refs for a local review — instead of waiting for a keypress, and `--select` there fails immediately.
+
 ### Publishing
 
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
@@ -443,7 +478,7 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 `nickpit github feedback` and `nickpit gitlab feedback` print a review NickPit already published on a PR/MR — reassembled from the same hidden markers a chat uses, so there is no re-review, no LLM call, and no local session needed. That is how feedback posted by the [serve daemon](#gitlab-webhook-daemon) or from another machine gets onto your terminal, and with `--clipboard` into an editor or coding agent.
 
-The request is selected exactly as in the review commands: `--url`, or `--repo` plus `--id`. Output uses the normal review formats (`-o markdown|json|raw`), and `--clipboard` copies instead of printing, with the same helper chain and unstyled payload as [`nickpit session --clipboard`](#discuss-a-review-chat-). The command is read-only — nothing is posted or changed on the PR/MR.
+The request is selected exactly as in the review commands: `--url`, `--repo` plus `--id`, or [interactively](#pick-the-mrpr-branch-or-commit-interactively-) (omit `--id` in a checkout, or pass `--select`). Output uses the normal review formats (`-o markdown|json|raw`), and `--clipboard` copies instead of printing, with the same helper chain and unstyled payload as [`nickpit session --clipboard`](#discuss-a-review-chat-). The command is read-only — nothing is posted or changed on the PR/MR.
 
 When a request carries several reviews the newest is printed; `--list` shows them all (newest first, with publish time, revision, finding count, verdict, model and NickPit version) and `--review-id` picks one. Only markers in comments authored by the token's own user are trusted, so a marker planted by another commenter is ignored — on GitHub this needs a token whose `/user` resolves, which rules out a GitHub App installation token.
 
@@ -516,6 +551,9 @@ nickpit chat --from-json review.json
 
 # Start a chat from a GitLab MR — findings are reassembled from the review NickPit posted
 nickpit chat --gitlab --url https://gitlab.example.com/group/project/-/merge_requests/456
+
+# ... or pick the MR from the project's open ones (in a checkout, on a terminal)
+nickpit chat --gitlab
 ```
 
 Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id and timestamp, so a later chat can regroup them into the exact (newest) review — no local state needed. Because the markers are encoded but not cryptographically signed, only markers in notes authored by the chat token's own user (the bot that published the review) are trusted; markers planted by other commenters are ignored. When an MR carries several reviews, the newest is chosen (`--review-id` overrides). The retrieval tools read from an automatic temporary checkout of the MR head (or a local checkout: `--repo-root`, or the current directory for local sessions) — this includes the daemon's in-thread replies, which answer with code-reading tools enabled.

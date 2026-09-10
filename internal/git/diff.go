@@ -141,11 +141,7 @@ func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewReque
 }
 
 func (s *LocalSource) defaultBranch(ctx context.Context) (string, error) {
-	out, err := s.git.Run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
+	return defaultBranch(ctx, s.git)
 }
 
 func (s *LocalSource) originRemoteRef(ctx context.Context, ref string) (string, bool) {
@@ -158,11 +154,7 @@ func (s *LocalSource) originRemoteRef(ctx context.Context, ref string) (string, 
 }
 
 func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {
-	out, err := s.git.Run(ctx, "symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
+	return currentBranch(ctx, s.git)
 }
 
 // diffRevArgs renders the revision selection of a request: what the patch and
