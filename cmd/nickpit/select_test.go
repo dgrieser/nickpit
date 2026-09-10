@@ -947,7 +947,10 @@ func newTestRepo(t *testing.T) string {
 		t.Skip("git not installed")
 	}
 	dir := t.TempDir()
-	runGitTestCommand(t, dir, "init", "--quiet", ".")
+	// The branch name is pinned, not inherited: a runner without
+	// init.defaultBranch starts on "master", and these tests pair a local
+	// branch with the remote-tracking ref of the same name.
+	runGitTestCommand(t, dir, "init", "--quiet", "-b", "main", ".")
 	runGitTestCommand(t, dir, "config", "user.email", "test@example.com")
 	runGitTestCommand(t, dir, "config", "user.name", "Test")
 	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "first commit")
