@@ -904,6 +904,27 @@ type ReviewPublisher interface {
 	PublishReview(ctx context.Context, req ReviewRequest, result *ReviewResult) error
 }
 
+// OpenRequest is one open merge request or pull request as the interactive
+// picker needs it: what the row shows and what a review command needs to
+// address it. Both SCM adapters normalize their listings into this shape so the
+// picker stays platform-agnostic.
+type OpenRequest struct {
+	// Identifier is the GitLab MR IID or the GitHub PR number: what --id takes.
+	Identifier int
+	Title      string
+	// Author is the username that opened the request.
+	Author string
+	// SourceBranch and TargetBranch are the request's branches; SourceBranch is
+	// how a picker recognizes the request of the checked-out branch.
+	SourceBranch string
+	TargetBranch string
+	// Draft marks a draft/WIP request; they are listed and labeled, not hidden.
+	Draft bool
+	// UpdatedAt is the last activity timestamp the listing sorts on.
+	UpdatedAt time.Time
+	WebURL    string
+}
+
 type CheckoutSpec struct {
 	Provider ReviewMode
 	Repo     string

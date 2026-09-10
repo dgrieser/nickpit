@@ -25,6 +25,7 @@ type feedbackOptions struct {
 	repo      string
 	id        int
 	rawURL    string
+	pick      bool
 	reviewID  string
 	clipboard bool
 	list      bool
@@ -57,21 +58,35 @@ func (a *app) newGitLabFeedbackCmd() *cobra.Command {
 		Short: "Print or copy the review NickPit published on a merge request",
 		Long:  fmt.Sprintf(feedbackLong, "merge request", "merge request"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			project, mrID, baseURL, err := resolveFeedbackRequest(cmd, opts, parseGitLabMRURL)
+			target, err := a.resolveRequestTarget(feedbackSelectors(cmd, opts), parseGitLabMRURL, "", "merge request")
 			if err != nil {
 				return err
 			}
 			// Set before loading the profile, like `gitlab mr` does: the profile
 			// takes the flag/URL host as a CLI override, so a --url on another
 			// host reaches the client through the profile like everything else.
-			if baseURL != "" {
-				a.gitlabBaseURL = baseURL
+			if target.BaseURL != "" {
+				a.gitlabBaseURL = target.BaseURL
 			}
 			profile, err := a.loadProfileWithoutLLM()
 			if err != nil {
 				return err
 			}
-			adapter := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken), profile.AssetBaseURL)
+			client := glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken)
+			project := target.Repo
+			if target.ID == 0 {
+				if target.ID, err = a.pickOpenRequest(cmd.Context(), project, openRequestList{
+					noun:   "merge request",
+					marker: "!",
+					list: func(ctx context.Context) ([]model.OpenRequest, error) {
+						return client.ListOpenMRs(ctx, project)
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			mrID := target.ID
+			adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
 			return a.runFeedback(cmd.Context(), cmd.OutOrStdout(), opts, feedbackSource{
 				noun:   "merge request",
 				origin: fmt.Sprintf("GitLab MR %s!%d", textsan.StripControl(project), mrID),
@@ -83,7 +98,7 @@ func (a *app) newGitLabFeedbackCmd() *cobra.Command {
 	}
 	addFeedbackFlags(cmd, &opts,
 		"GitLab project group/name (inferred from git remote if omitted)",
-		"Merge request IID",
+		"Merge request IID (omit in a terminal to pick an open MR from a list)",
 		"GitLab merge request URL",
 		"merge request")
 	return cmd
@@ -96,7 +111,7 @@ func (a *app) newGitHubFeedbackCmd() *cobra.Command {
 		Short: "Print or copy the review NickPit published on a pull request",
 		Long:  fmt.Sprintf(feedbackLong, "pull request", "pull request"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			repo, pr, _, err := resolveFeedbackRequest(cmd, opts, parseGitHubPRURLTarget)
+			target, err := a.resolveRequestTarget(feedbackSelectors(cmd, opts), parseGitHubPRURLTarget, "", "pull request")
 			if err != nil {
 				return err
 			}
@@ -104,7 +119,21 @@ func (a *app) newGitHubFeedbackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			adapter := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
+			client := ghscm.NewClient("", profile.GitHubToken)
+			repo := target.Repo
+			if target.ID == 0 {
+				if target.ID, err = a.pickOpenRequest(cmd.Context(), repo, openRequestList{
+					noun:   "pull request",
+					marker: "#",
+					list: func(ctx context.Context) ([]model.OpenRequest, error) {
+						return client.ListOpenPRs(ctx, repo)
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			pr := target.ID
+			adapter := ghscm.NewAdapter(client, profile.AssetBaseURL)
 			return a.runFeedback(cmd.Context(), cmd.OutOrStdout(), opts, feedbackSource{
 				noun:   "pull request",
 				origin: fmt.Sprintf("GitHub PR %s#%d", textsan.StripControl(repo), pr),
@@ -116,16 +145,30 @@ func (a *app) newGitHubFeedbackCmd() *cobra.Command {
 	}
 	addFeedbackFlags(cmd, &opts,
 		"GitHub repo owner/name (inferred from git remote if omitted)",
-		"Pull request number",
+		"Pull request number (omit in a terminal to pick an open PR from a list)",
 		"GitHub pull request URL",
 		"pull request")
 	return cmd
+}
+
+// feedbackSelectors projects the feedback flags onto the selector set every
+// MR/PR-addressed command resolves the same way, carrying cobra's flag-presence
+// state so an explicitly supplied default still counts as supplied.
+func feedbackSelectors(cmd *cobra.Command, opts feedbackOptions) requestSelectors {
+	return requestSelectors{
+		repo:    opts.repo,
+		id:      opts.id,
+		rawURL:  opts.rawURL,
+		pick:    opts.pick,
+		changed: cmd.Flags().Changed,
+	}
 }
 
 func addFeedbackFlags(cmd *cobra.Command, opts *feedbackOptions, repoUsage, idUsage, urlUsage, noun string) {
 	cmd.Flags().StringVar(&opts.repo, "repo", "", repoUsage)
 	cmd.Flags().IntVar(&opts.id, "id", 0, idUsage)
 	cmd.Flags().StringVar(&opts.rawURL, "url", "", urlUsage)
+	addSelectFlag(cmd, &opts.pick, "an open "+noun, requestSelectNote)
 	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Select a specific review when the "+noun+" carries more than one")
 	cmd.Flags().BoolVar(&opts.list, "list", false, "List the reviews found on the "+noun+" instead of printing one")
 	cmd.Flags().BoolVar(&opts.clipboard, "clipboard", false, "Copy the review to the system clipboard instead of printing it (uses the platform clipboard helper: pbcopy, clip.exe, wl-copy, xclip, xsel, or termux-clipboard-set)")
@@ -134,38 +177,11 @@ func addFeedbackFlags(cmd *cobra.Command, opts *feedbackOptions, repoUsage, idUs
 }
 
 // parseGitHubPRURLTarget adapts parseGitHubPRURL to the shape
-// resolveFeedbackRequest expects. GitHub has no per-host API base URL flag, so
+// resolveRequestTarget expects. GitHub has no per-host API base URL flag, so
 // the third result is always empty.
 func parseGitHubPRURLTarget(raw string) (string, int, string, error) {
 	repo, number, err := parseGitHubPRURL(raw)
 	return repo, number, "", err
-}
-
-// resolveFeedbackRequest applies the same --url / --repo + --id validation the
-// review commands do: --url is exclusive with both others, --id must be
-// positive without it, and a missing repo is inferred from the git remote.
-func resolveFeedbackRequest(cmd *cobra.Command, opts feedbackOptions,
-	parse func(string) (string, int, string, error)) (repo string, id int, baseURL string, err error) {
-	repo, id = opts.repo, opts.id
-	if cmd.Flags().Changed("url") {
-		if cmd.Flags().Changed("id") {
-			return "", 0, "", fmt.Errorf("--url can not be combined with --id")
-		}
-		if cmd.Flags().Changed("repo") {
-			return "", 0, "", fmt.Errorf("--url can not be combined with --repo")
-		}
-		if repo, id, baseURL, err = parse(opts.rawURL); err != nil {
-			return "", 0, "", err
-		}
-	} else if id <= 0 {
-		return "", 0, "", fmt.Errorf("--id must be a positive integer")
-	}
-	if repo == "" {
-		if repo = inferRepo(); repo == "" {
-			return "", 0, "", fmt.Errorf("--repo is required (could not infer from git remote)")
-		}
-	}
-	return repo, id, baseURL, nil
 }
 
 // loadProfileWithoutLLM loads the active profile for a command that needs only

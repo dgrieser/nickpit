@@ -39,6 +39,7 @@ type chatOptions struct {
 	rawURL              string
 	repo                string
 	mrID                int
+	selectMR            bool
 	reviewID            string
 	repoRoot            string
 	replyDiscussion     string
@@ -87,7 +88,8 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.gitlab, "gitlab", false, "Start a session from a GitLab merge request (use with --url or --repo/--id)")
 	cmd.Flags().StringVar(&opts.rawURL, "url", "", "GitLab merge request URL (with --gitlab)")
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "GitLab project group/name (with --gitlab)")
-	cmd.Flags().IntVar(&opts.mrID, "id", 0, "GitLab merge request IID (with --gitlab)")
+	cmd.Flags().IntVar(&opts.mrID, "id", 0, "GitLab merge request IID (with --gitlab; omit in a terminal to pick an open MR from a list)")
+	addSelectFlag(cmd, &opts.selectMR, "an open merge request (with --gitlab)", requestSelectNote)
 	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Select a specific review when the MR carries more than one")
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
@@ -609,12 +611,20 @@ func validateChatSourceFlags(opts chatOptions) error {
 		if opts.mrID != 0 {
 			stray = append(stray, "--id")
 		}
+		if opts.selectMR {
+			stray = append(stray, "--"+selectFlagName)
+		}
 		if opts.reviewID != "" {
 			stray = append(stray, "--review-id")
 		}
 		if len(stray) > 0 {
 			return fmt.Errorf("chat: %s only apply to a GitLab session; add --gitlab (or --reply-discussion)", strings.Join(stray, ", "))
 		}
+	}
+	// The thread-reply mode is spawned by the daemon and never has a terminal,
+	// so a picker there could only hang: the thread names its own MR.
+	if opts.selectMR && opts.replyDiscussion != "" {
+		return fmt.Errorf("chat: --%s can not be combined with --reply-discussion", selectFlagName)
 	}
 	// --reply-note is meaningful only with --reply-discussion, and the reply
 	// path derives its pin and review from the thread's own marker, so
@@ -696,19 +706,31 @@ func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
 // chatSessionFromGitLab builds a session by reassembling the review from the
 // hidden carrier markers on an MR's notes.
 func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile, opts chatOptions) (*session.Session, error) {
-	project, mrID, baseURL := opts.repo, opts.mrID, ""
-	if strings.TrimSpace(opts.rawURL) != "" {
-		var err error
-		project, mrID, baseURL, err = parseGitLabMRURL(opts.rawURL)
-		if err != nil {
+	target, err := a.resolveRequestTarget(requestSelectors{
+		repo:   opts.repo,
+		id:     opts.mrID,
+		rawURL: strings.TrimSpace(opts.rawURL),
+		pick:   opts.selectMR,
+	}, parseGitLabMRURL, "chat", "merge request")
+	if err != nil {
+		return nil, err
+	}
+	project := target.Repo
+	apiBaseURL := firstNonEmpty(target.BaseURL, profile.GitLabBaseURL)
+	client := glscm.NewClient(apiBaseURL, profile.GitLabToken)
+	mrID := target.ID
+	if mrID == 0 {
+		if mrID, err = a.pickOpenRequest(ctx, project, openRequestList{
+			noun:   "merge request",
+			marker: "!",
+			list: func(ctx context.Context) ([]model.OpenRequest, error) {
+				return client.ListOpenMRs(ctx, project)
+			},
+		}); err != nil {
 			return nil, err
 		}
 	}
-	if project == "" || mrID <= 0 {
-		return nil, fmt.Errorf("chat --gitlab requires --url or both --repo and --id")
-	}
-	apiBaseURL := firstNonEmpty(baseURL, profile.GitLabBaseURL)
-	adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
+	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
 	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
 		return nil, err
 	}

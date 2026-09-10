@@ -7,6 +7,7 @@
 #   internal/logging/live.go      — the live dashboard (header, bars, footer)
 #   internal/logging/reasoning_renderer.go — the streamed reasoning block
 #   internal/output/terminal.go, internal/output/badge.go — review output
+#   internal/pick — the interactive MR/PR/branch/commit picker
 #
 # Each entry shows the SGR code, the Go constant it comes from, and where the
 # colour actually appears. Requires a truecolor-capable terminal: the stage
@@ -496,5 +497,140 @@ badge_row "$(verdict_badge '0;255;13' 'RESOLVED' '✓')"   'resolved'   'resolve
 badge_row "$(verdict_badge '0;255;13' 'CORRECT' '✓')"    'correct'    'overall verdict: correct'
 badge_row "$(verdict_badge '255;7;58' 'INCORRECT' 'x')"  'incorrect'  'overall verdict: incorrect'
 printf '  %s\n' "$(grey 'fixed 16-column width, mirroring the published badge SVGs in assets/; verdict glyph bold, "x" ASCII so it never overflows its cell')"
+
+################################################################################
+heading 'Interactive picker — internal/pick (MR/PR, branch and commit selection)'
+################################################################################
+
+# The picker reuses the 256-colour message palette: a picker row should read
+# like the progress lines of the same run. The selected row carries a
+# background rather than reverse video — the live dashboard's lavender pastel
+# dimmed to 35%, the scale progressBar() dims its unfilled half by — and every
+# segment of the row repeats that background, since a nested reset would end
+# the bar mid-row, so the columns keep their own colours while selected.
+PICK_CURSOR='48;2;69;56;86'
+
+pick_cell() { s "$1" "$2"; }                    # one column of an unselected row
+pick_cell_on() { s "${PICK_CURSOR};$1" "$2"; }  # the same column inside the selected row
+pick_gap_on() { s "$PICK_CURSOR" '  '; }
+pick_mark_gap_on() { s "$PICK_CURSOR" ' '; }   # a one-cell marker column keeps a single space
+
+printf '  %s%s%s%s\n' "$(s '1;38;5;255' 'Open merge requests in group/project')" \
+  "$(s '38;5;117' ' feat')" "$(s '38;5;244' '/')" "$(s '38;5;117' 'cluster')"
+printf '  %s%s%s%s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;214' '★')" "$(pick_mark_gap_on)" \
+  "$(pick_cell_on '38;5;118' '!142')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;120' 'feat')$(pick_cell_on '38;5;244' '(')$(pick_cell_on '38;5;116' 'review')$(pick_cell_on '38;5;244' '):')$(pick_cell_on '38;5;189' ' cluster merge')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;218' 'alice')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;156' '22m')"
+printf '      %s  %s  %s  %s\n' \
+  "$(pick_cell '38;5;118' '!139')" \
+  "$(pick_cell '38;5;120' 'fix')$(pick_cell '38;5;244' '(')$(pick_cell '38;5;116' 'llm')$(pick_cell '38;5;244' '):')$(pick_cell '38;5;189' ' retry on 429  ')" \
+  "$(pick_cell '38;5;116' 'bob  ')" \
+  "$(pick_cell '38;5;244' '4d')"
+printf '      %s  %s  %s  %s  %s\n' \
+  "$(pick_cell '38;5;118' '!131')" \
+  "$(pick_cell '38;5;221' 'draft')" \
+  "$(pick_cell '38;5;120' 'chore')$(pick_cell '38;5;244' ':')$(pick_cell '38;5;189' ' bump deps')" \
+  "$(pick_cell '38;5;105' 'carol')" \
+  "$(pick_cell '38;5;244' '1w')"
+printf '  %s\n' "$(s '38;5;244' '1 of 3')"
+printf '  %s\n\n' "$(s '38;5;242' '↑/↓ move · PgUp/PgDn page · type to filter · Ctrl-U clear · Enter select · Esc abort')"
+
+# The branch picker: one row per branch (a local branch and its
+# remote-tracking refs are folded together), the checked-out branch starred in
+# its own column left of the name, and green reserved for the default branch.
+# The name column is the first to be shortened — the title line carries the
+# selected branch in full, in the colour of the side being chosen — and it
+# keeps a wider floor than the others so a branch stays recognisable past its
+# first segment. Inside a cell the picker paints two more rules, both borrowed
+# from the git-color helper: a ref's "/" and ":" separators fade back, and a
+# conventional-commit prefix is taken apart into type, scope and punctuation.
+printf '  %s%s%s%s\n' "$(s '1;38;5;255' 'Base to review against:')" \
+  "$(s '38;5;48' ' origin')" "$(s '38;5;244' '/')" "$(s '38;5;48' 'main')"
+printf '  %s%s%s%s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;214' '★')" "$(pick_mark_gap_on)" \
+  "$(pick_cell_on '38;5;48' 'main                               ')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;189' 'Merge pull request #159')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;177' 'David Grieser')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;244' '15h')"
+printf '      %s  %s  %s  %s\n' \
+  "feat$(pick_cell '38;5;244' '/')pick                          " \
+  "$(pick_cell '38;5;120' 'feat')$(pick_cell '38;5;244' '(')$(pick_cell '38;5;116' 'cli')$(pick_cell '38;5;244' '):')$(pick_cell '38;5;189' ' add a picker')" \
+  "$(pick_cell '38;5;177' 'David Grieser')" \
+  "$(pick_cell '38;5;156' '22m')"
+printf '      %s  %s  %s  %s\n\n' \
+  "mirror$(pick_cell '38;5;244' '/')build                      " \
+  "$(pick_cell '38;5;120' 'fix')$(pick_cell '38;5;244' '(')$(pick_cell '38;5;116' 'ci')$(pick_cell '38;5;244' '):')$(pick_cell '38;5;189' ' skip release job')" \
+  "$(pick_cell '38;5;218' 'nabrams      ')" \
+  "$(pick_cell '38;5;244' '2mo')"
+
+# The commit picker selects a range: the first Enter opens it, moving covers
+# the commits between, and the same background carries the whole span so it
+# reads as one block. The title line counts what is covered and names its ends.
+printf '  %s%s%s%s%s%s\n' "$(s '1;38;5;255' 'Commits to review:')" \
+  "$(s '38;5;244' ' 3 commits')" "$(s '38;5;244' ' · ')" \
+  "$(s '38;5;117' 'd077dba')" "$(s '38;5;244' '..')" "$(s '38;5;117' '82a6dbd')"
+printf '  %s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;71' '82a6dbd')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;120' 'feat')$(pick_cell_on '38;5;244' '(')$(pick_cell_on '38;5;116' 'scm')$(pick_cell_on '38;5;244' '):')$(pick_cell_on '38;5;189' ' interactive selection')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;177' 'David Grieser')" "$(pick_gap_on)$(pick_cell_on '38;5;156' '40m')"
+printf '  %s%s%s%s%s%s%s\n' \
+  "$(s "$PICK_CURSOR" '  ')" \
+  "$(pick_cell_on '38;5;71' '28bfd1e')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;189' 'Merge pull request #159')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;177' 'David Grieser')" "$(pick_gap_on)$(pick_cell_on '38;5;244' '20h')"
+printf '      %s  %s  %s  %s\n' \
+  "$(pick_cell '38;5;71' 'a8cbc3e')" \
+  "$(pick_cell '38;5;189' 'Merge pull request #158')" \
+  "$(pick_cell '38;5;177' 'David Grieser')" \
+  "$(pick_cell '38;5;244' '21h')"
+printf '  %s\n' "$(s '38;5;244' '2 of 20')"
+printf '  %s\n\n' "$(s '38;5;242' '↑/↓ extend · PgUp/PgDn page · Enter selects the range · Esc drops it')"
+
+swatch '1;38;5;255' 'styleTitle'      'the title line, and the ❯ cursor marker'
+swatch '48;2;69;56;86' 'styleCursorRow' 'background of the selected row, repeated on every segment — liveAgentPastelRGB lavender at 35%'
+swatch '38;5;118'   'StyleIdentifier' 'MR/PR number — progressColorNumberGreen'
+swatch '38;5;71'    'StyleHash'       'commit SHA — progressColorHashDarkGreen'
+swatch '38;5;189'   'StyleText'       'title, commit subject, branch tip message — pale lavender, the one code the picker adds'
+swatch '38;5;244'   'StyleAge'        'age column and position line — progressColorGrey'
+swatch '38;5;156'   'StyleFresh'      'age column within the last hour — progressColorBoolGreen'
+swatch '38;5;221'   'StyleCaveat'     'draft marker, and the "no match" line — progressColorWarnYellow'
+swatch '38;5;48'    'StyleDefaultRef' 'the default branch, the only coloured ref name — progressColorBranchToAquaGreen'
+swatch '38;5;214'   'StyleMark'       'the ★ marker column in every picker — progressColorBranchFromGold'
+swatch '38;5;117'   'StyleDetail'     'full value of the selected row, shown after the title'
+swatch '38;5;48'    'StyleBaseRef'    'the base side: its title detail and confirmation — progressColorBranchToAquaGreen'
+swatch '38;5;214'   'StyleHeadRef'    'the head side: its title detail and confirmation — progressColorBranchFromGold'
+swatch '38;5;242'   'styleHint'       'the key list under the rows — progressColorDarkGrey'
+swatch '38;5;120'   'styleMsgType'    'conventional-commit type: feat, fix, chore … — progressColorStringGreen'
+swatch '38;5;116'   'styleMsgScope'   'what the commit touched, the "(scope)" — progressColorKeyTurquoise'
+swatch '38;5;244'   'StyleSeparator'  'the parens and colon of a commit prefix, and the "/" and ":" inside a ref, in a row or in a confirmation — progressColorGrey'
+swatch '38;5;203'   'styleMsgBreaking' 'the "!" of a breaking change — progressColorErrorRed'
+
+# AuthorStyle picks one of these per person, keyed on the lower-cased name, so
+# the same author keeps their colour across rows, pickers and runs.
+printf '\n  %s\n' "$(grey 'AuthorStyle — a stable colour per person (pick.authorStyles, hashed name)')"
+swatch '38;5;218' 'authorStyles[0]' 'progressColorTaskPink'
+swatch '38;5;116' 'authorStyles[1]' 'progressColorKeyTurquoise'
+swatch '38;5;216' 'authorStyles[2]' 'progressColorProfile — apricot'
+swatch '38;5;105' 'authorStyles[3]' 'progressColorURLPurpleBlue'
+swatch '38;5;120' 'authorStyles[4]' 'progressColorStringGreen'
+swatch '38;5;177' 'authorStyles[5]' 'progressColorSkipPurple'
+swatch '38;5;110' 'authorStyles[6]' 'progressColorMutedModel — muted blue'
+
+# The confirmation printed after a pick: an aside about the run, not part of
+# its output, so italic light grey with the chosen value in its picker colour.
+printf '\n  %s%s%s\n' \
+  "$(s '3;38;5;252' 'Base branch ')" "$(s '38;5;48' 'origin')$(s '38;5;244' '/')$(s '38;5;48' 'main')" "$(s '3;38;5;252' '')"
+printf '  %s%s%s\n' \
+  "$(s '3;38;5;252' 'Selected merge request ')" "$(s '38;5;118' '!142')" "$(s '3;38;5;252' ' feat(review): cluster merge')"
+printf '  %s%s%s\n' \
+  "$(s '3;38;5;252' 'Head branch ')" "$(s '38;5;214' 'feat')$(s '38;5;244' '/')$(s '38;5;214' 'pick')" "$(s '3;38;5;252' '')"
+printf '  %s\n' "$(grey 'selectionStyle = 3;38;5;252 — italic progressColorLightGrey, the only italic in the UI; the line names the side it answers and the value keeps that prompt colour')"
+
+printf '  %s\n' "$(grey 'NO_COLOR drops every code above and keeps the layout, the ❯ marker and the ★ column')"
 
 printf '\n%s\n' "$(grey 'Without a TTY (or with useANSI=false) every element above degrades to the same text with no escape sequences.')"
