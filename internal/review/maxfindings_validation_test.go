@@ -341,7 +341,7 @@ func TestReviewSystemPromptMaxFindingsLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	limited, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{MaxFindings: 5}, false, "review", nil, false)
+	limited, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{MaxFindings: 5}, false, "review", nil, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestReviewSystemPromptMaxFindingsLine(t *testing.T) {
 		}
 	}
 
-	unlimited, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false)
+	unlimited, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -142,7 +142,7 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 	if err != nil {
 		return nil, run, err
 	}
-	style, err := e.renderStyleGuideToolchainSnippet("update", guides, len(req.ReviewCtx.ToolchainVersions) > 0)
+	style, err := e.renderStyleGuideToolchainSnippet("update", guides, len(req.ReviewCtx.ToolchainVersions) > 0, req.ReviewCtx.ProjectContext)
 	if err != nil {
 		return nil, run, err
 	}

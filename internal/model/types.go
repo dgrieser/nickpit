@@ -261,7 +261,14 @@ type ReviewContext struct {
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
-	OmittedSections     []string           `json:"omitted_sections,omitempty"`
+	// ProjectContext is how the project describes its own deployment, users and
+	// trust boundaries. Like ToolchainVersions it is never evicted by the
+	// trimmer: it is small, bounded by projectcontext.MaxBytes, and dropping it
+	// would silently change how findings are judged rather than merely shorten
+	// the prompt. It reaches agents through the system prompt, not this
+	// context's prompt payload.
+	ProjectContext  *ProjectContext `json:"project_context,omitempty"`
+	OmittedSections []string        `json:"omitted_sections,omitempty"`
 }
 
 type ReviewPromptPayload struct {
@@ -375,6 +382,45 @@ type AdditionalStyleGuide struct {
 	StyleGuide
 	GateLanguage string
 	GateVersion  string
+}
+
+// ProjectContext describes how the reviewed project is actually built,
+// deployed and used. It is background context agents use to judge whether an
+// issue is reachable, who can trigger it, and how severe the impact is — not a
+// rule set, and never grounds to drop a finding (see
+// prompts/agent_styleguide_toolchain_snippet.tmpl).
+//
+// Every field is optional and free text: Deployment and Criticality have
+// documented vocabularies but are rendered verbatim rather than validated, so
+// a project can describe itself in its own words.
+type ProjectContext struct {
+	Version         int      `json:"version,omitempty" yaml:"version"`
+	Summary         string   `json:"summary,omitempty" yaml:"summary"`
+	Deployment      string   `json:"deployment,omitempty" yaml:"deployment"`
+	Users           string   `json:"users,omitempty" yaml:"users"`
+	Criticality     string   `json:"criticality,omitempty" yaml:"criticality"`
+	Data            []string `json:"data,omitempty" yaml:"data"`
+	TrustBoundaries []string `json:"trust_boundaries,omitempty" yaml:"trust_boundaries"`
+	Assumptions     []string `json:"assumptions,omitempty" yaml:"assumptions"`
+	NonGoals        []string `json:"non_goals,omitempty" yaml:"non_goals"`
+	Notes           string   `json:"notes,omitempty" yaml:"notes"`
+	// Sources names where the merged context came from, in application order,
+	// so the prompt can attribute it and a reader of a persisted review can
+	// tell repo-supplied context from an operator override. Never decoded from
+	// YAML: a repository must not be able to forge its own provenance.
+	Sources []string `json:"sources,omitempty" yaml:"-"`
+}
+
+// Empty reports whether the context carries nothing worth putting in a prompt.
+// Sources is excluded deliberately: provenance alone is not content.
+func (p *ProjectContext) Empty() bool {
+	if p == nil {
+		return true
+	}
+	return p.Summary == "" && p.Deployment == "" && p.Users == "" &&
+		p.Criticality == "" && p.Notes == "" &&
+		len(p.Data) == 0 && len(p.TrustBoundaries) == 0 &&
+		len(p.Assumptions) == 0 && len(p.NonGoals) == 0
 }
 
 type Comment struct {
@@ -906,6 +952,25 @@ type RemoteCheckoutSource interface {
 	ResolveCheckout(ctx context.Context, req ReviewRequest) (*CheckoutSpec, error)
 }
 
+// BaseFileSource is an optional capability for review sources that can read a
+// file from the BASE revision of the change — the revision the target project
+// controls, which the change's author cannot edit.
+//
+// This is the trust boundary for repository-supplied review input. A checkout
+// is a depth-1 fetch of the HEAD from the change's clone URL, which for a fork
+// is the contributor's own repository; anything read from it is
+// attacker-controlled. Reading the base instead means a fork cannot decide what
+// the reviewers are told about the project.
+//
+// The bool reports whether the file exists; a missing file is not an error.
+// Implementations must read at most MaxBaseFileBytes so a hostile repository
+// cannot exhaust memory with an oversized file; callers apply their own,
+// tighter limits on top.
+type BaseFileSource interface {
+	ReviewSource
+	ReadBaseFile(ctx context.Context, req ReviewRequest, path string) ([]byte, bool, error)
+}
+
 // ReviewPublisher is an optional capability for review sources that can post
 // the finished review back to the origin (GitLab MR and GitHub PR comments).
 // runReview type-asserts the source to this interface and only publishes when
@@ -934,6 +999,9 @@ type OpenRequest struct {
 	UpdatedAt time.Time
 	WebURL    string
 }
+
+// MaxBaseFileBytes is the transport-level cap on a single BaseFileSource read.
+const MaxBaseFileBytes = 1 << 20
 
 type CheckoutSpec struct {
 	Provider ReviewMode

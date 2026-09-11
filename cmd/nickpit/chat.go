@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
@@ -1089,11 +1090,15 @@ func chatToolset(repoRoot string) []llm.ToolDefinition {
 
 // chatEngine builds a review engine wired for the discussion agent, mirroring
 // runReview's engine setup: rate-limit backoff, search-tool optimization, and —
-// crucially — the user-configured additional styleguides, resolved from the
-// current configuration so the chat's styleguide set matches what a review run
-// today would use.
+// crucially — the user-configured additional styleguides and project context,
+// resolved from the current configuration so the chat's rules and background
+// match what a review run today would use.
 func (a *app) chatEngine(ctx context.Context, profile config.Profile, source model.ReviewSource, retrievalEngine retrieval.Engine, logger *logging.Logger) (*review.Engine, error) {
 	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides, profile.Workdir)
+	if err != nil {
+		return nil, err
+	}
+	projectContextOverlay, err := projectcontext.Resolve(ctx, profile.ProjectContext, profile.Workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,6 +1110,8 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	engine.SetAdditionalStyleGuides(additionalGuides)
 	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
+	engine.SetProjectContextOverlay(projectContextOverlay)
+	engine.SetDisableRepoProjectContext(profile.DisableProjectContext)
 	return engine, nil
 }
 

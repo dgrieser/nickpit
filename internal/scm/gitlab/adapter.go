@@ -57,3 +57,10 @@ func (a *Adapter) ReviewResults(ctx context.Context, project string, iid int) (m
 	}
 	return reviewmd.ReviewResultsByID(bodies), nil
 }
+
+// ReadBaseFile implements model.BaseFileSource, reading from the merge
+// request's target project at the base commit so a fork cannot control the
+// content.
+func (a *Adapter) ReadBaseFile(ctx context.Context, req model.ReviewRequest, path string) ([]byte, bool, error) {
+	return a.client.FetchBaseFile(ctx, req.Repo, req.Identifier, path)
+}

@@ -30,6 +30,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/output"
 	"github.com/dgrieser/nickpit/internal/pick"
+	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
@@ -198,8 +199,11 @@ type app struct {
 	excludeContentSet         bool
 	// styleGuides needs no companion Set bool: CLI values append to the
 	// profile's list, so an unset (nil) flag is indistinguishable from empty.
-	styleGuides                   []string
-	disableStyleGuides            []string
+	styleGuides        []string
+	disableStyleGuides []string
+	// projectContext follows the same append rule as styleGuides.
+	projectContext                []string
+	disableProjectContext         bool
 	diffFormat                    string
 	outputFormat                  string
 	jsonOutput                    bool
@@ -402,6 +406,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.styleGuides, "styleguide", nil, "Additional styleguide for all agents: file path or HTTP(S) URL, appended to the profile's styleguides; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: all, "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.projectContext, "project-context", nil, "Project context for all agents: file path or HTTP(S) URL, appended to the profile's project_context and to the reviewed repo's "+projectcontext.RepoPath+"; repeatable")
+	root.PersistentFlags().BoolVar(&cli.disableProjectContext, "disable-project-context", false, "Ignore the reviewed repository's own "+projectcontext.RepoPath+"; --project-context entries still apply")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().StringVarP(&cli.outputFormat, "output", "o", "markdown", "Output format: markdown, json, or raw")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output (compatibility alias for --output json)")
@@ -703,6 +709,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ExcludeContent:            excludeContent,
 		StyleGuides:               a.styleGuides,
 		DisableStyleGuides:        a.disableStyleGuides,
+		ProjectContext:            a.projectContext,
+		DisableProjectContext:     a.disableProjectContext,
 		DiffFormat:                model.DiffFormat(a.diffFormat),
 		MaxContextTokens:          maxContextTokens,
 		MaxRequestBytes:           maxRequestBytes,
@@ -1745,6 +1753,15 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 
+	// Operator-supplied project context resolves here for the same reason, and
+	// because it is anchored to the operator's filesystem rather than the
+	// checkout: the reviewed repository's own file is read later, once a source
+	// exists to read it from the base revision.
+	projectContextOverlay, err := projectcontext.Resolve(ctx, profile.ProjectContext, profile.Workdir)
+	if err != nil {
+		return err
+	}
+
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
 	// findings) operate on injected findings and may make no LLM call at all — a
 	// single-input merge is a passthrough, finalize on empty findings is a no-op.
@@ -1893,6 +1910,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	engine.SetAdditionalStyleGuides(additionalGuides)
 	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
+	engine.SetProjectContextOverlay(projectContextOverlay)
+	engine.SetDisableRepoProjectContext(profile.DisableProjectContext)
 
 	// Single path: the embedded DefaultSpec and any user-supplied spec run
 	// identically. The pipeline may skip source/repo resolution (e.g.

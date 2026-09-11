@@ -2,7 +2,11 @@ package gitlab
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -376,4 +380,60 @@ func normalizeMRCommits(in []commitResponse) []model.CommitSummary {
 		})
 	}
 	return out
+}
+
+// baseFileResponse is the subset of the repository-files payload needed to read
+// a small text file.
+type baseFileResponse struct {
+	Encoding string `json:"encoding"`
+	Size     int    `json:"size"`
+	Content  string `json:"content"`
+}
+
+// FetchBaseFile reads path from the MR's TARGET project at the base commit.
+//
+// The target project, never the source, is the point: for a fork MR the source
+// project belongs to the contributor, so a file read from it is
+// attacker-controlled. diff_refs.base_sha is preferred over the target branch
+// name because it is immutable and is the revision the reviewed diff is
+// computed against; the branch name is only a fallback.
+func (c *Client) FetchBaseFile(ctx context.Context, project string, iid int, path string) ([]byte, bool, error) {
+	escaped := escapeProject(project)
+	var mr mrResponse
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escaped, iid), &mr); err != nil {
+		return nil, false, err
+	}
+	target := escaped
+	if mr.TargetProjectID > 0 {
+		target = strconv.Itoa(mr.TargetProjectID)
+	}
+	ref := mr.DiffRefs.BaseSHA
+	if ref == "" {
+		ref = mr.TargetBranch
+	}
+	if ref == "" {
+		return nil, false, nil
+	}
+	// GitLab wants the whole file path in one URL-encoded segment, separators
+	// included; url.PathEscape encodes "/" as %2F, which is what this needs.
+	endpoint := fmt.Sprintf("/projects/%s/repository/files/%s?ref=%s", target, url.PathEscape(path), url.QueryEscape(ref))
+	var file baseFileResponse
+	if err := c.Get(ctx, endpoint, &file); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if file.Size > model.MaxBaseFileBytes {
+		return nil, false, fmt.Errorf("gitlab: %s at %s exceeds %d bytes", path, ref, model.MaxBaseFileBytes)
+	}
+	if file.Encoding != "base64" {
+		return nil, false, fmt.Errorf("gitlab: %s at %s: unsupported content encoding %q", path, ref, file.Encoding)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(file.Content), ""))
+	if err != nil {
+		return nil, false, fmt.Errorf("gitlab: decoding %s at %s: %w", path, ref, err)
+	}
+	return decoded, true, nil
 }

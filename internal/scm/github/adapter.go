@@ -92,3 +92,9 @@ func (a *Adapter) ReviewResults(ctx context.Context, repo string, number int) (m
 func ownedBy(author userRef, user *User) bool {
 	return author.Login != "" && strings.EqualFold(author.Login, user.Login)
 }
+
+// ReadBaseFile implements model.BaseFileSource, reading from the pull request's
+// base repository at the base commit so a fork cannot control the content.
+func (a *Adapter) ReadBaseFile(ctx context.Context, req model.ReviewRequest, path string) ([]byte, bool, error) {
+	return a.client.FetchBaseFile(ctx, req.Repo, req.Identifier, path)
+}

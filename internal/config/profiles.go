@@ -80,6 +80,12 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.DisableStyleGuides != nil {
 		base.DisableStyleGuides = slices.Clone(override.DisableStyleGuides)
 	}
+	if override.ProjectContext != nil {
+		base.ProjectContext = slices.Clone(override.ProjectContext)
+	}
+	if override.DisableProjectContext {
+		base.DisableProjectContext = true
+	}
 	if override.DiffFormat != "" {
 		base.DiffFormat = override.DiffFormat
 	}
