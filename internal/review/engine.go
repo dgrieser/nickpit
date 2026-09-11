@@ -1083,6 +1083,9 @@ func allVectorsFailed(results []agentResult) bool {
 // step that skipped it warns with the reason it had, which is more specific
 // than anything the run itself records.
 func agentRunWarning(run model.AgentRun) string {
+	if run.BudgetStop != nil && run.Error == "" {
+		return ""
+	}
 	actor := "reviewer"
 	if run.Role == "merge" {
 		actor = "merge step"
@@ -2149,6 +2152,9 @@ func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.Re
 		s := e.newReviewerSession(agent, req, false)
 		budget := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 		if err := e.reviewerInitial(ctx, s, req, budget, e, req); err != nil {
+			if s.latestResp != nil {
+				return s.result(req), err
+			}
 			return s.partialResult(req), err
 		}
 		if err := e.reviewerNudges(ctx, s, req, budget, e, req, budget, e, req); err != nil {
@@ -3642,7 +3648,9 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		// succeed, in which case the failure is progress-only and never becomes
 		// a warning — but it still happened, and the stream is the only place
 		// it can be seen.
-		if err != nil {
+		if err != nil && ctx.Value(reviewerBudgetContextKey{}) != nil && ctx.Err() != nil {
+			e.logf(turnCtx, "Reviewer request interrupted by budget or cancellation: %v", err)
+		} else if err != nil {
 			e.logger.Progress(turnCtx, logging.StageResponse, logging.StateError, fmt.Sprintf("%s error=%v", elapsed, err))
 		} else {
 			e.logger.Progress(turnCtx, logging.StageResponse, logging.StateDone, elapsed.String())
@@ -3652,6 +3660,9 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 }
 
 func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	if ctx.Value(reviewerBudgetContextKey{}) != nil {
+		return e.llm.Review(ctx, req)
+	}
 	if timeBudgetUrgentNow(ctx) && !req.Urgent {
 		urgentReq := *req
 		urgentReq.Urgent = true

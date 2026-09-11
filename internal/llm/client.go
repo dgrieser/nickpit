@@ -155,6 +155,9 @@ type ReviewRequest struct {
 	ReasoningSink                  ReasoningSink
 	DisableReasoningEffortFallback bool
 	Urgent                         bool
+	// Finalize selects one low-effort attempt without model-level fallbacks.
+	// Transport retries still obey the request context and retry limit.
+	Finalize bool
 	// CallerRetriesError reports, for an error Review is about to return,
 	// whether the caller's own retry loop will retry it. Those failures are the
 	// caller's to report — a warning here would announce a failure the caller
@@ -280,6 +283,18 @@ type streamReadError struct {
 	retryable bool
 	partial   *streamedResponse
 }
+
+// InterruptedResponseError preserves work received before caller cancellation.
+// PartialResponse still requires the caller's normal response validation.
+type InterruptedResponseError struct {
+	Err             error
+	RawContent      string
+	TokensUsed      model.TokenUsage
+	PartialResponse *ReviewResponse
+}
+
+func (e *InterruptedResponseError) Error() string { return e.Err.Error() }
+func (e *InterruptedResponseError) Unwrap() error { return e.Err }
 
 type llmHTTPStatusError struct {
 	statusCode int
@@ -926,10 +941,12 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 // reviewLadder runs one review down the reasoning-effort ladder, retrying at a
 // lower effort when the model exhausts its reasoning budget, loops, or answers
 // with reasoning only, and finally once without tools.
-func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, progress *retryProgress) (*ReviewResponse, error) {
+func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, progress *retryProgress) (response *ReviewResponse, resultErr error) {
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	if req.Urgent {
+	if req.Finalize {
+		efforts = []string{finalizationReasoningEffort(originalEffort, c.allowedEfforts)}
+	} else if req.Urgent {
 		efforts = urgentReasoningEfforts(originalEffort, c.allowedEfforts)
 	} else if !req.DisableReasoningEffortFallback {
 		for _, effort := range fallbackReasoningEfforts(originalEffort) {
@@ -975,6 +992,24 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 	// no-tools retries included) so the returned TokensUsed reflects what the
 	// whole call cost, not just the final attempt.
 	var totalUsage model.TokenUsage
+	defer func() {
+		if resultErr == nil || ctx.Err() == nil {
+			return
+		}
+		diagnostic := &InterruptedResponseError{Err: resultErr, TokensUsed: totalUsage}
+		var readErr *streamReadError
+		if errors.As(resultErr, &readErr) && readErr.partial != nil {
+			diagnostic.RawContent = readErr.partial.content
+			if len(readErr.partial.toolCalls) == 0 && strings.TrimSpace(diagnostic.RawContent) != "" {
+				diagnostic.PartialResponse, _, _ = parseReviewResponseWithIDBackfill(diagnostic.RawContent, req.SchemaKind, req.Constraints)
+				if diagnostic.PartialResponse != nil {
+					diagnostic.PartialResponse.RawResponse = diagnostic.RawContent
+					diagnostic.PartialResponse.ReasoningEffort = efforts[0]
+				}
+			}
+		}
+		resultErr = diagnostic
+	}()
 	// finishResponse stamps the accumulated spend onto the response that is
 	// about to be returned; finishError does the same for partial responses
 	// carried by invalid-response errors.
@@ -1009,6 +1044,9 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 		addTokenUsage(&totalUsage, usage)
 		if err == nil {
 			return finishResponse(resp), nil
+		}
+		if req.Finalize {
+			return nil, finishError(err)
 		}
 		// A provider-reported repeated output chunk is not a reasoning loop:
 		// it happens even with reasoning disabled and is usually a transient
@@ -1318,6 +1356,29 @@ func urgentReasoningEfforts(effort string, allowed map[string]struct{}) []string
 	return out
 }
 
+func finalizationReasoningEffort(original string, allowed map[string]struct{}) string {
+	original = strings.ToLower(strings.TrimSpace(original))
+	for _, lower := range []string{"off", "none", "minimal"} {
+		if original == lower && attemptReasoningEffortAllowed(lower, allowed) {
+			return lower
+		}
+	}
+	if attemptReasoningEffortAllowed("low", allowed) {
+		return "low"
+	}
+	for _, effort := range []string{"off", "none", "minimal", "medium", "high", "xhigh", "max"} {
+		if attemptReasoningEffortAllowed(effort, allowed) {
+			return effort
+		}
+	}
+	// A provider may advertise only custom effort names. Keep requests within
+	// that advertised set rather than sending an unsupported standard value.
+	if custom := slices.Sorted(maps.Keys(allowed)); len(custom) > 0 {
+		return custom[0]
+	}
+	return original
+}
+
 // effortStepDirection names the direction of one reasoning-effort ladder step
 // for its retry line. The ladder descends from the requested effort for a
 // normal call and ascends for an urgent one, so the direction is read from the
@@ -1431,6 +1492,16 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progr
 		maxTokensLog = fmt.Sprintf("%d", *req.MaxTokens)
 	}
 	requestExtraBody := cloneRequestExtraBody(req.ExtraBody)
+	if req.Finalize {
+		// Provider extras must not restore tools or override finalization's
+		// selected effort. All other sampling/provider settings still apply.
+		delete(requestExtraBody, "tools")
+		delete(requestExtraBody, "tool_choice")
+		delete(requestExtraBody, "parallel_tool_calls")
+		delete(requestExtraBody, "reasoning_effort")
+		payload.Tools = nil
+		payload.ParallelToolCalls = false
+	}
 
 	temperatureLog := "unset"
 	if req.Temperature != nil {
@@ -3449,6 +3520,14 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 		}
 	}
 	return missing
+}
+
+// ValidRecoveredReviewFinding applies the normal field/priority checks to a
+// decoded finding before the reviewer accepts it from interrupted output.
+func ValidRecoveredReviewFinding(finding model.Finding, constraints ResponseConstraints) bool {
+	findings := []model.Finding{finding}
+	raw, err := json.Marshal(findings)
+	return err == nil && len(missingFindingFields(findings, raw, SchemaKindReview, constraints)) == 0
 }
 
 func rawUUIDIsValid(raw json.RawMessage) bool {

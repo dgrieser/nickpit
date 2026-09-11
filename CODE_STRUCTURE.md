@@ -27,6 +27,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/pipeline.go`: Pipeline model and execution state for workflow steps, groups, lanes, and result aggregation.
 - `internal/review/pipeline_steps.go`: Step implementations for context collection, review lanes, merge, finalize, verdict, summarize, and fused post-merge execution.
 - `internal/review/reviewer_session.go`: Reviewer session state, main review execution, nudge handling, and reasoning-mining/update subagents.
+- `internal/review/reviewer_budget.go`: Reviewer soft-deadline finalization, bounded candidate mining, partial-output recovery, and round termination.
 - `internal/review/categorizer.go`: Private per-finding descriptive classification inside verification. The classifier is blind to routing outcomes, diff scope, tools, and verifier evidence; Go applies the configured drop policy and classification failures fail open.
 - `internal/review/diff_scope.go`: Canonical old/new diff windows (plus a line-1 window for metadata-only symlink changes, which have no hunk), deterministic overlap checks, and scope filtering used for location repair and retry guidance.
 - `internal/review/verifier.go`: Per-finding evidence verification, verifier options, fallback unverified results, and verifier telemetry.

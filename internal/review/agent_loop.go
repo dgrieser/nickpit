@@ -64,6 +64,8 @@ type agentLoopResult struct {
 	toolMessages       []llm.Message
 	toolCallHistory    []toolCallHistoryEntry
 	messages           []llm.Message
+	reasoningTraces    []string
+	interruptedOutput  string
 	toolCalls          int
 	duplicateToolCalls int
 }
@@ -92,7 +94,7 @@ func newAgentLoopState() *agentLoopState {
 	}
 }
 
-func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentLoopResult, error) {
+func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result agentLoopResult, resultErr error) {
 	// Admission through the run-global limiter caps concurrent LLM agent
 	// loops across the whole pipeline. Chains admitted upstream (verify's
 	// ordered spawn loop) carry the admission in ctx and pass through.
@@ -128,7 +130,8 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	}
 
 	messages := append([]llm.Message(nil), req.Messages...)
-	result := agentLoopResult{reasoningEffort: req.ReasoningEffort}
+	result = agentLoopResult{reasoningEffort: req.ReasoningEffort}
+	defer func() { result.messages = append([]llm.Message(nil), messages...) }()
 	state := req.State
 	if state == nil {
 		state = newAgentLoopState()
@@ -159,7 +162,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 
 		var perCallBuf *llm.BufferedReasoningSink
-		if req.OnReasoningTrace != nil {
+		if req.OnReasoningTrace != nil || ctx.Value(reviewerBudgetContextKey{}) != nil {
 			perCallBuf = &llm.BufferedReasoningSink{}
 			llmReq.ReasoningSink = llm.TeeReasoningSinks(req.ReasoningSink, perCallBuf)
 		} else {
@@ -167,13 +170,23 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 
 		resp, err := e.loggedReview(loopCtx, llmReq, req.Section)
-		if perCallBuf != nil && err == nil && resp != nil {
+		if perCallBuf != nil {
 			if trace := strings.TrimSpace(perCallBuf.String()); trace != "" {
-				req.OnReasoningTrace(req.AgentName, state.callNum, trace)
+				result.reasoningTraces = append(result.reasoningTraces, trace)
+				if req.OnReasoningTrace != nil && err == nil && resp != nil {
+					req.OnReasoningTrace(req.AgentName, state.callNum, trace)
+				}
 			}
 		}
 		repairedFromPartial := false
 		if err != nil {
+			var interrupted *llm.InterruptedResponseError
+			if errors.As(err, &interrupted) {
+				recordTokens(interrupted.TokensUsed)
+				result.interruptedOutput = interrupted.RawContent
+				result.resp = interrupted.PartialResponse
+				return result, err
+			}
 			var invalidResp *llm.InvalidResponseError
 			if !errors.As(err, &invalidResp) {
 				return result, err
@@ -565,6 +578,10 @@ func outputRetriesExhaustedLine(retries int, reason string) string {
 // it succeeded, returned a partial/invalid response, or failed outright.
 func reviewCallTokens(resp *llm.ReviewResponse, err error) model.TokenUsage {
 	if err != nil {
+		var interrupted *llm.InterruptedResponseError
+		if errors.As(err, &interrupted) {
+			return interrupted.TokensUsed
+		}
 		var invalidResp *llm.InvalidResponseError
 		if errors.As(err, &invalidResp) {
 			return invalidResponseTokens(invalidResp)

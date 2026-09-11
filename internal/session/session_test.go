@@ -51,6 +51,28 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStoreReviewerBudgetStopRoundTrip(t *testing.T) {
+	for _, stop := range []*model.BudgetStop{nil, {Reason: "deadline", Scope: "step:review:testing", Phase: "nudge", NudgeIndex: 2}} {
+		store, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess := New()
+		sess.Result = &model.ReviewResult{AgentRuns: []model.AgentRun{{Name: "Testing", Role: "review", Status: model.AgentRunStatusPartial, BudgetStop: stop}}}
+		if err := store.Save(sess); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := store.Load(sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := loaded.Result.AgentRuns[0].BudgetStop
+		if (got == nil) != (stop == nil) || (got != nil && *got != *stop) {
+			t.Fatalf("budget stop=%+v, want %+v", got, stop)
+		}
+	}
+}
+
 func TestStoreListLatest(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

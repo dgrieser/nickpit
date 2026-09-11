@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -19,6 +20,18 @@ type activeTimeBudget struct {
 
 type timeBudgetContextKey struct{}
 type timeBudgetThresholdContextKey struct{}
+
+type reviewerBudgetContextKey struct{}
+
+type timeBudgetDeadlineCause struct{ scope string }
+
+func (e *timeBudgetDeadlineCause) Error() string { return "time budget deadline: " + e.scope }
+func (e *timeBudgetDeadlineCause) Unwrap() error { return context.DeadlineExceeded }
+
+func isTimeBudgetDeadline(ctx context.Context) bool {
+	var cause *timeBudgetDeadlineCause
+	return errors.As(context.Cause(ctx), &cause)
+}
 
 type childTimePlan struct {
 	allocated *time.Duration
@@ -105,7 +118,7 @@ func withConfiguredTimeBudget(ctx context.Context, cfg *workflow.TimeBudget, pla
 		deadline:         deadline,
 		speedupThreshold: threshold,
 	}
-	deadlineCtx, cancel := context.WithDeadline(ctx, deadline)
+	deadlineCtx, cancel := context.WithDeadlineCause(ctx, deadline, &timeBudgetDeadlineCause{scope: budget.scope})
 	deadlineCtx = context.WithValue(deadlineCtx, timeBudgetContextKey{}, budget)
 	logTimeBudgetStart(deadlineCtx, logf, budget)
 	return deadlineCtx, cancel, false
