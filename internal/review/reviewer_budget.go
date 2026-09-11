@@ -94,6 +94,13 @@ func (e *Engine) runReviewerRound(ctx context.Context, s *reviewerSession, req a
 	notes := strings.TrimSpace(strings.Join(unmined, "\n\n"))
 	if notes != "" && !reviewReq.DisableReasoningExtract {
 		limit := min(30*time.Second, time.Until(budget.deadline)/4)
+		if allocated := s.mineBudget.plan.allocated; allocated != nil {
+			limit = min(limit, *allocated)
+		} else if s.mineBudget.plan.optional {
+			// Optional phases have no reserved allocation. Final mining must
+			// not take that time from the active round's final response.
+			limit = 0
+		}
 		if cfg := s.mineBudget.cfg; cfg != nil && cfg.MaxSeconds != nil {
 			limit = min(limit, time.Duration(*cfg.MaxSeconds)*time.Second)
 		}

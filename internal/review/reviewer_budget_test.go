@@ -204,6 +204,74 @@ func TestReviewerBudgetMiningFallback(t *testing.T) {
 	}
 }
 
+func TestReviewerBudgetFinalMiningHonorsPhaseAllocation(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		mainWeight *int
+		mineWeight *int
+		maxSeconds *int
+		wantMining bool
+	}{
+		{name: "small weight", mineWeight: intPtr(1), wantMining: true},
+		{name: "optional weight zero", mineWeight: intPtr(0)},
+		{name: "optional with absolute cap", mineWeight: intPtr(0), maxSeconds: intPtr(1)},
+		{name: "no remaining allocation", mainWeight: intPtr(100)},
+		{name: "absolute cap tighter", mineWeight: intPtr(100), maxSeconds: intPtr(1), wantMining: true},
+		{name: "final response reserve tighter", mineWeight: intPtr(100), wantMining: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := reviewerBudgetTestContext(t, 8*time.Second, 80, true)
+			cfg := &workflow.StepOverride{
+				TimeBudget: &workflow.TimeBudget{Weight: tt.mainWeight},
+				MineReasoning: &workflow.AgentOverride{TimeBudget: &workflow.TimeBudget{
+					Weight: tt.mineWeight, MaxSeconds: tt.maxSeconds,
+				}},
+			}
+			req := model.ReviewRequest{}
+			_, mine, _, _ := reviewPhaseBudgetStarters(ctx, "security", cfg, req, false, nil)
+			bound := 2 * time.Second // quarter of the round's remaining time
+			if mine.plan.allocated != nil {
+				bound = min(bound, *mine.plan.allocated)
+			}
+			if tt.maxSeconds != nil {
+				bound = min(bound, time.Duration(*tt.maxSeconds)*time.Second)
+			}
+			miningCalls := 0
+			client := &budgetRoundClient{respond: func(callCtx context.Context, call *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+				assertFinalCall(t, call)
+				if call.SchemaKind == llm.SchemaKindText {
+					miningCalls++
+					deadline, ok := callCtx.Deadline()
+					if remaining := time.Until(deadline); !ok || remaining <= 0 || remaining > bound {
+						t.Fatalf("mining deadline remaining=%s, want 0 < remaining <= %s", remaining, bound)
+					}
+					return nil, errors.New("use raw notes")
+				}
+				if callCtx.Err() != nil || !strings.Contains(budgetPrompt(call), "UNMINED_NOTE") {
+					t.Fatal("final response lost its budget or unmined notes")
+				}
+				return &llm.ReviewResponse{}, nil
+			}}
+			e := pipelineTestEngine(client)
+			s := e.newReviewerSession(budgetAgent(), req, false)
+			s.mineBudget = mine
+			s.reasoningTraces = []string{"UNMINED_NOTE"}
+			loop, sec := e.buildAgentLoopRequest(s.agent, req)
+			defer sec.End()
+			if _, err := e.runReviewerRound(ctx, s, loop, req, "review", 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			wantMining := 0
+			if tt.wantMining {
+				wantMining = 1
+			}
+			if miningCalls != wantMining || client.count() != wantMining+1 {
+				t.Fatalf("mining calls=%d total=%d, want mining=%d plus one final response", miningCalls, client.count(), wantMining)
+			}
+		})
+	}
+}
+
 func TestReviewerBudgetRepairBoundAndPartialRecovery(t *testing.T) {
 	for _, repairAllowed := range []bool{true, false} {
 		t.Run(map[bool]string{true: "one repair", false: "allowance spent"}[repairAllowed], func(t *testing.T) {
