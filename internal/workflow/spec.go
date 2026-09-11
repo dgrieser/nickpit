@@ -273,23 +273,29 @@ type ContextInclude struct {
 	// Toolchain drops toolchain_versions from the payload and the instruction
 	// to consult it from the system prompt.
 	Toolchain *bool `yaml:"toolchain"`
+	// ProjectContext drops the project's own description of how it is deployed
+	// and used from the system prompt. Dropping it makes the step judge the
+	// change without knowing what is reachable in production, so it buys tokens
+	// at the cost of the calibration the context exists to provide.
+	ProjectContext *bool `yaml:"project_context"`
 }
 
-var contextIncludeKeys = []string{"styleguides", "diff", "commits", "comments", "toolchain"}
+var contextIncludeKeys = []string{"styleguides", "diff", "commits", "comments", "toolchain", "project_context"}
 
 // ContextIncludeSet is a ContextInclude resolved against the all-included
 // default, so consumers read plain bools instead of nil-checking pointers.
 type ContextIncludeSet struct {
-	StyleGuides bool
-	Diff        bool
-	Commits     bool
-	Comments    bool
-	Toolchain   bool
+	StyleGuides    bool
+	Diff           bool
+	Commits        bool
+	Comments       bool
+	Toolchain      bool
+	ProjectContext bool
 }
 
 // AllContextIncluded is the default every dedupe and merge step starts from.
 func AllContextIncluded() ContextIncludeSet {
-	return ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Comments: true, Toolchain: true}
+	return ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Comments: true, Toolchain: true, ProjectContext: true}
 }
 
 // All reports whether nothing is excluded, letting callers keep the prebuilt
@@ -314,6 +320,7 @@ func (o *StepOverride) ContextInclude() ContextIncludeSet {
 		{o.Context.Commits, &out.Commits},
 		{o.Context.Comments, &out.Comments},
 		{o.Context.Toolchain, &out.Toolchain},
+		{o.Context.ProjectContext, &out.ProjectContext},
 	} {
 		if field.set != nil {
 			*field.out = *field.set

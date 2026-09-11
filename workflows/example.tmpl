@@ -81,6 +81,7 @@
 #   commits       the commit summaries
 #   comments      the MR/PR discussion comments
 #   toolchain     toolchain_versions, and the instruction to consult it
+#   project_context  the project's own account of how it is deployed and used
 # `toolchain: false` only trims the prompt: the detected toolchain still picks
 # the styleguide version, so a Go 1.25 change keeps the Go 1.25 guide instead of
 # falling back to the generic one.
@@ -181,6 +182,7 @@
 #             commits: true
 #             comments: true
 #             toolchain: true
+#             project_context: true
 #       - type: finalize
 #         config:
 #           scope: cluster

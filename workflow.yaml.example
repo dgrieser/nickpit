@@ -83,6 +83,7 @@
 #   commits       the commit summaries
 #   comments      the MR/PR discussion comments
 #   toolchain     toolchain_versions, and the instruction to consult it
+#   project_context  the project's own account of how it is deployed and used
 # `toolchain: false` only trims the prompt: the detected toolchain still picks
 # the styleguide version, so a Go 1.25 change keeps the Go 1.25 guide instead of
 # falling back to the generic one.
@@ -142,6 +143,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Code quality
         config:
           time_budget:
@@ -176,6 +178,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Security
         config:
           time_budget:
@@ -210,6 +213,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Architecture
         config:
           time_budget:
@@ -244,6 +248,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Performance
         config:
           time_budget:
@@ -278,6 +283,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Testing
         config:
           time_budget:
@@ -312,6 +318,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Best practices
         config:
           time_budget:
@@ -329,6 +336,7 @@ steps:
             commits: true
             comments: true
             toolchain: true
+            project_context: true
       - type: finalize
         config:
           model: "@small"
@@ -440,6 +448,7 @@ steps:
 #             commits: true
 #             comments: true
 #             toolchain: true
+#             project_context: true
 #       - type: finalize
 #         config:
 #           scope: cluster

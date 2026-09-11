@@ -46,6 +46,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Code quality
         config:
           time_budget:
@@ -80,6 +81,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Security
         config:
           time_budget:
@@ -114,6 +116,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Architecture
         config:
           time_budget:
@@ -148,6 +151,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Performance
         config:
           time_budget:
@@ -182,6 +186,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Testing
         config:
           time_budget:
@@ -216,6 +221,7 @@ steps:
                 commits: true
                 comments: true
                 toolchain: true
+                project_context: true
         name: Best practices
         config:
           time_budget:
@@ -233,6 +239,7 @@ steps:
             commits: true
             comments: true
             toolchain: true
+            project_context: true
       - type: finalize
         config:
           model: "@small"
