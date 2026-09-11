@@ -13,10 +13,19 @@ type User struct {
 // CurrentUser returns the user the client's token authenticates as. A GitHub App
 // installation token has no user behind it and gets a 403 here, so callers that
 // only need best-effort identity must tolerate the error rather than fail on it.
+// A successful answer is memoized for the client's lifetime: it identifies the
+// token, which cannot change under it, and callers that verify carrier
+// authorship ask once per request they read.
 func (c *Client) CurrentUser(ctx context.Context) (*User, error) {
+	c.userMu.Lock()
+	defer c.userMu.Unlock()
+	if c.user != nil {
+		return c.user, nil
+	}
 	var user User
 	if err := c.Get(ctx, "/user", &user); err != nil {
 		return nil, err
 	}
-	return &user, nil
+	c.user = &user
+	return c.user, nil
 }

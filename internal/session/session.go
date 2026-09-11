@@ -278,17 +278,26 @@ func (s *Store) Load(id string) (*Session, error) {
 }
 
 // header is the lightweight prefix of a session file: enough for listing and
-// for Save's concurrency check without decoding the (potentially MB-scale)
-// cached context and transcript.
+// for Save's concurrency check without holding on to the (potentially
+// MB-scale) cached context and transcript. The whole file is still scanned —
+// encoding/json has no way to stop early — but only these fields are kept, so
+// a listing costs parse time rather than memory.
 type header struct {
-	Version  int    `json:"version"`
-	ID       string `json:"id"`
-	ReviewID string `json:"review_id"`
-	Source   struct {
-		Repo string `json:"repo"`
-	} `json:"source"`
+	Version         int       `json:"version"`
+	ID              string    `json:"id"`
+	ReviewID        string    `json:"review_id"`
+	Source          Source    `json:"source"`
 	PinnedFindingID string    `json:"pinned_finding_id"`
+	Model           string    `json:"model"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// Result is decoded down to what a listing shows. The findings are decoded
+	// as empty structs: a listing wants their number, not their content.
+	Result *struct {
+		Revision           uint64     `json:"revision"`
+		CreatedAt          time.Time  `json:"created_at"`
+		OverallCorrectness string     `json:"overall_correctness"`
+		Findings           []struct{} `json:"findings"`
+	} `json:"result"`
 }
 
 // loadHeader decodes just the header fields of a session file.
@@ -479,13 +488,27 @@ func isSessionFileName(name string) bool {
 	return err == nil
 }
 
-// Info is a lightweight session listing entry.
+// Info is a lightweight session listing entry: what a picker or a listing
+// shows, and what a caller filters on, without loading the session itself.
 type Info struct {
-	ID              string
-	ReviewID        string
-	Repo            string
+	ID       string
+	ReviewID string
+	Repo     string
+	// Source is where the session's review came from — the mode, submode and
+	// refs a caller needs to tell a local review of this checkout from one of
+	// another repository or another branch.
+	Source          Source
 	PinnedFindingID string
+	Model           string
 	UpdatedAt       time.Time
+	// HasResult reports whether the session carries a review at all; a session
+	// without one has nothing to print.
+	HasResult bool
+	// Revision, CreatedAt, Findings and Verdict summarize that review.
+	Revision  uint64
+	CreatedAt time.Time
+	Findings  int
+	Verdict   string
 }
 
 // List returns known sessions, newest first. A missing directory yields an empty
@@ -514,13 +537,23 @@ func (s *Store) List() ([]Info, error) {
 		if err != nil || h.ID == "" {
 			continue // skip unreadable/corrupt/foreign files
 		}
-		infos = append(infos, Info{
+		info := Info{
 			ID:              h.ID,
 			ReviewID:        h.ReviewID,
 			Repo:            h.Source.Repo,
+			Source:          h.Source,
 			PinnedFindingID: h.PinnedFindingID,
+			Model:           h.Model,
 			UpdatedAt:       h.UpdatedAt,
-		})
+		}
+		if h.Result != nil {
+			info.HasResult = true
+			info.Revision = h.Result.Revision
+			info.CreatedAt = h.Result.CreatedAt
+			info.Findings = len(h.Result.Findings)
+			info.Verdict = h.Result.OverallCorrectness
+		}
+		infos = append(infos, info)
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
 	return infos, nil

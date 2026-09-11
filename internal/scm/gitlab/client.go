@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,12 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+
+	// userMu guards the memoized token owner. It is held across the /user
+	// request itself, so concurrent callers — a listing that probes many merge
+	// requests at once — share one call instead of racing to make their own.
+	userMu sync.Mutex
+	user   *User
 }
 
 func NewClient(baseURL, token string) *Client {

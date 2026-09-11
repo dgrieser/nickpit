@@ -439,6 +439,12 @@ nickpit gitlab mr --repo group/project --id 456 --publish
 # Read a published review back from the PR/MR — print it, or copy it to the clipboard
 nickpit github feedback --url https://github.com/owner/repo/pull/123
 nickpit gitlab feedback --url https://gitlab.example.com/group/project/-/merge_requests/456 --clipboard
+
+# Read a local review back: the saved reviews of the checked-out branch
+nickpit git feedback
+
+# Everything this checkout has — published on its MRs/PRs and saved locally — in one list
+nickpit feedback
 ```
 
 ### Pick the MR/PR, Branch or Commit Interactively 🎯
@@ -465,6 +471,8 @@ Local reviews pick refs the same way. `nickpit git branch` always asks on a term
 Keys: `↑`/`↓` (or `Ctrl-P`/`Ctrl-N`) move, `PgUp`/`PgDn` page, `Home`/`End` jump, typing filters (`Ctrl-U` clears the filter), `Enter` selects, and `Esc`/`Ctrl-C` aborts without running anything (exit code 130). The list is drawn on stderr, so the review output on stdout stays exactly what it is with `--id`.
 
 Rows are coloured like the progress lines of the same run, in the palette `tools/print_colors.sh` documents: identifiers green, messages in a pale lavender, a stable colour per person so a list can be scanned by who wrote what, ages grey and green while still inside the hour. Two rules paint inside a cell, the same ones the `git-color` dev helper applies to a `git log`: a conventional-commit prefix is taken apart (`feat` green, `(scope)` turquoise, the punctuation and a `!` for a breaking change stepping out of the text), and the `/` separators of a branch name fade back the way a progress line renders `head → base`. In a branch list green is reserved for the default branch. The selected row carries a highlight bar — the live dashboard's lavender pastel, dimmed the way a progress bar dims its unfilled half — and the title line spells out its full value after the prompt — `Base to review against: origin/feat/tree-sitter-parse-cap-and-cache` — so the name column is free to be the first thing shortened when the row does not fit, and the tip message keeps the room. The two branch prompts wear the aqua green and gold a progress line paints `base → head` in, so `Base to review against:` and `Branch to review:` are never confused. The pick is confirmed on stderr in italic grey with the chosen ref in that same colour, and `NO_COLOR` keeps every layout while dropping the colour.
+
+The two read-back lists work the same way: `nickpit git feedback` offers the saved reviews of the checked-out branch, and `nickpit feedback` merges those with the reviews published on this checkout's open MRs/PRs. Both always ask — there is no "newest wins" fallback — so `--session <id>`, `--id` or `--list` is what a script uses.
 
 Nothing changes without a terminal: piped, redirected and daemon-spawned runs keep the non-interactive behaviour — the same "`--id` must be a positive integer" error for a request, the command's default refs for a local review — instead of waiting for a keypress, and `--select` there fails immediately.
 
@@ -497,6 +505,49 @@ nickpit gitlab feedback --repo group/project --id 456 --review-id <review-id>
 # Machine-readable, e.g. to hand the findings to another tool
 nickpit github feedback --repo owner/repo --id 123 --output json
 ```
+
+#### Local reviews: `nickpit git feedback`
+
+A local review is not published anywhere — it is saved as a session — so `nickpit git feedback` reads it back from there. It offers the reviews **of the branch you are on**: local reviews of this repository whose head ref is the checked-out branch (`HEAD`, which is what the range submodes record when the head was not named, counts as that branch). Reviews of another ref and the working-tree submodes (`uncommitted`, `staged`, `unstaged`), which record no refs at all, are not offered here; `nickpit session` prints any saved review regardless of branch, and an empty list says how many of those exist.
+
+The list is always drawn, even for a single match, so you see what you are printing — the range, the finding count, the model and the age. Without a terminal nothing is guessed: pass `--session <id>` or `--list`.
+
+```bash
+# Choose one of the saved reviews of the checked-out branch
+nickpit git feedback
+
+# List them (add -o json for the machine-readable form), then print one
+nickpit git feedback --list
+nickpit git feedback --session <session-id>
+
+# Copy instead of printing
+nickpit git feedback --session <session-id> --clipboard
+```
+
+#### Everything at once: `nickpit feedback`
+
+`nickpit feedback` collects what this checkout has and asks which one to print. The git remotes decide where it looks: open merge requests on the GitLab instance a remote points at, open pull requests on GitHub, and the saved local reviews of the checked-out branch. Only requests that really carry a published review become rows, so every row can be printed — that costs one API read per open request, which is why the platform-specific commands stay the faster way to address a review you already know. A source that fails (a rejected token, an unreachable host) is reported as a warning and never hides the others; when nothing at all is found, the failures are named in the error.
+
+Rows are sorted by when the review was produced, newest first, and a request whose source branch is the checked-out one is starred `★` and preselected. `--list` prints the rows instead of asking (`-o json` included), and `--clipboard` copies the chosen review.
+
+```bash
+# Choose from everything this checkout has
+nickpit feedback
+
+# Just show what there is
+nickpit feedback --list
+```
+
+#### When the project is not there
+
+A `404` from a forge API says "not found here", which is rarely the whole story: the repository may live on the *other* forge, on another GitLab instance, or on neither. Every command that addresses a project — `gitlab mr`, `gitlab feedback`, `gitlab templates`, `github pr`, `github feedback`, `chat --gitlab` — adds what this checkout's git remotes say about it:
+
+```text
+ERROR: feedback: reading published reviews: gitlab: GET https://gitlab.example.com/api/v4/projects/owner%2Frepo/... : status 404: {"message":"404 Project Not Found"}
+The git remote "origin" of this checkout points at github.com/owner/repo, a GitHub repository, so there is nothing to find on GitLab. Run `nickpit github feedback` instead, or pass --repo/--url to name a GitLab project.
+```
+
+The other cases are named just as plainly: a GitHub command in a GitLab checkout points at `nickpit gitlab mr`/`feedback`; a GitLab remote on a different instance than the configured one asks for `--gitlab-base-url https://<that host>/api/v4`; a remote on neither forge says so and offers `nickpit git feedback` for the local reviews; and a checkout without remotes says the project path, the id and the token's access are all that is left to check. Where the repository really does live on the forge that answered `404`, nothing is added — the API error's own advice is already complete.
 
 ## Discuss a Review (Chat) 💬
 

@@ -456,7 +456,12 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
-	root.AddCommand(cli.newChatCmd())
+	chatCmd := cli.newChatCmd()
+	cli.diagnoseSCMErrors(chatCmd)
+	root.AddCommand(chatCmd)
+	feedbackCmd := cli.newFeedbackCmd()
+	cli.diagnoseSCMErrors(feedbackCmd)
+	root.AddCommand(feedbackCmd)
 	root.AddCommand(cli.newSessionCmd())
 	root.AddCommand(newCompletionCmd(root))
 	return root
@@ -815,6 +820,7 @@ func (a *app) newGitCmd() *cobra.Command {
 	local.AddCommand(a.newLocalReviewCmd("unstaged"))
 	local.AddCommand(a.newLocalReviewCmd("commits"))
 	local.AddCommand(a.newLocalReviewCmd("branch"))
+	local.AddCommand(a.newGitFeedbackCmd())
 	return local
 }
 
@@ -991,6 +997,9 @@ func (a *app) newGitHubCmd() *cobra.Command {
 	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
 	cmd.AddCommand(prCmd)
 	cmd.AddCommand(a.newGitHubFeedbackCmd())
+	// Every GitHub-addressed command can hit a repository that is not on
+	// GitHub at all; the checkout's remotes are what says so.
+	a.diagnoseSCMErrors(cmd)
 	return cmd
 }
 
@@ -1078,10 +1087,17 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	mrCmd.Flags().StringVar(&rawURL, "url", "", "GitLab merge request URL")
 	addSelectFlag(mrCmd, &selectMR, "an open merge request", requestSelectNote)
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
+	feedbackCmd := a.newGitLabFeedbackCmd()
+	templatesCmd := a.newGitLabTemplatesCmd()
 	cmd.AddCommand(mrCmd)
-	cmd.AddCommand(a.newGitLabFeedbackCmd())
+	cmd.AddCommand(feedbackCmd)
 	cmd.AddCommand(a.newGitLabServeCmd())
-	cmd.AddCommand(a.newGitLabTemplatesCmd())
+	cmd.AddCommand(templatesCmd)
+	// The daemon is deliberately left out: it runs where no checkout has to
+	// exist, so its remotes say nothing about a project it was configured with.
+	a.diagnoseSCMErrors(mrCmd)
+	a.diagnoseSCMErrors(feedbackCmd)
+	a.diagnoseSCMErrors(templatesCmd)
 	return cmd
 }
 
@@ -3135,27 +3151,8 @@ func inferRepo() string {
 	if err != nil {
 		return ""
 	}
-	return parseRepoFromRemoteURL(strings.TrimSpace(string(out)))
-}
-
-func parseRepoFromRemoteURL(raw string) string {
-	// URL schemes: https://, ssh://, git://
-	// e.g. https://github.com/owner/repo.git
-	//      ssh://git@gitlab.example.com:29418/group/project.git
-	if strings.Contains(raw, "://") {
-		u, err := url.Parse(raw)
-		if err != nil {
-			return ""
-		}
-		path := strings.TrimPrefix(u.Path, "/")
-		return strings.TrimSuffix(path, ".git")
-	}
-	// SCP-style: git@github.com:owner/repo.git
-	//            git@gitlab.com:group/project.git
-	if _, after, ok := strings.Cut(raw, ":"); ok {
-		return strings.TrimSuffix(after, ".git")
-	}
-	return ""
+	_, repo := parseRemoteURL(string(out))
+	return repo
 }
 
 func parseGitHubPRURL(raw string) (string, int, error) {

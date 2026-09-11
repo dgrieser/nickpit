@@ -2,8 +2,10 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -208,4 +210,49 @@ func unixTime(raw string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(seconds, 0)
+}
+
+// Remote is one configured git remote: its name and the URL as git stores it.
+type Remote struct {
+	// Name is the remote's name ("origin").
+	Name string
+	// URL is the configured URL in whatever form it was written: https://,
+	// ssh://, git:// or SCP-style git@host:path.
+	URL string
+}
+
+// Remotes lists the remotes configured in repoRoot, in git's own config order.
+// A repository without remotes yields an empty list, not an error — "this
+// checkout has nothing to compare against" is an answer, not a failure.
+func Remotes(ctx context.Context, repoRoot string) ([]Remote, error) {
+	return remotes(ctx, ExecRunner{RepoRoot: repoRoot})
+}
+
+func remotes(ctx context.Context, runner Runner) ([]Remote, error) {
+	out, err := runner.Run(ctx, "config", "--get-regexp", `^remote\..*\.url$`)
+	if err != nil {
+		// `git config --get-regexp` exits 1 when the pattern matches nothing,
+		// which is a repository without remotes; every other failure (not a
+		// repository, unreadable config) is real and surfaces.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var list []Remote
+	for line := range strings.SplitSeq(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		// "remote.<name>.url": the name may itself contain dots, so it is what
+		// remains between the fixed prefix and suffix rather than a field split.
+		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
+		if name == "" || name == key {
+			continue
+		}
+		list = append(list, Remote{Name: name, URL: strings.TrimSpace(value)})
+	}
+	return list, nil
 }

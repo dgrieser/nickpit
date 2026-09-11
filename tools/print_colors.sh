@@ -591,6 +591,44 @@ printf '      %s  %s  %s  %s\n' \
 printf '  %s\n' "$(s '38;5;244' '2 of 20')"
 printf '  %s\n\n' "$(s '38;5;242' '↑/↓ extend · PgUp/PgDn page · Enter selects the range · Esc drops it')"
 
+# The two read-back lists (`nickpit git feedback`, `nickpit feedback`) read the
+# same way as the request list, with one added rule: gold says which kind of
+# review a row is — the column a request list uses for "draft" — green what
+# addresses it, lavender its text, and blue the finding count being compared.
+# A local row has no short identifier, so its session id is spelled out in the
+# title line in the hash green an id wears.
+printf '  %s%s\n' "$(s '1;38;5;255' 'Saved reviews of feat/pick in nickpit')" \
+  "$(s '38;5;71' ' 9f1c2b7e-1c4a-4f9d-9a1e-2f6b0c5d8e31')"
+printf '  %s%s%s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;221' 'commits')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;189' 'd077dba')$(pick_cell_on '38;5;244' '..')$(pick_cell_on '38;5;189' 'HEAD     ')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;117' '3 findings')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;218' 'qwen3-coder')" "$(pick_gap_on)$(pick_cell_on '38;5;156' '12m')"
+printf '      %s  %s  %s  %s  %s\n\n' \
+  "$(pick_cell '38;5;221' 'branch ')" \
+  "$(pick_cell '38;5;189' 'origin')$(pick_cell '38;5;244' '/')$(pick_cell '38;5;189' 'main..feat')$(pick_cell '38;5;244' '/')$(pick_cell '38;5;189' 'pick')" \
+  "$(pick_cell '38;5;117' '7 findings')" \
+  "$(pick_cell '38;5;218' 'qwen3-coder')" \
+  "$(pick_cell '38;5;244' '3d')"
+
+printf '  %s\n' "$(s '1;38;5;255' 'Reviews for this checkout')"
+printf '  %s%s%s%s%s%s%s%s%s%s%s\n' \
+  "$(s "${PICK_CURSOR};1;38;5;255" '❯ ')" \
+  "$(pick_cell_on '38;5;214' '★')" "$(pick_mark_gap_on)" \
+  "$(pick_cell_on '38;5;221' 'GitLab')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;118' '!142')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;120' 'feat')$(pick_cell_on '38;5;244' '(')$(pick_cell_on '38;5;116' 'review')$(pick_cell_on '38;5;244' '):')$(pick_cell_on '38;5;189' ' cluster merge')" "$(pick_gap_on)" \
+  "$(pick_cell_on '38;5;117' '4 findings')" "$(pick_gap_on)$(pick_cell_on '38;5;156' '22m')"
+printf '      %s %s  %s  %s  %s  %s\n' \
+  ' ' \
+  "$(pick_cell '38;5;221' 'local ')" \
+  "$(pick_cell '38;5;118' 'branch')" \
+  "$(pick_cell '38;5;189' 'origin')$(pick_cell '38;5;244' '/')$(pick_cell '38;5;189' 'main..feat')$(pick_cell '38;5;244' '/')$(pick_cell '38;5;189' 'pick ')" \
+  "$(pick_cell '38;5;117' '7 findings')" \
+  "$(pick_cell '38;5;244' '3d')"
+printf '  %s\n\n' "$(s '38;5;244' '1 of 2')"
+
 swatch '1;38;5;255' 'styleTitle'      'the title line, and the ❯ cursor marker'
 swatch '48;2;69;56;86' 'styleCursorRow' 'background of the selected row, repeated on every segment — liveAgentPastelRGB lavender at 35%'
 swatch '38;5;118'   'StyleIdentifier' 'MR/PR number — progressColorNumberGreen'
@@ -598,10 +636,10 @@ swatch '38;5;71'    'StyleHash'       'commit SHA — progressColorHashDarkGreen
 swatch '38;5;189'   'StyleText'       'title, commit subject, branch tip message — pale lavender, the one code the picker adds'
 swatch '38;5;244'   'StyleAge'        'age column and position line — progressColorGrey'
 swatch '38;5;156'   'StyleFresh'      'age column within the last hour — progressColorBoolGreen'
-swatch '38;5;221'   'StyleCaveat'     'draft marker, and the "no match" line — progressColorWarnYellow'
+swatch '38;5;221'   'StyleCaveat'     'draft marker, the review kind in the read-back lists, and the "no match" line — progressColorWarnYellow'
 swatch '38;5;48'    'StyleDefaultRef' 'the default branch, the only coloured ref name — progressColorBranchToAquaGreen'
 swatch '38;5;214'   'StyleMark'       'the ★ marker column in every picker — progressColorBranchFromGold'
-swatch '38;5;117'   'StyleDetail'     'full value of the selected row, shown after the title'
+swatch '38;5;117'   'StyleDetail'     'full value of the selected row shown after the title, and the finding count in the read-back lists'
 swatch '38;5;48'    'StyleBaseRef'    'the base side: its title detail and confirmation — progressColorBranchToAquaGreen'
 swatch '38;5;214'   'StyleHeadRef'    'the head side: its title detail and confirmation — progressColorBranchFromGold'
 swatch '38;5;242'   'styleHint'       'the key list under the rows — progressColorDarkGrey'
