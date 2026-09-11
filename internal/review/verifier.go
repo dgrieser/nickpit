@@ -103,7 +103,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			return nil, usage, agentToolCounts{}, err
 		}
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0, req.ReviewCtx.ProjectContext)
 	if err != nil {
 		return nil, usage, agentToolCounts{}, err
 	}

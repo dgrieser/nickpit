@@ -45,6 +45,7 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 	st.enrichedPrompt = userPrompt
 	st.styleGuides = styleGuides
 	st.hasToolchain = len(payload.ToolchainVersions) > 0
+	st.projectContext = st.Enriched.ProjectContext
 	st.promptsReady = true
 	return nil
 }
@@ -71,11 +72,11 @@ func (e *Engine) collectStepFunc() stepFunc {
 			return err
 		}
 		hasToolchain := basePayload != nil && len(basePayload.ToolchainVersions) > 0
-		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req, guides, hasToolchain)
+		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req, guides, hasToolchain, st.Base.ProjectContext)
 		if err != nil {
 			return err
 		}
-		noToolsSystem, err := sc.Engine.renderContextSystemForTools(contextTemplate, sc.Req, guides, hasToolchain, false)
+		noToolsSystem, err := sc.Engine.renderContextSystemForTools(contextTemplate, sc.Req, guides, hasToolchain, st.Base.ProjectContext, false)
 		if err != nil {
 			return err
 		}
@@ -124,11 +125,11 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	if err != nil {
 		return agentSpec{}, err
 	}
-	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "review", st.styleGuides, st.hasToolchain)
+	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "review", st.styleGuides, st.hasToolchain, st.projectContext)
 	if err != nil {
 		return agentSpec{}, err
 	}
-	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "review", st.styleGuides, st.hasToolchain)
+	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "review", st.styleGuides, st.hasToolchain, st.projectContext)
 	if err != nil {
 		return agentSpec{}, err
 	}
@@ -531,7 +532,7 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 			return err
 		}
 		before := len(vr.resp.Findings)
-		resp, run := sc.Engine.runDedupeAgent(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain)
+		resp, run := sc.Engine.runDedupeAgent(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
 		if resp != nil {
 			st.setVectorResponse(vectorID, resp)
 		}
@@ -567,7 +568,7 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain)
+		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.dedupeRuns = append(st.dedupeRuns, runs...)
@@ -610,7 +611,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			if err != nil {
 				return err
 			}
-			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, promptCtx.styleGuides, promptCtx.hasToolchain)
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -773,7 +774,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, mergePromptCtx.reviewContextJSON, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergePromptCtx.styleGuides, mergePromptCtx.hasToolchain, fmt.Sprintf("#%d", ci+1))
+				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, mergePromptCtx.reviewContextJSON, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergePromptCtx.styleGuides, mergePromptCtx.hasToolchain, mergePromptCtx.projectContext, fmt.Sprintf("#%d", ci+1))
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}
@@ -996,6 +997,7 @@ type stepPromptContext struct {
 	reviewContextJSON string
 	styleGuides       []model.StyleGuide
 	hasToolchain      bool
+	projectContext    *model.ProjectContext
 }
 
 // resolveStepPromptContext applies a dedupe/merge step's context-include flags
@@ -1011,6 +1013,9 @@ type stepPromptContext struct {
 func (e *Engine) resolveStepPromptContext(st *PipelineState, override *workflow.StepOverride) (stepPromptContext, error) {
 	include := override.ContextInclude()
 	out := stepPromptContext{hasToolchain: st.hasToolchain && include.Toolchain}
+	if include.ProjectContext {
+		out.projectContext = st.projectContext
+	}
 	if include.StyleGuides {
 		guides, err := e.stepStyleGuides(st)
 		if err != nil {

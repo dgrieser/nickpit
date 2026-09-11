@@ -343,7 +343,7 @@ func TestContextNoToolsPromptOmitsExplorationInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt, err := e.renderContextSystemForTools(template, model.ReviewRequest{}, nil, false, false)
+	prompt, err := e.renderContextSystemForTools(template, model.ReviewRequest{}, nil, false, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
