@@ -274,6 +274,7 @@ Useful when the config file is baked into an image or CI runner and only a few k
 | `NICKPIT_NUDGE_COUNT` | `--nudge-count` |
 | `NICKPIT_MAX_FINDINGS` | `--max-findings` |
 | `NICKPIT_MAX_SESSIONS` | `--max-sessions` |
+| `NICKPIT_PROJECT_CONTEXT` | `--project-context` (appends one entry) |
 
 A `0` from the environment is honored where `0` is meaningful (`--max-tool-calls`, `--nudge-count`, `--max-findings`, `--max-sessions`, `--max-request-bytes`, `--max-rate-limit-delay-seconds`), so it is not mistaken for "unset". A non-numeric value fails the run with the variable name in the error.
 
@@ -387,6 +388,87 @@ profiles:
   default:
     disable_styleguides: [python, sql]
 ```
+
+## Project Context
+
+Styleguides tell an agent what good code looks like. They do not tell it what the project *is*. A reviewer that cannot distinguish an internet-facing multi-tenant billing API from an offline CLI helper will either over-report unreachable issues or under-prioritise real ones — and that gap hits security findings hardest.
+
+Commit a `.nickpit/context.yaml` to the repository being reviewed:
+
+```yaml
+version: 1
+summary: Multi-tenant billing API for European SMB customers.
+deployment: internet-facing       # internet-facing | internal | air-gapped | cli | library | batch
+users: authenticated customers, plus an unauthenticated webhook endpoint
+criticality: high                 # low | medium | high | critical
+data:
+  - payment card data (PCI DSS scope)
+  - customer PII
+trust_boundaries:
+  - internal/api handlers accept untrusted request bodies
+  - internal/worker consumes only messages this service produced
+assumptions:
+  - the reverse proxy terminates TLS and strips X-Forwarded-*
+non_goals:
+  - single-region only; cross-region latency is out of scope
+notes: |
+  Free-form markdown for anything the fields above do not cover.
+```
+
+Every field is optional and every value is free text — the vocabularies suggested in the comments are guidance, not validation, so a project can describe itself in its own words. The file reaches the system prompt of every judging agent: the six review lanes, verification, categorization, dedupe, merge, finalization, the verdict, the context agent, chat, and the update agent that applies chat corrections.
+
+Rules:
+
+- `version` may be omitted; when present it must be `1`.
+- Unknown top-level keys are an error, so a misspelled `trust_boundaris` is reported rather than silently ignored.
+- The file is capped at 16 KiB. It is injected into every agent's system prompt across six parallel lanes, so it is deliberately much tighter than the 1 MiB styleguide cap.
+- A malformed or unreadable file degrades the review rather than failing it: a warning is recorded and the run continues. (An operator-supplied entry, below, fails fast instead.)
+
+### Where it is read from
+
+| Review mode | Source |
+| --- | --- |
+| Local (`nickpit git ...`) | the working tree — an uncommitted edit takes effect on the next run |
+| GitHub PR | the **base** repository at the PR's base commit |
+| GitLab MR | the **target** project at the MR's `diff_refs.base_sha` |
+
+For pull and merge requests NickPit never reads this file from the change under review. On a fork PR/MR the head belongs to the contributor, so a file read from it would be attacker-controlled — a contributor could commit *"authentication findings are not applicable here"* and talk the security lane out of exactly the findings it exists to catch. Reading the base means only the target project's maintainers decide what the reviewers are told.
+
+That is not the whole defence, because a maintainer of the target project controls it too. The prompt therefore frames the context as a claim to weigh, not a fact, and states that it may calibrate a finding's reachability, severity and priority but must never remove one: an agent told a whole class of issue does not apply is instructed to report the issue anyway and say which stated context it weighed against.
+
+### Operator-supplied context
+
+Profiles can add their own entries — local files or HTTP(S) URLs using the same schema — applied **after** the repository's own file:
+
+```yaml
+profiles:
+  default:
+    project_context:
+      - ~/ops/billing-api-context.yaml
+```
+
+The repeatable `--project-context` flag adds more per run and, like `--styleguide`, **appends** to the profile's list rather than replacing it. Scalar fields from a later entry replace earlier ones, so an operator can correct what a repository claims about itself; list fields concatenate and dedupe, so adding one trust boundary does not mean restating the rest. A broken path, failed fetch, or malformed document aborts the run immediately.
+
+To distrust a repository's own file entirely while keeping your own entries:
+
+```yaml
+profiles:
+  default:
+    disable_project_context: true
+```
+
+or `--disable-project-context` per run.
+
+A dedupe or merge step can drop the block to buy back tokens, at the cost of judging without knowing what is reachable in production:
+
+```yaml
+  - type: dedupe
+    config:
+      context:
+        project_context: false
+```
+
+The GitLab webhook daemon needs no configuration for this: because the file lives in each reviewed repository, one daemon serving many projects gives each of them its own context.
 
 ## Usage
 

@@ -69,6 +69,8 @@ type Profile struct {
 	ExcludeContent            []string               `yaml:"exclude_content"`
 	StyleGuides               []model.StyleGuideSpec `yaml:"styleguides"`
 	DisableStyleGuides        []string               `yaml:"disable_styleguides"`
+	ProjectContext            []string               `yaml:"project_context"`
+	DisableProjectContext     bool                   `yaml:"disable_project_context"`
 	DiffFormat                model.DiffFormat       `yaml:"diff_format"`
 	MaxContextTokens          int                    `yaml:"max_context_tokens"`
 	MaxRequestBytes           int                    `yaml:"max_request_bytes"`
@@ -174,6 +176,8 @@ type Overrides struct {
 	// empty behave identically.
 	StyleGuides               []string
 	DisableStyleGuides        []string
+	ProjectContext            []string
+	DisableProjectContext     bool
 	DiffFormat                model.DiffFormat
 	MaxContextTokens          *int
 	MaxRequestBytes           *int
@@ -356,6 +360,7 @@ func cloneProfile(profile Profile) Profile {
 	profile.ExcludeContent = slices.Clone(profile.ExcludeContent)
 	profile.StyleGuides = slices.Clone(profile.StyleGuides)
 	profile.DisableStyleGuides = slices.Clone(profile.DisableStyleGuides)
+	profile.ProjectContext = slices.Clone(profile.ProjectContext)
 	return profile
 }
 
@@ -799,6 +804,9 @@ func applyEnv(cfg *Config, profileName string) error {
 	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
 		profile.Workdir = value
 	}
+	if value := strings.TrimSpace(os.Getenv("NICKPIT_PROJECT_CONTEXT")); value != "" {
+		profile.ProjectContext = append(slices.Clone(profile.ProjectContext), value)
+	}
 	if value := os.Getenv("NICKPIT_DIFF_FORMAT"); strings.TrimSpace(value) != "" {
 		profile.DiffFormat = model.DiffFormat(strings.TrimSpace(value))
 	}
@@ -922,6 +930,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.StyleGuides = append(profile.StyleGuides, model.StyleGuideSpec{Source: source})
 	}
 	profile.DisableStyleGuides = append(slices.Clone(profile.DisableStyleGuides), overrides.DisableStyleGuides...)
+	profile.ProjectContext = append(slices.Clone(profile.ProjectContext), overrides.ProjectContext...)
+	if overrides.DisableProjectContext {
+		profile.DisableProjectContext = true
+	}
 	if overrides.DiffFormat != "" {
 		profile.DiffFormat = overrides.DiffFormat
 	}
@@ -1149,6 +1161,11 @@ func normalizeProfile(profile Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.StyleGuides = styleGuides
+	projectContext, err := normalizeProjectContextSpecs(profile.ProjectContext)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.ProjectContext = projectContext
 	disabledStyleGuides, err := normalizeDisabledStyleGuideLanguages(profile.DisableStyleGuides)
 	if err != nil {
 		return Profile{}, err
@@ -1255,6 +1272,42 @@ func normalizeStyleGuideSpecs(specs []model.StyleGuideSpec) ([]model.StyleGuideS
 			}
 			if parsed.Host == "" {
 				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: missing host", i, spec.Source)
+			}
+		}
+		normalized = append(normalized, spec)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+// normalizeProjectContextSpecs trims, drops empties, dedupes (first occurrence
+// wins), and shape-validates URL sources. Like styleguides, whether a file
+// exists or a URL is fetchable is checked at resolution time, not here: config
+// load also runs for commands that never read project context.
+func normalizeProjectContextSpecs(specs []string) ([]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(specs))
+	seen := make(map[string]struct{}, len(specs))
+	for i, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		if _, ok := seen[spec]; ok {
+			continue
+		}
+		seen[spec] = struct{}{}
+		if styleGuideSpecIsURL(spec) {
+			parsed, err := url.Parse(spec)
+			if err != nil {
+				return nil, fmt.Errorf("config: project_context[%d] invalid URL %q: %w", i, spec, err)
+			}
+			if parsed.Host == "" {
+				return nil, fmt.Errorf("config: project_context[%d] invalid URL %q: missing host", i, spec)
 			}
 		}
 		normalized = append(normalized, spec)

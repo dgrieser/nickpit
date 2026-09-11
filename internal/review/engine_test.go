@@ -343,7 +343,7 @@ func TestReviewSystemPromptGatesSearchLocationGuidanceOnTools(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	template := "{{.FindingInstructionsSnippet}}"
 
-	withTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, true, "review", nil, false)
+	withTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, true, "review", nil, false, nil)
 	if err != nil {
 		t.Fatalf("renderReviewSystemWithFocus with tools returned err: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestReviewSystemPromptGatesSearchLocationGuidanceOnTools(t *testing.T) {
 		}
 	}
 
-	withoutTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false)
+	withoutTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false, nil)
 	if err != nil {
 		t.Fatalf("renderReviewSystemWithFocus without tools returned err: %v", err)
 	}
@@ -2881,7 +2881,7 @@ func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
 	}
 
-	if _, err := engine.callDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false); err != nil {
+	if _, err := engine.callDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false, nil); err != nil {
 		t.Fatalf("callDedupeAgent returned err: %v", err)
 	}
 	if len(llmClient.mergeRequests) != 1 {
@@ -3110,7 +3110,7 @@ func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false)
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want 1", len(llmClient.mergeRequests))
@@ -3206,7 +3206,7 @@ func TestClusterMergeReturnedRunMatchesPartialStepStatus(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false, nil)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1", len(runs))
@@ -3239,7 +3239,7 @@ func TestClusterMergeErrorMarksRunFailedAndKeepsFindings(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix beta issue", 13)}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1", len(runs))
@@ -3265,7 +3265,7 @@ func TestClusterMergeFoldsMechanicalDuplicatesWithoutLLM(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("merge requests = %d, want pure mechanical fold", len(llmClient.mergeRequests))
@@ -3289,7 +3289,7 @@ func TestClusterMergeDistinctFindingsPassThroughWithoutLLM(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("merge requests = %d, want none for distinct findings", len(llmClient.mergeRequests))
@@ -3315,7 +3315,7 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 		{name: "b.json", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
 	}
 
-	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(result.resp.Findings) != 2 {
 		t.Fatalf("findings = %d, want both preserved", len(result.resp.Findings))
@@ -3326,7 +3326,7 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 
 	// Explicit "patch is correct" alongside findings stays untouched.
 	inputs[0].response.OverallCorrectness = "patch is correct"
-	result, _ = engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, _ = engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 	if result.resp.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall correctness = %q, want explicit input verdict preserved", result.resp.OverallCorrectness)
 	}
@@ -3346,7 +3346,7 @@ func TestClusterMergeCrossFileTitleTwinsRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the cross-file cluster", len(llmClient.mergeRequests))
@@ -3379,7 +3379,7 @@ func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the related cross-file cluster", len(llmClient.mergeRequests))
@@ -3412,7 +3412,7 @@ func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the root-cause cross-file cluster", len(llmClient.mergeRequests))
@@ -3472,7 +3472,7 @@ func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.
 		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
 	}}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1 skipped run", len(runs))
@@ -3788,7 +3788,7 @@ func TestClusterMergeStripsMergedFromOnAccept(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
 		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
@@ -3824,7 +3824,7 @@ func TestClusterMergeRepairsMissingMergedFromWithoutRetry(t *testing.T) {
 		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one request with provenance repair and no retry", len(llmClient.mergeRequests))
@@ -3888,7 +3888,7 @@ func TestRunDedupeAgentsSelectsOneSuggestionWithLLM(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}}
 
-	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 {
 		t.Fatalf("requests/runs = %d/%d, want one dedupe agent", len(llmClient.mergeRequests), len(runs))
@@ -3914,7 +3914,7 @@ func TestClusterMergeSelectsOneSuggestionWithLLM(t *testing.T) {
 		{name: "B", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
 		t.Fatalf("requests/runs = %d/%+v, want one successful merge agent", len(llmClient.mergeRequests), runs)
@@ -3937,7 +3937,7 @@ func TestRunDedupeAgentsMechanicalPrePassSkipsLLMWhenReduced(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}}
 
-	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("LLM dedupe requests = %d, want 0 after mechanical fold to one", len(llmClient.mergeRequests))
@@ -3967,7 +3967,7 @@ func TestDedupeAgentAcceptsDedupedReviewerFindings(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false, nil)
 
 	if run.Status != model.AgentRunStatusOK {
 		t.Fatalf("dedupe status = %q, want ok: %s", run.Status, run.Error)
@@ -3993,7 +3993,7 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false, nil)
 
 	if resp != nil {
 		t.Fatalf("dedupe resp = %#v, want fallback/no replacement", resp)
@@ -4556,7 +4556,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "review", nil, false)
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "review", nil, false, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

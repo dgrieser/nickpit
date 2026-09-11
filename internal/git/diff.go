@@ -2,12 +2,16 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 // stableDiffContextLines pins how many context lines every patch nickpit reads
@@ -280,4 +284,50 @@ func localTitle(req model.ReviewRequest) string {
 
 func localDescription(req model.ReviewRequest) string {
 	return fmt.Sprintf("Local %s review generated from git diff.", req.Submode)
+}
+
+// ReadBaseFile implements model.BaseFileSource for local reviews.
+//
+// There is no fork to distrust here: the working tree is the user's own
+// repository. Reading the worktree rather than a committed revision is also the
+// better behavior locally — an uncommitted edit to the file takes effect on the
+// next run instead of requiring a commit first.
+func (s *LocalSource) ReadBaseFile(_ context.Context, _ model.ReviewRequest, path string) ([]byte, bool, error) {
+	if s.repoRoot == "" {
+		return nil, false, nil
+	}
+	// Jail the read to the repository even though every current caller passes a
+	// constant path, and follow it with the symlink check: a checked-out
+	// symlink pointing outside the root is lexically contained but still reads
+	// whatever it targets.
+	_, fullPath, err := repofs.ResolvePath(s.repoRoot, path)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := repofs.VerifyNoSymlinkEscape(s.repoRoot, fullPath); err != nil {
+		return nil, false, err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("git: %s is not a regular file", path)
+	}
+	file, err := os.Open(fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, model.MaxBaseFileBytes))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
 }

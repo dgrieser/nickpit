@@ -107,7 +107,7 @@ This document maps the production Go code. Test files live beside the code they 
 ## Git and SCM Integrations
 
 - `internal/git/git.go`: Git command wrapper and repository helpers.
-- `internal/git/diff.go`: Diff loading and changed-file extraction. Owns `patchArgs`/`stableDiffArgs`, the pinned `-U3` plus configuration-neutralizing flags every patch-emitting git invocation must use.
+- `internal/git/diff.go`: Diff loading and changed-file extraction. Owns `patchArgs`/`stableDiffArgs`, the pinned `-U3` plus configuration-neutralizing flags every patch-emitting git invocation must use, plus `LocalSource.ReadBaseFile` (repo-root-jailed, symlink-escape checked worktree read for project context).
 - `internal/git/parser.go`: Git diff parser and hunk model.
 - `internal/git/modes.go`: Git file-mode lookups: symlinks (with their blob names) in a given commit tree (`ls-tree`, literal pathspecs), post-change modes plus blob names from a `--raw` listing, and verbatim blob reads, so symlinks are recognized — and their targets recoverable — independently of how a worktree materialized them.
 - `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
@@ -115,14 +115,14 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring, plus reassembly of published reviews from the carrier markers on the PR's reviews, review comments, and issue comments (author-verified).
 - `internal/scm/github/client.go`: GitHub API client.
-- `internal/scm/github/pr.go`: Pull request loading and review source construction.
+- `internal/scm/github/pr.go`: Pull request loading and review source construction, plus `FetchBaseFile` (contents API against the base repository at `base.sha`).
 - `internal/scm/github/prlist.go`: Open pull requests of a repo as `model.OpenRequest` rows for the interactive picker, newest activity first with deterministic ties.
 - `internal/scm/github/position.go`: GitHub inline-comment position mapping.
 - `internal/scm/github/publish.go`: GitHub review/comment publishing.
 - `internal/scm/github/user.go`: Authenticated token owner lookup, used to verify carrier-marker authorship.
 - `internal/scm/gitlab/adapter.go`: GitLab adapter wiring.
 - `internal/scm/gitlab/client.go`: GitLab API client.
-- `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).
+- `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, live MR status (`FetchMRStatus`), and `FetchBaseFile` (repository-files API against the target project at `diff_refs.base_sha`).
 - `internal/scm/gitlab/mrlist.go`: Open merge requests of a project as `model.OpenRequest` rows for the interactive picker, newest activity first with deterministic ties.
 - `internal/scm/gitlab/project.go`: Project lookup (topics), current-user lookup, and award-emoji posting.
 - `internal/scm/gitlab/notes.go`: Note/discussion operations used by the serve daemon: plain MR notes, threaded replies, discussion listing, and root-note updates.
@@ -166,6 +166,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
 - `internal/filetype/language.go`: Unified file classification API (language detection, generated-file flags, trim eviction classes) backed by the mappings data.
 - `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
+- `internal/projectcontext/projectcontext.go`: Loads and merges the project's own description of how it is deployed and used. Reads the reviewed repository's `.nickpit/context.yaml` through `model.BaseFileSource` (always the base revision, so a fork cannot author it) and resolves operator entries from the profile or `--project-context`. Strict YAML decode (unknown keys are an error), 16 KiB cap; a malformed repo file warns, a malformed operator entry fails the run.
 - `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, the full message transcript, and archived review revisions; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
 - `internal/pick/pick.go`: Keyboard-driven single-choice list on a terminal (raw mode, in-place redraw, abort/no-items sentinels): the interactive counterpart of the `--id`/`--url`/`--base` selectors. Widths are display cells, not runes, so wide runes cannot wrap a row out of sync with the redraw.
 - `internal/pick/list.go`: The picker's pure state and rendering — cursor, scroll window, AND-term filter, column fitting, per-column and per-row colours, the selected row's pastel highlight, an anchored range (the span highlighted as one block, counted in the title line, with the filter cleared and frozen so nothing can hide inside it), and the full value of the current row in the title line — driven by keys and returning lines, so its behaviour is testable without a terminal. Its palette is the 256-colour message palette of `internal/logging/progress.go`, mirrored in `tools/print_colors.sh`.

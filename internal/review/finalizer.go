@@ -71,7 +71,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return in, model.AgentRun{}, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("finalize", styleGuides, len(reviewCtx.ToolchainVersions) > 0)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("finalize", styleGuides, len(reviewCtx.ToolchainVersions) > 0, reviewCtx.ProjectContext)
 	if err != nil {
 		return in, model.AgentRun{}, err
 	}

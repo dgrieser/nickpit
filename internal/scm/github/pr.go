@@ -2,7 +2,11 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -302,4 +306,75 @@ func normalizeCommits(in []commitResponse) []model.CommitSummary {
 		})
 	}
 	return out
+}
+
+// baseFileResponse is the subset of the contents API payload needed to read a
+// small text file.
+type baseFileResponse struct {
+	Type     string `json:"type"`
+	Encoding string `json:"encoding"`
+	Size     int    `json:"size"`
+	Content  string `json:"content"`
+}
+
+// FetchBaseFile reads path from the PR's BASE repository at the base commit.
+//
+// The base, never the head, is the point: for a fork PR the head repository
+// belongs to the contributor, so a file read from it is attacker-controlled.
+// The base commit SHA is preferred over the base branch name because it is
+// immutable and is what the reviewed diff is computed against; the branch name
+// is only a fallback for a payload that omits the SHA.
+func (c *Client) FetchBaseFile(ctx context.Context, repo string, number int, path string) ([]byte, bool, error) {
+	var pr prResponse
+	if err := c.Get(ctx, fmt.Sprintf("/repos/%s/pulls/%d", escapeRepo(repo), number), &pr); err != nil {
+		return nil, false, err
+	}
+	baseRepo := repo
+	if pr.Base.Repo != nil && pr.Base.Repo.FullName != "" {
+		baseRepo = pr.Base.Repo.FullName
+	}
+	ref := pr.Base.SHA
+	if ref == "" {
+		ref = pr.Base.Ref
+	}
+	if ref == "" {
+		return nil, false, nil
+	}
+	endpoint := fmt.Sprintf("/repos/%s/contents/%s?ref=%s", escapeRepo(baseRepo), escapePath(path), url.QueryEscape(ref))
+	var file baseFileResponse
+	if err := c.Get(ctx, endpoint, &file); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if file.Type != "file" {
+		return nil, false, fmt.Errorf("github: %s at %s is a %s, not a file", path, ref, file.Type)
+	}
+	if file.Size > model.MaxBaseFileBytes {
+		return nil, false, fmt.Errorf("github: %s at %s exceeds %d bytes", path, ref, model.MaxBaseFileBytes)
+	}
+	// GitHub serves anything over ~1 MiB with an empty body and encoding
+	// "none"; the size check above already rejects those, so any other encoding
+	// is an API change rather than a large file.
+	if file.Encoding != "base64" {
+		return nil, false, fmt.Errorf("github: %s at %s: unsupported content encoding %q", path, ref, file.Encoding)
+	}
+	// The payload is wrapped at 60 columns, which base64.StdEncoding rejects.
+	decoded, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(file.Content), ""))
+	if err != nil {
+		return nil, false, fmt.Errorf("github: decoding %s at %s: %w", path, ref, err)
+	}
+	return decoded, true, nil
+}
+
+// escapePath escapes a repository-relative path for a URL path segment list,
+// keeping the separators intact.
+func escapePath(path string) string {
+	parts := strings.Split(path, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.Join(parts, "/")
 }

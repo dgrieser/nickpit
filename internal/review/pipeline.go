@@ -36,6 +36,7 @@ type PipelineState struct {
 	contextNotes    string
 	styleGuides     []model.StyleGuide
 	hasToolchain    bool
+	projectContext  *model.ProjectContext
 	promptsReady    bool
 	diffFormat      model.DiffFormat
 

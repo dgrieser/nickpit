@@ -86,6 +86,12 @@ func TestCLIUpdatePublishesGitLabReviewWithoutMirroringChat(t *testing.T) {
 					write(map[string]any{"id": 7, "username": "nickpit"})
 					return
 				}
+				if strings.HasPrefix(r.URL.Path, "/api/v4/projects/g/p/repository/files/") {
+					// The engine probes the target project for .nickpit/context.yaml
+					// at the base SHA; this project declares none.
+					http.NotFound(w, r)
+					return
+				}
 				const base = "/api/v4/projects/g/p/merge_requests/1"
 				tail, ok := strings.CutPrefix(r.URL.Path, base)
 				if !ok {

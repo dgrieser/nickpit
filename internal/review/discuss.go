@@ -155,7 +155,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if err != nil {
 		return out, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("discuss", styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("discuss", styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0, req.ReviewCtx.ProjectContext)
 	if err != nil {
 		return out, err
 	}
