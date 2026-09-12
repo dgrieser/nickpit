@@ -444,8 +444,15 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			return nil
 		}
 		sess.Append(session.UserMessage(question))
+		// A review published by another user can be discussed but not
+		// corrected: the notes that carry it are theirs. Withholding the
+		// handler is what takes the tool out of the discussion.
+		var updateReview func(context.Context, review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error)
+		if !a.chatReviewReadOnly {
+			updateReview = updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question})
+		}
 		res, err := engine.Discuss(ctx, review.DiscussRequest{
-			UpdateReview:             updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question}),
+			UpdateReview:             updateReview,
 			ReviewCtx:                reviewCtx,
 			Result:                   sess.Result,
 			PinnedFindingID:          sess.PinnedFindingID,
@@ -515,6 +522,12 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 		}
 	}
 	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", textsan.StripControl(sess.ID))
+	if a.chatReviewReadOnly {
+		// Said once, up front: the reason a correction is not on offer is not
+		// something to discover by asking for one.
+		fmt.Fprintln(os.Stderr,
+			"This review was published by another user, so it can be discussed but not corrected from here.")
+	}
 	if sess.PinnedFindingID != "" {
 		if opener := review.DiscussOpener(sess.Result, sess.PinnedFindingID); opener != "" {
 			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
@@ -743,17 +756,28 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
 		return nil, err
 	}
-	read := adapter.ReviewResults
+	var (
+		reviews map[string]*model.ReviewResult
+		mine    map[string]bool
+		err2    error
+	)
 	if opts.anyMarkerAuthor {
-		read = adapter.ReviewResultsAnyAuthor
+		reviews, mine, err2 = adapter.ReviewResultsWithOwnership(ctx, project, mrID)
+	} else {
+		reviews, err2 = adapter.ReviewResults(ctx, project, mrID)
 	}
-	reviews, err := read(ctx, project, mrID)
-	if err != nil {
-		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
+	if err2 != nil {
+		return nil, fmt.Errorf("chat: reading MR reviews: %w", err2)
 	}
 	result, err := pickReview(reviews, opts.reviewID, "merge request")
 	if err != nil {
 		return nil, fmt.Errorf("chat: %w", err)
+	}
+	if opts.anyMarkerAuthor && !mine[result.ReviewID] {
+		// The notes that carry this review belong to another user, so nothing
+		// here can rewrite them: the correction tool is withheld rather than
+		// offered and then failing on the first turn that uses it.
+		a.chatReviewReadOnly = true
 	}
 	sess := session.New()
 	sess.Result = result

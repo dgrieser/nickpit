@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -961,5 +964,61 @@ func TestWithRequestCommentsKeepsTheProfileForOptionlessReviews(t *testing.T) {
 	}
 	if len(req.IncludePaths) != 1 || len(req.ExcludePaths) != 1 || req.MaxContextTokens != 4242 {
 		t.Fatalf("request = %+v, want the profile's own context options", req)
+	}
+}
+
+// A review published by another token can be read and discussed, but the notes
+// that carry it are theirs: a correction would reload it through the
+// author-restricted reader, fail to find it, and report that the original
+// review is not available. The tool is withheld instead.
+func TestChatWithheldCorrectionForAForeignReview(t *testing.T) {
+	mine := &model.ReviewResult{ReviewID: "r-mine", OverallCorrectness: "patch is correct"}
+	theirs := &model.ReviewResult{ReviewID: "r-theirs", OverallCorrectness: "patch is incorrect"}
+	render := reviewmd.NewRenderer("")
+	body := func(result *model.ReviewResult) string {
+		carried, ok := render.SummaryBodyCarried(result)
+		if !ok {
+			t.Fatal("the summary marker did not fit")
+		}
+		return carried
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/user") {
+			_, _ = w.Write([]byte(`{"id":909,"username":"ours"}`))
+			return
+		}
+		_, _ = fmt.Fprintf(w, `[{"id":1,"body":%q,"author":{"id":909,"username":"ours"}},
+			{"id":2,"body":%q,"author":{"id":324,"username":"another-bot"}}]`, body(mine), body(theirs))
+	}))
+	defer server.Close()
+
+	adapter := glscm.NewAdapter(glscm.NewClient(server.URL, "token"), "")
+	reviews, owned, err := adapter.ReviewResultsWithOwnership(context.Background(), "grp/proj", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both are readable; only one is ours.
+	if len(reviews) != 2 || !owned["r-mine"] || owned["r-theirs"] {
+		t.Fatalf("reviews = %v, owned = %v", reviews, owned)
+	}
+}
+
+func TestChatReadOnlyWithholdsTheUpdateHandler(t *testing.T) {
+	updates := &cliChatUpdates{completed: make(chan cliUpdateCompletion, 1)}
+	handler := updates.handler(cliUpdateInput{Result: &model.ReviewResult{ReviewID: "r"}})
+	if handler == nil {
+		t.Fatal("the correction tool is never built")
+	}
+	// What the discussion sees is nil for a read-only review, which is what
+	// takes the tool out of the prompt (review.DiscussRequest.UpdateReview).
+	for _, readOnly := range []bool{false, true} {
+		a := &app{chatReviewReadOnly: readOnly}
+		var offered func(context.Context, review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error)
+		if !a.chatReviewReadOnly {
+			offered = handler
+		}
+		if (offered == nil) != readOnly {
+			t.Fatalf("readOnly = %v, handler offered = %v", readOnly, offered != nil)
+		}
 	}
 }

@@ -270,6 +270,10 @@ type app struct {
 	// the row inside it; nil falls back to selectFn, which answers in the scope
 	// the list opened on.
 	selectViewFn func(opts pick.Options) (int, int, error)
+	// chatReviewReadOnly withholds the correction tool from a chat: the review
+	// under discussion was published by another user, whose notes carry it and
+	// which this token cannot rewrite. Set while the session is built.
+	chatReviewReadOnly bool
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time

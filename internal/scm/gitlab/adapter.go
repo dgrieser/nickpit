@@ -57,6 +57,34 @@ func (a *Adapter) ReviewResultsAnyAuthor(ctx context.Context, project string, ii
 	return a.reviewResults(ctx, project, iid, false)
 }
 
+// ReviewResultsWithOwnership reads the markers without the author check and
+// says which of the reviews this token published itself. A review it did not
+// publish can be read and discussed but never corrected: a correction rewrites
+// the notes that carry it, and those belong to another user. One pass over the
+// notes answers both questions, so the caller pays for a single fetch.
+func (a *Adapter) ReviewResultsWithOwnership(ctx context.Context, project string, iid int) (map[string]*model.ReviewResult, map[string]bool, error) {
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("gitlab: resolving token user for carrier verification: %w", err)
+	}
+	notes, err := a.client.MRNotes(ctx, project, iid)
+	if err != nil {
+		return nil, nil, err
+	}
+	var all, own []string
+	for _, note := range notes {
+		all = append(all, note.Body)
+		if note.AuthorID == user.ID {
+			own = append(own, note.Body)
+		}
+	}
+	mine := map[string]bool{}
+	for id := range reviewmd.ReviewResultsByID(own) {
+		mine[id] = true
+	}
+	return reviewmd.ReviewResultsByID(all), mine, nil
+}
+
 func (a *Adapter) reviewResults(ctx context.Context, project string, iid int, trustedOnly bool) (map[string]*model.ReviewResult, error) {
 	userID := 0
 	if trustedOnly {
