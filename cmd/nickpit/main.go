@@ -266,6 +266,14 @@ type app struct {
 	// selectRangeFn answers a range pick; nil falls back to selectFn, whose
 	// single row stands for a range of one.
 	selectRangeFn func(opts pick.Options) (int, int, error)
+	// selectViewFn answers a multi-scope pick with the scope it ended in and
+	// the row inside it; nil falls back to selectFn, which answers in the scope
+	// the list opened on.
+	selectViewFn func(opts pick.Options) (int, int, error)
+	// chatReviewReadOnly withholds the correction tool from a chat: the review
+	// under discussion was published by another user, whose notes carry it and
+	// which this token cannot rewrite. Set while the session is built.
+	chatReviewReadOnly bool
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -3131,11 +3139,18 @@ func writeHistoryNotes(note string, shallow, truncated bool) error {
 }
 
 func inferRepo() string {
+	return parseRepoFromRemoteURL(originRemoteURL())
+}
+
+// originRemoteURL is the origin remote of the current directory, empty outside
+// a checkout or where that remote does not exist. Its host says which platform
+// the project lives on.
+func originRemoteURL() string {
 	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
 	if err != nil {
 		return ""
 	}
-	return parseRepoFromRemoteURL(strings.TrimSpace(string(out)))
+	return strings.TrimSpace(string(out))
 }
 
 func parseRepoFromRemoteURL(raw string) string {

@@ -45,6 +45,11 @@ type Source struct {
 	HeadRef    string `json:"head_ref,omitempty"`
 	BaseURL    string `json:"base_url,omitempty"`
 	RepoRoot   string `json:"repo_root,omitempty"`
+	// Branch is the branch that was checked out when a local review ran. It is
+	// recorded for listings only — never for recreating the diff, which uses
+	// BaseRef/HeadRef — because a local review of the working tree names no
+	// refs at all and would otherwise be impossible to tell apart later.
+	Branch string `json:"branch,omitempty"`
 }
 
 // ContextOptions records the context-shaping options the review ran with, so a
@@ -278,17 +283,38 @@ func (s *Store) Load(id string) (*Session, error) {
 }
 
 // header is the lightweight prefix of a session file: enough for listing and
-// for Save's concurrency check without decoding the (potentially MB-scale)
-// cached context and transcript.
+// for Save's concurrency check without materializing the (potentially
+// MB-scale) cached context, findings and transcript. The arrays are decoded
+// into empty structs, so a listing pays for scanning them but not for keeping
+// them; Result is a pointer so a session that holds no review can be told from
+// one that does.
 type header struct {
 	Version  int    `json:"version"`
 	ID       string `json:"id"`
 	ReviewID string `json:"review_id"`
-	Source   struct {
-		Repo string `json:"repo"`
-	} `json:"source"`
-	PinnedFindingID string    `json:"pinned_finding_id"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Source   Source `json:"source"`
+	Model    string `json:"model"`
+	Profile  string `json:"profile"`
+	Result   *struct {
+		Revision uint64 `json:"revision"`
+		Findings []struct {
+			Title string `json:"title"`
+		} `json:"findings"`
+		OverallCorrectness string `json:"overall_correctness"`
+	} `json:"result"`
+	// Context is decoded down to the diff's two refs only. They are what a
+	// local review that recorded none in its source still knows: an uncommitted
+	// review's base ref is the branch it ran on.
+	Context *struct {
+		Repository struct {
+			BaseRef string `json:"base_ref"`
+			HeadRef string `json:"head_ref"`
+		} `json:"repository"`
+	} `json:"context"`
+	Messages        []struct{} `json:"messages"`
+	PinnedFindingID string     `json:"pinned_finding_id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // loadHeader decodes just the header fields of a session file.
@@ -479,14 +505,40 @@ func isSessionFileName(name string) bool {
 	return err == nil
 }
 
-// Info is a lightweight session listing entry.
+// Info is a lightweight session listing entry: what a picker or a listing can
+// show about a session without loading it.
 type Info struct {
-	ID              string
-	ReviewID        string
-	Repo            string
+	ID       string
+	ReviewID string
+	// Source is where the session's review came from, the same descriptor the
+	// session itself carries — repo, refs and MR/PR number, so a listing can be
+	// narrowed to the repository or the branch in front of the user.
+	Source          Source
+	Model           string
+	Profile         string
 	PinnedFindingID string
-	UpdatedAt       time.Time
+	// ContextBaseRef and ContextHeadRef are the refs the cached review context
+	// was built between. A local review records them nowhere else: its source
+	// carries no refs at all, while the context of an uncommitted review names
+	// the branch as its base and "uncommitted" as its head.
+	ContextBaseRef string
+	ContextHeadRef string
+	// HasResult reports whether the session holds a review at all; Findings and
+	// Messages count what it holds, and Headline is the first finding's title —
+	// what a listing can show to say what the review was about.
+	HasResult bool
+	Revision  uint64
+	Verdict   string
+	Findings  int
+	Headline  string
+	Messages  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
+
+// Repo is the session's repository, for the common case of a listing that only
+// needs to name it.
+func (i Info) Repo() string { return i.Source.Repo }
 
 // List returns known sessions, newest first. A missing directory yields an empty
 // list rather than an error.
@@ -514,13 +566,31 @@ func (s *Store) List() ([]Info, error) {
 		if err != nil || h.ID == "" {
 			continue // skip unreadable/corrupt/foreign files
 		}
-		infos = append(infos, Info{
+		info := Info{
 			ID:              h.ID,
 			ReviewID:        h.ReviewID,
-			Repo:            h.Source.Repo,
+			Source:          h.Source,
+			Model:           h.Model,
+			Profile:         h.Profile,
 			PinnedFindingID: h.PinnedFindingID,
+			Messages:        len(h.Messages),
+			CreatedAt:       h.CreatedAt,
 			UpdatedAt:       h.UpdatedAt,
-		})
+		}
+		if h.Context != nil {
+			info.ContextBaseRef = h.Context.Repository.BaseRef
+			info.ContextHeadRef = h.Context.Repository.HeadRef
+		}
+		if h.Result != nil {
+			info.HasResult = true
+			info.Revision = h.Result.Revision
+			info.Verdict = h.Result.OverallCorrectness
+			info.Findings = len(h.Result.Findings)
+			if info.Findings > 0 {
+				info.Headline = h.Result.Findings[0].Title
+			}
+		}
+		infos = append(infos, info)
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })
 	return infos, nil

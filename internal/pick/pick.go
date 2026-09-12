@@ -24,6 +24,15 @@ import (
 type Item struct {
 	Cells []string
 	Match string
+	// MatchFields is Match in several parts, each able to demand a minimum term
+	// length: a field a short term must not reach — an opaque id, where any two
+	// characters hit some row — sets MinTerm, and typing fewer characters then
+	// searches only the other fields. It replaces Match when set.
+	MatchFields []MatchField
+	// Key identifies the row across views: when the scope changes, the cursor
+	// stays on the row carrying the same key. Rows without one are matched by
+	// nothing, so the cursor falls back to the top of the new view.
+	Key string
 	// CellStyles overrides Options.CellStyles for this row, indexed like Cells:
 	// what makes one row's column stand out (the default branch, a person's
 	// colour, a timestamp from the last hour). "" falls back to the column's
@@ -33,6 +42,27 @@ type Item struct {
 	// the selected one: what a column had to shorten (a long branch name) is
 	// still readable somewhere, so the columns can stay narrow.
 	Detail string
+	// Details is Detail in several parts, each with its own colour: the title
+	// line joins them with the separator it uses everywhere else, so a header
+	// can name a row in the same colours its columns do. It replaces Detail
+	// when set.
+	Details []Field
+}
+
+// Field is one part of a row's Details: a value, the colour it carries, and
+// what it holds so the picker can paint inside it (a ref's separators fade, a
+// message's commit prefix is taken apart).
+type Field struct {
+	Text  string
+	Style string
+	Kind  ColumnKind
+}
+
+// MatchField is one searchable part of a row. MinTerm is the shortest term
+// that may search it: 0 lets every term through.
+type MatchField struct {
+	Text    string
+	MinTerm int
 }
 
 func (i Item) filterText() string {
@@ -42,17 +72,71 @@ func (i Item) filterText() string {
 	return strings.Join(i.Cells, " ")
 }
 
-// Options configures one selection.
-type Options struct {
-	// Title names what is being chosen; it stays visible above the rows.
+// fields are the row's searchable parts, lowered once so a filter can compare
+// against them on every keystroke without rebuilding them.
+func (i Item) fields() []MatchField {
+	if len(i.MatchFields) == 0 {
+		return []MatchField{{Text: strings.ToLower(i.filterText())}}
+	}
+	fields := make([]MatchField, 0, len(i.MatchFields))
+	for _, field := range i.MatchFields {
+		fields = append(fields, MatchField{Text: strings.ToLower(field.Text), MinTerm: field.MinTerm})
+	}
+	return fields
+}
+
+// View is one scope of a list that has several: its own rows, its own title,
+// and the label the switcher line names it by. Tab (or the right arrow) moves
+// to the next scope, Shift-Tab (or the left arrow) to the previous one, and
+// the filter survives the switch — so the same typed text can be looked for in
+// a wider set without retyping it.
+type View struct {
+	// Label names the scope in the switcher line ("branch", "repo", "all").
+	Label string
+	// Title replaces Options.Title while this view is shown; "" keeps it.
 	Title string
 	Items []Item
+	// Empty is the line drawn in place of the rows while this view holds none
+	// — what the scope's emptiness means is the caller's to word. "" uses a
+	// generic default.
+	Empty string
+	// Load supplies the rows the first time the scope is shown, for a scope
+	// whose rows cost something to produce (a network round trip). The list
+	// draws Loading in their place, runs Load once, and keeps what it returns;
+	// a failure is shown where the empty line would be, so one unreachable
+	// scope never takes the others down with it.
+	Load func() ([]Item, error)
+	// Loading is the line drawn while Load runs; "" uses a generic default.
+	Loading string
+}
+
+// Options configures one selection.
+type Options struct {
+	// Title names what is being chosen; it stays visible above the rows. With
+	// Views it is the fallback for a view that carries no title of its own.
+	Title string
+	Items []Item
+	// Views splits the list into scopes the user can switch between; it
+	// replaces Items. A single view behaves exactly like a plain list — the
+	// switcher line and its key are only drawn from two views on.
+	Views []View
+	// View is the scope the list opens on, an index into Views.
+	View int
 	// Initial is the row the cursor starts on. Out-of-range values start at the
 	// first row.
 	Initial int
 	// MaxVisible caps how many rows are drawn at once; 0 derives the cap from
 	// the terminal height.
 	MaxVisible int
+	// Hint replaces the key line under the list. A prompt with a handful of
+	// fixed rows has no use for the paging and filtering keys the default line
+	// names, and a nested prompt wants its own word for leaving.
+	Hint string
+	// DismissOnBackspace lets backspace on an empty filter leave the list, the
+	// way Esc does. It suits a prompt opened from another one, where backspace
+	// reads as "back"; a list that is the whole interaction leaves it off, so
+	// one press too many while clearing a filter cannot throw it away.
+	DismissOnBackspace bool
 	// CellStyles colours the columns, indexed like Item.Cells: one of the
 	// Style* codes, or "" to leave a column unstyled. Shorter than Cells is
 	// fine — the remaining columns stay unstyled.
@@ -117,8 +201,8 @@ func AuthorStyle(name string) string {
 	return authorStyles[digest.Sum32()%uint32(len(authorStyles))]
 }
 
-// ErrAborted reports that the list was dismissed (Esc, Ctrl-C, Ctrl-D, or
-// backspace on an empty filter) without a choice. Callers turn it into their
+// ErrAborted reports that the list was dismissed (Esc, Ctrl-C or Ctrl-D)
+// without a choice. Callers turn it into their
 // own "nothing selected" message rather than a failure.
 var ErrAborted = errors.New("selection aborted")
 
@@ -144,11 +228,26 @@ func Select(in, out *os.File, opts Options) (int, error) {
 // the rows are — first is the higher row, last the lower one. Without
 // Options.Range both results are the single chosen row.
 func SelectRange(in, out *os.File, opts Options) (int, int, error) {
-	if len(opts.Items) == 0 {
-		return -1, -1, ErrNoItems
+	_, first, last, err := run(in, out, opts)
+	return first, last, err
+}
+
+// SelectView is Select for a list of several scopes: it returns the view the
+// list ended in and the index into THAT view's items, since a scope switch
+// changes what the rows are. The initial scope is Options.View.
+func SelectView(in, out *os.File, opts Options) (int, int, error) {
+	view, first, _, err := run(in, out, opts)
+	return view, first, err
+}
+
+// run draws the list and reports the view it ended in together with the chosen
+// row (or range).
+func run(in, out *os.File, opts Options) (int, int, int, error) {
+	if totalItems(opts) == 0 {
+		return 0, -1, -1, ErrNoItems
 	}
 	if in == nil || out == nil || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
-		return -1, -1, ErrNotATerminal
+		return 0, -1, -1, ErrNotATerminal
 	}
 	_, height := terminalSize(out)
 	_, noColor := os.LookupEnv("NO_COLOR")
@@ -156,7 +255,7 @@ func SelectRange(in, out *os.File, opts Options) (int, int, error) {
 
 	previous, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
-		return -1, -1, fmt.Errorf("pick: switching the terminal to raw mode: %w", err)
+		return 0, -1, -1, fmt.Errorf("pick: switching the terminal to raw mode: %w", err)
 	}
 	screen := &renderer{w: out}
 	defer func() {
@@ -168,10 +267,29 @@ func SelectRange(in, out *os.File, opts Options) (int, int, error) {
 		_ = term.Restore(int(in.Fd()), previous)
 	}()
 	if _, err := io.WriteString(out, hideCursor); err != nil {
-		return -1, -1, err
+		return 0, -1, -1, err
 	}
 
-	return selectFrom(state, screen, func() (int, int) { return terminalSize(out) }, opts.MaxVisible, &fileInput{file: in})
+	first, last, err := selectFrom(state, screen, func() (int, int) { return terminalSize(out) }, opts.MaxVisible, &fileInput{file: in})
+	return state.view, first, last, err
+}
+
+// totalItems counts the rows a list holds across every scope: a list is only
+// empty when no scope has anything to choose from.
+func totalItems(opts Options) int {
+	if len(opts.Views) == 0 {
+		return len(opts.Items)
+	}
+	total := 0
+	for _, view := range opts.Views {
+		total += len(view.Items)
+		if view.Load != nil {
+			// A scope that has not fetched its rows yet may well have some; the
+			// list is only empty when nothing can appear in it at all.
+			total++
+		}
+	}
+	return total
 }
 
 // input is the picker's key source: one blocking read plus the short second
@@ -190,6 +308,12 @@ func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisibl
 		state.resize(maxVisible, height)
 		if err := screen.draw(state.render(width)); err != nil {
 			return -1, -1, err
+		}
+		if state.pending {
+			// The scope is on screen with its loading line; fetching now means
+			// the wait is visible instead of looking like a frozen key.
+			state.runPendingLoad()
+			continue
 		}
 		chunk, readErr := source.read()
 		pending = append(pending, chunk...)
@@ -320,6 +444,56 @@ func (r *renderer) moveToStart() string {
 		return "\r"
 	}
 	return fmt.Sprintf("\r\x1b[%dA", r.lines-1)
+}
+
+// DisplayWidth is how many terminal cells s occupies, which is what a caller
+// shortening a value before it reaches a column has to measure in.
+func DisplayWidth(s string) int { return displayWidth(s) }
+
+// Truncate shortens s to width display cells, marking the cut with an ellipsis
+// — the picker's own rule, exported so a caller that shortens a value itself
+// (to keep a part of it whole, or to share a budget between two parts) cuts it
+// the same way the columns do.
+func Truncate(s string, width int) string { return truncate(s, width) }
+
+// TruncateMiddle shortens s to width display cells by taking the cut out of its
+// middle, keeping both ends. It suits a value whose ends are what tell it
+// apart — a project name, a long identifier — where a tail cut would leave
+// every candidate looking the same.
+func TruncateMiddle(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if displayWidth(s) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	// One cell goes to the ellipsis; the remainder splits with the odd cell in
+	// front, since the head of a name carries more of it than the tail.
+	budget := width - 1
+	head, tail := (budget+1)/2, budget/2
+	runes := []rune(s)
+	front, used := 0, 0
+	for front < len(runes) {
+		cells := runewidth.RuneWidth(runes[front])
+		if used+cells > head {
+			break
+		}
+		used += cells
+		front++
+	}
+	back, used := len(runes), 0
+	for back > front {
+		cells := runewidth.RuneWidth(runes[back-1])
+		if used+cells > tail {
+			break
+		}
+		used += cells
+		back--
+	}
+	return string(runes[:front]) + "…" + string(runes[back:])
 }
 
 // displayWidth is how many terminal cells s occupies. Not its rune count: a CJK

@@ -48,6 +48,15 @@ type chatOptions struct {
 	replyMuteEmoji      string
 	replyCommandKeyword string
 	replySkipPhrases    []string
+	// withComments asks for the request's own discussion in the review context,
+	// whatever the review ran with: a chat started from a published review is
+	// about what has been said on the request as much as about the findings.
+	withComments bool
+	// anyMarkerAuthor reassembles the review from markers whoever wrote them,
+	// for a chat opened on a review this token did not publish (another group's
+	// bot, a colleague's run). Markers are forgeable, so this is only ever set
+	// by a caller that already listed the review that way.
+	anyMarkerAuthor bool
 }
 
 type chatUpdateExecution struct {
@@ -435,8 +444,15 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			return nil
 		}
 		sess.Append(session.UserMessage(question))
+		// A review published by another user can be discussed but not
+		// corrected: the notes that carry it are theirs. Withholding the
+		// handler is what takes the tool out of the discussion.
+		var updateReview func(context.Context, review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error)
+		if !a.chatReviewReadOnly {
+			updateReview = updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question})
+		}
 		res, err := engine.Discuss(ctx, review.DiscussRequest{
-			UpdateReview:             updates.handler(cliUpdateInput{Source: sess.Source, ContextOptions: sess.ContextOptions, Result: sess.Result, Messages: sess.Conversation(), Question: question}),
+			UpdateReview:             updateReview,
 			ReviewCtx:                reviewCtx,
 			Result:                   sess.Result,
 			PinnedFindingID:          sess.PinnedFindingID,
@@ -506,6 +522,12 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 		}
 	}
 	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", textsan.StripControl(sess.ID))
+	if a.chatReviewReadOnly {
+		// Said once, up front: the reason a correction is not on offer is not
+		// something to discover by asking for one.
+		fmt.Fprintln(os.Stderr,
+			"This review was published by another user, so it can be discussed but not corrected from here.")
+	}
 	if sess.PinnedFindingID != "" {
 		if opener := review.DiscussOpener(sess.Result, sess.PinnedFindingID); opener != "" {
 			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
@@ -662,7 +684,7 @@ func (a *app) resolveChatSession(ctx context.Context, store *session.Store, prof
 		sess, err := store.Load(opts.sessionID)
 		return sess, false, err
 	case opts.fromJSON != "":
-		sess, err := a.chatSessionFromJSON(opts)
+		sess, err := a.chatSessionFromJSON(ctx, opts)
 		return sess, true, err
 	case opts.gitlab:
 		sess, err := a.chatSessionFromGitLab(ctx, profile, opts)
@@ -682,7 +704,7 @@ func (a *app) resolveChatSession(ctx context.Context, store *session.Store, prof
 // chatSessionFromJSON builds a session from a saved review result. The result's
 // own metadata (mode, repo, refs) reconstructs the source so the diff can be
 // re-resolved at chat time.
-func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
+func (a *app) chatSessionFromJSON(ctx context.Context, opts chatOptions) (*session.Session, error) {
 	data, err := os.ReadFile(opts.fromJSON)
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading %s: %w", opts.fromJSON, err)
@@ -699,7 +721,7 @@ func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
 	// Present when the JSON came from an MR/PR-reassembled result; pipeline
 	// output leaves it nil and the current configuration applies.
 	sess.ContextOptions = result.ContextOptions
-	sess.Source = sourceFromResult(&result, opts.repoRoot)
+	sess.Source = describeLocalSource(ctx, sourceFromResult(&result, opts.repoRoot))
 	return sess, nil
 }
 
@@ -734,13 +756,28 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
 		return nil, err
 	}
-	reviews, err := adapter.ReviewResults(ctx, project, mrID)
-	if err != nil {
-		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
+	var (
+		reviews map[string]*model.ReviewResult
+		mine    map[string]bool
+		err2    error
+	)
+	if opts.anyMarkerAuthor {
+		reviews, mine, err2 = adapter.ReviewResultsWithOwnership(ctx, project, mrID)
+	} else {
+		reviews, err2 = adapter.ReviewResults(ctx, project, mrID)
+	}
+	if err2 != nil {
+		return nil, fmt.Errorf("chat: reading MR reviews: %w", err2)
 	}
 	result, err := pickReview(reviews, opts.reviewID, "merge request")
 	if err != nil {
 		return nil, fmt.Errorf("chat: %w", err)
+	}
+	if opts.anyMarkerAuthor && !mine[result.ReviewID] {
+		// The notes that carry this review belong to another user, so nothing
+		// here can rewrite them: the correction tool is withheld rather than
+		// offered and then failing on the first turn that uses it.
+		a.chatReviewReadOnly = true
 	}
 	sess := session.New()
 	sess.Result = result
@@ -753,6 +790,12 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	// written before the field existed — the current config is then the best
 	// available fallback.
 	sess.ContextOptions = result.ContextOptions
+	if opts.withComments {
+		sess.ContextOptions = withRequestComments(sess.ContextOptions)
+		// For a review that carried no options, the request is built from the
+		// current configuration, where this is the flag that asks for them.
+		a.includeComments = true
+	}
 	sess.Source = session.Source{
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
@@ -764,6 +807,28 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 		RepoRoot: opts.repoRoot,
 	}
 	return sess, nil
+}
+
+// withRequestComments turns the request's discussion on in a copy of the
+// review's context options, so the conversation on the MR reaches the chat
+// without the review's own envelope (which the result still points at) being
+// rewritten.
+//
+// A review published before context options were carried has none, and nil is
+// how a session says "use the current configuration": chatReviewRequest takes
+// any non-nil options as the whole truth, so returning a bare one here would
+// replace the profile's path and content filters, its commit and full-file
+// settings and its context budget with zeros — and could pull in files the
+// profile excludes. Nil therefore stays nil, and the caller asks for the
+// comments the way the command line does (a.includeComments), which is exactly
+// the branch chatReviewRequest takes for a session without options.
+func withRequestComments(opts *session.ContextOptions) *session.ContextOptions {
+	if opts == nil {
+		return nil
+	}
+	updated := *opts
+	updated.IncludeComments = true
+	return &updated
 }
 
 // pickReview selects one review from those reassembled on a merge/pull request,
@@ -1775,6 +1840,7 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 		BaseURL:    scmBaseURL,
 		RepoRoot:   repoRoot,
 	}
+	sess.Source = describeLocalSource(ctx, sess.Source)
 	if err := store.Save(sess); err != nil {
 		a.warnf("chat: could not save session (review will not be resumable with `nickpit chat`): %v", err)
 		return ""

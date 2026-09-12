@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -920,5 +923,102 @@ func TestPostChatReplyWithPolicyRevalidatesRequestedTarget(t *testing.T) {
 				t.Fatalf("reply posted to a suppressed target: reply=%q note=%q", c.replyBody, c.noteBody)
 			}
 		})
+	}
+}
+
+// A review published before context options were carried has none, and nil is
+// how a session says "use the current configuration". Asking for the request's
+// discussion must not turn that into a bare options object, which
+// chatReviewRequest would take as the whole truth — the profile's filters and
+// budget would be replaced with zeros.
+func TestWithRequestCommentsKeepsTheProfileForOptionlessReviews(t *testing.T) {
+	if got := withRequestComments(nil); got != nil {
+		t.Fatalf("options = %+v, want nil so the current configuration applies", got)
+	}
+	carried := &session.ContextOptions{
+		IncludePaths: []string{"internal/"}, ExcludePaths: []string{"vendor/"},
+		IncludeFullFiles: true, MaxContextTokens: 4242, DiffFormat: "git-json",
+	}
+	updated := withRequestComments(carried)
+	if !updated.IncludeComments {
+		t.Fatal("the discussion was not asked for")
+	}
+	if carried.IncludeComments {
+		t.Fatal("the review's own options were rewritten")
+	}
+	if len(updated.IncludePaths) != 1 || updated.MaxContextTokens != 4242 ||
+		updated.DiffFormat != "git-json" || !updated.IncludeFullFiles {
+		t.Fatalf("options = %+v, want the review's own kept", updated)
+	}
+
+	// The nil case reaches the same result through the request builder: the
+	// profile's filters survive and the comments are on.
+	a := &app{includeComments: true}
+	profile := config.Profile{
+		IncludePaths: []string{"internal/"}, ExcludePaths: []string{"vendor/"},
+		MaxContextTokens: 4242,
+	}
+	req := a.chatReviewRequest(profile, session.Source{Mode: "gitlab", Repo: "grp/proj", Identifier: 42}, nil)
+	if !req.IncludeComments {
+		t.Fatal("the discussion was not asked for")
+	}
+	if len(req.IncludePaths) != 1 || len(req.ExcludePaths) != 1 || req.MaxContextTokens != 4242 {
+		t.Fatalf("request = %+v, want the profile's own context options", req)
+	}
+}
+
+// A review published by another token can be read and discussed, but the notes
+// that carry it are theirs: a correction would reload it through the
+// author-restricted reader, fail to find it, and report that the original
+// review is not available. The tool is withheld instead.
+func TestChatWithheldCorrectionForAForeignReview(t *testing.T) {
+	mine := &model.ReviewResult{ReviewID: "r-mine", OverallCorrectness: "patch is correct"}
+	theirs := &model.ReviewResult{ReviewID: "r-theirs", OverallCorrectness: "patch is incorrect"}
+	render := reviewmd.NewRenderer("")
+	body := func(result *model.ReviewResult) string {
+		carried, ok := render.SummaryBodyCarried(result)
+		if !ok {
+			t.Fatal("the summary marker did not fit")
+		}
+		return carried
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/user") {
+			_, _ = w.Write([]byte(`{"id":909,"username":"ours"}`))
+			return
+		}
+		_, _ = fmt.Fprintf(w, `[{"id":1,"body":%q,"author":{"id":909,"username":"ours"}},
+			{"id":2,"body":%q,"author":{"id":324,"username":"another-bot"}}]`, body(mine), body(theirs))
+	}))
+	defer server.Close()
+
+	adapter := glscm.NewAdapter(glscm.NewClient(server.URL, "token"), "")
+	reviews, owned, err := adapter.ReviewResultsWithOwnership(context.Background(), "grp/proj", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both are readable; only one is ours.
+	if len(reviews) != 2 || !owned["r-mine"] || owned["r-theirs"] {
+		t.Fatalf("reviews = %v, owned = %v", reviews, owned)
+	}
+}
+
+func TestChatReadOnlyWithholdsTheUpdateHandler(t *testing.T) {
+	updates := &cliChatUpdates{completed: make(chan cliUpdateCompletion, 1)}
+	handler := updates.handler(cliUpdateInput{Result: &model.ReviewResult{ReviewID: "r"}})
+	if handler == nil {
+		t.Fatal("the correction tool is never built")
+	}
+	// What the discussion sees is nil for a read-only review, which is what
+	// takes the tool out of the prompt (review.DiscussRequest.UpdateReview).
+	for _, readOnly := range []bool{false, true} {
+		a := &app{chatReviewReadOnly: readOnly}
+		var offered func(context.Context, review.ReviewUpdateSignal) (review.ReviewUpdateToolResult, error)
+		if !a.chatReviewReadOnly {
+			offered = handler
+		}
+		if (offered == nil) != readOnly {
+			t.Fatalf("readOnly = %v, handler offered = %v", readOnly, offered != nil)
+		}
 	}
 }

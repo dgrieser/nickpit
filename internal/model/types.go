@@ -133,19 +133,22 @@ type ReviewResult struct {
 	// restores it, so a chat rebuilt from MR/PR markers recreates the SAME
 	// filtered context the review saw — never files the review deliberately
 	// withheld. Pipeline results emitted to stdout leave it nil.
-	ContextOptions         *ContextOptions `json:"context_options,omitempty"`
-	Findings               []Finding       `json:"findings"`
-	OverallCorrectness     string          `json:"overall_correctness"`
-	OverallExplanation     string          `json:"overall_explanation"`
-	OverallConfidenceScore float64         `json:"overall_confidence_score"`
-	AgentRuns              []AgentRun      `json:"agent_runs,omitempty"`
-	Warnings               []string        `json:"warnings,omitempty"`
-	TokensUsed             TokenUsage      `json:"tokens_used"`
-	CategorizeTokensUsed   TokenUsage      `json:"categorize_tokens_used"`
-	VerifyTokensUsed       TokenUsage      `json:"verify_tokens_used"`
-	FinalizeTokensUsed     TokenUsage      `json:"finalize_tokens_used"`
-	VerdictTokensUsed      TokenUsage      `json:"verdict_tokens_used"`
-	SummarizeTokensUsed    TokenUsage      `json:"summarize_tokens_used"`
+	ContextOptions     *ContextOptions `json:"context_options,omitempty"`
+	Findings           []Finding       `json:"findings"`
+	OverallCorrectness string          `json:"overall_correctness"`
+	OverallExplanation string          `json:"overall_explanation"`
+	// Replies are the answers the published summary's thread collected, the
+	// same display-only shape Finding.Replies has.
+	Replies                []Reply    `json:"replies,omitempty"`
+	OverallConfidenceScore float64    `json:"overall_confidence_score"`
+	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
+	Warnings               []string   `json:"warnings,omitempty"`
+	TokensUsed             TokenUsage `json:"tokens_used"`
+	CategorizeTokensUsed   TokenUsage `json:"categorize_tokens_used"`
+	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used"`
+	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used"`
+	VerdictTokensUsed      TokenUsage `json:"verdict_tokens_used"`
+	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used"`
 	// RuntimeSeconds is the whole review command span in seconds (model check,
 	// checkout, pipeline through summarize).
 	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
@@ -395,21 +398,35 @@ type CommitSummary struct {
 	Date    time.Time `json:"date"`
 }
 
+// Reply is one answer in a published review's thread — on the summary or on a
+// finding — as it is read back from the merge or pull request it was written
+// on. Author is the name a person is read by, not the account name.
+type Reply struct {
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
+	Body      string    `json:"body"`
+}
+
 type Finding struct {
 	Revision   uint64             `json:"revision,omitempty"`
 	Resolution *FindingResolution `json:"resolution,omitempty"`
 	// ID is required at serialization boundaries; regenerate legacy artifacts
 	// that predate UUID finding IDs.
-	ID              string                `json:"id"`
-	Title           string                `json:"title"`
-	Body            string                `json:"body"`
-	ConfidenceScore float64               `json:"confidence_score"`
-	Priority        *int                  `json:"priority,omitempty"`
-	CodeLocation    CodeLocation          `json:"code_location"`
-	Suggestions     []Suggestion          `json:"suggestions,omitempty"`
-	Verification    *FindingVerification  `json:"verification,omitempty"`
-	Finalization    *FindingFinalization  `json:"finalization,omitempty"`
-	Summarization   *FindingSummarization `json:"summarization,omitempty"`
+	ID              string       `json:"id"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	ConfidenceScore float64      `json:"confidence_score"`
+	Priority        *int         `json:"priority,omitempty"`
+	CodeLocation    CodeLocation `json:"code_location"`
+	Suggestions     []Suggestion `json:"suggestions,omitempty"`
+	// Replies are the answers this finding's published thread collected. They
+	// are display-only: a review that is produced, published or corrected never
+	// carries them, so they reach no carrier marker — only a reader that read
+	// them back off a merge or pull request sets them.
+	Replies       []Reply               `json:"replies,omitempty"`
+	Verification  *FindingVerification  `json:"verification,omitempty"`
+	Finalization  *FindingFinalization  `json:"finalization,omitempty"`
+	Summarization *FindingSummarization `json:"summarization,omitempty"`
 	// MergedFrom is merge-step provenance only: the ids of cluster findings
 	// absorbed into this one. Validation consumes it to detect silently
 	// dropped findings; the merge step strips it before findings leave the

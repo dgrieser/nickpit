@@ -49,7 +49,7 @@ const requestSelectNote = "the project comes from --repo or the git remote of th
 // requests over the API — only to fail there instead of reporting the missing
 // --id up front.
 func (a *app) interactiveSelect() bool {
-	if a.selectFn != nil || a.selectRangeFn != nil {
+	if a.selectFn != nil || a.selectRangeFn != nil || a.selectViewFn != nil {
 		return true
 	}
 	return isInteractiveTerminal(os.Stdin) && isInteractiveTerminal(os.Stderr)
@@ -85,6 +85,21 @@ func (a *app) selectRange(opts pick.Options) (int, int, error) {
 		return index, index, nil
 	}
 	return pick.SelectRange(os.Stdin, os.Stderr, opts)
+}
+
+// selectView draws a multi-scope list and returns the scope the user ended in
+// together with the chosen row inside that scope's items.
+func (a *app) selectView(opts pick.Options) (int, int, error) {
+	if a.selectViewFn != nil {
+		return a.selectViewFn(opts)
+	}
+	if a.selectFn != nil {
+		// A seam that answers with one row answers in the scope the list opened
+		// on, so a scoped prompt stays answerable without a terminal.
+		index, err := a.selectFn(opts)
+		return opts.View, index, err
+	}
+	return pick.SelectView(os.Stdin, os.Stderr, opts)
 }
 
 // requestTarget addresses one merge request or pull request. An ID of 0 means
@@ -718,7 +733,7 @@ func rowStyles(columns int, overrides map[int]string) []string {
 // picker's own header gave it, so the line reads as an aside to the run that
 // follows.
 func (a *app) printSelection(prefix, highlight, highlightStyle, suffix string) {
-	if a.selectFn != nil {
+	if a.selectFn != nil || a.selectViewFn != nil {
 		// A test seam replaces the terminal; there is nothing to confirm to.
 		return
 	}

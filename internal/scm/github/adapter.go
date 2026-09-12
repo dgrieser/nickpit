@@ -48,10 +48,26 @@ func (a *Adapter) ResolveCheckout(ctx context.Context, req model.ReviewRequest) 
 // (reviewed before carrier markers existed, or published by a different user
 // than this token's).
 func (a *Adapter) ReviewResults(ctx context.Context, repo string, number int) (map[string]*model.ReviewResult, error) {
-	user, err := a.client.CurrentUser(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("github: resolving token user for carrier verification: %w", err)
+	return a.reviewResults(ctx, repo, number, true)
+}
+
+// ReviewResultsAnyAuthor reads the same markers without the author check, for a
+// reader that has to see reviews this token did not publish — the GitHub twin
+// of the GitLab method, with the same trade-off: forgeable, so READ-ONLY use
+// only, while publishing and correcting keep the strict reader.
+func (a *Adapter) ReviewResultsAnyAuthor(ctx context.Context, repo string, number int) (map[string]*model.ReviewResult, error) {
+	return a.reviewResults(ctx, repo, number, false)
+}
+
+func (a *Adapter) reviewResults(ctx context.Context, repo string, number int, trustedOnly bool) (map[string]*model.ReviewResult, error) {
+	var user *User
+	if trustedOnly {
+		var err error
+		if user, err = a.client.CurrentUser(ctx); err != nil {
+			return nil, fmt.Errorf("github: resolving token user for carrier verification: %w", err)
+		}
 	}
+	mine := func(author userRef) bool { return !trustedOnly || ownedBy(author, user) }
 	escaped := escapeRepo(repo)
 	var bodies []string
 
@@ -60,7 +76,7 @@ func (a *Adapter) ReviewResults(ctx context.Context, repo string, number int) (m
 		return nil, err
 	}
 	for _, review := range reviews {
-		if ownedBy(review.User, user) {
+		if mine(review.User) {
 			bodies = append(bodies, review.Body)
 		}
 	}
@@ -69,7 +85,7 @@ func (a *Adapter) ReviewResults(ctx context.Context, repo string, number int) (m
 		return nil, err
 	}
 	for _, comment := range comments {
-		if ownedBy(comment.User, user) {
+		if mine(comment.User) {
 			bodies = append(bodies, comment.Body)
 		}
 	}
@@ -78,7 +94,7 @@ func (a *Adapter) ReviewResults(ctx context.Context, repo string, number int) (m
 		return nil, err
 	}
 	for _, comment := range issueComments {
-		if ownedBy(comment.User, user) {
+		if mine(comment.User) {
 			bodies = append(bodies, comment.Body)
 		}
 	}

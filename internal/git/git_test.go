@@ -189,3 +189,57 @@ func TestTopLevelResolvesTheWorkingTreeRoot(t *testing.T) {
 		t.Fatal("TopLevel reported a working tree outside any repository")
 	}
 }
+
+func TestWhereFoldsWorktreesOntoOneRepository(t *testing.T) {
+	root := newRealRepo(t, 1024)
+	sub := filepath.Join(root, "cmd", "nickpit")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	main, ok := Where(ctx, sub)
+	if !ok {
+		t.Fatal("Where reported nothing for a subdirectory of a repository")
+	}
+	if resolve(t, main.Root) != resolve(t, root) {
+		t.Fatalf("Root = %q, want the working tree %q", main.Root, root)
+	}
+	if !filepath.IsAbs(main.Repo) {
+		t.Fatalf("Repo = %q, want an absolute git directory", main.Repo)
+	}
+
+	// A linked worktree is a different working tree of the SAME repository,
+	// which is what lets a listing fold both onto one repository.
+	linked := filepath.Join(t.TempDir(), "wt")
+	if _, err := (ExecRunner{RepoRoot: root}).Run(ctx, "worktree", "add", "--quiet", "-b", "feat/x", linked); err != nil {
+		t.Fatalf("git worktree add: %v", err)
+	}
+	other, ok := Where(ctx, linked)
+	if !ok {
+		t.Fatal("Where reported nothing for a linked worktree")
+	}
+	if resolve(t, other.Root) == resolve(t, main.Root) {
+		t.Fatalf("Root = %q, want the worktree's own working tree", other.Root)
+	}
+	if resolve(t, other.Repo) != resolve(t, main.Repo) {
+		t.Fatalf("Repo = %q, want the repository of the clone %q", other.Repo, main.Repo)
+	}
+
+	if _, ok := Where(ctx, t.TempDir()); ok {
+		t.Fatal("Where reported a checkout outside any repository")
+	}
+	if _, ok := Where(ctx, filepath.Join(root, "gone")); ok {
+		t.Fatal("Where reported a checkout for a directory that does not exist")
+	}
+}
+
+// resolve normalizes a path the way git reports it (macOS temp dirs are
+// symlinked).
+func resolve(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}

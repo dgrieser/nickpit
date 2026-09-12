@@ -41,9 +41,58 @@ func (a *Adapter) Client() *Client { return a.client }
 // markers existed, or the reviews were posted by a different user than this
 // token's).
 func (a *Adapter) ReviewResults(ctx context.Context, project string, iid int) (map[string]*model.ReviewResult, error) {
+	return a.reviewResults(ctx, project, iid, true)
+}
+
+// ReviewResultsAnyAuthor reads the same markers without the author check, for a
+// reader that has to see reviews this token did not publish: a project reviewed
+// by another group's bot, or by a colleague's token, carries markers no local
+// token can claim, and refusing them would show nothing at all.
+//
+// The trade-off is the one the author check exists for — anyone who can comment
+// on the request can forge a marker, and what comes back is then their text —
+// so this is for READ-ONLY use (listing and printing what a request carries).
+// Publishing and correcting keep the strict reader.
+func (a *Adapter) ReviewResultsAnyAuthor(ctx context.Context, project string, iid int) (map[string]*model.ReviewResult, error) {
+	return a.reviewResults(ctx, project, iid, false)
+}
+
+// ReviewResultsWithOwnership reads the markers without the author check and
+// says which of the reviews this token published itself. A review it did not
+// publish can be read and discussed but never corrected: a correction rewrites
+// the notes that carry it, and those belong to another user. One pass over the
+// notes answers both questions, so the caller pays for a single fetch.
+func (a *Adapter) ReviewResultsWithOwnership(ctx context.Context, project string, iid int) (map[string]*model.ReviewResult, map[string]bool, error) {
 	user, err := a.client.CurrentUser(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("gitlab: resolving token user for carrier verification: %w", err)
+		return nil, nil, fmt.Errorf("gitlab: resolving token user for carrier verification: %w", err)
+	}
+	notes, err := a.client.MRNotes(ctx, project, iid)
+	if err != nil {
+		return nil, nil, err
+	}
+	var all, own []string
+	for _, note := range notes {
+		all = append(all, note.Body)
+		if note.AuthorID == user.ID {
+			own = append(own, note.Body)
+		}
+	}
+	mine := map[string]bool{}
+	for id := range reviewmd.ReviewResultsByID(own) {
+		mine[id] = true
+	}
+	return reviewmd.ReviewResultsByID(all), mine, nil
+}
+
+func (a *Adapter) reviewResults(ctx context.Context, project string, iid int, trustedOnly bool) (map[string]*model.ReviewResult, error) {
+	userID := 0
+	if trustedOnly {
+		user, err := a.client.CurrentUser(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("gitlab: resolving token user for carrier verification: %w", err)
+		}
+		userID = user.ID
 	}
 	notes, err := a.client.MRNotes(ctx, project, iid)
 	if err != nil {
@@ -51,7 +100,7 @@ func (a *Adapter) ReviewResults(ctx context.Context, project string, iid int) (m
 	}
 	var bodies []string
 	for _, note := range notes {
-		if note.AuthorID == user.ID {
+		if !trustedOnly || note.AuthorID == userID {
 			bodies = append(bodies, note.Body)
 		}
 	}

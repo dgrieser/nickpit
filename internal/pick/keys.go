@@ -19,6 +19,8 @@ const (
 	keyEnter
 	keyBackspace
 	keyClearFilter
+	keyNextView
+	keyPrevView
 	keyAbort
 )
 
@@ -56,6 +58,8 @@ func decode(buf []byte, more bool) (key, int) {
 		return key{kind: keyUp}, 1
 	case 0x15: // Ctrl-U
 		return key{kind: keyClearFilter}, 1
+	case 0x09: // Tab
+		return key{kind: keyNextView}, 1
 	}
 	if buf[0] < 0x20 {
 		return key{}, 1
@@ -71,9 +75,9 @@ func decode(buf []byte, more bool) (key, int) {
 	return key{kind: keyRune, rune: r}, size
 }
 
-// decodeEscape decodes the CSI and SS3 sequences the arrow, paging and
-// home/end keys emit; anything else escape-introduced is consumed and ignored
-// so an unknown sequence cannot leak into the filter as text.
+// decodeEscape decodes the CSI and SS3 sequences the arrow, paging, home/end
+// and Shift-Tab keys emit; anything else escape-introduced is consumed and
+// ignored so an unknown sequence cannot leak into the filter as text.
 func decodeEscape(buf []byte, more bool) (key, int) {
 	if len(buf) == 1 {
 		if more {
@@ -104,6 +108,12 @@ func decodeEscape(buf []byte, more bool) (key, int) {
 		return key{kind: keyUp}, consumed
 	case 'B':
 		return key{kind: keyDown}, consumed
+	case 'C':
+		return key{kind: keyNextView}, consumed
+	case 'D':
+		return key{kind: keyPrevView}, consumed
+	case 'Z': // Shift-Tab
+		return key{kind: keyPrevView}, consumed
 	case 'H':
 		return key{kind: keyHome}, consumed
 	case 'F':

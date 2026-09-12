@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,5 +137,42 @@ func TestReviewResultsFailsWhenTokenUserIsUnknown(t *testing.T) {
 	_, err := adapter.ReviewResults(context.Background(), "owner/repo", 123)
 	if err == nil || !strings.Contains(err.Error(), "resolving token user") {
 		t.Fatalf("error = %v, want a token-user failure", err)
+	}
+}
+
+// The GitHub twin of the GitLab test: markers published by another account are
+// refused by the strict reader and shown by the read-only one.
+func TestReviewResultsAnyAuthorReadsForeignMarkers(t *testing.T) {
+	result := &model.ReviewResult{ReviewID: "r-1", OverallCorrectness: "patch is correct"}
+	body, ok := reviewmd.NewRenderer("").SummaryBodyCarried(result)
+	if !ok {
+		t.Fatal("the summary marker did not fit")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/user"):
+			_, _ = w.Write([]byte(`{"login":"mine"}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/17/comments"):
+			_, _ = fmt.Fprintf(w, `[{"body":%q,"user":{"login":"someone-else"}}]`, body)
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(NewClient(server.URL, "token"), "")
+	strict, err := adapter.ReviewResults(context.Background(), "owner/repo", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strict) != 0 {
+		t.Fatalf("strict read = %v, want the foreign markers refused", strict)
+	}
+	any, err := adapter.ReviewResultsAnyAuthor(context.Background(), "owner/repo", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(any) != 1 || any["r-1"] == nil {
+		t.Fatalf("read = %v, want the published review", any)
 	}
 }

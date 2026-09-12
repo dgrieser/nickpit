@@ -76,7 +76,21 @@ const (
 	// KindRef is a branch, ref or path: its "/" and ":" separators fade back,
 	// exactly as a progress line renders "repo @ head → base".
 	KindRef
+	// KindRefNote is a ref carrying a trailing parenthetical — "feat/x
+	// (uncommitted)": the ref is painted as one and the note recedes, so the
+	// qualifier does not read as part of the name.
+	KindRefNote
 )
+
+// StyleNote is the light grey a trailing parenthetical recedes into
+// (progressColorLightGrey), the tone the pick confirmation line is set in.
+const StyleNote = "38;5;252"
+
+// reTrailingNote matches the " (…)" a ref may end on. It is anchored at the
+// end, so a parenthesis inside the value itself is left alone — and it allows
+// the padding a column adds after the note, without which only the widest row
+// of a column would have its note painted at all.
+var reTrailingNote = regexp.MustCompile(`\s+\([^()]*\)\s*$`)
 
 // cellSegments paints one cell according to what the column holds.
 func cellSegments(kind ColumnKind, text, base string) []segment {
@@ -85,6 +99,8 @@ func cellSegments(kind ColumnKind, text, base string) []segment {
 		return messageSegments(text, base)
 	case KindRef:
 		return refSegments(text, base)
+	case KindRefNote:
+		return refNoteSegments(text, base)
 	default:
 		return []segment{{text, base}}
 	}
@@ -115,6 +131,18 @@ func refSegments(text, base string) []segment {
 		segments = append(segments, segment{text[part:], base})
 	}
 	return segments
+}
+
+// refNoteSegments paints a ref that ends on a parenthetical: the ref by its own
+// rule, the note in light grey. A cell the column had to cut short loses its
+// closing parenthesis and is then painted as a plain ref, which is what a
+// half-visible note should look like.
+func refNoteSegments(text, base string) []segment {
+	loc := reTrailingNote.FindStringIndex(text)
+	if loc == nil {
+		return refSegments(text, base)
+	}
+	return append(refSegments(text[:loc[0]], base), segment{text[loc[0]:], StyleNote})
 }
 
 // messageSegments splits a message into its conventional-commit prefix and the

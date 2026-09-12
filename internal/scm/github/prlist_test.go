@@ -104,3 +104,26 @@ func TestListOpenPRsAPIError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// ListPRs is the same listing over every state, for a caller reading what was
+// published on a request rather than looking for one to review.
+func TestListPRsAsksForEveryState(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`[{"number":7,"title":"merged work","updated_at":"2026-09-01T10:00:00Z",
+			"user":{"login":"bob"},"head":{"ref":"feat/x"},"base":{"ref":"main"}}]`))
+	}))
+	defer server.Close()
+
+	requests, err := NewClient(server.URL, "token").ListPRs(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "state=all") {
+		t.Fatalf("query = %q, want every state", gotQuery)
+	}
+	if len(requests) != 1 || requests[0].Identifier != 7 {
+		t.Fatalf("requests = %+v", requests)
+	}
+}

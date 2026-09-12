@@ -108,3 +108,26 @@ func TestListOpenMRsAPIError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// ListMRs is the same listing over every state, for a caller reading what was
+// published on a request rather than looking for one to review.
+func TestListMRsAsksForEveryState(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`[{"iid":9,"title":"merged work","updated_at":"2026-09-01T10:00:00Z",
+			"author":{"username":"bob"},"source_branch":"feat/x","target_branch":"main"}]`))
+	}))
+	defer server.Close()
+
+	requests, err := NewClient(server.URL, "token").ListMRs(context.Background(), "grp/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "state=all") {
+		t.Fatalf("query = %q, want every state", gotQuery)
+	}
+	if len(requests) != 1 || requests[0].Identifier != 9 {
+		t.Fatalf("requests = %+v", requests)
+	}
+}
