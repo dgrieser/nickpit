@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // CreateMRNote posts a top-level comment on a merge request.
@@ -57,11 +58,13 @@ type MRDiscussion struct {
 // and authors. It is used to find bot-authored visible review roots.
 func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]MRDiscussion, error) {
 	type noteJSON struct {
-		ID     int    `json:"id"`
-		Body   string `json:"body"`
-		System bool   `json:"system"`
-		Author struct {
+		ID        int       `json:"id"`
+		Body      string    `json:"body"`
+		System    bool      `json:"system"`
+		CreatedAt time.Time `json:"created_at"`
+		Author    struct {
 			Username string `json:"username"`
+			Name     string `json:"name"`
 			ID       int    `json:"id"`
 		} `json:"author"`
 	}
@@ -78,8 +81,8 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 		item := MRDiscussion{ID: discussion.ID, Notes: make([]DiscussionNote, 0, len(discussion.Notes))}
 		for _, note := range discussion.Notes {
 			item.Notes = append(item.Notes, DiscussionNote{
-				ID: note.ID, Body: note.Body, System: note.System,
-				AuthorName: note.Author.Username, AuthorID: note.Author.ID,
+				ID: note.ID, Body: note.Body, System: note.System, CreatedAt: note.CreatedAt,
+				AuthorName: note.Author.Username, AuthorDisplay: note.Author.Name, AuthorID: note.Author.ID,
 			})
 		}
 		out = append(out, item)
@@ -178,6 +181,11 @@ type DiscussionNote struct {
 	AnsweredNoteID int
 	Body           string
 	System         bool
-	AuthorName     string
-	AuthorID       int
+	// AuthorName is the username a reply is addressed by (@mentions), and
+	// AuthorDisplay the name a person is READ by — a bot account's username is
+	// a hash, so anything shown to a human uses the display name.
+	AuthorName    string
+	AuthorDisplay string
+	AuthorID      int
+	CreatedAt     time.Time
 }

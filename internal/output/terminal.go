@@ -146,6 +146,20 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 		b.WriteString(f.renderMarkdown(explanation))
 		b.WriteString("\n")
 	}
+	f.writeReplies(b, result.Replies)
+}
+
+// writeReplies renders the answers a published thread collected, as the
+// messages they are: who wrote it and when, then what they wrote, each one
+// quoted so a long answer reads as somebody else's voice rather than as more
+// review text. Nothing is written for a thread nobody answered.
+func (f *TerminalFormatter) writeReplies(b *strings.Builder, replies []model.Reply) {
+	if len(replies) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(f.renderMarkdown(repliesMarkdown(replies)))
+	b.WriteString("\n")
 }
 
 // writeFinding renders one finding comment: badge, location, and the
@@ -159,6 +173,7 @@ func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Findi
 		b.WriteString("\n\n")
 		b.WriteString(f.renderMarkdown(textsan.StripControl(finding.Resolution.Reason)))
 		b.WriteString("\n")
+		f.writeReplies(b, finding.Replies)
 		return
 	}
 
@@ -169,6 +184,9 @@ func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Findi
 	b.WriteString("\n\n")
 	b.WriteString(f.renderMarkdown(findingMarkdown(finding)))
 	b.WriteString("\n")
+	// After the suggestions, not before: an answer is about the finding AND
+	// what was proposed for it.
+	f.writeReplies(b, finding.Replies)
 }
 
 func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.ReviewResult) {
@@ -277,6 +295,33 @@ func findingLocation(finding model.Finding) string {
 // title heading, body, and the suggestions block. Markers and hard breaks are
 // publishing concerns and are deliberately absent; the renderer wraps at a
 // known width.
+// repliesMarkdown lays a thread out as chat messages: a heading line naming the
+// writer and the time, and the answer itself quoted under it. Every line of the
+// answer is quoted, so a multi-line one stays inside its message.
+func repliesMarkdown(replies []model.Reply) string {
+	var b strings.Builder
+	b.WriteString("**Replies**\n")
+	for _, reply := range replies {
+		body := textsan.StripControl(strings.TrimSpace(reply.Body))
+		if body == "" {
+			continue
+		}
+		author := textsan.StripControl(strings.TrimSpace(reply.Author))
+		if author == "" {
+			author = "unknown"
+		}
+		header := "**" + author + "**"
+		if !reply.CreatedAt.IsZero() {
+			header += " · " + reply.CreatedAt.Local().Format("2006-01-02 15:04")
+		}
+		b.WriteString("\n> " + header + "\n>\n")
+		for line := range strings.SplitSeq(body, "\n") {
+			b.WriteString("> " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
 func findingMarkdown(finding model.Finding) string {
 	title, body, _, _ := reviewmd.FindingDisplay(finding)
 	var b strings.Builder

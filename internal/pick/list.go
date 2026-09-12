@@ -38,6 +38,10 @@ const (
 	// family.
 	styleCursorRow  = "48;2;69;56;86"
 	styleCursorMark = "1;38;5;255"
+	// styleViewActive picks the current scope out of the status line: the same
+	// pale lavender the text column wears, bold, against the dark grey of the
+	// scopes the user could switch to.
+	styleViewActive = "1;38;5;189"
 )
 
 // Cell styles a caller assigns to its columns via Options.CellStyles. Same
@@ -57,9 +61,12 @@ const (
 	// column when it just changed (progressColorBoolGreen).
 	StyleAge   = "38;5;244"
 	StyleFresh = "38;5;156"
-	// StyleCaveat marks a qualifier such as a draft request
-	// (progressColorWarnYellow).
+	// StyleCaveat marks a qualifier such as a draft request, or a value that
+	// needs a second look (progressColorWarnYellow).
 	StyleCaveat = "38;5;221"
+	// StyleError marks a value that reports a failure — a verdict of incorrect,
+	// the same thing the review output badges red (progressColorErrorRed).
+	StyleError = "38;5;203"
 	// StyleDefaultRef marks the repository's default branch — the only ref
 	// coloured in a branch list (progressColorBranchToAquaGreen).
 	StyleDefaultRef = "38;5;48"
@@ -98,9 +105,16 @@ const (
 // keys go in through apply, lines come out of render — so the behaviour is
 // testable without a terminal.
 type list struct {
-	items  []Item
-	title  string
-	widths []int
+	// views are the scopes the list can show; a plain list is one view. items,
+	// title and widths always belong to the one on screen.
+	views []View
+	view  int
+	items []Item
+	// title is the current view's title and fallback the one Options supplied,
+	// used by every view that names none.
+	title    string
+	fallback string
+	widths   []int
 	// cellStyles holds the caller's per-column SGR codes, indexed like Cells.
 	cellStyles  []string
 	kinds       []ColumnKind
@@ -113,7 +127,20 @@ type list struct {
 	// summary counts.
 	rangeMode bool
 	unit      string
+	// keyLine replaces the hint when the caller supplied one, and
+	// dismissOnBackspace makes backspace a way out of a nested prompt.
+	keyLine            string
+	dismissOnBackspace bool
+	// loaded marks the scopes whose Load has run, failures marks the ones it
+	// failed for, and pending says a scope is waiting to be loaded — the draw
+	// loop runs it after the "loading" line is on screen, never before.
+	loaded   []bool
+	failures []string
+	pending  bool
 
+	// fields are the searchable parts of every item of the current view,
+	// lowered once at load so a keystroke only compares.
+	fields  [][]MatchField
 	filter  []rune
 	matches []int
 	cursor  int
@@ -123,24 +150,33 @@ type list struct {
 }
 
 func newList(opts Options, height int, color bool) *list {
+	views := opts.Views
+	if len(views) == 0 {
+		views = []View{{Items: opts.Items}}
+	}
 	l := &list{
-		items:       opts.Items,
-		title:       opts.Title,
-		widths:      columnWidths(opts.Items),
-		cellStyles:  opts.CellStyles,
-		kinds:       opts.ColumnKinds,
-		detailStyle: firstStyle(opts.DetailStyle, StyleDetail),
-		priorities:  opts.ColumnPriority,
-		rangeMode:   opts.Range,
-		unit:        opts.RangeUnit,
-		anchor:      -1,
-		color:       color,
-		visible:     visibleRows(opts.MaxVisible, height),
+		views:              views,
+		fallback:           opts.Title,
+		cellStyles:         opts.CellStyles,
+		kinds:              opts.ColumnKinds,
+		detailStyle:        firstNonEmpty(opts.DetailStyle, StyleDetail),
+		priorities:         opts.ColumnPriority,
+		rangeMode:          opts.Range,
+		unit:               opts.RangeUnit,
+		keyLine:            opts.Hint,
+		dismissOnBackspace: opts.DismissOnBackspace,
+		anchor:             -1,
+		color:              color,
 	}
-	l.matches = make([]int, len(l.items))
-	for i := range l.items {
-		l.matches[i] = i
+	l.loaded = make([]bool, len(views))
+	l.failures = make([]string, len(views))
+	l.view = opts.View
+	if l.view < 0 || l.view >= len(l.views) {
+		l.view = 0
 	}
+	l.pending = l.needsLoad()
+	l.loadView("")
+	l.visible = visibleRows(opts.MaxVisible, height, l.chrome())
 	l.cursor = opts.Initial
 	if l.cursor < 0 || l.cursor >= len(l.matches) {
 		l.cursor = 0
@@ -149,13 +185,94 @@ func newList(opts Options, height int, color bool) *list {
 	return l
 }
 
-// visibleRows leaves room for the title, the filter line, and the hint line so
-// the whole block fits on screen: a block taller than the terminal would
-// scroll, and the cursor-up redraw would then repaint the wrong lines.
-func visibleRows(maxVisible, height int) int {
+// loadView makes the current scope the one on screen: its rows, its title and
+// its column widths. The filter carries over — the same typed text in a wider
+// scope is what switching is for — and the cursor lands on the row carrying
+// key, which the caller read before the scope changed, or at the top when that
+// row is not in this scope.
+func (l *list) loadView(key string) {
+	view := l.views[l.view]
+	l.items = view.Items
+	l.title = firstNonEmpty(view.Title, l.fallback)
+	l.widths = columnWidths(view.Items)
+	l.fields = make([][]MatchField, len(view.Items))
+	for i, item := range view.Items {
+		l.fields[i] = item.fields()
+	}
+	l.cursor, l.top = 0, 0
+	l.applyFilter()
+	if key == "" {
+		return
+	}
+	for position, index := range l.matches {
+		if l.items[index].Key == key {
+			l.cursor = position
+			break
+		}
+	}
+	l.scrollToCursor()
+}
+
+// switchView moves delta scopes along, wrapping at both ends. It does nothing
+// while a range is open (the visible set is frozen there) or when there is only
+// one scope.
+func (l *list) switchView(delta int) {
+	if len(l.views) < 2 || l.anchor >= 0 {
+		return
+	}
+	key := ""
+	if index := l.selected(); index >= 0 {
+		key = l.items[index].Key
+	}
+	l.view = (l.view + delta + len(l.views)) % len(l.views)
+	l.pending = l.needsLoad()
+	l.loadView(key)
+}
+
+// needsLoad reports whether the current scope still has to fetch its rows.
+func (l *list) needsLoad() bool {
+	return l.views[l.view].Load != nil && !l.loaded[l.view]
+}
+
+// runPendingLoad fetches the current scope's rows. The caller runs it between
+// two draws, so the list is already showing the scope (and its loading line)
+// when the fetch blocks.
+func (l *list) runPendingLoad() {
+	l.pending = false
+	view := l.views[l.view]
+	if view.Load == nil || l.loaded[l.view] {
+		return
+	}
+	l.loaded[l.view] = true
+	items, err := view.Load()
+	if err != nil {
+		// Whatever was gathered before it failed is still worth showing, and
+		// the line says what is missing. With nothing gathered the rows the
+		// scope already had (a local listing the fetch was to be merged into)
+		// stay untouched.
+		l.failures[l.view] = err.Error()
+		if len(items) == 0 {
+			return
+		}
+	}
+	l.views[l.view].Items = items
+	l.loadView("")
+}
+
+// chrome is how many lines the block spends on something other than rows: the
+// title, the status line (position, scopes and filter in one) and the hint
+// line.
+func (l *list) chrome() int { return 3 }
+
+// visibleRows leaves room for the lines around the rows — the title, the
+// filter line, the hint line and, in a multi-scope list, the switcher — plus
+// one spare, so the whole block fits on screen: a block taller than the
+// terminal would scroll, and the cursor-up redraw would then repaint the wrong
+// lines. chrome is how many of those lines this list draws.
+func visibleRows(maxVisible, height, chrome int) int {
 	rows := defaultVisible
 	if height > 0 {
-		rows = height - 4
+		rows = height - chrome - 1
 	}
 	if maxVisible > 0 && maxVisible < rows {
 		rows = maxVisible
@@ -186,7 +303,7 @@ func columnWidths(items []Item) []int {
 // resize re-derives the row window after a terminal size change, so a block
 // drawn into a shrunken terminal keeps fitting on screen.
 func (l *list) resize(maxVisible, height int) {
-	rows := visibleRows(maxVisible, height)
+	rows := visibleRows(maxVisible, height, l.chrome())
 	if rows == l.visible {
 		return
 	}
@@ -287,15 +404,23 @@ func (l *list) apply(k key) action {
 			return actionNone
 		}
 		if len(l.filter) == 0 {
-			// Backspace on an empty filter is the second way out, for
-			// terminals that swallow Esc.
-			return actionAbort
+			// Nothing left to delete. In a nested prompt that is the way back;
+			// anywhere else a key pressed one time too many while clearing a
+			// filter must not throw the list away.
+			if l.dismissOnBackspace {
+				return actionAbort
+			}
+			return actionNone
 		}
 		l.setFilter(l.filter[:len(l.filter)-1])
 	case keyClearFilter:
 		if l.anchor < 0 && len(l.filter) > 0 {
 			l.setFilter(nil)
 		}
+	case keyNextView:
+		l.switchView(1)
+	case keyPrevView:
+		l.switchView(-1)
 	case keyRune:
 		if l.anchor < 0 {
 			l.setFilter(append(l.filter, k.rune))
@@ -325,14 +450,7 @@ func (l *list) move(delta int) {
 func (l *list) setFilter(filter []rune) {
 	previous := l.selected()
 	l.filter = filter
-	terms := strings.Fields(strings.ToLower(string(filter)))
-	l.matches = l.matches[:0]
-	for i, item := range l.items {
-		if matchesTerms(item.filterText(), terms) {
-			l.matches = append(l.matches, i)
-		}
-	}
-	l.cursor = 0
+	l.applyFilter()
 	for i, index := range l.matches {
 		if index == previous {
 			l.cursor = i
@@ -342,16 +460,44 @@ func (l *list) setFilter(filter []rune) {
 	l.scrollToCursor()
 }
 
-// matchesTerms requires every whitespace-separated term to appear in text, so
-// typing more words narrows instead of widening.
-func matchesTerms(text string, terms []string) bool {
-	lowered := strings.ToLower(text)
+// applyFilter rebuilds the matching subset of the current scope's items and
+// puts the cursor at the top; callers that have a row to return to move it
+// afterwards. It never reuses a match index across a scope switch, where the
+// same index means a different row.
+func (l *list) applyFilter() {
+	terms := strings.Fields(strings.ToLower(string(l.filter)))
+	l.matches = l.matches[:0]
+	for i := range l.items {
+		if matchesTerms(l.fields[i], terms) {
+			l.matches = append(l.matches, i)
+		}
+	}
+	l.cursor = 0
+}
+
+// matchesTerms requires every whitespace-separated term to appear in one of the
+// row's fields, so typing more words narrows instead of widening. A field only
+// answers terms long enough for it: too short a term simply looks elsewhere,
+// which is what keeps a two-character term out of an opaque id.
+func matchesTerms(fields []MatchField, terms []string) bool {
 	for _, term := range terms {
-		if !strings.Contains(lowered, term) {
+		if !matchesTerm(fields, term) {
 			return false
 		}
 	}
 	return true
+}
+
+func matchesTerm(fields []MatchField, term string) bool {
+	for _, field := range fields {
+		if field.MinTerm > 0 && len([]rune(term)) < field.MinTerm {
+			continue
+		}
+		if strings.Contains(field.Text, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *list) scrollToCursor() {
@@ -487,18 +633,87 @@ func (l *list) render(width int) []string {
 		width = 80
 	}
 	widths := fitWidths(l.widths, l.priorities, width)
-	lines := make([]string, 0, l.visible+3)
+	lines := make([]string, 0, l.visible+l.chrome())
 	lines = append(lines, l.renderTitle(width))
 	end := min(l.top+l.visible, len(l.matches))
 	for i := l.top; i < end; i++ {
 		lines = append(lines, l.renderRow(i, width, widths))
 	}
 	if len(l.matches) == 0 {
-		lines = append(lines, l.styled(styleNoMatch, truncate("  no match", width)))
+		// An empty scope and a filter that matched nothing are different
+		// things: the first is answered by switching scope, the second by
+		// typing less.
+		lines = append(lines, l.styled(styleNoMatch, truncate(l.emptyLine(), width)))
 	}
-	lines = append(lines, l.styled(stylePosition, truncate(l.filterLine(), width)))
+	lines = append(lines, l.statusLine(width))
 	lines = append(lines, l.styled(styleHint, l.hint(width)))
 	return lines
+}
+
+// emptyLine says why there are no rows: the scope holds none (in the caller's
+// own words where it supplied them), or the filter matched none of the rows it
+// does hold.
+func (l *list) emptyLine() string {
+	if l.pending {
+		if loading := l.views[l.view].Loading; loading != "" {
+			return "  " + loading
+		}
+		return "  loading…"
+	}
+	if len(l.items) > 0 {
+		return "  no match"
+	}
+	if failure := l.failures[l.view]; failure != "" {
+		return "  " + failure
+	}
+	if empty := l.views[l.view].Empty; empty != "" {
+		return "  " + empty
+	}
+	return "  nothing here"
+}
+
+// statusLine is the one line under the rows: where the cursor stands, the
+// scopes the list has with the current one in brackets, and the filter — but
+// only while something is typed, so a list nobody is filtering says nothing
+// about filtering.
+func (l *list) statusLine(width int) string {
+	segments := []segment{{l.position(), stylePosition}}
+	if len(l.views) > 1 {
+		for i, view := range l.views {
+			label := view.Label
+			if label == "" {
+				label = strconv.Itoa(i + 1)
+			}
+			style := styleHint
+			if i == l.view {
+				label = "[" + label + "]"
+				style = styleViewActive
+			}
+			segments = append(segments, segment{" · ", StyleSeparator}, segment{label, style})
+		}
+	}
+	if note, style := l.loadNote(); note != "" {
+		segments = append(segments, segment{" · ", StyleSeparator}, segment{note, style})
+	}
+	if len(l.filter) > 0 {
+		segments = append(segments, segment{" · ", StyleSeparator},
+			segment{"filter: " + string(l.filter), stylePosition})
+	}
+	return l.emitRow(segments, width, false)
+}
+
+// loadNote is what the status line says about a scope that fetches its rows:
+// that it is fetching them, or that it could not. A scope that loaded cleanly
+// says nothing.
+func (l *list) loadNote() (string, string) {
+	if l.pending {
+		return firstNonEmpty(l.views[l.view].Loading, "loading…"), stylePosition
+	}
+	if failure := l.failures[l.view]; failure != "" && len(l.items) > 0 {
+		// With no rows at all the failure stands in their place instead.
+		return failure, styleNoMatch
+	}
+	return "", ""
 }
 
 const (
@@ -511,12 +726,18 @@ const (
 	shortRangeHint = "↑/↓ move · type to filter · Enter opens the range · Esc abort"
 	longSpanHint   = "↑/↓ extend · PgUp/PgDn page · Enter selects the range · Esc drops it"
 	shortSpanHint  = "↑/↓ extend · Enter selects · Esc drops the range"
+	// The scope hints are appended in a list that has more than one scope.
+	longScopeHint  = "Tab/←/→ scope"
+	shortScopeHint = "Tab scope"
 )
 
 // hint states the keys of the state the list is in, in as much detail as the
 // terminal has room for: a truncated key list is worse than a shorter complete
 // one.
 func (l *list) hint(width int) string {
+	if l.keyLine != "" {
+		return truncate(l.keyLine, width)
+	}
 	long, short := longHint, shortHint
 	switch {
 	case l.anchor >= 0:
@@ -524,21 +745,24 @@ func (l *list) hint(width int) string {
 	case l.rangeMode:
 		long, short = longRangeHint, shortRangeHint
 	}
+	if len(l.views) > 1 && l.anchor < 0 {
+		long += " · " + longScopeHint
+		short += " · " + shortScopeHint
+	}
 	if displayWidth(long) <= width {
 		return long
 	}
 	return truncate(short, width)
 }
 
-func (l *list) filterLine() string {
-	position := fmt.Sprintf("%d of %d", l.cursor+1, len(l.matches))
+// position is where the cursor stands in the visible set; with nothing
+// matching it counts the scope's own rows, so the line still says how much the
+// filter is hiding.
+func (l *list) position() string {
 	if len(l.matches) == 0 {
-		position = fmt.Sprintf("0 of %d", len(l.items))
+		return fmt.Sprintf("0 of %d", len(l.items))
 	}
-	if len(l.filter) == 0 {
-		return position
-	}
-	return position + " · filter: " + string(l.filter)
+	return fmt.Sprintf("%d of %d", l.cursor+1, len(l.matches))
 }
 
 // renderTitle draws the title plus the selected row's Detail: the full value
@@ -548,13 +772,36 @@ func (l *list) renderTitle(width int) string {
 	if l.anchor >= 0 {
 		return l.emitRow(append(segments, l.spanSegments()...), width, false)
 	}
-	if index := l.selected(); index >= 0 && l.items[index].Detail != "" {
-		segments = append(segments, segment{" ", l.detailStyle})
-		// The detail is the full value a column had to shorten — a ref, in
-		// every picker that sets one — so its separators fade like a ref's.
-		segments = append(segments, refSegments(l.items[index].Detail, l.detailStyle)...)
+	if index := l.selected(); index >= 0 {
+		segments = append(segments, l.detailSegments(l.items[index])...)
 	}
 	return l.emitRow(segments, width, false)
+}
+
+// detailSegments renders what the title line says about the selected row: the
+// parts of Details in their own colours, or the single Detail value, each
+// behind the separator the list uses everywhere else.
+func (l *list) detailSegments(item Item) []segment {
+	if len(item.Details) == 0 {
+		if item.Detail == "" {
+			return nil
+		}
+		// The detail is the full value a column had to shorten — a ref, in
+		// every picker that sets one — so its separators fade like a ref's.
+		return append([]segment{{" ", l.detailStyle}}, refSegments(item.Detail, l.detailStyle)...)
+	}
+	var segments []segment
+	for _, field := range item.Details {
+		if field.Text == "" {
+			continue
+		}
+		segments = append(segments, segment{" · ", StyleSeparator})
+		// A field's colour is exactly what the caller set: an empty one leaves
+		// the value in the terminal's own colour, the way an unstyled column
+		// shows it.
+		segments = append(segments, cellSegments(field.Kind, field.Text, field.Style)...)
+	}
+	return segments
 }
 
 // spanSegments summarises an open range after the title: how many rows it
@@ -583,10 +830,11 @@ func (l *list) spanSegments() []segment {
 	return segments
 }
 
-// firstStyle returns the caller's style, or the fallback when it gave none.
-func firstStyle(style, fallback string) string {
-	if style != "" {
-		return style
+// firstNonEmpty returns the caller's value — a style, a title — or the
+// fallback when it gave none.
+func firstNonEmpty(value, fallback string) string {
+	if value != "" {
+		return value
 	}
 	return fallback
 }

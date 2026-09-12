@@ -1697,7 +1697,12 @@ func TestRunReviewProbesModelForSourcelessSpec(t *testing.T) {
 	defer server.Close()
 
 	source := &recordingSource{}
-	err := (&app{stepName: "merge"}).runReview(context.Background(), source, nil, "default", config.Profile{
+	// The run completes, so it auto-saves a session: without a session
+	// directory of its own it would write one into the user's real cache on
+	// every `go test` (the source-less spec resolves its repo root from the
+	// working directory, so those sessions even look like real reviews of this
+	// checkout).
+	err := (&app{stepName: "merge", sessionDir: t.TempDir()}).runReview(context.Background(), source, nil, "default", config.Profile{
 		Model:           "model",
 		BaseURL:         server.URL,
 		APIKey:          "token",

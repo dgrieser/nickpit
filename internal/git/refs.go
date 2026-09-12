@@ -4,10 +4,48 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// Location identifies the checkout a directory belongs to: the working-tree
+// root it sits in, and the repository that tree belongs to. Repo is the shared
+// git directory (`--git-common-dir`), which is what makes every worktree of one
+// clone — and every subdirectory of each — answer with the same value, so
+// sessions recorded anywhere in a repository can be recognized as belonging to
+// it. Both are absolute.
+type Location struct {
+	Root string
+	Repo string
+}
+
+// Where resolves dir to its working tree and repository in a single git call.
+// It fails for a path that is gone or is not a checkout, which the caller reads
+// as "unknown" rather than as an error: a session can outlive the directory it
+// was recorded in.
+func Where(ctx context.Context, dir string) (Location, bool) {
+	out, err := ExecRunner{RepoRoot: dir}.Run(ctx, "rev-parse", "--show-toplevel", "--git-common-dir")
+	if err != nil {
+		return Location{}, false
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		return Location{}, false
+	}
+	root, repo := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	if root == "" || repo == "" {
+		return Location{}, false
+	}
+	// --git-common-dir answers relative to the directory git ran in (".git",
+	// "../../.git" from a linked worktree), so it only identifies a repository
+	// once it is anchored back at that directory.
+	if !filepath.IsAbs(repo) {
+		repo = filepath.Join(dir, repo)
+	}
+	return Location{Root: filepath.Clean(root), Repo: filepath.Clean(repo)}, true
+}
 
 // BranchRef is one branch ref offered for interactive selection: enough to tell
 // branches apart without reading the log.

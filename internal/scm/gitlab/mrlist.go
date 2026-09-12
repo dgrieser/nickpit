@@ -35,8 +35,19 @@ const maxListedOpenMRs = 100
 // updated first. Drafts are included: they are the ones most likely to want a
 // review, and the picker labels them.
 func (c *Client) ListOpenMRs(ctx context.Context, project string) ([]model.OpenRequest, error) {
-	path := fmt.Sprintf("/projects/%s/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=%d",
-		escapeProject(project), maxListedOpenMRs)
+	return c.listMRs(ctx, project, "opened")
+}
+
+// ListMRs is ListOpenMRs over every state — merged and closed requests too —
+// for a caller reading what was published on them rather than looking for
+// something to review.
+func (c *Client) ListMRs(ctx context.Context, project string) ([]model.OpenRequest, error) {
+	return c.listMRs(ctx, project, "all")
+}
+
+func (c *Client) listMRs(ctx context.Context, project, state string) ([]model.OpenRequest, error) {
+	path := fmt.Sprintf("/projects/%s/merge_requests?state=%s&order_by=updated_at&sort=desc&per_page=%d",
+		escapeProject(project), state, maxListedOpenMRs)
 	var response []openMRResponse
 	if err := c.Get(ctx, path, &response); err != nil {
 		return nil, err

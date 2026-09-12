@@ -48,6 +48,15 @@ type chatOptions struct {
 	replyMuteEmoji      string
 	replyCommandKeyword string
 	replySkipPhrases    []string
+	// withComments asks for the request's own discussion in the review context,
+	// whatever the review ran with: a chat started from a published review is
+	// about what has been said on the request as much as about the findings.
+	withComments bool
+	// anyMarkerAuthor reassembles the review from markers whoever wrote them,
+	// for a chat opened on a review this token did not publish (another group's
+	// bot, a colleague's run). Markers are forgeable, so this is only ever set
+	// by a caller that already listed the review that way.
+	anyMarkerAuthor bool
 }
 
 type chatUpdateExecution struct {
@@ -662,7 +671,7 @@ func (a *app) resolveChatSession(ctx context.Context, store *session.Store, prof
 		sess, err := store.Load(opts.sessionID)
 		return sess, false, err
 	case opts.fromJSON != "":
-		sess, err := a.chatSessionFromJSON(opts)
+		sess, err := a.chatSessionFromJSON(ctx, opts)
 		return sess, true, err
 	case opts.gitlab:
 		sess, err := a.chatSessionFromGitLab(ctx, profile, opts)
@@ -682,7 +691,7 @@ func (a *app) resolveChatSession(ctx context.Context, store *session.Store, prof
 // chatSessionFromJSON builds a session from a saved review result. The result's
 // own metadata (mode, repo, refs) reconstructs the source so the diff can be
 // re-resolved at chat time.
-func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
+func (a *app) chatSessionFromJSON(ctx context.Context, opts chatOptions) (*session.Session, error) {
 	data, err := os.ReadFile(opts.fromJSON)
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading %s: %w", opts.fromJSON, err)
@@ -699,7 +708,7 @@ func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
 	// Present when the JSON came from an MR/PR-reassembled result; pipeline
 	// output leaves it nil and the current configuration applies.
 	sess.ContextOptions = result.ContextOptions
-	sess.Source = sourceFromResult(&result, opts.repoRoot)
+	sess.Source = describeLocalSource(ctx, sourceFromResult(&result, opts.repoRoot))
 	return sess, nil
 }
 
@@ -734,7 +743,11 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	if err := adapter.RecoverReviewUpdates(ctx, project, mrID); err != nil {
 		return nil, err
 	}
-	reviews, err := adapter.ReviewResults(ctx, project, mrID)
+	read := adapter.ReviewResults
+	if opts.anyMarkerAuthor {
+		read = adapter.ReviewResultsAnyAuthor
+	}
+	reviews, err := read(ctx, project, mrID)
 	if err != nil {
 		return nil, fmt.Errorf("chat: reading MR reviews: %w", err)
 	}
@@ -753,6 +766,9 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	// written before the field existed — the current config is then the best
 	// available fallback.
 	sess.ContextOptions = result.ContextOptions
+	if opts.withComments {
+		sess.ContextOptions = withRequestComments(sess.ContextOptions)
+	}
 	sess.Source = session.Source{
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
@@ -764,6 +780,19 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 		RepoRoot: opts.repoRoot,
 	}
 	return sess, nil
+}
+
+// withRequestComments turns the request's discussion on in a copy of the
+// review's context options, so the conversation on the MR reaches the chat
+// without the review's own envelope (which the result still points at) being
+// rewritten.
+func withRequestComments(opts *session.ContextOptions) *session.ContextOptions {
+	updated := session.ContextOptions{}
+	if opts != nil {
+		updated = *opts
+	}
+	updated.IncludeComments = true
+	return &updated
 }
 
 // pickReview selects one review from those reassembled on a merge/pull request,
@@ -1775,6 +1804,7 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 		BaseURL:    scmBaseURL,
 		RepoRoot:   repoRoot,
 	}
+	sess.Source = describeLocalSource(ctx, sess.Source)
 	if err := store.Save(sess); err != nil {
 		a.warnf("chat: could not save session (review will not be resumable with `nickpit chat`): %v", err)
 		return ""

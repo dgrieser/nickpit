@@ -98,7 +98,7 @@ func TestListFilterNarrowsAndKeepsSelection(t *testing.T) {
 	}
 }
 
-func TestListBackspaceOnEmptyFilterAborts(t *testing.T) {
+func TestListBackspaceOnlyDeletesFilterText(t *testing.T) {
 	l := testList(t, Options{}, 24)
 	for _, r := range "ab" {
 		l.apply(key{kind: keyRune, rune: r})
@@ -110,8 +110,13 @@ func TestListBackspaceOnEmptyFilterAborts(t *testing.T) {
 	if len(l.filter) != 0 {
 		t.Fatalf("filter = %q, want it emptied", string(l.filter))
 	}
-	if action := l.apply(key{kind: keyBackspace}); action != actionAbort {
-		t.Fatalf("backspace on an empty filter = %v, want abort", action)
+	// One press too many while clearing a filter must not throw the list away:
+	// only Esc and Ctrl-C/Ctrl-D leave it.
+	if action := l.apply(key{kind: keyBackspace}); action != actionNone {
+		t.Fatalf("backspace on an empty filter = %v, want nothing", action)
+	}
+	if action := l.apply(key{kind: keyAbort}); action != actionAbort {
+		t.Fatalf("abort key = %v, want abort", action)
 	}
 }
 
@@ -911,5 +916,351 @@ func TestRenderShowsTheOpenSpan(t *testing.T) {
 	// The marker stays on the row the keys move.
 	if !strings.Contains(lines[2], cursorMarker) || strings.Contains(lines[1], cursorMarker) {
 		t.Fatalf("rows = %q / %q, want the marker on the cursor row only", lines[1], lines[2])
+	}
+}
+
+// viewOptions is a two-scope list where the narrow scope is a subset of the
+// wide one, the shape every scoped picker has.
+func viewOptions() Options {
+	return Options{
+		Title: "Sessions",
+		Views: []View{
+			{Label: "branch", Title: "Sessions on feat/x", Items: []Item{
+				{Key: "b", Cells: []string{"b2", "feat/x"}},
+			}, Empty: "no sessions for this branch"},
+			{Label: "all", Items: []Item{
+				{Key: "a", Cells: []string{"a1", "main"}},
+				{Key: "b", Cells: []string{"b2", "feat/x"}},
+				{Key: "c", Cells: []string{"c3", "fix/y"}},
+			}},
+		},
+	}
+}
+
+func TestViewSwitchKeepsTheRowAndTheFilter(t *testing.T) {
+	l := newList(viewOptions(), 24, false)
+	if got := l.title; got != "Sessions on feat/x" {
+		t.Fatalf("title = %q, want the view's own title", got)
+	}
+	l.setFilter([]rune("feat"))
+	l.apply(key{kind: keyNextView})
+	if l.view != 1 {
+		t.Fatalf("view = %d, want the second scope", l.view)
+	}
+	if got := l.title; got != "Sessions" {
+		t.Fatalf("title = %q, want the Options title for a view without one", got)
+	}
+	if got := string(l.filter); got != "feat" {
+		t.Fatalf("filter = %q, want it carried across the switch", got)
+	}
+	if got := l.items[l.selected()].Key; got != "b" {
+		t.Fatalf("selected key = %q, want the row the cursor was on", got)
+	}
+	// Widening past the last scope wraps back to the first, and the row the
+	// cursor sits on survives that too.
+	l.setFilter(nil)
+	l.move(2) // "c3", which the branch scope does not hold
+	l.apply(key{kind: keyNextView})
+	if l.view != 0 {
+		t.Fatalf("view = %d, want the wrap back to the first scope", l.view)
+	}
+	if got := l.items[l.selected()].Key; got != "b" {
+		t.Fatalf("selected key = %q, want the top of the scope that lacks the row", got)
+	}
+	l.apply(key{kind: keyPrevView})
+	if l.view != 1 {
+		t.Fatalf("view = %d, want the backwards wrap", l.view)
+	}
+}
+
+func TestViewSwitchIgnoredWithoutScopesAndInsideARange(t *testing.T) {
+	single := newList(Options{Items: scriptedItems}, 24, false)
+	single.apply(key{kind: keyNextView})
+	if single.view != 0 {
+		t.Fatalf("view = %d, want a one-scope list to stay put", single.view)
+	}
+	opts := viewOptions()
+	opts.Range, opts.RangeUnit = true, "session"
+	ranged := newList(opts, 24, false)
+	ranged.apply(key{kind: keyEnter}) // opens the range
+	ranged.apply(key{kind: keyNextView})
+	if ranged.view != 0 {
+		t.Fatalf("view = %d, want the scope frozen while a range is open", ranged.view)
+	}
+}
+
+func TestStatusLineCarriesPositionScopesAndFilter(t *testing.T) {
+	l := newList(viewOptions(), 24, false)
+	status := func() string {
+		lines := l.render(80)
+		return lines[len(lines)-2]
+	}
+	// Position, scopes and filter share one line, and the filter half of it
+	// only appears once something is typed.
+	if got := status(); got != "1 of 1 · [branch] · all" {
+		t.Fatalf("status = %q", got)
+	}
+	l.apply(key{kind: keyNextView})
+	l.setFilter([]rune("feat"))
+	if got := status(); got != "1 of 1 · branch · [all] · filter: feat" {
+		t.Fatalf("status = %q", got)
+	}
+	if !strings.Contains(l.hint(200), "scope") {
+		t.Fatalf("hint = %q, want the scope key named", l.hint(200))
+	}
+	// One scope is a plain list: the line is the position alone, and no key is
+	// offered for switching.
+	plain := newList(Options{Items: scriptedItems}, 24, false)
+	lines := plain.render(80)
+	if got := lines[len(lines)-2]; got != "1 of 2" {
+		t.Fatalf("status = %q, want the position alone", got)
+	}
+	if strings.Contains(plain.hint(200), "scope") {
+		t.Fatalf("hint = %q, want no scope key in a one-scope list", plain.hint(200))
+	}
+}
+
+func TestEmptyScopeSaysSoAndSelectsNothing(t *testing.T) {
+	opts := viewOptions()
+	opts.Views[0].Items = nil
+	l := newList(opts, 24, false)
+	lines := l.render(80)
+	if !strings.Contains(lines[1], "no sessions for this branch") {
+		t.Fatalf("line = %q, want the scope's own empty wording", lines[1])
+	}
+	if action := l.apply(key{kind: keyEnter}); action != actionNone {
+		t.Fatalf("Enter in an empty scope = %v, want nothing selected", action)
+	}
+	// A filter that matches nothing is a different situation and says so.
+	l.apply(key{kind: keyNextView})
+	l.setFilter([]rune("zzz"))
+	if got := l.render(80)[1]; !strings.Contains(got, "no match") {
+		t.Fatalf("line = %q, want the no-match wording", got)
+	}
+}
+
+func TestSelectViewReportsTheScopeItEndedIn(t *testing.T) {
+	state := newList(viewOptions(), 24, false)
+	source := &scriptedInput{chunks: [][]byte{[]byte("\t"), []byte("\x1b[B"), []byte("\r")}}
+	first, _, err := selectFrom(state, &renderer{w: &strings.Builder{}}, func() (int, int) { return 80, 24 }, 0, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.view != 1 {
+		t.Fatalf("view = %d, want the scope Tab moved to", state.view)
+	}
+	if first != 2 {
+		t.Fatalf("index = %d, want the row below the one the cursor followed", first)
+	}
+}
+
+func TestSelectViewWithoutAnyItemsIsNoItems(t *testing.T) {
+	_, _, err := SelectView(nil, nil, Options{Views: []View{{Label: "a"}, {Label: "b"}}})
+	if !errors.Is(err, ErrNoItems) {
+		t.Fatalf("err = %v, want ErrNoItems", err)
+	}
+	// One scope with rows is enough for the list to be worth drawing; without a
+	// terminal it fails on that instead.
+	_, _, err = SelectView(nil, nil, Options{Views: []View{{Label: "a"}, {Label: "b", Items: scriptedItems}}})
+	if !errors.Is(err, ErrNotATerminal) {
+		t.Fatalf("err = %v, want ErrNotATerminal", err)
+	}
+}
+
+func TestRefNoteFadesTheTrailingParenthetical(t *testing.T) {
+	item := Item{Cells: []string{"feat/x (uncommitted)"}}
+	l := newList(Options{Items: []Item{item}, CellStyles: []string{StyleIdentifier},
+		ColumnKinds: []ColumnKind{KindRefNote}}, 24, true)
+	row := l.render(80)[1]
+	// The cursor row carries its highlight in the same sequence, so the note's
+	// own code is matched without assuming it starts one.
+	if !strings.Contains(row, StyleNote+"m (uncommitted)") {
+		t.Fatalf("row = %q, want the note in its own light grey", row)
+	}
+	if !strings.Contains(row, StyleSeparator+"m/") {
+		t.Fatalf("row = %q, want the ref's separator still faded", row)
+	}
+	// A parenthesis that is not a trailing note is part of the ref.
+	inner := newList(Options{Items: []Item{{Cells: []string{"feat/(x) more"}}},
+		ColumnKinds: []ColumnKind{KindRefNote}}, 24, true).render(80)[1]
+	if strings.Contains(inner, StyleNote) {
+		t.Fatalf("row = %q, want no note painted", inner)
+	}
+	// Every row's note is painted, not just the widest one's: a column pads the
+	// cells it fits, which puts the note somewhere other than the very end.
+	padded := newList(Options{
+		Items: []Item{
+			{Cells: []string{"short (uncommitted)", "a"}},
+			{Cells: []string{"a-much-longer-branch-name (uncommitted)", "b"}},
+		},
+		CellStyles:  []string{StyleIdentifier, ""},
+		ColumnKinds: []ColumnKind{KindRefNote},
+	}, 24, true).render(120)
+	for _, row := range padded[1:3] {
+		if !strings.Contains(row, StyleNote+"m (uncommitted)") {
+			t.Fatalf("row = %q, want the note painted despite the column padding", row)
+		}
+	}
+}
+
+func TestTruncateMiddleKeepsBothEnds(t *testing.T) {
+	cases := []struct {
+		in    string
+		width int
+		want  string
+	}{
+		{"archiefmeester", 14, "archiefmeester"},
+		{"archiefmeester", 7, "arc…ter"},
+		{"archiefmeester", 6, "arc…er"},
+		{"archiefmeester", 2, "a…"},
+		{"archiefmeester", 1, "…"},
+		{"archiefmeester", 0, ""},
+		// A double-width rune never lands half inside the kept ends.
+		{"レビューを見る", 5, "レ…る"},
+	}
+	for _, c := range cases {
+		got := TruncateMiddle(c.in, c.width)
+		if got != c.want {
+			t.Fatalf("TruncateMiddle(%q, %d) = %q, want %q", c.in, c.width, got, c.want)
+		}
+		if displayWidth(got) > c.width {
+			t.Fatalf("TruncateMiddle(%q, %d) = %q, wider than asked", c.in, c.width, got)
+		}
+	}
+}
+
+func TestDetailFieldsCarryTheirOwnColours(t *testing.T) {
+	l := newList(Options{
+		Title: "Session",
+		Items: []Item{{
+			Cells: []string{"57e092c6"},
+			Details: []Field{
+				{Text: "57e092c6-e0f9-4b14-9b88-00b3cacb410a", Style: StyleHash},
+				{Text: "/src/nickpit/cmd", Kind: KindRef},
+				{Text: "", Style: StyleAge}, // an empty field adds no separator
+			},
+		}},
+	}, 24, true)
+	header := l.render(120)[0]
+	if !strings.Contains(header, StyleHash+"m57e092c6-e0f9") {
+		t.Fatalf("header = %q, want the id in the id column's colour", header)
+	}
+	// A field without a colour stays in the terminal's own, with a ref's
+	// separators faded — the way an unstyled column shows a path.
+	if !strings.Contains(header, "src\x1b["+StyleSeparator+"m/") {
+		t.Fatalf("header = %q, want the path unstyled with faded separators", header)
+	}
+	plain := stripANSI(header)
+	if plain != "Session · 57e092c6-e0f9-4b14-9b88-00b3cacb410a · /src/nickpit/cmd" {
+		t.Fatalf("header = %q", plain)
+	}
+}
+
+func TestMatchFieldsHonourTheirMinimumTerm(t *testing.T) {
+	items := []Item{
+		{Cells: []string{"row one"}, MatchFields: []MatchField{
+			{Text: "feat/abc"},
+			{Text: "3f1a9c22-0000-4000-8000-000000000001", MinTerm: 4},
+		}},
+		{Cells: []string{"row two"}, MatchFields: []MatchField{
+			{Text: "main"},
+			{Text: "aaaabbbb-0000-4000-8000-000000000002", MinTerm: 4},
+		}},
+	}
+	l := newList(Options{Items: items}, 24, false)
+	matched := func(filter string) []int {
+		l.setFilter([]rune(filter))
+		return append([]int(nil), l.matches...)
+	}
+	// Long enough to be an id, so it reaches one.
+	if got := matched("3f1a"); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("matches for an id term = %v, want the first row", got)
+	}
+	// Too short: the id is not searched, and nothing else holds it.
+	if got := matched("3f1"); len(got) != 0 {
+		t.Fatalf("matches for a short term = %v, want none", got)
+	}
+	// A short term still searches the fields that set no minimum.
+	if got := matched("abc"); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("matches for a short term in an open field = %v, want the first row", got)
+	}
+	// Terms still narrow each other, across fields.
+	if got := matched("feat 3f1a"); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("matches for two terms = %v, want the row carrying both", got)
+	}
+	if got := matched("main 3f1a"); len(got) != 0 {
+		t.Fatalf("matches for terms from two rows = %v, want none", got)
+	}
+	// An item without fields still matches on its cells, as before.
+	plain := newList(Options{Items: scriptedItems}, 24, false)
+	plain.setFilter([]rune("first"))
+	if len(plain.matches) != 1 {
+		t.Fatalf("matches without fields = %v", plain.matches)
+	}
+}
+
+func TestLazyViewLoadsOnceWhenShown(t *testing.T) {
+	loads := 0
+	opts := Options{
+		Views: []View{
+			{Label: "local", Items: scriptedItems},
+			{Label: "remote", Loading: "asking the server…", Load: func() ([]Item, error) {
+				loads++
+				return []Item{{Cells: []string{"!42", "from the server"}}}, nil
+			}},
+		},
+	}
+	state := newList(opts, 24, false)
+	// Tab, then Enter on the row the scope brought in.
+	source := &scriptedInput{chunks: [][]byte{[]byte("\t"), []byte("\r")}}
+	index, _, err := selectFrom(state, &renderer{w: &strings.Builder{}}, func() (int, int) { return 80, 24 }, 0, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 {
+		t.Fatalf("Load ran %d times, want once", loads)
+	}
+	if index != 0 || state.view != 1 || state.items[0].Cells[1] != "from the server" {
+		t.Fatalf("selected %d of view %d: %+v", index, state.view, state.items)
+	}
+	// Going away and coming back does not fetch again.
+	state.apply(key{kind: keyPrevView})
+	state.apply(key{kind: keyNextView})
+	state.runPendingLoad()
+	if loads != 1 {
+		t.Fatalf("Load ran %d times, want the rows kept", loads)
+	}
+}
+
+func TestLazyViewShowsLoadingThenItsFailure(t *testing.T) {
+	state := newList(Options{
+		Views: []View{
+			{Label: "local", Items: scriptedItems},
+			{Label: "remote", Loading: "asking the server…", Load: func() ([]Item, error) {
+				return nil, errors.New("no token for gitlab.example.com")
+			}},
+		},
+	}, 24, false)
+	state.apply(key{kind: keyNextView})
+	if got := state.render(80)[1]; !strings.Contains(got, "asking the server…") {
+		t.Fatalf("line = %q, want the loading line before the fetch", got)
+	}
+	state.runPendingLoad()
+	if got := state.render(80)[1]; !strings.Contains(got, "no token for gitlab.example.com") {
+		t.Fatalf("line = %q, want the failure in place of the rows", got)
+	}
+	// The other scope is untouched by the one that could not load.
+	state.apply(key{kind: keyPrevView})
+	if len(state.matches) != len(scriptedItems) {
+		t.Fatalf("matches = %d, want the local scope intact", len(state.matches))
+	}
+}
+
+func TestSelectViewWithOnlyALazyScopeIsNotEmpty(t *testing.T) {
+	_, _, err := SelectView(nil, nil, Options{Views: []View{
+		{Label: "remote", Load: func() ([]Item, error) { return nil, nil }},
+	}})
+	if !errors.Is(err, ErrNotATerminal) {
+		t.Fatalf("err = %v, want the list to be worth drawing", err)
 	}
 }

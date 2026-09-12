@@ -35,8 +35,19 @@ const maxListedOpenPRs = 100
 // ListOpenPRs returns the open pull requests of a repo, most recently updated
 // first. Drafts are included and labeled by the picker.
 func (c *Client) ListOpenPRs(ctx context.Context, repo string) ([]model.OpenRequest, error) {
-	path := fmt.Sprintf("/repos/%s/pulls?state=open&sort=updated&direction=desc&per_page=%d",
-		escapeRepo(repo), maxListedOpenPRs)
+	return c.listPRs(ctx, repo, "open")
+}
+
+// ListPRs is ListOpenPRs over every state — merged and closed requests too —
+// for a caller reading what was published on them rather than looking for
+// something to review.
+func (c *Client) ListPRs(ctx context.Context, repo string) ([]model.OpenRequest, error) {
+	return c.listPRs(ctx, repo, "all")
+}
+
+func (c *Client) listPRs(ctx context.Context, repo, state string) ([]model.OpenRequest, error) {
+	path := fmt.Sprintf("/repos/%s/pulls?state=%s&sort=updated&direction=desc&per_page=%d",
+		escapeRepo(repo), state, maxListedOpenPRs)
 	var response []openPRResponse
 	if err := c.Get(ctx, path, &response); err != nil {
 		return nil, err
