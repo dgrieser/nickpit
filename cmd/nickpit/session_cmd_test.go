@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -1191,5 +1192,60 @@ func TestClipboardConfirmationIsAnAside(t *testing.T) {
 	defer func() { _ = wr.Close() }()
 	if useColor(wr) {
 		t.Fatal("a pipe must not be coloured")
+	}
+}
+
+func TestPickerOpensWithOnlyPublishedReviews(t *testing.T) {
+	// Nothing saved on this machine: the reviews published on the project's
+	// requests are the whole list, which is the case a daemon-reviewed project
+	// looks like from a fresh checkout.
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offered int
+	a := &app{sessionDir: dir, outputFormat: "raw"}
+	a.selectViewFn = func(opts pick.Options) (int, int, error) {
+		offered = len(opts.Views)
+		return -1, -1, pick.ErrAborted
+	}
+	err = a.runSessionTo(context.Background(), sessionOptions{}, nil, &bytes.Buffer{})
+	// No project to ask either, so there is still no list — but the message
+	// says what is missing rather than failing before the scopes exist.
+	if err == nil || !strings.Contains(err.Error(), "no saved sessions") {
+		t.Fatalf("err = %v", err)
+	}
+	if offered != 0 {
+		t.Fatalf("a list was drawn with nothing in it (%d scopes)", offered)
+	}
+
+	// With a store that holds only unfinished sessions the message says so.
+	if err := store.Save(session.New()); err != nil {
+		t.Fatal(err)
+	}
+	err = a.runSessionTo(context.Background(), sessionOptions{}, nil, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "no saved session holds a review") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// Once there is a project to ask, the prompt opens on an empty local store
+	// and the remote scope carries the rows.
+	place := sessionPlace{repo: "grp/nickpit", branch: "feat/x"}
+	remote := fakeRemote(
+		[]model.OpenRequest{{Identifier: 42, SourceBranch: "feat/x", UpdatedAt: time.Now()}},
+		map[int]map[string]*model.ReviewResult{
+			42: {"r-published": publishedReview("r-published", "patch is correct", 1, time.Hour)},
+		}, nil, nil)
+	views, initial := sessionViews(nil, place, remote)
+	if initial != scopeAll {
+		t.Fatalf("initial = %d, want the full list when nothing is saved", initial)
+	}
+	items, err := views[scopeRemote].Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Key != "r-published" {
+		t.Fatalf("remote scope = %+v", items)
 	}
 }

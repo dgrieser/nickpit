@@ -141,8 +141,18 @@ func TestSessionViewsCarryRemoteReviews(t *testing.T) {
 
 func TestRemoteListingFailureLeavesTheRestAlone(t *testing.T) {
 	remote := fakeRemote(nil, nil, nil, errors.New("401 unauthorized"))
-	if _, err := remote.find(context.Background()); err == nil || !strings.Contains(err.Error(), "401") {
-		t.Fatalf("err = %v, want the listing failure", err)
+	if _, err := remote.find(context.Background()); err == nil || !strings.Contains(err.Error(), "401") ||
+		!strings.Contains(err.Error(), "merge requests") {
+		t.Fatalf("err = %v, want the listing failure and what was being listed", err)
+	}
+
+	// A server that does not answer in time says so in a line that fits,
+	// instead of a truncated API URL with a deadline error inside it.
+	slow := fakeRemote(nil, nil, nil, context.DeadlineExceeded)
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := slow.find(stopped); err == nil || !strings.Contains(err.Error(), "did not list the merge requests") {
+		t.Fatalf("err = %v, want the timeout wording", err)
 	}
 	// The failure is remembered rather than retried on every scope switch.
 	remote.source.list = func(context.Context) ([]model.OpenRequest, error) {

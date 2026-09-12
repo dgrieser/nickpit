@@ -90,25 +90,33 @@ func (a *app) completeSessionIDs(prefix string) ([]string, cobra.ShellCompDirect
 }
 
 // reviewedSessions lists the sessions this command can act on, newest first:
-// one that holds no review has nothing to print, copy or discuss.
-func reviewedSessions(store *session.Store) ([]session.Info, error) {
+// one that holds no review has nothing to print, copy or discuss. An empty
+// result is not an error here — the picker can still offer the reviews
+// published on the project's requests, which is the whole point of a machine
+// that reviewed nothing locally — so the caller decides what emptiness means.
+// stored says how many sessions the store holds either way, which is what
+// tells "nothing saved" from "nothing printable".
+func reviewedSessions(store *session.Store) (reviewed []session.Info, stored int, err error) {
 	infos, err := store.List()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	reviewed := make([]session.Info, 0, len(infos))
+	reviewed = make([]session.Info, 0, len(infos))
 	for _, info := range infos {
 		if info.HasResult {
 			reviewed = append(reviewed, info)
 		}
 	}
-	if len(reviewed) == 0 {
-		if len(infos) > 0 {
-			return nil, fmt.Errorf("session: no saved session holds a review")
-		}
-		return nil, fmt.Errorf("session: no saved sessions")
+	return reviewed, len(infos), nil
+}
+
+// noReviewedSessionError says what an empty listing means, so a store holding
+// only unfinished sessions does not read as an empty one.
+func noReviewedSessionError(stored int) error {
+	if stored > 0 {
+		return fmt.Errorf("session: no saved session holds a review")
 	}
-	return reviewed, nil
+	return fmt.Errorf("session: no saved sessions")
 }
 
 // chooseSession runs the interactive half of the command: pick a session, then
@@ -117,9 +125,13 @@ func reviewedSessions(store *session.Store) ([]session.Info, error) {
 // leaves without doing anything. The chosen action is carried out here, so the
 // caller only handles the non-interactive path.
 func (a *app) chooseSession(ctx context.Context, store *session.Store, opts sessionOptions,
-	infos []session.Info, w io.Writer) error {
+	infos []session.Info, stored int, w io.Writer) error {
 	place := sessionLocation(ctx)
 	remote := newRemoteFinder(a, place, opts.closed)
+	if len(infos) == 0 && !remote.available() {
+		// Nothing saved here and no project to ask: there is no list to draw.
+		return noReviewedSessionError(stored)
+	}
 	state := newSessionPickState()
 	for {
 		chosen, next, err := a.pickSession(place, infos, "Session", remote, state)
@@ -166,15 +178,20 @@ func (a *app) runSessionTo(ctx context.Context, opts sessionOptions, args []stri
 		return err
 	}
 	if sessionID == "" {
-		infos, err := reviewedSessions(store)
+		infos, stored, err := reviewedSessions(store)
 		if err != nil {
 			return err
 		}
 		// A prompt needs a terminal, and --clipboard already says what to do
 		// with the session; either way the newest one is the answer a pipe, a
-		// redirect or a daemon-spawned run has always got.
+		// redirect or a daemon-spawned run has always got. The prompt is
+		// offered even with nothing saved here: the reviews published on the
+		// project's requests are a list of their own.
 		if a.interactiveSelect() && !opts.clipboard {
-			return a.chooseSession(ctx, store, opts, infos, w)
+			return a.chooseSession(ctx, store, opts, infos, stored, w)
+		}
+		if len(infos) == 0 {
+			return noReviewedSessionError(stored)
 		}
 		sessionID = infos[0].ID
 	}

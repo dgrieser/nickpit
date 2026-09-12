@@ -197,7 +197,12 @@ func (a *app) remoteSourceFor(place sessionPlace, closed bool) *remoteSource {
 func (s *remoteSource) collect(ctx context.Context) ([]remoteReview, error) {
 	requests, err := s.list(ctx)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			// The bound fired: say that in a line that fits, rather than
+			// showing a truncated API URL with a deadline error inside it.
+			return nil, fmt.Errorf("the server did not list the %s within %s", s.noun(), remoteFetchTimeout)
+		}
+		return nil, fmt.Errorf("listing the %s: %w", s.noun(), err)
 	}
 	if len(requests) > maxRemoteRequests {
 		requests = requests[:maxRemoteRequests]

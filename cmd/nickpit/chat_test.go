@@ -922,3 +922,44 @@ func TestPostChatReplyWithPolicyRevalidatesRequestedTarget(t *testing.T) {
 		})
 	}
 }
+
+// A review published before context options were carried has none, and nil is
+// how a session says "use the current configuration". Asking for the request's
+// discussion must not turn that into a bare options object, which
+// chatReviewRequest would take as the whole truth — the profile's filters and
+// budget would be replaced with zeros.
+func TestWithRequestCommentsKeepsTheProfileForOptionlessReviews(t *testing.T) {
+	if got := withRequestComments(nil); got != nil {
+		t.Fatalf("options = %+v, want nil so the current configuration applies", got)
+	}
+	carried := &session.ContextOptions{
+		IncludePaths: []string{"internal/"}, ExcludePaths: []string{"vendor/"},
+		IncludeFullFiles: true, MaxContextTokens: 4242, DiffFormat: "git-json",
+	}
+	updated := withRequestComments(carried)
+	if !updated.IncludeComments {
+		t.Fatal("the discussion was not asked for")
+	}
+	if carried.IncludeComments {
+		t.Fatal("the review's own options were rewritten")
+	}
+	if len(updated.IncludePaths) != 1 || updated.MaxContextTokens != 4242 ||
+		updated.DiffFormat != "git-json" || !updated.IncludeFullFiles {
+		t.Fatalf("options = %+v, want the review's own kept", updated)
+	}
+
+	// The nil case reaches the same result through the request builder: the
+	// profile's filters survive and the comments are on.
+	a := &app{includeComments: true}
+	profile := config.Profile{
+		IncludePaths: []string{"internal/"}, ExcludePaths: []string{"vendor/"},
+		MaxContextTokens: 4242,
+	}
+	req := a.chatReviewRequest(profile, session.Source{Mode: "gitlab", Repo: "grp/proj", Identifier: 42}, nil)
+	if !req.IncludeComments {
+		t.Fatal("the discussion was not asked for")
+	}
+	if len(req.IncludePaths) != 1 || len(req.ExcludePaths) != 1 || req.MaxContextTokens != 4242 {
+		t.Fatalf("request = %+v, want the profile's own context options", req)
+	}
+}

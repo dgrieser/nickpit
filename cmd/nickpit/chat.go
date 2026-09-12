@@ -768,6 +768,9 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	sess.ContextOptions = result.ContextOptions
 	if opts.withComments {
 		sess.ContextOptions = withRequestComments(sess.ContextOptions)
+		// For a review that carried no options, the request is built from the
+		// current configuration, where this is the flag that asks for them.
+		a.includeComments = true
 	}
 	sess.Source = session.Source{
 		Mode:       string(model.ModeGitLab),
@@ -786,11 +789,20 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 // review's context options, so the conversation on the MR reaches the chat
 // without the review's own envelope (which the result still points at) being
 // rewritten.
+//
+// A review published before context options were carried has none, and nil is
+// how a session says "use the current configuration": chatReviewRequest takes
+// any non-nil options as the whole truth, so returning a bare one here would
+// replace the profile's path and content filters, its commit and full-file
+// settings and its context budget with zeros — and could pull in files the
+// profile excludes. Nil therefore stays nil, and the caller asks for the
+// comments the way the command line does (a.includeComments), which is exactly
+// the branch chatReviewRequest takes for a session without options.
 func withRequestComments(opts *session.ContextOptions) *session.ContextOptions {
-	updated := session.ContextOptions{}
-	if opts != nil {
-		updated = *opts
+	if opts == nil {
+		return nil
 	}
+	updated := *opts
 	updated.IncludeComments = true
 	return &updated
 }
