@@ -66,7 +66,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	}
 	on := true
 	fullContext := func() *ContextInclude {
-		return &ContextInclude{StyleGuides: &on, Diff: &on, Commits: &on, Comments: &on, Toolchain: &on}
+		return &ContextInclude{StyleGuides: &on, Diff: &on, Commits: &on, Comments: &on, Toolchain: &on, ProjectContext: &on}
 	}
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
 	laneNames := []string{"Code quality", "Security", "Architecture", "Performance", "Testing", "Best practices"}
@@ -1246,7 +1246,7 @@ func TestContextIncludePartialOverrideKeepsUnsetOn(t *testing.T) {
 	on := true
 	override := &StepOverride{Context: &ContextInclude{StyleGuides: &off, Commits: &on}}
 	got := override.ContextInclude()
-	want := ContextIncludeSet{StyleGuides: false, Diff: true, Commits: true, Comments: true, Toolchain: true}
+	want := ContextIncludeSet{StyleGuides: false, Diff: true, Commits: true, Comments: true, Toolchain: true, ProjectContext: true}
 	if got != want {
 		t.Fatalf("ContextInclude() = %+v, want %+v", got, want)
 	}
@@ -1286,11 +1286,11 @@ steps:
 		t.Fatalf("validate: %v", err)
 	}
 	vectorDedupe := spec.Steps[1].Config.ContextInclude()
-	if vectorDedupe != (ContextIncludeSet{Commits: true, Comments: true, Toolchain: true}) {
+	if vectorDedupe != (ContextIncludeSet{Commits: true, Comments: true, Toolchain: true, ProjectContext: true}) {
 		t.Fatalf("dedupe:security context = %+v", vectorDedupe)
 	}
 	globalDedupe := spec.Steps[2].Config.ContextInclude()
-	if globalDedupe != (ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Toolchain: true}) {
+	if globalDedupe != (ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Toolchain: true, ProjectContext: true}) {
 		t.Fatalf("dedupe context = %+v", globalDedupe)
 	}
 	if merge := spec.Steps[3].Config.ContextInclude(); !merge.All() {
