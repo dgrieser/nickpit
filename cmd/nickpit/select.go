@@ -111,8 +111,7 @@ type requestTarget struct {
 }
 
 // requestSelectors is the selector flag set shared by every MR/PR-addressed
-// command: `gitlab mr`, `github pr`, both `feedback` commands, and
-// `chat --gitlab`.
+// command: `gitlab mr`, `github pr`, and `chat --gitlab`.
 type requestSelectors struct {
 	repo   string
 	id     int

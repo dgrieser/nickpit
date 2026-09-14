@@ -420,8 +420,8 @@ func (a *app) chatAboutRemoteReview(ctx context.Context, row remoteReview) error
 	}, nil)
 }
 
-// remoteOriginLabel names where a copied review came from, the way the feedback
-// command names it in its clipboard confirmation.
+// remoteOriginLabel names where a copied review came from in its clipboard
+// confirmation.
 func remoteOriginLabel(row remoteReview) string {
 	if row.mode == model.ModeGitHub {
 		return fmt.Sprintf("GitHub PR %s#%d", textsan.StripControl(row.repo), row.id)

@@ -998,7 +998,6 @@ func (a *app) newGitHubCmd() *cobra.Command {
 	addSelectFlag(prCmd, &selectPR, "an open pull request", requestSelectNote)
 	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
 	cmd.AddCommand(prCmd)
-	cmd.AddCommand(a.newGitHubFeedbackCmd())
 	return cmd
 }
 
@@ -1087,7 +1086,6 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	addSelectFlag(mrCmd, &selectMR, "an open merge request", requestSelectNote)
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	cmd.AddCommand(mrCmd)
-	cmd.AddCommand(a.newGitLabFeedbackCmd())
 	cmd.AddCommand(a.newGitLabServeCmd())
 	cmd.AddCommand(a.newGitLabTemplatesCmd())
 	return cmd
@@ -2225,6 +2223,16 @@ func (a *app) loadProfileForSpec() (string, config.Profile, error) {
 	return a.loadProfile()
 }
 
+// loadProfileWithoutLLM loads the active profile for commands that need only
+// SCM credentials. A profile without a model or endpoint remains usable.
+func (a *app) loadProfileWithoutLLM() (config.Profile, error) {
+	_, profile, err := a.loadProfileForSpec()
+	if err != nil && !config.IsMissingLLMEndpoint(err) {
+		return config.Profile{}, err
+	}
+	return profile, nil
+}
+
 // specProfile returns the `profile:` declared by a --spec file, or "" when no
 // spec is given, the spec declares none, or a single --step is used.
 func (a *app) specProfile() (string, error) {
@@ -3190,6 +3198,13 @@ func parseGitHubPRURL(raw string) (string, int, error) {
 		return "", 0, err
 	}
 	return parts[0] + "/" + parts[1], pr, nil
+}
+
+// parseGitHubPRURLTarget adapts parseGitHubPRURL to resolveRequestTarget's
+// parser shape. GitHub has no per-host API base URL flag.
+func parseGitHubPRURLTarget(raw string) (string, int, string, error) {
+	repo, number, err := parseGitHubPRURL(raw)
+	return repo, number, "", err
 }
 
 func parseGitLabMRURL(raw string) (string, int, string, error) {

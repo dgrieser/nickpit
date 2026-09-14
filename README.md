@@ -436,22 +436,18 @@ nickpit gitlab mr --url https://gitlab.example.com/group/project/-/merge_request
 # Review a GitLab MR and post the result back as comments (summary + one per finding)
 nickpit gitlab mr --repo group/project --id 456 --publish
 
-# Read a published review back from the PR/MR — print it, or copy it to the clipboard
-nickpit github feedback --url https://github.com/owner/repo/pull/123
-nickpit gitlab feedback --url https://gitlab.example.com/group/project/-/merge_requests/456 --clipboard
 ```
 
 ### Pick the MR/PR, Branch or Commit Interactively 🎯
 
-Every command that addresses a merge request or pull request — `gitlab mr`, `github pr`, `gitlab feedback`, `github feedback`, `chat --gitlab` — can pick it from a list instead of taking `--repo`/`--id`/`--url`. In a checkout of the repository, on a terminal, just leave the identifier out:
+Every command that addresses a merge request or pull request — `gitlab mr`, `github pr`, and `chat --gitlab` — can pick it from a list instead of taking `--repo`/`--id`/`--url`. In a checkout of the repository, on a terminal, just leave the identifier out:
 
 ```bash
 # Open MRs of the project the origin remote points at, newest activity first
 nickpit gitlab mr
 
-# Same for GitHub, and for the read-back and chat commands
+# Same for GitHub and the chat command
 nickpit github pr
-nickpit gitlab feedback
 nickpit chat --gitlab
 
 # Force the list even where a target could be resolved without it
@@ -473,30 +469,6 @@ Nothing changes without a terminal: piped, redirected and daemon-spawned runs ke
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
-
-### Reading a Published Review Back 📋
-
-`nickpit github feedback` and `nickpit gitlab feedback` print a review NickPit already published on a PR/MR — reassembled from the same hidden markers a chat uses, so there is no re-review, no LLM call, and no local session needed. That is how feedback posted by the [serve daemon](#gitlab-webhook-daemon) or from another machine gets onto your terminal, and with `--clipboard` into an editor or coding agent.
-
-The request is selected exactly as in the review commands: `--url`, `--repo` plus `--id`, or [interactively](#pick-the-mrpr-branch-or-commit-interactively-) (omit `--id` in a checkout, or pass `--select`). Output uses the normal review formats (`-o markdown|json|raw`), and `--clipboard` copies instead of printing, with the same helper chain and unstyled payload as [`nickpit session --clipboard`](#discuss-a-review-chat-). The command is read-only — nothing is posted or changed on the PR/MR.
-
-When a request carries several reviews the newest is printed; `--list` shows them all (newest first, with publish time, revision, finding count, verdict, model and NickPit version) and `--review-id` picks one. Only markers in comments authored by the token's own user are trusted, so a marker planted by another commenter is ignored — on GitHub this needs a token whose `/user` resolves, which rules out a GitHub App installation token.
-
-```bash
-# Print the newest review published on a PR/MR
-nickpit github feedback --repo owner/repo --id 123
-nickpit gitlab feedback --repo group/project --id 456
-
-# Copy it to the clipboard instead of printing it
-nickpit gitlab feedback --repo group/project --id 456 --clipboard
-
-# List the reviews on the MR, then print a specific one
-nickpit gitlab feedback --repo group/project --id 456 --list
-nickpit gitlab feedback --repo group/project --id 456 --review-id <review-id>
-
-# Machine-readable, e.g. to hand the findings to another tool
-nickpit github feedback --repo owner/repo --id 123 --output json
-```
 
 ## Discuss a Review (Chat) 💬
 
@@ -563,7 +535,7 @@ Pin the chat to one finding with `--finding <id>` and the agent opens by pointin
 
 `nickpit session` without a session id asks which one to print. In a checkout the list opens on the sessions of that repository, and `Tab` (or `←`/`→`) switches the scope: the sessions of the checked-out branch, the sessions of this repository, the reviews published on the project's open requests, all saved sessions. The line under the rows carries all of it — `1 of 65 · branch · [repository] · remote · all · filter: dd` — with the filter named only while one is typed. Outside a checkout there is one scope: all sessions.
 
-A fourth scope, `remote`, lists what is not saved here at all: the reviews NickPit published on the project's **open merge or pull requests** — by the serve daemon, by `--publish`, by a colleague — reassembled from their hidden markers. One row per review, so a re-reviewed request contributes several, each collapsed onto its newest revision; the requests on the checked-out branch lead, the rest follow newest first. The other scopes never show them, and nothing is fetched until this scope is drawn — the status line says `reading published reviews…` while it is. `--include-closed` widens the scope past the open requests to the merged and closed ones — the review published on a request that has since been merged is still the review of that work. Unlike `nickpit gitlab feedback`, this scope reads the markers **whoever published them**: a project reviewed by another group's bot, or by a colleague's token, carries markers no local token can claim, and requiring one's own would show nothing. Markers are encoded but not signed, so a review listed here can in principle have been forged by anyone who can comment on the request — it is read-only either way, and publishing and correcting keep the strict author check. The platform comes from the `origin` remote (github.com means GitHub, anything else the profile's GitLab, and only when its host matches the one the token belongs to), at most 15 requests are read, newest activity first, and a server that does not answer within 8 seconds leaves the rows it did answer with plus a note. Without a project, without a token, or outside a checkout the scope simply says so.
+A fourth scope, `remote`, lists what is not saved here at all: the reviews NickPit published on the project's **open merge or pull requests** — by the serve daemon, by `--publish`, by a colleague — reassembled from their hidden markers. One row per review, so a re-reviewed request contributes several, each collapsed onto its newest revision; the requests on the checked-out branch lead, the rest follow newest first. The other scopes never show them, and nothing is fetched until this scope is drawn — the status line says `reading published reviews…` while it is. `--include-closed` widens the scope past the open requests to the merged and closed ones — the review published on a request that has since been merged is still the review of that work. This scope reads the markers **whoever published them**: a project reviewed by another group's bot, or by a colleague's token, carries markers no local token can claim, and requiring one's own would show nothing. Markers are encoded but not signed, so a review listed here can in principle have been forged by anyone who can comment on the request — it is read-only either way, and publishing and correcting keep the strict author check. The platform comes from the `origin` remote (github.com means GitHub, anything else the profile's GitLab, and only when its host matches the one the token belongs to), at most 15 requests are read, newest activity first, and a server that does not answer within 8 seconds leaves the rows it did answer with plus a note. Without a project, without a token, or outside a checkout the scope simply says so.
 
 A session belongs to the repository when it names the same project, or when it ran in a checkout of it. The second test is on the repository itself (git's shared directory), not on the path, so every worktree of a clone and every subdirectory a review was started from count as one repository — a review records the directory it ran in. A worktree that has since been deleted is claimed by the folder this repository's checkouts live in, so removing a feature branch's worktree does not hide its sessions. It belongs to the branch when it recorded that branch, and those sessions are starred `★` in the wider scopes too.
 
