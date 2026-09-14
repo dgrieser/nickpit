@@ -27,7 +27,7 @@ func fullProjectContext() *model.ProjectContext {
 		Assumptions:     []string{"the proxy terminates TLS"},
 		NonGoals:        []string{"single region only"},
 		Notes:           "Anything the fields miss.",
-		Sources:         []string{".nickpit/context.yaml"},
+		Sources:         []string{".nickpit/project.yaml"},
 	}
 }
 
@@ -57,7 +57,7 @@ func TestProjectContextSnippetRendersEveryField(t *testing.T) {
 		"- Declared non-goals:",
 		"  - single region only",
 		"Anything the fields miss.",
-		"Declared in: .nickpit/context.yaml",
+		"Declared in: .nickpit/project.yaml",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("snippet missing %q:\n%s", want, got)
@@ -197,7 +197,7 @@ func TestReviewSystemPromptCarriesProjectContext(t *testing.T) {
 func TestCaptureProjectContextMergesRepoAndOverlay(t *testing.T) {
 	engine := newProjectContextEngine(t)
 	engine.SetProjectContextLoader(func(context.Context, model.ReviewSource, model.ReviewRequest) (*model.ProjectContext, []string) {
-		return &model.ProjectContext{Summary: "repo", Deployment: "internal", Sources: []string{".nickpit/context.yaml"}}, nil
+		return &model.ProjectContext{Summary: "repo", Deployment: "internal", Sources: []string{".nickpit/project.yaml"}}, nil
 	})
 	engine.SetProjectContextOverlay([]*model.ProjectContext{
 		{Deployment: "internet-facing", Sources: []string{"ops.yaml"}},
@@ -323,7 +323,7 @@ func TestProjectContextFromLocalRepoReachesReviewPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "deployment: internet-facing\ncriticality: high\ntrust_boundaries:\n  - handlers accept untrusted bodies\n"
-	if err := os.WriteFile(filepath.Join(dir, ".nickpit", "context.yaml"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".nickpit", "project.yaml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,7 +334,7 @@ func TestProjectContextFromLocalRepoReachesReviewPrompt(t *testing.T) {
 	if reviewCtx.ProjectContext == nil {
 		t.Fatal("ProjectContext = nil, want the repository's file loaded")
 	}
-	if reviewCtx.ProjectContext.Sources[0] != ".nickpit/context.yaml" {
+	if reviewCtx.ProjectContext.Sources[0] != ".nickpit/project.yaml" {
 		t.Fatalf("sources = %v", reviewCtx.ProjectContext.Sources)
 	}
 
@@ -346,7 +346,7 @@ func TestProjectContextFromLocalRepoReachesReviewPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderReviewSystemWithFocus returned err: %v", err)
 	}
-	for _, want := range []string{"## PROJECT CONTEXT", "internet-facing", "handlers accept untrusted bodies", "Declared in: .nickpit/context.yaml"} {
+	for _, want := range []string{"## PROJECT CONTEXT", "internet-facing", "handlers accept untrusted bodies", "Declared in: .nickpit/project.yaml"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("review system prompt missing %q:\n%s", want, system)
 		}

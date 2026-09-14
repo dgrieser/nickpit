@@ -87,7 +87,7 @@ func TestCLIUpdatePublishesGitLabReviewWithoutMirroringChat(t *testing.T) {
 					return
 				}
 				if strings.HasPrefix(r.URL.Path, "/api/v4/projects/g/p/repository/files/") {
-					// The engine probes the target project for .nickpit/context.yaml
+					// The engine probes the target project for .nickpit/project.yaml
 					// at the base SHA; this project declares none.
 					http.NotFound(w, r)
 					return

@@ -55,7 +55,7 @@ func TestFetchBaseFileReadsTargetProjectAtBaseSHA(t *testing.T) {
 	}))
 	defer server.Close()
 
-	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/context.yaml")
+	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFetchBaseFileReadsTargetProjectAtBaseSHA(t *testing.T) {
 	if !strings.Contains(filesPath, "/projects/42/repository/files/") {
 		t.Fatalf("files path = %q, want the target project (42), not the source (99)", filesPath)
 	}
-	if !strings.Contains(filesPath, ".nickpit%2Fcontext.yaml") {
+	if !strings.Contains(filesPath, ".nickpit%2Fproject.yaml") {
 		t.Fatalf("files path = %q, want the file path in one encoded segment", filesPath)
 	}
 	if filesRef != "basesha" {
@@ -88,7 +88,7 @@ func TestFetchBaseFileFallsBackToTargetBranch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/context.yaml"); err != nil {
+	if _, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/project.yaml"); err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v", err)
 	}
 	if filesRef != "main" {
@@ -106,7 +106,7 @@ func TestFetchBaseFileMissingIsNotAnError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/context.yaml")
+	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v, want a missing file to be silent", err)
 	}
@@ -135,7 +135,7 @@ func TestFetchBaseFileRejectsUnusableResponses(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/context.yaml")
+			_, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "group/proj", 7, ".nickpit/project.yaml")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
