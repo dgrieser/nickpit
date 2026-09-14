@@ -494,6 +494,7 @@ func fusedSpecFromPipeline(entry workflow.StepEntry) postMergeFusedSpec {
 // Run executes the pipeline against the given context, returning the assembled
 // result and the (possibly enriched) context.
 func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
+	ctx = context.WithValue(ctx, agentBudgetEnabledKey{}, !req.DisableWorkflowTimeBudget)
 	st := newPipelineState(reviewCtx, p.reviewOrder)
 	st.warnings.logger = p.engine.logger
 	st.warnings.info = p.engine.progressInfo("", "", "")
@@ -636,7 +637,10 @@ func laneLabel(lane boundLane) string {
 
 func (e *Engine) stepContext(override *workflow.StepOverride, req model.ReviewRequest) *stepContext {
 	profile, effReq := override.Resolve(e.config, req)
-	return &stepContext{Engine: e.withConfig(profile), Req: effReq, Override: override}
+	engine := e.withConfig(profile)
+	engine.budgetSummary = workflow.ReasoningSummaryOverride(override)
+	engine.disableBudgetSummary = effReq.DisableReasoningExtract
+	return &stepContext{Engine: engine, Req: effReq, Override: override}
 }
 
 // assemble builds the final ReviewResult: the flat findings/overall from the

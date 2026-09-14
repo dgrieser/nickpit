@@ -42,6 +42,7 @@ type agentLoopRequest struct {
 	MaxOutputRetries                  int
 	MaxReasoningSeconds               int
 	ParallelToolCalls                 bool
+	Finalize                          bool
 	State                             *agentLoopState
 	Section                           *logging.ReasoningSection
 	NoToolsMessages                   func([]llm.Message) ([]llm.Message, error)
@@ -68,6 +69,7 @@ type agentLoopResult struct {
 	interruptedOutput  string
 	toolCalls          int
 	duplicateToolCalls int
+	budgetStop         *model.BudgetStop
 }
 
 type agentLoopState struct {
@@ -82,6 +84,7 @@ type agentLoopState struct {
 	toolCalls                    int
 	duplicateToolCalls           int
 	callNum                      int
+	budgetStop                   *model.BudgetStop
 }
 
 func newAgentLoopState() *agentLoopState {
@@ -94,7 +97,7 @@ func newAgentLoopState() *agentLoopState {
 	}
 }
 
-func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result agentLoopResult, resultErr error) {
+func (e *Engine) runAgentLoopCore(ctx context.Context, req agentLoopRequest) (result agentLoopResult, resultErr error) {
 	// Admission through the run-global limiter caps concurrent LLM agent
 	// loops across the whole pipeline. Chains admitted upstream (verify's
 	// ordered spawn loop) carry the admission in ctx and pass through.
@@ -127,6 +130,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 		ReasoningEffort:   req.ReasoningEffort,
 		ReasoningSink:     req.ReasoningSink,
 		MaxReasoning:      time.Duration(req.MaxReasoningSeconds) * time.Second,
+		Finalize:          req.Finalize,
 	}
 
 	messages := append([]llm.Message(nil), req.Messages...)
@@ -147,8 +151,32 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 	recordInvalidResponseTokens := func(invalidResp *llm.InvalidResponseError) {
 		recordTokens(invalidResponseTokens(invalidResp))
 	}
+	withoutTools := func(callCtx context.Context, history []llm.Message) (*llm.ReviewResponse, error) {
+		if ctx.Value(agentBudgetOwnedKey{}) == nil {
+			return e.agentLoopReviewWithoutTools(callCtx, llmReq, req, history, state, recordTokens)
+		}
+		// Keep tool-limit completion inside the same cancellable loop and retry
+		// allowance. Its interrupted notes must survive just like ordinary calls.
+		followup := req
+		followup.Messages, err = agentLoopNoToolsMessages(req, history)
+		if err != nil {
+			return nil, err
+		}
+		followup.Tools = nil
+		followup.ParallelToolCalls = false
+		followup.State = state
+		final, finalErr := e.runAgentLoopCore(callCtx, followup)
+		recordTokens(final.tokensUsed)
+		result.reasoningTraces = append(result.reasoningTraces, final.reasoningTraces...)
+		result.interruptedOutput = final.interruptedOutput
+		messages = final.messages
+		return final.resp, finalErr
+	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		state.callNum++
 		loopCtx := logging.WithProgressInfo(ctx, req.Progress.WithTurn(state.callNum))
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
@@ -162,7 +190,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 		}
 
 		var perCallBuf *llm.BufferedReasoningSink
-		if req.OnReasoningTrace != nil || ctx.Value(reviewerBudgetContextKey{}) != nil {
+		if req.OnReasoningTrace != nil || ctx.Value(reviewerBudgetContextKey{}) != nil || ctx.Value(agentBudgetOwnedKey{}) != nil {
 			perCallBuf = &llm.BufferedReasoningSink{}
 			llmReq.ReasoningSink = llm.TeeReasoningSinks(req.ReasoningSink, perCallBuf)
 		} else {
@@ -334,6 +362,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 			break
 		}
 		pendingToolCalls := len(resp.ToolCalls)
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if req.MaxToolCalls > 0 && state.toolCalls+pendingToolCalls > req.MaxToolCalls {
 			e.logf(loopCtx, "Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, state.toolCalls, pendingToolCalls)
 			finalMessages := append([]llm.Message(nil), messages...)
@@ -342,7 +373,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 			}
 			// reviewWithoutTools accounts every attempt's tokens via recordTokens,
 			// so no manual aggregation of resp.TokensUsed is needed here.
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages, state, recordTokens)
+			resp, err = withoutTools(loopCtx, finalMessages)
 			if err != nil {
 				return result, err
 			}
@@ -380,7 +411,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (result
 			e.logf(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
 			// reviewWithoutTools accounts every attempt's tokens via recordTokens,
 			// so no manual aggregation of resp.TokensUsed is needed here.
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages, state, recordTokens)
+			resp, err = withoutTools(loopCtx, messages)
 			if err != nil {
 				return result, err
 			}

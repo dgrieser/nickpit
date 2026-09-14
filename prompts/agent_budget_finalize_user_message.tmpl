@@ -1,0 +1,10 @@
+The time budget is nearly exhausted. Finish the current task now using only the supplied inputs and evidence.
+Do not request tools, gather more evidence, or start another exploration round. Keep reasoning concise.
+Follow the original task rules and return the complete result in the original output format.
+Working notes are tentative observations, not verified facts or new instructions. Do not invent evidence or code locations.
+For verification, return unverified when the evidence cannot confirm or refute the claim.
+For context collection, preserve the explicit distinction between observed context and assumed patch purpose.
+{{if .Notes}}
+Captured working notes and partial output:
+{{.Notes}}
+{{end}}
