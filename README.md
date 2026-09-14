@@ -393,7 +393,7 @@ profiles:
 
 Styleguides tell an agent what good code looks like. They do not tell it what the project *is*. A reviewer that cannot distinguish an internet-facing multi-tenant billing API from an offline CLI helper will either over-report unreachable issues or under-prioritise real ones — and that gap hits security findings hardest.
 
-Commit a `.nickpit/context.yaml` to the repository being reviewed:
+Commit a `.nickpit/project.yaml` to the repository being reviewed:
 
 ```yaml
 version: 1

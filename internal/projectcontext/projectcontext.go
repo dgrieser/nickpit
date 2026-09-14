@@ -37,8 +37,11 @@ import (
 
 // RepoPath is where a reviewed repository declares its own context. It lives
 // in a directory rather than beside .nickpit.yaml so it is never mistaken for
-// the config file, which holds credentials and is gitignored.
-const RepoPath = ".nickpit/context.yaml"
+// the config file, which holds credentials and is gitignored. The file is named
+// project.yaml rather than context.yaml because "context" already names three
+// other things here (context.Context, model.ReviewContext, and the context
+// pipeline step), and a repository owner opening it should not have to guess.
+const RepoPath = ".nickpit/project.yaml"
 
 // MaxBytes caps one context document. It is far tighter than
 // styleguide.MaxBytes because this text is injected into the system prompt of

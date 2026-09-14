@@ -17,12 +17,12 @@ func TestLocalSourceReadBaseFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "deployment: cli\n"
-	if err := os.WriteFile(filepath.Join(dir, ".nickpit", "context.yaml"), []byte(want), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".nickpit", "project.yaml"), []byte(want), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	source := NewLocalSource(dir)
-	data, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/context.yaml")
+	data, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("ReadBaseFile returned err: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestLocalSourceReadBaseFile(t *testing.T) {
 
 func TestLocalSourceReadBaseFileMissing(t *testing.T) {
 	source := NewLocalSource(t.TempDir())
-	data, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/context.yaml")
+	data, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("ReadBaseFile returned err: %v, want a missing file to be silent", err)
 	}
@@ -44,7 +44,7 @@ func TestLocalSourceReadBaseFileMissing(t *testing.T) {
 
 func TestLocalSourceReadBaseFileNoRepoRoot(t *testing.T) {
 	source := NewLocalSource("")
-	_, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/context.yaml")
+	_, found, err := source.ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/project.yaml")
 	if err != nil || found {
 		t.Fatalf("ReadBaseFile() = %v, %v; want no file and no error", found, err)
 	}
@@ -65,11 +65,11 @@ func TestLocalSourceReadBaseFileRejectsSymlinkEscape(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".nickpit"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(secret, filepath.Join(dir, ".nickpit", "context.yaml")); err != nil {
+	if err := os.Symlink(secret, filepath.Join(dir, ".nickpit", "project.yaml")); err != nil {
 		t.Fatal(err)
 	}
 
-	_, found, err := NewLocalSource(dir).ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/context.yaml")
+	_, found, err := NewLocalSource(dir).ReadBaseFile(context.Background(), model.ReviewRequest{}, ".nickpit/project.yaml")
 	if err == nil {
 		t.Fatal("ReadBaseFile succeeded through a symlink pointing outside the repository")
 	}

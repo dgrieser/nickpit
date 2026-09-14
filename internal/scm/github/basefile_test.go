@@ -59,7 +59,7 @@ func TestFetchBaseFileReadsBaseRepoAtBaseSHA(t *testing.T) {
 	}))
 	defer server.Close()
 
-	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/context.yaml")
+	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestFetchBaseFileReadsBaseRepoAtBaseSHA(t *testing.T) {
 	if string(data) != "deployment: internet-facing\n" {
 		t.Fatalf("data = %q", data)
 	}
-	if contentsPath != "/repos/owner/repo/contents/.nickpit/context.yaml" {
+	if contentsPath != "/repos/owner/repo/contents/.nickpit/project.yaml" {
 		t.Fatalf("contents path = %q, want the base repository and an unescaped separator", contentsPath)
 	}
 	if contentsRef != "basesha" {
@@ -90,7 +90,7 @@ func TestFetchBaseFileFallsBackToBaseRef(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/context.yaml"); err != nil {
+	if _, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/project.yaml"); err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v", err)
 	}
 	if contentsRef != "main" {
@@ -108,7 +108,7 @@ func TestFetchBaseFileMissingIsNotAnError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/context.yaml")
+	data, found, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/project.yaml")
 	if err != nil {
 		t.Fatalf("FetchBaseFile returned err: %v, want a missing file to be silent", err)
 	}
@@ -138,7 +138,7 @@ func TestFetchBaseFileRejectsUnusableResponses(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/context.yaml")
+			_, _, err := NewClient(server.URL, "token").FetchBaseFile(context.Background(), "owner/repo", 7, ".nickpit/project.yaml")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
