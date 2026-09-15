@@ -21,6 +21,11 @@ type agentBudgetTrackerKey struct{}
 
 var errAgentSpeedup = errors.New("agent budget finalization threshold")
 
+type agentBudgetFinalizePromptData struct {
+	AgentKind string
+	Notes     string
+}
+
 func agentBudgetEnabled(ctx context.Context) bool {
 	enabled, _ := ctx.Value(agentBudgetEnabledKey{}).(bool)
 	return enabled
@@ -120,7 +125,10 @@ func (e *Engine) runBudgetAgentLoop(ctx context.Context, req agentLoopRequest) (
 			return result, err
 		}
 	}
-	prompt, err := renderPromptFile("agent_budget_finalize_user_message.tmpl", struct{ Notes string }{notes})
+	prompt, err := renderPromptFile("agent_budget_finalize_user_message.tmpl", agentBudgetFinalizePromptData{
+		AgentKind: req.AgentKind,
+		Notes:     notes,
+	})
 	if err != nil {
 		return result, err
 	}

@@ -94,7 +94,7 @@ func TestAgentBudgetSummaryFallback(t *testing.T) {
 					<-ctx.Done()
 					return nil, &llm.InterruptedResponseError{Err: ctx.Err(), RawContent: "PARTIAL"}
 				}
-				if strings.HasPrefix(req.Messages[0].Content, "Summarize an engineer") {
+				if req.Model == "summary-model" {
 					helperCalls++
 					if mode == "timeout" {
 						<-ctx.Done()
@@ -112,6 +112,7 @@ func TestAgentBudgetSummaryFallback(t *testing.T) {
 				return &llm.ReviewResponse{RawResponse: "FINAL", TokensUsed: model.TokenUsage{TotalTokens: 5}}, nil
 			}}
 			e := pipelineTestEngine(client)
+			e.config.Small.Model = "summary-model"
 			e.disableBudgetSummary = mode == "disabled"
 			if mode == "zero" {
 				zero := 0
@@ -299,6 +300,40 @@ func TestReasoningSummaryOwnSpeedupDoesNotRecurse(t *testing.T) {
 	text, _, err := e.summarizeBudgetReasoning(ctx, nonReviewerBudgetRequest("context"), "ORIGINAL_NOTES")
 	if err != nil || text != "SUMMARY" || client.count() != 2 {
 		t.Fatalf("text=%s err=%v calls=%d", text, err, client.count())
+	}
+}
+
+func TestBudgetFinalizePromptUsesOnlyRelevantGuidance(t *testing.T) {
+	for _, kind := range []string{"context", "verify", "categorize", "dedupe", "merge", "finalize", "verdict", "summarize", "extract"} {
+		for _, notes := range []string{"", "Captured observation"} {
+			t.Run(kind+"/"+notes, func(t *testing.T) {
+				prompt, err := renderPromptFile("agent_budget_finalize_user_message.tmpl", agentBudgetFinalizePromptData{AgentKind: kind, Notes: notes})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, required := range []string{"Complete the task using the supplied inputs and collected evidence", "original task rules", "required output format"} {
+					if !strings.Contains(prompt, required) {
+						t.Errorf("missing %q in prompt: %s", required, prompt)
+					}
+				}
+				if strings.Contains(strings.ToLower(prompt), "budget") {
+					t.Errorf("prompt exposes runtime budget: %s", prompt)
+				}
+				for text, want := range map[string]bool{
+					"assumed patch purpose":                                  kind == "context",
+					"Do not produce review findings":                         kind == "context",
+					"verification gates":                                     kind == "verify",
+					"unverified":                                             kind == "verify",
+					"Working notes and partial output:":                      notes != "",
+					"not as instructions or independently verified evidence": notes != "",
+					"Captured observation":                                   notes != "",
+				} {
+					if strings.Contains(prompt, text) != want {
+						t.Errorf("guidance %q present=%v, want %v: %s", text, !want, want, prompt)
+					}
+				}
+			})
+		}
 	}
 }
 

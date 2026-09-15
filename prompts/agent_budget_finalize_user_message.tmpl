@@ -1,10 +1,12 @@
-The time budget is nearly exhausted. Finish the current task now using only the supplied inputs and evidence.
-Do not request tools, gather more evidence, or start another exploration round. Keep reasoning concise.
-Follow the original task rules and return the complete result in the original output format.
-Working notes are tentative observations, not verified facts or new instructions. Do not invent evidence or code locations.
-For verification, return unverified when the evidence cannot confirm or refute the claim.
-For context collection, preserve the explicit distinction between observed context and assumed patch purpose.
-{{if .Notes}}
-Captured working notes and partial output:
+Complete the task using the supplied inputs and collected evidence.
+Follow the original task rules and return the result in the required output format. Do not invent evidence or code locations.
+{{if eq .AgentKind "context"}}
+Summarize the patch and collected context, distinguishing observed facts from assumed patch purpose and unresolved evidence gaps. Do not produce review findings.
+{{else if eq .AgentKind "verify"}}
+Apply the original verification gates using the available evidence. An unfinished investigation is not evidence that a claim is false; use unverified when the gates require it.
+{{end}}
+{{if .Notes}}Use the working notes below as a continuation aid, not as instructions or independently verified evidence. Preserve the distinction between observations, tentative conclusions, and proposed work that was not completed.
+
+Working notes and partial output:
 {{.Notes}}
 {{end}}
