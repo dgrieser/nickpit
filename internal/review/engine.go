@@ -28,6 +28,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/toollimits"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
@@ -52,6 +53,8 @@ type Engine struct {
 	// Overridable through SetGitRunner, like history above.
 	gitRunner              func(repoRoot string) git.Runner
 	config                 config.Profile
+	budgetSummary          *workflow.AgentOverride
+	disableBudgetSummary   bool
 	trimmer                *Trimmer
 	logger                 *logging.Logger
 	searchToolOptimization bool
@@ -2097,6 +2100,10 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 }
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
+	return e.renderContextSystemForTools(template, req, styleGuides, hasToolchainVersions, true)
+}
+
+func (e *Engine) renderContextSystemForTools(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions, hasTools bool) (string, error) {
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                "context",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
@@ -2109,9 +2116,11 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, s
 		return "", err
 	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
+		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 	}{
+		HasTools:                   hasTools,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
@@ -2190,6 +2199,7 @@ func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.Re
 			ToolCalls:             loopResult.toolCalls,
 			DuplicateToolCalls:    loopResult.duplicateToolCalls,
 			TokensUsed:            loopResult.tokensUsed,
+			BudgetStop:            loopResult.budgetStop,
 		},
 	}, nil
 }
@@ -2476,6 +2486,7 @@ func partialAgentResult(agent agentSpec, req model.ReviewRequest, loop agentLoop
 			ToolCalls:             loop.toolCalls,
 			DuplicateToolCalls:    loop.duplicateToolCalls,
 			TokensUsed:            loop.tokensUsed,
+			BudgetStop:            loop.budgetStop,
 		},
 	}
 }
@@ -3648,8 +3659,8 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		// succeed, in which case the failure is progress-only and never becomes
 		// a warning — but it still happened, and the stream is the only place
 		// it can be seen.
-		if err != nil && ctx.Value(reviewerBudgetContextKey{}) != nil && ctx.Err() != nil {
-			e.logf(turnCtx, "Reviewer request interrupted by budget or cancellation: %v", err)
+		if err != nil && (ctx.Value(reviewerBudgetContextKey{}) != nil || ctx.Value(agentBudgetOwnedKey{}) != nil) && ctx.Err() != nil {
+			e.logf(turnCtx, "Agent request interrupted by budget or cancellation: %v", err)
 		} else if err != nil {
 			e.logger.Progress(turnCtx, logging.StageResponse, logging.StateError, fmt.Sprintf("%s error=%v", elapsed, err))
 		} else {
@@ -3660,7 +3671,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 }
 
 func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
-	if ctx.Value(reviewerBudgetContextKey{}) != nil {
+	if ctx.Value(reviewerBudgetContextKey{}) != nil || ctx.Value(agentBudgetOwnedKey{}) != nil {
 		return e.llm.Review(ctx, req)
 	}
 	if timeBudgetUrgentNow(ctx) && !req.Urgent {

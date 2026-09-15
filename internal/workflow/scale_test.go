@@ -100,8 +100,8 @@ func TestWithScaledTimeBudgetsScalesEveryAbsoluteCap(t *testing.T) {
 	if *verify.Weight != 55 || *verify.SpeedupThreshold != 90 || verify.MaxSeconds != nil {
 		t.Fatalf("relative budget was rewritten: %+v", verify)
 	}
-	if report.Factor != 2 || report.Caps != 9 || report.Clamped != 0 {
-		t.Fatalf("report = %+v, want factor 2 over 9 caps with none clamped", report)
+	if report.Factor != 2 || report.Caps != 11 || report.Clamped != 0 {
+		t.Fatalf("report = %+v, want factor 2 over 11 caps with none clamped", report)
 	}
 	if report.MinSeconds != 40 || report.MaxSeconds != 3000 {
 		t.Fatalf("report range = %ds..%ds, want 40s..3000s", report.MinSeconds, report.MaxSeconds)
@@ -201,8 +201,8 @@ func TestWithScaledTimeBudgetsKeepsTheDefaultSpecValid(t *testing.T) {
 	if found == 0 {
 		t.Fatal("no absolute budgets found in the default spec; the test no longer covers anything")
 	}
-	if got := *scaled.Steps[0].Config.TimeBudget.MaxSeconds; got != 900 {
-		t.Fatalf("default context budget = %d, want 3x300", got)
+	if got := *scaled.Steps[0].Config.TimeBudget.MaxSeconds; got != 1080 {
+		t.Fatalf("default context budget = %d, want 3x360", got)
 	}
 	if report.Caps < found || report.Clamped != 0 {
 		t.Fatalf("report = %+v, want at least %d caps and none clamped", report, found)
@@ -252,7 +252,7 @@ func absoluteCapFields(typ reflect.Type) []string {
 // fails until WithScaledTimeBudgets covers it.
 func TestScaleCoversEveryAbsoluteCapField(t *testing.T) {
 	want := map[string][]string{
-		"StepOverride":  {"TimeBudget", "MaxReasoningSeconds", "MineReasoning", "CompileFindings", "Nudge", "Categorize"},
+		"StepOverride":  {"TimeBudget", "MaxReasoningSeconds", "MineReasoning", "CompileFindings", "Nudge", "Categorize", "SummarizeReasoning"},
 		"AgentOverride": {"TimeBudget", "MaxReasoningSeconds"},
 	}
 	got := map[string][]string{

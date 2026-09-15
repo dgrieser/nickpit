@@ -2458,6 +2458,16 @@ func modelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest, useSm
 		if stepUsesSmall == useSmallModel {
 			requirements.merge(stepModelRequirements(entry.Type, stepReq.DisableJSONResponseFormat))
 		}
+		if workflow.StepSupportsReasoningSummary(entry.Type) && !req.DisableWorkflowTimeBudget {
+			helper := workflow.ReasoningSummaryOverride(entry.Config)
+			disabled := req.DisableReasoningExtract
+			if entry.Config != nil && entry.Config.DisableReasoningExtract != nil {
+				disabled = *entry.Config.DisableReasoningExtract
+			}
+			if !disabled && *helper.TimeBudget.Weight != 0 && agentUsesSmall(stepUsesSmall, helper) == useSmallModel {
+				requirements.merge(textModelRequirements())
+			}
+		}
 		if entry.Config == nil {
 			continue
 		}

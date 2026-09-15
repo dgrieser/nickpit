@@ -206,8 +206,8 @@ type AgentRun struct {
 	InvalidResponse *InvalidResponseDiagnostic `json:"invalid_response,omitempty"`
 }
 
-// BudgetStop describes a reviewer closed by its wall-clock budget. Findings
-// already returned remain usable even when further rounds were omitted.
+// BudgetStop describes an agent closed by its wall-clock budget. Completed
+// outputs remain usable even when further exploration or rounds were omitted.
 type BudgetStop struct {
 	Reason     string `json:"reason"` // finalized or deadline
 	Scope      string `json:"scope"`

@@ -11,11 +11,15 @@ The code reviewer, who will receive the context you collect:
 {{- end}}
 
 ## YOUR TASK
-Use the following tools to collect all necessary context, needed for a thorough code review, of a proposed code change.
+{{if .HasTools}}Use the following tools to collect all necessary context, needed for a thorough code review, of a proposed code change.
+{{else}}Summarize the patch using only the context and evidence already provided. Do not request tools or additional evidence.
+{{end}}
 
 DO NOT produce review findings yourself.
 
-Gather ALL necessary ADDITIONAL context on the following vectors:
+{{if .HasTools}}Gather ALL necessary ADDITIONAL context on the following vectors:
+{{else}}Use the supplied context to cover these vectors, noting any unresolved evidence gaps:
+{{end}}
 - Code Quality and Correctness
 - Security
 - Architecture
@@ -26,5 +30,6 @@ Gather ALL necessary ADDITIONAL context on the following vectors:
 Your final message should be a markdown formatted summary of what you believe the patch is intended to do.
 Make clear in that section that the purpose is an assumption based on the patch and collected context.
 
-### TOOLS
+{{if .HasTools}}### TOOLS
 {{.ToolInstructions}}
+{{end}}

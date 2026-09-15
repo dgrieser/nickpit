@@ -23,9 +23,16 @@ func (e *Engine) executeAgentTools(ctx context.Context, req agentLoopRequest, ca
 	}
 	for i, call := range calls {
 		if handler := req.ToolHandlers[call.Name]; handler != nil {
+			if err := ctx.Err(); err != nil && ctx.Value(agentBudgetOwnedKey{}) != nil {
+				out[i] = llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: toolError("", "canceled", err.Error())}
+				continue
+			}
 			body, err := handler(ctx, call)
 			if err != nil {
-				return nil, err
+				if ctx.Err() == nil || ctx.Value(agentBudgetOwnedKey{}) == nil {
+					return nil, err
+				}
+				body = toolError("", "canceled", ctx.Err().Error())
 			}
 			out[i] = llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: body}
 			e.logToolCall(ctx, call, body)

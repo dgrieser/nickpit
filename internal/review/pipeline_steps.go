@@ -75,11 +75,15 @@ func (e *Engine) collectStepFunc() stepFunc {
 		if err != nil {
 			return err
 		}
+		noToolsSystem, err := sc.Engine.renderContextSystemForTools(contextTemplate, sc.Req, guides, hasToolchain, false)
+		if err != nil {
+			return err
+		}
 		contextResult, contextErr := sc.Engine.runContextAgent(ctx, agentSpec{
 			name:          "Collect Context",
 			role:          "context",
 			system:        contextSystem,
-			noToolsSystem: contextSystem,
+			noToolsSystem: noToolsSystem,
 			user:          baseUserPrompt,
 			schemaKind:    llm.SchemaKindText,
 			hasTools:      true,

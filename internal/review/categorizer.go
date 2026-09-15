@@ -214,6 +214,8 @@ func buildCategorizeUserPrompt(reviewCtx *model.ReviewContext, finding model.Fin
 // classifier is toolless, so the run carries tokens and runtime only. A nil run
 // means nothing ran.
 func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]categorizeResult, *model.AgentRun, []string, error) {
+	budgetTracker := &agentBudgetTracker{}
+	ctx = context.WithValue(ctx, agentBudgetTrackerKey{}, budgetTracker)
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Categorize generated replacement IDs for invalid finding IDs: count=%d", overwrote)
@@ -308,6 +310,7 @@ func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewConte
 		Findings:       len(findings),
 		TokensUsed:     usageSum,
 		RuntimeSeconds: model.RuntimeSeconds(time.Since(categorizeStart)),
+		BudgetStop:     budgetTracker.result(ctx, "categorize"),
 	}
 	return results, run, warnings, nil
 }

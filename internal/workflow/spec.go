@@ -244,6 +244,10 @@ type StepOverride struct {
 	// no categorize time_budget at all both phases share that budget as one unit.
 	Categorize *AgentOverride `yaml:"categorize"`
 
+	// SummarizeReasoning prepares an interrupted context/verification agent's
+	// notes for final completion. Its weight divides the urgent remainder.
+	SummarizeReasoning *AgentOverride `yaml:"summarize_reasoning"`
+
 	// Dedupe/merge-only prompt trimming, accepted only under config on
 	// dedupe / dedupe:<vector> / merge steps — the two stages that judge
 	// findings against each other and carry the review context to do it.
@@ -334,7 +338,7 @@ var stepOverrideKeys = []string{
 
 var reviewInternalOverrideKeys = []string{"mine_reasoning", "compile_findings", "nudge"}
 
-var verifyInternalOverrideKeys = []string{CategorizeAgentKey}
+var verifyInternalOverrideKeys = []string{CategorizeAgentKey, "summarize_reasoning"}
 
 // CategorizeAgentKey is the verify step's internal-agent subconfig key.
 const CategorizeAgentKey = "categorize"
@@ -915,6 +919,8 @@ func stepAcceptsContextInclude(stepType string) bool {
 // nudge, verify steps spawn the categorize classifier.
 func internalOverrideKeys(stepType string) []string {
 	switch {
+	case stepType == StepCollectContext:
+		return []string{"summarize_reasoning"}
 	case strings.HasPrefix(stepType, StepReviewPrefix):
 		return reviewInternalOverrideKeys
 	case isVerifyStep(stepType):
@@ -1143,6 +1149,18 @@ func stepDiscardedAfterMerge(stepType string) bool {
 }
 
 func validateStepTimeBudgets(entry StepEntry) error {
+	if entry.Config != nil && entry.Config.SummarizeReasoning != nil {
+		if !StepSupportsReasoningSummary(entry.Type) {
+			return fmt.Errorf("summarize_reasoning is only supported by collect-context and verify steps")
+		}
+		tb := entry.Config.SummarizeReasoning.TimeBudget
+		if err := validateTimeBudget(tb); err != nil {
+			return fmt.Errorf("summarize_reasoning.time_budget: %w", err)
+		}
+		if tb != nil && tb.Weight != nil && *tb.Weight == 100 {
+			return fmt.Errorf("summarize_reasoning.time_budget weight must be between 0 and 99 to leave time for final completion")
+		}
+	}
 	if entry.Config != nil {
 		if err := validateTimeBudget(entry.Config.TimeBudget); err != nil {
 			return fmt.Errorf("time_budget: %w", err)
@@ -1330,7 +1348,7 @@ func validateStepOverrideValues(cfg *StepOverride) error {
 	if err := validateOutputRetries(cfg.MaxOutputRetries); err != nil {
 		return err
 	}
-	for _, agent := range []*AgentOverride{cfg.MineReasoning, cfg.CompileFindings, cfg.Nudge, cfg.Categorize} {
+	for _, agent := range []*AgentOverride{cfg.MineReasoning, cfg.CompileFindings, cfg.Nudge, cfg.Categorize, cfg.SummarizeReasoning} {
 		if agent == nil {
 			continue
 		}

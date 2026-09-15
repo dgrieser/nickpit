@@ -103,14 +103,14 @@ steps:
     name: Context
     config:
       time_budget:
-        max_seconds: 300
-  # Each review lane caps at 2100s and its steps split that cap by weight.
-  # verify 30 + dedupe 15 leaves the review step the implicit remainder, 55% = 19m15s.
+        max_seconds: 360
+  # Each review lane caps at 2400s and its steps split that cap by weight.
+  # verify 30 + dedupe 15 leaves the review step the implicit remainder, 55% = 22m.
   # Do not write that 55 out as an explicit `weight` on the review step: a weight
   # there also switches on the per-phase split inside the step (main, mine_reasoning,
   # compile_findings, nudge) and the same number is reused as the main phase's share
-  # of the step budget, so `weight: 55` would cut the main review pass to 55% of 19m15s
-  # instead of leaving the whole 19m15s for the phases to share.
+  # of the step budget, so `weight: 55` would cut the main review pass to 55% of 22m
+  # instead of leaving the whole 22m for the phases to share.
   - parallel:
       - lane:
           - type: review:codequality
@@ -130,7 +130,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -145,7 +146,7 @@ steps:
         name: Code quality
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
       - lane:
           - type: review:security
             config:
@@ -164,7 +165,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:security
             config:
               scope: reviewer
@@ -179,7 +181,7 @@ steps:
         name: Security
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
       - lane:
           - type: review:architecture
             config:
@@ -198,7 +200,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -213,7 +216,7 @@ steps:
         name: Architecture
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
       - lane:
           - type: review:performance
             config:
@@ -232,7 +235,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -247,7 +251,7 @@ steps:
         name: Performance
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
       - lane:
           - type: review:testing
             config:
@@ -266,7 +270,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -281,7 +286,7 @@ steps:
         name: Testing
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
       - lane:
           - type: review:bestpractices
             config:
@@ -300,7 +305,8 @@ steps:
                 # the rest. Bounded because a classifier stalling on the endpoint
                 # used to consume the whole step and ship unverified findings.
                 time_budget:
-                  weight: 15
+                  weight: 5
+                  max_seconds: 30
           - type: dedupe:bestpractices
             config:
               scope: reviewer
@@ -315,14 +321,14 @@ steps:
         name: Best practices
         config:
           time_budget:
-            max_seconds: 2100
+            max_seconds: 2400
     name: Review
   - pipeline:
       - type: merge
         config:
           scope: cluster
           time_budget:
-            weight: 30
+            weight: 50
           context:
             styleguides: true
             diff: true
@@ -334,13 +340,13 @@ steps:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 40
+            weight: 30
       - type: verdict
         config:
           model: "@small"
           scope: all
           time_budget:
-            weight: 20
+            weight: 10
       - type: summarize
         config:
           model: "@small"
@@ -350,7 +356,7 @@ steps:
     name: Finalize
     config:
       time_budget:
-        max_seconds: 1200
+        max_seconds: 900
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
@@ -360,7 +366,7 @@ steps:
 # falling back to the primary profile config. profile.small may carry its own
 # base_url / api_key, in which case every "@small" step runs against that second
 # endpoint (its own client, its own rate-limit backoff, its own model check).
-# A nested mine_reasoning / compile_findings / nudge / categorize override that
+# A nested mine_reasoning / compile_findings / nudge / categorize / summarize_reasoning override that
 # names a concrete model stays on its step's endpoint — only "@small" selects one —
 # so a model that just one of the two providers serves needs its own step.
 # Two caveats when the endpoints are different providers: the json_schema
@@ -379,6 +385,13 @@ steps:
 #       time_budget:
 #         max_seconds: 300
 #         speedup_threshold: 80
+#       # collect-context and verify support this urgent-only helper. Defaults:
+#       summarize_reasoning:
+#         model: "@small"
+#         time_budget:
+#           weight: 25              # share of urgent remainder; 0 skips helper
+#           max_seconds: 30
+#           speedup_threshold: 100  # no recursive summarization
 #   - parallel:
 #       - lane:
 #           - type: review:security

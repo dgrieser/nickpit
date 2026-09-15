@@ -101,7 +101,7 @@
 # falling back to the primary profile config. profile.small may carry its own
 # base_url / api_key, in which case every "@small" step runs against that second
 # endpoint (its own client, its own rate-limit backoff, its own model check).
-# A nested mine_reasoning / compile_findings / nudge / categorize override that
+# A nested mine_reasoning / compile_findings / nudge / categorize / summarize_reasoning override that
 # names a concrete model stays on its step's endpoint — only "@small" selects one —
 # so a model that just one of the two providers serves needs its own step.
 # Two caveats when the endpoints are different providers: the json_schema
@@ -120,6 +120,13 @@
 #       time_budget:
 #         max_seconds: 300
 #         speedup_threshold: 80
+#       # collect-context and verify support this urgent-only helper. Defaults:
+#       summarize_reasoning:
+#         model: "@small"
+#         time_budget:
+#           weight: 25              # share of urgent remainder; 0 skips helper
+#           max_seconds: 30
+#           speedup_threshold: 100  # no recursive summarization
 #   - parallel:
 #       - lane:
 #           - type: review:security

@@ -92,6 +92,14 @@ func scaledEntries(entries []StepEntry, factor float64, report *TimeBudgetScaleR
 	}
 	scaled := make([]StepEntry, len(entries))
 	for i, entry := range entries {
+		if StepSupportsReasoningSummary(entry.Type) {
+			cfg := StepOverride{}
+			if entry.Config != nil {
+				cfg = *entry.Config
+			}
+			cfg.SummarizeReasoning = ReasoningSummaryOverride(entry.Config)
+			entry.Config = &cfg
+		}
 		entry.Config = scaledStepOverride(entry.Config, factor, report)
 		entry.Parallel = scaledEntries(entry.Parallel, factor, report)
 		entry.Lane = scaledEntries(entry.Lane, factor, report)
@@ -115,6 +123,7 @@ func scaledStepOverride(override *StepOverride, factor float64, report *TimeBudg
 	// time_budget weight — the classifier's share of the verify step — is relative
 	// and so left alone, like every other weight.
 	copied.Categorize = scaledAgentOverride(override.Categorize, factor, report)
+	copied.SummarizeReasoning = scaledAgentOverride(override.SummarizeReasoning, factor, report)
 	return &copied
 }
 

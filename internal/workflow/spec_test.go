@@ -50,14 +50,15 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	all := ScopeAll
 	finding := ScopeFinding
 	reviewer := ScopeReviewer
-	max300 := 300
-	max1200 := 1200
-	max2100 := 2100
+	max360 := 360
+	max900 := 900
+	max2400 := 2400
+	max30 := 30
+	weight5 := 5
 	weight10 := 10
 	weight15 := 15
-	weight20 := 20
 	weight30 := 30
-	weight40 := 40
+	weight50 := 50
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -73,19 +74,19 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight30}, Categorize: &AgentOverride{Model: &small, TimeBudget: &TimeBudget{Weight: &weight15}}}},
+			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight30}, Categorize: &AgentOverride{Model: &small, TimeBudget: &TimeBudget{Weight: &weight5, MaxSeconds: &max30}}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}, Context: fullContext()}},
-		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2100}}}
+		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}}
 	}
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
-		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max300}}},
+		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max360}}},
 		{Name: "Review", Parallel: parallel},
 		{Name: "Finalize", Pipeline: []StepEntry{
-			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}, Context: fullContext()}},
-			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
-			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
+			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight50}, Context: fullContext()}},
+			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
+			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight10}}},
 			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight10}}},
-		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1200}}},
+		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max900}}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)

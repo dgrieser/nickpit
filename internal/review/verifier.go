@@ -218,6 +218,8 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 // and RuntimeSeconds is the wall-clock span of the concurrent fan-out. A nil
 // run means nothing ran (no findings, or a failure before the first agent).
 func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]verifyResult, *model.AgentRun, []string, error) {
+	budgetTracker := &agentBudgetTracker{}
+	ctx = context.WithValue(ctx, agentBudgetTrackerKey{}, budgetTracker)
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
@@ -324,6 +326,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		DuplicateToolCalls:    counts.duplicateToolCalls,
 		TokensUsed:            usageSum,
 		RuntimeSeconds:        model.RuntimeSeconds(time.Since(verifyStart)),
+		BudgetStop:            budgetTracker.result(ctx, "verify"),
 	}
 	return results, run, warnings, nil
 }

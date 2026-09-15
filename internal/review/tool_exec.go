@@ -129,6 +129,9 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 }
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	if err := ctx.Err(); err != nil {
+		return toolError("", "canceled", err.Error())
+	}
 	if e.retrieval == nil {
 		return toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"}))
 	}
