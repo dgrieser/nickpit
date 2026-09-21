@@ -1014,7 +1014,7 @@ func (e *Engine) resolveStepPromptContext(st *PipelineState, override *workflow.
 	include := override.ContextInclude()
 	out := stepPromptContext{hasToolchain: st.hasToolchain && include.Toolchain}
 	if include.ProjectContext {
-		out.projectContext = st.projectContext
+		out.projectContext = e.stepProjectContext(st)
 	}
 	if include.StyleGuides {
 		guides, err := e.stepStyleGuides(st)

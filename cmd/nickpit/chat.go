@@ -907,6 +907,17 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 // cache was updated and should be saved.
 func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session, co *chatCheckout) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
 	refresh := sess.Context == nil
+	req := a.chatReviewRequest(profile, sess.Source, sess.ContextOptions)
+	// cachedContext hands back the stored context, and is the only way this
+	// function returns one. The overlay, --disable-project-context and the
+	// repository's own file are current configuration rather than properties of
+	// the cached snapshot, so every cached return has to re-apply them: a resumed
+	// chat is then told what a review run today would be told, and disabling can
+	// take back what the cache already holds.
+	cachedContext := func() (*model.ReviewContext, bool, error) {
+		engine.ApplyProjectContext(ctx, sess.Context, req)
+		return sess.Context, false, nil
+	}
 	if adapter, ok := source.(*glscm.Adapter); ok && model.ReviewMode(sess.Source.Mode) == model.ModeGitLab &&
 		sess.Source.Repo != "" && sess.Source.Identifier > 0 {
 		status, err := adapter.Client().FetchMRStatusByPath(ctx, sess.Source.Repo, sess.Source.Identifier)
@@ -924,16 +935,16 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 		}
 	}
 	if !refresh {
-		return sess.Context, false, nil
+		return cachedContext()
 	}
-	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions), co)
+	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, req, co)
 	if err != nil {
 		// A refresh failure must not block the chat when a cached context exists:
 		// stale-but-real context beats no conversation. Without a cache the error
 		// is fatal.
 		if sess.Context != nil {
 			a.logf(ctx, "chat: context refresh failed, using cached context: %v", err)
-			return sess.Context, false, nil
+			return cachedContext()
 		}
 		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
 	}

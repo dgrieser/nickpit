@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -204,7 +205,7 @@ func TestCaptureProjectContextMergesRepoAndOverlay(t *testing.T) {
 	})
 
 	reviewCtx := sampleReviewCtx()
-	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{}, true)
 
 	if reviewCtx.ProjectContext == nil {
 		t.Fatal("ProjectContext = nil, want the merged context")
@@ -224,7 +225,7 @@ func TestCaptureProjectContextRecordsWarnings(t *testing.T) {
 	})
 
 	reviewCtx := sampleReviewCtx()
-	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{}, true)
 
 	if reviewCtx.ProjectContext != nil {
 		t.Fatalf("ProjectContext = %+v, want none", reviewCtx.ProjectContext)
@@ -247,7 +248,7 @@ func TestCaptureProjectContextDisabledKeepsOverlay(t *testing.T) {
 	engine.SetDisableRepoProjectContext(true)
 
 	reviewCtx := sampleReviewCtx()
-	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{}, true)
 
 	if called {
 		t.Fatal("repository loader ran with the repo context disabled")
@@ -263,7 +264,7 @@ func TestCaptureProjectContextNoSources(t *testing.T) {
 		return nil, nil
 	})
 	reviewCtx := sampleReviewCtx()
-	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{}, true)
 	if reviewCtx.ProjectContext != nil {
 		t.Fatalf("ProjectContext = %+v, want nil", reviewCtx.ProjectContext)
 	}
@@ -294,7 +295,8 @@ func TestTrimmerKeepsProjectContext(t *testing.T) {
 func TestStepContextIncludeControlsProjectContext(t *testing.T) {
 	engine := newProjectContextEngine(t)
 	pc := fullProjectContext()
-	st := &PipelineState{projectContext: pc, enrichedPrompt: "{}"}
+	// promptsReady mirrors ensurePrompts, which is what fills projectContext.
+	st := &PipelineState{projectContext: pc, enrichedPrompt: "{}", promptsReady: true}
 
 	on, err := engine.resolveStepPromptContext(st, nil)
 	if err != nil {
@@ -315,6 +317,103 @@ func TestStepContextIncludeControlsProjectContext(t *testing.T) {
 	}
 }
 
+// A findings-only workflow runs no reviewer, so ensurePrompts never fires and
+// the prepared projectContext field stays empty. Dedupe and merge must still see
+// the context off the pipeline's own review context.
+func TestStepProjectContextFallsBackToContextWhenNoReviewerRan(t *testing.T) {
+	engine := newProjectContextEngine(t)
+	pc := fullProjectContext()
+	st := &PipelineState{Base: &model.ReviewContext{ProjectContext: pc}, enrichedPrompt: "{}"}
+	st.Enriched = st.Base
+
+	got, err := engine.resolveStepPromptContext(st, nil)
+	if err != nil {
+		t.Fatalf("resolveStepPromptContext returned err: %v", err)
+	}
+	if got.projectContext != pc {
+		t.Fatalf("projectContext = %+v, want the review context's own entry", got.projectContext)
+	}
+}
+
+// A workflow consuming injected findings has no revision to read the repository
+// file from, but the operator overlay is configuration and must still arrive.
+func TestSourcelessPipelineAppliesOperatorOverlay(t *testing.T) {
+	engine := newProjectContextEngine(t)
+	engine.SetProjectContextLoader(func(context.Context, model.ReviewSource, model.ReviewRequest) (*model.ProjectContext, []string) {
+		t.Fatal("repository file must not be read without a revision under review")
+		return nil, nil
+	})
+	engine.SetProjectContextOverlay([]*model.ProjectContext{
+		{Deployment: "internet-facing", Sources: []string{"ops.yaml"}},
+	})
+
+	spec := workflow.Spec{Version: workflow.SpecVersion, Name: "merge-only", Steps: []workflow.StepEntry{{Type: workflow.StepMerge}}}
+	p, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatalf("BuildPipeline returned err: %v", err)
+	}
+	if p.NeedsSource() {
+		t.Fatal("merge-only spec must not need a source")
+	}
+	_, enriched, err := engine.RunSpecPipeline(context.Background(), p, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatalf("RunSpecPipeline returned err: %v", err)
+	}
+	if enriched == nil || enriched.ProjectContext == nil {
+		t.Fatalf("ProjectContext = %+v, want the overlay applied", enriched)
+	}
+	if enriched.ProjectContext.Deployment != "internet-facing" {
+		t.Fatalf("Deployment = %q, want the overlay value", enriched.ProjectContext.Deployment)
+	}
+}
+
+// A re-capture is what a resumed chat does. It must reflect today's
+// configuration, including taking back a context the cache already holds, and
+// must not stack a duplicate warning on every call.
+func TestApplyProjectContextIsIdempotentAndCanClear(t *testing.T) {
+	engine := newProjectContextEngine(t)
+	engine.SetProjectContextLoader(func(context.Context, model.ReviewSource, model.ReviewRequest) (*model.ProjectContext, []string) {
+		return nil, []string{"project context ignored: broken"}
+	})
+	reviewCtx := &model.ReviewContext{ProjectContext: fullProjectContext(), OmittedSections: []string{"unrelated warning"}}
+
+	engine.ApplyProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+	engine.ApplyProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+
+	if reviewCtx.ProjectContext != nil {
+		t.Fatalf("ProjectContext = %+v, want the stale cached entry cleared", reviewCtx.ProjectContext)
+	}
+	warnings := 0
+	for _, s := range reviewCtx.OmittedSections {
+		if strings.HasPrefix(s, projectContextWarningPrefix) {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("project-context warnings = %d, want exactly 1 after two captures", warnings)
+	}
+	if !slices.Contains(reviewCtx.OmittedSections, "unrelated warning") {
+		t.Fatalf("OmittedSections = %v, want unrelated warnings preserved", reviewCtx.OmittedSections)
+	}
+}
+
+// Disabling the repository file must also take back what a cached context holds.
+func TestApplyProjectContextHonoursDisable(t *testing.T) {
+	engine := newProjectContextEngine(t)
+	engine.SetDisableRepoProjectContext(true)
+	engine.SetProjectContextLoader(func(context.Context, model.ReviewSource, model.ReviewRequest) (*model.ProjectContext, []string) {
+		t.Fatal("repository file must not be read when disabled")
+		return nil, nil
+	})
+	reviewCtx := &model.ReviewContext{ProjectContext: fullProjectContext()}
+
+	engine.ApplyProjectContext(context.Background(), reviewCtx, model.ReviewRequest{})
+
+	if reviewCtx.ProjectContext != nil {
+		t.Fatalf("ProjectContext = %+v, want it cleared by --disable-project-context", reviewCtx.ProjectContext)
+	}
+}
+
 // End-to-end over the real seam: a file on disk, read through the production
 // LocalSource and loader, ending up in a reviewer's system prompt.
 func TestProjectContextFromLocalRepoReachesReviewPrompt(t *testing.T) {
@@ -329,7 +428,7 @@ func TestProjectContextFromLocalRepoReachesReviewPrompt(t *testing.T) {
 
 	engine := NewEngine(git.NewLocalSource(dir), &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	reviewCtx := sampleReviewCtx()
-	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{RepoRoot: dir})
+	engine.captureProjectContext(context.Background(), reviewCtx, model.ReviewRequest{RepoRoot: dir}, true)
 
 	if reviewCtx.ProjectContext == nil {
 		t.Fatal("ProjectContext = nil, want the repository's file loaded")

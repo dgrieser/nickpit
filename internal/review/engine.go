@@ -342,6 +342,10 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 		}
 	} else {
 		reviewCtx = &model.ReviewContext{Mode: req.Mode, CheckoutRoot: req.RepoRoot, Identifier: req.Identifier}
+		// A findings-only workflow still judges severity and reachability, so the
+		// operator overlay has to reach its agents. There is no revision under
+		// review here, hence no repository file to read.
+		e.captureProjectContext(ctx, reviewCtx, req, false)
 	}
 	result, enrichedCtx, err := p.Run(ctx, reviewCtx, req)
 	if err != nil {
@@ -408,7 +412,7 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 		}
 	}
 
-	e.captureProjectContext(ctx, reviewCtx, req)
+	e.captureProjectContext(ctx, reviewCtx, req, true)
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
 		e.appendFullFiles(ctx, reviewCtx, req.RepoRoot)
@@ -2989,6 +2993,23 @@ func detectedVersionsFor(ctx *model.ReviewContext, language string) []string {
 	return out
 }
 
+// stepProjectContext is stepStyleGuides for the project context: prepared state
+// once the reviewers have built their prompts, and otherwise the context itself.
+// A findings-only workflow runs no reviewer, so ensurePrompts never fires and
+// the prepared field stays empty — without the fallback every dedupe and merge
+// agent in such a workflow would be told nothing about the project.
+func (e *Engine) stepProjectContext(st *PipelineState) *model.ProjectContext {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.promptsReady {
+		return st.projectContext
+	}
+	if st.Enriched == nil {
+		return nil
+	}
+	return st.Enriched.ProjectContext
+}
+
 // stepStyleGuides returns the styleguides for dedupe and merge prompts. A
 // source-less workflow (e.g. --step merge --findings a.json) never runs
 // ensurePrompts, so st.styleGuides stays unset; fall back to resolving
@@ -3102,13 +3123,42 @@ func addDetectorLanguages(seen map[string]struct{}, path, content string) {
 
 const maxStyleGuideProbeBytes = 1 << 20
 
+// projectContextWarningPrefix marks the OmittedSections entries this capture
+// owns, so a repeated capture replaces its own warnings instead of stacking a
+// duplicate on every call. It matches what projectcontext.LoadRepo emits.
+const projectContextWarningPrefix = "project context"
+
+// ApplyProjectContext re-resolves the project context onto an existing review
+// context, so a caller reusing a cached context (a resumed chat session) still
+// sees today's configuration rather than whatever was merged when the context
+// was first built.
+func (e *Engine) ApplyProjectContext(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) {
+	if reviewCtx == nil {
+		return
+	}
+	e.captureProjectContext(ctx, reviewCtx, req, true)
+}
+
 // captureProjectContext resolves how the project describes its own deployment
 // and usage, merging the reviewed repository's own file with any operator
 // overlay. Best-effort: a repository that cannot be read, or whose file does
 // not parse, degrades to a warning rather than failing the review.
-func (e *Engine) captureProjectContext(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) {
+//
+// includeRepoFile is false when there is no revision under review — a workflow
+// running only on injected findings has no base revision to read the file from,
+// and probing for one would only produce a spurious warning. The operator
+// overlay still applies, because it is configuration rather than repository
+// content.
+//
+// The result is assigned unconditionally, nil included: on a re-capture an
+// empty merge must clear a context the previous capture stored, or
+// --disable-project-context could never take back what a cache already holds.
+func (e *Engine) captureProjectContext(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest, includeRepoFile bool) {
+	reviewCtx.OmittedSections = slices.DeleteFunc(reviewCtx.OmittedSections, func(s string) bool {
+		return strings.HasPrefix(s, projectContextWarningPrefix)
+	})
 	var entries []*model.ProjectContext
-	if !e.disableRepoProjectContext && e.projectContextLoad != nil && e.source != nil {
+	if includeRepoFile && !e.disableRepoProjectContext && e.projectContextLoad != nil && e.source != nil {
 		repoContext, warnings := e.projectContextLoad(ctx, e.source, req)
 		for _, warning := range warnings {
 			e.logf(ctx, "Project context warning: %s", warning)
@@ -3120,10 +3170,10 @@ func (e *Engine) captureProjectContext(ctx context.Context, reviewCtx *model.Rev
 	}
 	entries = append(entries, e.projectContextOverlay...)
 	merged := projectcontext.Merge(entries...)
+	reviewCtx.ProjectContext = merged
 	if merged == nil {
 		return
 	}
-	reviewCtx.ProjectContext = merged
 	e.logf(ctx, "Loaded project context: sources=%s deployment=%q criticality=%q", strings.Join(merged.Sources, ","), merged.Deployment, merged.Criticality)
 }
 
