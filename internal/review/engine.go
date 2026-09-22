@@ -21,6 +21,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
@@ -70,6 +71,19 @@ type Engine struct {
 	// disabledStyleGuides holds built-in styleguide languages the user turned
 	// off. Same write-once-before-pipeline contract as additionalStyleGuides.
 	disabledStyleGuides map[string]struct{}
+	// projectContextLoad reads the reviewed repository's own description of how
+	// it is deployed and used. A seam, like toolchainCapture, so tests can
+	// supply one without an SCM. Warnings it returns land in OmittedSections.
+	projectContextLoad func(ctx context.Context, src model.ReviewSource, req model.ReviewRequest) (*model.ProjectContext, []string)
+	// projectContextOverlay holds operator-supplied context entries (profile
+	// project_context / --project-context), applied after the repository's own
+	// so an operator can correct what a repository claims about itself. Resolved
+	// before the checkout exists, hence engine state rather than review context.
+	// Same write-once-before-pipeline contract as additionalStyleGuides.
+	projectContextOverlay []*model.ProjectContext
+	// disableRepoProjectContext ignores the reviewed repository's file entirely;
+	// the overlay still applies.
+	disableRepoProjectContext bool
 }
 
 // Both patterns count `$` as an identifier character, matching retrieval's
@@ -206,6 +220,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		config:                 profile,
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
+		projectContextLoad:     projectcontext.LoadRepo,
 	}
 }
 
@@ -247,6 +262,26 @@ func (e *Engine) newGitRunner(repoRoot string) git.Runner {
 // tests; production code uses the default manifest parsing capture.
 func (e *Engine) SetToolchainCapture(fn func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion) {
 	e.toolchainCapture = fn
+}
+
+// SetProjectContextLoader overrides the reviewed repository's project-context
+// reader. Intended for tests; production code uses projectcontext.LoadRepo.
+func (e *Engine) SetProjectContextLoader(fn func(ctx context.Context, src model.ReviewSource, req model.ReviewRequest) (*model.ProjectContext, []string)) {
+	e.projectContextLoad = fn
+}
+
+// SetProjectContextOverlay installs operator-supplied project-context entries,
+// applied in order after the reviewed repository's own. Must be called before
+// the pipeline runs; the slice must not be mutated afterwards.
+func (e *Engine) SetProjectContextOverlay(entries []*model.ProjectContext) {
+	e.projectContextOverlay = entries
+}
+
+// SetDisableRepoProjectContext ignores the reviewed repository's own context
+// file. Operator-supplied entries are unaffected: the switch exists to distrust
+// the repository, not to turn the feature off.
+func (e *Engine) SetDisableRepoProjectContext(disabled bool) {
+	e.disableRepoProjectContext = disabled
 }
 
 func (e *Engine) SetLogger(logger *logging.Logger) {
@@ -307,6 +342,10 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 		}
 	} else {
 		reviewCtx = &model.ReviewContext{Mode: req.Mode, CheckoutRoot: req.RepoRoot, Identifier: req.Identifier}
+		// A findings-only workflow still judges severity and reachability, so the
+		// operator overlay has to reach its agents. There is no revision under
+		// review here, hence no repository file to read.
+		e.captureProjectContext(ctx, reviewCtx, req, false)
 	}
 	result, enrichedCtx, err := p.Run(ctx, reviewCtx, req)
 	if err != nil {
@@ -372,6 +411,8 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 			e.logf(ctx, "Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
 		}
 	}
+
+	e.captureProjectContext(ctx, reviewCtx, req, true)
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
 		e.appendFullFiles(ctx, reviewCtx, req.RepoRoot)
@@ -1196,7 +1237,7 @@ func suggestionCandidateCount(findings []model.Finding) int {
 // findings intact and only records the dedupe run for telemetry. Mechanically
 // detectable duplicates are folded in code first; the LLM agent only sees the
 // reduced set.
-func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) []model.AgentRun {
+func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) []model.AgentRun {
 	runs := make([]model.AgentRun, len(vectorResults))
 	var wg sync.WaitGroup
 	for i := range vectorResults {
@@ -1223,7 +1264,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 		wg.Add(1)
 		go func(idx int, input agentResult, before int) {
 			defer wg.Done()
-			resp, run := e.runDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions)
+			resp, run := e.runDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions, projectContext)
 			runs[idx] = run
 			after := len(input.resp.Findings)
 			if resp != nil {
@@ -1249,8 +1290,8 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 	return out
 }
 
-func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (*llm.ReviewResponse, model.AgentRun) {
-	result, err := e.callDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions)
+func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (*llm.ReviewResponse, model.AgentRun) {
+	result, err := e.callDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions, projectContext)
 	run := result.run
 	if err != nil {
 		return nil, e.failDedupeRun(run, model.AgentRunStatusFailed, err)
@@ -1269,7 +1310,7 @@ func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextN
 	return resp, run
 }
 
-func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, error) {
+func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_dedupe_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -1278,7 +1319,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, context
 	if err != nil {
 		return agentResult{}, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("dedupe", styleGuides, hasToolchainVersions)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("dedupe", styleGuides, hasToolchainVersions, projectContext)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1362,7 +1403,7 @@ func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun 
 // run concurrently. A failed or invalid micro-merge keeps its cluster's
 // findings unmerged — bias toward inclusion: a rare surviving near-duplicate
 // beats silently losing a reviewer's finding.
-func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, []model.AgentRun) {
+func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (agentResult, []model.AgentRun) {
 	if len(inputs) == 0 {
 		result := emptyVerifiedMergeResult()
 		return result, []model.AgentRun{result.run}
@@ -1402,7 +1443,7 @@ func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, c
 		wg.Add(1)
 		go func(ci int, reduced []model.Finding) {
 			defer wg.Done()
-			outcomes[ci], runs[ci] = e.runClusterMergeAgent(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, fmt.Sprintf("#%d", ci+1))
+			outcomes[ci], runs[ci] = e.runClusterMergeAgent(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, projectContext, fmt.Sprintf("#%d", ci+1))
 		}(ci, reduced)
 	}
 	wg.Wait()
@@ -1470,8 +1511,8 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 
 // runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
 // the cluster unmerged so reviewer findings are never lost.
-func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) ([]model.Finding, model.AgentRun) {
-	result, err := e.callClusterMergeAgent(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, shardLabel)
+func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext, shardLabel string) ([]model.Finding, model.AgentRun) {
+	result, err := e.callClusterMergeAgent(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, projectContext, shardLabel)
 	run := result.run
 	if err != nil {
 		return cluster, e.failMergeRun(run, model.AgentRunStatusFailed, err)
@@ -1625,7 +1666,7 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 	return &clone
 }
 
-func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) (agentResult, error) {
+func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext, shardLabel string) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_cluster_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -1634,7 +1675,7 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 	if err != nil {
 		return agentResult{}, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("merge", styleGuides, hasToolchainVersions)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("merge", styleGuides, hasToolchainVersions, projectContext)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -2099,11 +2140,11 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 	}, err
 }
 
-func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
-	return e.renderContextSystemForTools(template, req, styleGuides, hasToolchainVersions, true)
+func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
+	return e.renderContextSystemForTools(template, req, styleGuides, hasToolchainVersions, projectContext, true)
 }
 
-func (e *Engine) renderContextSystemForTools(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions, hasTools bool) (string, error) {
+func (e *Engine) renderContextSystemForTools(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext, hasTools bool) (string, error) {
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                "context",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
@@ -2111,7 +2152,7 @@ func (e *Engine) renderContextSystemForTools(template string, req model.ReviewRe
 	if err != nil {
 		return "", err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("context", styleGuides, hasToolchainVersions)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("context", styleGuides, hasToolchainVersions, projectContext)
 	if err != nil {
 		return "", err
 	}
@@ -2310,12 +2351,12 @@ func reasoningFindingsJSON(findings []model.Finding) (string, error) {
 	})
 }
 
-func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
+func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
 	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet)
 	if err != nil {
 		return "", err
 	}
-	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools, agentRole, styleGuides, hasToolchainVersions)
+	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools, agentRole, styleGuides, hasToolchainVersions, projectContext)
 }
 
 func (e *Engine) renderReviewerQuestionsSnippet(questionsName string) (string, error) {
@@ -2349,7 +2390,7 @@ func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) 
 	return rendered, nil
 }
 
-func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
+func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
 	toolInstructions := ""
 	if hasTools {
 		var err error
@@ -2366,7 +2407,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 	if err != nil {
 		return "", err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentRole, styleGuides, hasToolchainVersions)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentRole, styleGuides, hasToolchainVersions, projectContext)
 	if err != nil {
 		return "", err
 	}
@@ -2952,6 +2993,23 @@ func detectedVersionsFor(ctx *model.ReviewContext, language string) []string {
 	return out
 }
 
+// stepProjectContext is stepStyleGuides for the project context: prepared state
+// once the reviewers have built their prompts, and otherwise the context itself.
+// A findings-only workflow runs no reviewer, so ensurePrompts never fires and
+// the prepared field stays empty — without the fallback every dedupe and merge
+// agent in such a workflow would be told nothing about the project.
+func (e *Engine) stepProjectContext(st *PipelineState) *model.ProjectContext {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.promptsReady {
+		return st.projectContext
+	}
+	if st.Enriched == nil {
+		return nil
+	}
+	return st.Enriched.ProjectContext
+}
+
 // stepStyleGuides returns the styleguides for dedupe and merge prompts. A
 // source-less workflow (e.g. --step merge --findings a.json) never runs
 // ensurePrompts, so st.styleGuides stays unset; fall back to resolving
@@ -2967,9 +3025,13 @@ func (e *Engine) stepStyleGuides(st *PipelineState) ([]model.StyleGuide, error) 
 	return e.styleGuidesFor(enriched)
 }
 
-func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
+func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
 	agentRole = strings.TrimSpace(agentRole)
-	if len(guides) == 0 && !hasToolchainVersions {
+	// An empty-but-non-nil context would render a heading with no content.
+	if projectContext.Empty() {
+		projectContext = nil
+	}
+	if len(guides) == 0 && !hasToolchainVersions && projectContext == nil {
 		return "", nil
 	}
 	template, err := e.loadPrompt("agent_styleguide_toolchain_snippet.tmpl")
@@ -2980,10 +3042,12 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 		AgentRole            string
 		StyleGuides          []model.StyleGuide
 		HasToolchainVersions bool
+		ProjectContext       *model.ProjectContext
 	}{
 		AgentRole:            agentRole,
 		StyleGuides:          guides,
 		HasToolchainVersions: hasToolchainVersions,
+		ProjectContext:       projectContext,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering styleguide/toolchain prompt: %w", err)
@@ -3058,6 +3122,60 @@ func addDetectorLanguages(seen map[string]struct{}, path, content string) {
 }
 
 const maxStyleGuideProbeBytes = 1 << 20
+
+// projectContextWarningPrefix marks the OmittedSections entries this capture
+// owns, so a repeated capture replaces its own warnings instead of stacking a
+// duplicate on every call. It matches what projectcontext.LoadRepo emits.
+const projectContextWarningPrefix = "project context"
+
+// ApplyProjectContext re-resolves the project context onto an existing review
+// context, so a caller reusing a cached context (a resumed chat session) still
+// sees today's configuration rather than whatever was merged when the context
+// was first built.
+func (e *Engine) ApplyProjectContext(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) {
+	if reviewCtx == nil {
+		return
+	}
+	e.captureProjectContext(ctx, reviewCtx, req, true)
+}
+
+// captureProjectContext resolves how the project describes its own deployment
+// and usage, merging the reviewed repository's own file with any operator
+// overlay. Best-effort: a repository that cannot be read, or whose file does
+// not parse, degrades to a warning rather than failing the review.
+//
+// includeRepoFile is false when there is no revision under review — a workflow
+// running only on injected findings has no base revision to read the file from,
+// and probing for one would only produce a spurious warning. The operator
+// overlay still applies, because it is configuration rather than repository
+// content.
+//
+// The result is assigned unconditionally, nil included: on a re-capture an
+// empty merge must clear a context the previous capture stored, or
+// --disable-project-context could never take back what a cache already holds.
+func (e *Engine) captureProjectContext(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest, includeRepoFile bool) {
+	reviewCtx.OmittedSections = slices.DeleteFunc(reviewCtx.OmittedSections, func(s string) bool {
+		return strings.HasPrefix(s, projectContextWarningPrefix)
+	})
+	var entries []*model.ProjectContext
+	if includeRepoFile && !e.disableRepoProjectContext && e.projectContextLoad != nil && e.source != nil {
+		repoContext, warnings := e.projectContextLoad(ctx, e.source, req)
+		for _, warning := range warnings {
+			e.logf(ctx, "Project context warning: %s", warning)
+			reviewCtx.OmittedSections = append(reviewCtx.OmittedSections, warning)
+		}
+		if repoContext != nil {
+			entries = append(entries, repoContext)
+		}
+	}
+	entries = append(entries, e.projectContextOverlay...)
+	merged := projectcontext.Merge(entries...)
+	reviewCtx.ProjectContext = merged
+	if merged == nil {
+		return
+	}
+	e.logf(ctx, "Loaded project context: sources=%s deployment=%q criticality=%q", strings.Join(merged.Sources, ","), merged.Deployment, merged.Criticality)
+}
 
 // appendFullFiles inlines the current content of every changed file as
 // supplemental context.

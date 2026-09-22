@@ -125,7 +125,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("verdict", styleGuides, len(reviewCtx.ToolchainVersions) > 0)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("verdict", styleGuides, len(reviewCtx.ToolchainVersions) > 0, reviewCtx.ProjectContext)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}

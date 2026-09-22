@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
@@ -906,6 +907,17 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 // cache was updated and should be saved.
 func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session, co *chatCheckout) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
 	refresh := sess.Context == nil
+	req := a.chatReviewRequest(profile, sess.Source, sess.ContextOptions)
+	// cachedContext hands back the stored context, and is the only way this
+	// function returns one. The overlay, --disable-project-context and the
+	// repository's own file are current configuration rather than properties of
+	// the cached snapshot, so every cached return has to re-apply them: a resumed
+	// chat is then told what a review run today would be told, and disabling can
+	// take back what the cache already holds.
+	cachedContext := func() (*model.ReviewContext, bool, error) {
+		engine.ApplyProjectContext(ctx, sess.Context, req)
+		return sess.Context, false, nil
+	}
 	if adapter, ok := source.(*glscm.Adapter); ok && model.ReviewMode(sess.Source.Mode) == model.ModeGitLab &&
 		sess.Source.Repo != "" && sess.Source.Identifier > 0 {
 		status, err := adapter.Client().FetchMRStatusByPath(ctx, sess.Source.Repo, sess.Source.Identifier)
@@ -923,16 +935,16 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 		}
 	}
 	if !refresh {
-		return sess.Context, false, nil
+		return cachedContext()
 	}
-	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions), co)
+	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, req, co)
 	if err != nil {
 		// A refresh failure must not block the chat when a cached context exists:
 		// stale-but-real context beats no conversation. Without a cache the error
 		// is fatal.
 		if sess.Context != nil {
 			a.logf(ctx, "chat: context refresh failed, using cached context: %v", err)
-			return sess.Context, false, nil
+			return cachedContext()
 		}
 		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
 	}
@@ -1154,11 +1166,15 @@ func chatToolset(repoRoot string) []llm.ToolDefinition {
 
 // chatEngine builds a review engine wired for the discussion agent, mirroring
 // runReview's engine setup: rate-limit backoff, search-tool optimization, and —
-// crucially — the user-configured additional styleguides, resolved from the
-// current configuration so the chat's styleguide set matches what a review run
-// today would use.
+// crucially — the user-configured additional styleguides and project context,
+// resolved from the current configuration so the chat's rules and background
+// match what a review run today would use.
 func (a *app) chatEngine(ctx context.Context, profile config.Profile, source model.ReviewSource, retrievalEngine retrieval.Engine, logger *logging.Logger) (*review.Engine, error) {
 	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides, profile.Workdir)
+	if err != nil {
+		return nil, err
+	}
+	projectContextOverlay, err := projectcontext.Resolve(ctx, profile.ProjectContext, profile.Workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -1170,6 +1186,8 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	engine.SetAdditionalStyleGuides(additionalGuides)
 	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
+	engine.SetProjectContextOverlay(projectContextOverlay)
+	engine.SetDisableRepoProjectContext(profile.DisableProjectContext)
 	return engine, nil
 }
 

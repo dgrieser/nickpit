@@ -1022,3 +1022,60 @@ func TestChatReadOnlyWithholdsTheUpdateHandler(t *testing.T) {
 		}
 	}
 }
+
+// A refresh that fails still hands the caller a cached context, and that context
+// must carry today's project-context configuration — otherwise the one path a
+// user cannot control (an API outage mid-refresh) is also the one path where
+// --disable-project-context silently keeps feeding the agents a stale block.
+//
+// Reaching that fallback needs a refresh that was actually attempted: a GitLab
+// session whose cached SHAs no longer match the MR, resolving against a server
+// that serves the status probe and then fails the diff.
+func TestChatContextRefreshFailureReappliesProjectContext(t *testing.T) {
+	// The MR endpoint serves the status probe and the refresh's own first fetch;
+	// everything the refresh needs after that fails, so resolution errors out.
+	var mrFetches int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/merge_requests/1"):
+			mrFetches++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"title":"t","sha":"new-head","diff_refs":{"base_sha":"new-base","head_sha":"new-head","start_sha":"new-base"}}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	src := glscm.NewAdapter(glscm.NewClient(server.URL, "token"), "")
+	a := &app{}
+	engine := review.NewEngine(src, nil, retrieval.NewLocalEngine(), config.Profile{})
+	engine.SetDisableRepoProjectContext(true)
+
+	cached := &model.ReviewContext{ProjectContext: &model.ProjectContext{Version: 1, Deployment: "internet-facing"}}
+	sess := &session.Session{
+		Source:         session.Source{Mode: string(model.ModeGitLab), Repo: "g/p", Identifier: 1},
+		Context:        cached,
+		ContextHeadSHA: "old-head",
+		ContextBaseSHA: "old-base",
+	}
+	var co chatCheckout
+	reviewCtx, refreshed, err := a.chatContext(context.Background(), engine, src, config.Profile{}, sess, &co)
+	if err != nil {
+		t.Fatalf("chatContext returned err: %v", err)
+	}
+	// One fetch is the status probe alone, which would mean the plain cached
+	// branch ran instead of the failure fallback that is under test.
+	if mrFetches < 2 {
+		t.Fatalf("MR fetches = %d, want the status probe plus an attempted refresh", mrFetches)
+	}
+	if refreshed {
+		t.Fatal("refreshed = true, want the cached context after a failed refresh")
+	}
+	if reviewCtx != cached {
+		t.Fatal("chatContext must hand back the cached context")
+	}
+	if reviewCtx.ProjectContext != nil {
+		t.Fatalf("ProjectContext = %+v, want it cleared by --disable-project-context on the fallback path", reviewCtx.ProjectContext)
+	}
+}
