@@ -36,14 +36,24 @@ func TestAwardMREmoji(t *testing.T) {
 }
 
 func TestAwardMREmojiToleratesAlreadyAwarded(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict} {
+	tests := []struct {
+		status int
+		body   string
+	}{
+		{status: http.StatusBadRequest, body: `{"message":"Award Emoji Name has already been taken"}`},
+		{status: http.StatusNotFound, body: `{"message":"Award Emoji Name has already been taken"}`},
+		{status: http.StatusConflict, body: `{"message":"Award Emoji Name has already been taken"}`},
+		// Real GitLab responds through Grape's not_found!, which wraps the reason.
+		{status: http.StatusNotFound, body: `{"message":"404 Award Emoji Name has already been taken Not Found"}`},
+	}
+	for _, tt := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(status)
-			_, _ = w.Write([]byte(`{"message":"Award Emoji Name has already been taken"}`))
+			w.WriteHeader(tt.status)
+			_, _ = w.Write([]byte(tt.body))
 		}))
 		client := NewClient(server.URL, "token")
 		if err := client.AwardMREmoji(context.Background(), 42, 7, "eyes"); err != nil {
-			t.Fatalf("status %d: expected nil, got %v", status, err)
+			t.Fatalf("status %d body %s: expected nil, got %v", tt.status, tt.body, err)
 		}
 		server.Close()
 	}

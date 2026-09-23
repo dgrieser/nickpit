@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 )
@@ -95,8 +96,8 @@ func noteEmojiPath(projectID, iid, noteID int) string {
 }
 
 // awardEmoji posts one award. GitLab rejects double-awards by the same user,
-// with a status that varies across versions, so only the canonical duplicate
-// validation response is treated as success. Other client errors can mean the
+// with a status and message wrapping that vary across versions, so only the
+// canonical duplicate validation response is treated as success. Other client errors can mean the
 // emoji is invalid or the awardable vanished and must reach the caller.
 func (c *Client) awardEmoji(ctx context.Context, basePath, name string) error {
 	err := c.Post(ctx, basePath, map[string]string{"name": name}, nil)
@@ -123,7 +124,12 @@ func isDuplicateAwardError(err error) bool {
 	if json.Unmarshal(response.Message, &message) != nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(message), "Award Emoji Name has already been taken")
+	const duplicate = "Award Emoji Name has already been taken"
+	message = strings.TrimSpace(message)
+	// Grape's not_found! wraps the reason as "404 <reason> Not Found", which is
+	// what gitlab.com and self-managed instances return for a double-award.
+	wrapped := fmt.Sprintf("%d %s %s", apiErr.Status, duplicate, http.StatusText(apiErr.Status))
+	return strings.EqualFold(message, duplicate) || strings.EqualFold(message, wrapped)
 }
 
 // replaceEmoji finds the named awards, confirms add, then revokes the old
