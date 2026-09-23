@@ -759,7 +759,7 @@ func TestGitLocalChangeCommandsPresent(t *testing.T) {
 	}{
 		{
 			args:      []string{"git", "uncommitted"},
-			wantShort: "Review staged and unstaged tracked changes against HEAD; untracked files excluded",
+			wantShort: "Review staged and unstaged tracked changes",
 		},
 		{
 			args:      []string{"git", "staged"},
@@ -775,7 +775,7 @@ func TestGitLocalChangeCommandsPresent(t *testing.T) {
 		},
 		{
 			args:      []string{"git", "branch"},
-			wantShort: "Review a branch against a base branch",
+			wantShort: "Review against a base branch (PR Style)",
 		},
 	}
 

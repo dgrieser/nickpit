@@ -13,6 +13,8 @@ const (
 	actionNone action = iota
 	actionSelect
 	actionAbort
+	// actionInterrupt leaves the list for the whole run (Ctrl-C, Ctrl-D).
+	actionInterrupt
 )
 
 // The picker's own colours. They are the 256-colour message palette of
@@ -131,6 +133,8 @@ type list struct {
 	// dismissOnBackspace makes backspace a way out of a nested prompt.
 	keyLine            string
 	dismissOnBackspace bool
+	// nested names Esc "back" in the default key line.
+	nested bool
 	// loaded marks the scopes whose Load has run, failures marks the ones it
 	// failed for, and pending says a scope is waiting to be loaded — the draw
 	// loop runs it after the "loading" line is on screen, never before.
@@ -165,6 +169,7 @@ func newList(opts Options, height int, color bool) *list {
 		unit:               opts.RangeUnit,
 		keyLine:            opts.Hint,
 		dismissOnBackspace: opts.DismissOnBackspace,
+		nested:             opts.Nested,
 		anchor:             -1,
 		color:              color,
 	}
@@ -386,6 +391,9 @@ func (l *list) apply(k key) action {
 			return actionNone
 		}
 		return actionAbort
+	case keyInterrupt:
+		// Ctrl-C leaves at once, open range or not: it is the key for "stop".
+		return actionInterrupt
 	case keyUp:
 		l.move(-1)
 	case keyDown:
@@ -744,6 +752,10 @@ func (l *list) hint(width int) string {
 		long, short = longSpanHint, shortSpanHint
 	case l.rangeMode:
 		long, short = longRangeHint, shortRangeHint
+	}
+	if l.nested {
+		long = strings.Replace(long, "Esc abort", "Esc back", 1)
+		short = strings.Replace(short, "Esc abort", "Esc back", 1)
 	}
 	if len(l.views) > 1 && l.anchor < 0 {
 		long += " · " + longScopeHint

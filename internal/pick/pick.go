@@ -137,6 +137,11 @@ type Options struct {
 	// reads as "back"; a list that is the whole interaction leaves it off, so
 	// one press too many while clearing a filter cannot throw it away.
 	DismissOnBackspace bool
+	// Nested says the list was opened from another prompt, so Esc leads back
+	// to it rather than out of the run: the default key line names Esc "back"
+	// instead of "abort". Leaving still returns ErrAborted; going back is the
+	// caller's reading of it.
+	Nested bool
 	// CellStyles colours the columns, indexed like Item.Cells: one of the
 	// Style* codes, or "" to leave a column unstyled. Shorter than Cells is
 	// fine — the remaining columns stay unstyled.
@@ -205,6 +210,12 @@ func AuthorStyle(name string) string {
 // without a choice. Callers turn it into their
 // own "nothing selected" message rather than a failure.
 var ErrAborted = errors.New("selection aborted")
+
+// ErrInterrupted is the ErrAborted of Ctrl-C, Ctrl-D or a closed key source:
+// it matches ErrAborted, so callers that only care about "nothing selected"
+// need no change, while a nested prompt, whose Esc means "back", can tell the
+// user wanted out of the whole run.
+var ErrInterrupted = fmt.Errorf("%w: interrupted", ErrAborted)
 
 // ErrNoItems reports that there was nothing to choose from; the caller knows
 // what its empty list means and says so itself.
@@ -341,11 +352,14 @@ func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisibl
 				return first, last, nil
 			case actionAbort:
 				return -1, -1, ErrAborted
+			case actionInterrupt:
+				return -1, -1, ErrInterrupted
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return -1, -1, ErrAborted
+				// Nobody is left to press a key, so there is nothing to go back to.
+				return -1, -1, ErrInterrupted
 			}
 			return -1, -1, fmt.Errorf("pick: reading the terminal: %w", readErr)
 		}

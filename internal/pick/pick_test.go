@@ -387,8 +387,25 @@ func TestSelectFromArrowAndEnter(t *testing.T) {
 // continuation byte that never comes, leaving the key looking dead.
 func TestSelectFromLoneEscapeAborts(t *testing.T) {
 	source := &scriptedInput{chunks: [][]byte{[]byte("\x1b")}}
-	if _, err := selectScripted(t, scriptedItems, source); !errors.Is(err, ErrAborted) {
+	_, err := selectScripted(t, scriptedItems, source)
+	if !errors.Is(err, ErrAborted) {
 		t.Fatalf("err = %v, want ErrAborted", err)
+	}
+	// Esc is the one way out a nested prompt reads as "back".
+	if errors.Is(err, ErrInterrupted) {
+		t.Fatalf("err = %v, want Esc not reported as an interrupt", err)
+	}
+}
+
+// Ctrl-C and Ctrl-D leave as ErrInterrupted, which still matches ErrAborted —
+// even with a range open, which Esc would only close.
+func TestSelectFromInterruptKeys(t *testing.T) {
+	for _, keys := range []string{"\x03", "\x04", "\r\x03"} {
+		source := &scriptedInput{chunks: [][]byte{[]byte(keys)}}
+		_, _, err := selectRangeScripted(t, Options{Items: rangeItems(), Range: true}, source)
+		if !errors.Is(err, ErrInterrupted) || !errors.Is(err, ErrAborted) {
+			t.Fatalf("keys %q: err = %v, want ErrInterrupted matching ErrAborted", keys, err)
+		}
 	}
 }
 
@@ -410,8 +427,9 @@ func TestSelectFromSplitEscapeSequence(t *testing.T) {
 
 // A closed terminal is not a selection; it ends the list the way Esc does.
 func TestSelectFromEOFAborts(t *testing.T) {
-	if _, err := selectScripted(t, scriptedItems, &scriptedInput{}); !errors.Is(err, ErrAborted) {
-		t.Fatalf("err = %v, want ErrAborted", err)
+	// Nobody can go back from a closed terminal: it counts as an interrupt.
+	if _, err := selectScripted(t, scriptedItems, &scriptedInput{}); !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("err = %v, want ErrInterrupted", err)
 	}
 }
 
@@ -1262,5 +1280,14 @@ func TestSelectViewWithOnlyALazyScopeIsNotEmpty(t *testing.T) {
 	}})
 	if !errors.Is(err, ErrNotATerminal) {
 		t.Fatalf("err = %v, want the list to be worth drawing", err)
+	}
+}
+
+func TestHintNamesEscBackInANestedList(t *testing.T) {
+	l := newList(Options{Items: scriptedItems, Nested: true}, 24, false)
+	for _, width := range []int{200, 60} {
+		if got := l.hint(width); !strings.Contains(got, "Esc back") || strings.Contains(got, "abort") {
+			t.Fatalf("hint(%d) = %q, want Esc named back", width, got)
+		}
 	}
 }
