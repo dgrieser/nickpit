@@ -6,7 +6,7 @@
 
 > **AI assisted code review, so you can merge with confidence** :100:
 
-NickPit is a CLI that reviews local git changes, GitHub pull requests, and GitLab merge requests using any OpenAI-compatible LLM endpoint. Point it at a diff and it dispatches a small army of specialist agents who read your code, argue about it, double-check each other, throw out the duplicates, and hand you back a ranked, verified, de-duplicated list of findings — instead of one giant model monologue that confidently flags a bug on a line that doesn't exist.
+NickPit is a CLI that reviews local git changes, GitHub pull requests, GitLab merge requests, and Forgejo pull requests using any OpenAI-compatible LLM endpoint. Point it at a diff and it dispatches a small army of specialist agents who read your code, argue about it, double-check each other, throw out the duplicates, and hand you back a ranked, verified, de-duplicated list of findings — instead of one giant model monologue that confidently flags a bug on a line that doesn't exist.
 
 ## Why NickPit? 🎯
 
@@ -166,7 +166,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 ### 🔋 Everything else you'd expect, plus some you wouldn't
 
 - **Local review modes**: uncommitted changes, commit ranges, branch diffs.
-- **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id`, by URL, or [picked from a list](#pick-the-mrpr-branch-or-commit-interactively-) in a checkout of the repository.
+- **GitHub PRs, GitLab MRs, and Forgejo PRs** (Codeberg or any self-hosted Forgejo/Gitea) via direct REST clients — by `--repo`/`--id`, by URL, or [picked from a list](#pick-the-mrpr-branch-or-commit-interactively-) in a checkout of the repository.
 - **Diff filters**: regex include/exclude by path *and* by file content.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Rendered terminal, raw Markdown, and JSON output**, live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
@@ -214,10 +214,12 @@ Notes:
   your host user. The image trusts mounted repositories (`git safe.directory=*`), so git
   does not reject a repo owned by a different UID.
 - Pass auth via env: `OPENROUTER_API_KEY`, plus `NICKPIT_GITHUB_TOKEN` /
-  `NICKPIT_GITLAB_TOKEN` for remote reviews. `NICKPIT_GITLAB_BASE_URL` sets a custom
-  GitLab API root. `GITHUB_TOKEN`, `GITLAB_TOKEN`, and `GITLAB_BASE_URL` also work, but
-  the `NICKPIT_` names win when both are set. The bare `-e NAME` form forwards the value
-  from your shell.
+  `NICKPIT_GITLAB_TOKEN` / `NICKPIT_FORGEJO_TOKEN` for remote reviews.
+  `NICKPIT_GITLAB_BASE_URL` sets a custom GitLab API root; `NICKPIT_FORGEJO_BASE_URL`
+  names the Forgejo instance (there is no default — `codeberg.org` is one). `GITHUB_TOKEN`,
+  `GITLAB_TOKEN`, `GITLAB_BASE_URL`, `FORGEJO_TOKEN`, and `FORGEJO_BASE_URL` also work,
+  but the `NICKPIT_` names win when both are set. The bare `-e NAME` form forwards the
+  value from your shell.
 - Provide config by mounting `.nickpit.yaml` into `/work`, or with an absolute
   `--config /work/.nickpit.yaml`. When running as an arbitrary UID, prefer an absolute
   `--config` path over `~` expansion (the image `HOME` is not readable by a foreign UID).
@@ -278,7 +280,7 @@ Useful when the config file is baked into an image or CI runner and only a few k
 
 A `0` from the environment is honored where `0` is meaningful (`--max-tool-calls`, `--nudge-count`, `--max-findings`, `--max-sessions`, `--max-request-bytes`, `--max-rate-limit-delay-seconds`), so it is not mistaken for "unset". A non-numeric value fails the run with the variable name in the error.
 
-Model and provider settings have their own variables: `NICKPIT_MODEL`, `NICKPIT_BASE_URL`, `NICKPIT_API_KEY`, `NICKPIT_REASONING_EFFORT`, the sampling knobs and their `NICKPIT_SMALL_*` counterparts — including `NICKPIT_SMALL_BASE_URL` and `NICKPIT_SMALL_API_KEY` (see [The `small` model alias](#the-small-model-alias)) — plus `NICKPIT_WORKDIR`, `NICKPIT_GITHUB_TOKEN`, `NICKPIT_GITLAB_TOKEN`, `NICKPIT_GITLAB_BASE_URL`, and `NICKPIT_CACHE_DIR`.
+Model and provider settings have their own variables: `NICKPIT_MODEL`, `NICKPIT_BASE_URL`, `NICKPIT_API_KEY`, `NICKPIT_REASONING_EFFORT`, the sampling knobs and their `NICKPIT_SMALL_*` counterparts — including `NICKPIT_SMALL_BASE_URL` and `NICKPIT_SMALL_API_KEY` (see [The `small` model alias](#the-small-model-alias)) — plus `NICKPIT_WORKDIR`, `NICKPIT_GITHUB_TOKEN`, `NICKPIT_GITLAB_TOKEN`, `NICKPIT_GITLAB_BASE_URL`, `NICKPIT_FORGEJO_TOKEN`, `NICKPIT_FORGEJO_BASE_URL`, and `NICKPIT_CACHE_DIR`.
 
 `--concurrency` stays CLI-only on purpose: the execution shape of a run should be visible in the command that started it, not inherited from the environment.
 
@@ -431,6 +433,7 @@ Rules:
 | Local (`nickpit git ...`) | the working tree — an uncommitted edit takes effect on the next run |
 | GitHub PR | the **base** repository at the PR's base commit |
 | GitLab MR | the **target** project at the MR's `diff_refs.base_sha` |
+| Forgejo PR | the **base** repository at the PR's base commit |
 
 For pull and merge requests NickPit never reads this file from the change under review. On a fork PR/MR the head belongs to the contributor, so a file read from it would be attacker-controlled — a contributor could commit *"authentication findings are not applicable here"* and talk the security lane out of exactly the findings it exists to catch. Reading the base means only the target project's maintainers decide what the reviewers are told.
 
@@ -503,6 +506,7 @@ nickpit git unstaged
 # Pick one of the repository's open MRs/PRs instead of naming it (in a checkout, on a terminal)
 nickpit gitlab mr
 nickpit github pr
+nickpit forgejo pr
 
 # Pick the commit range from the log (--from is required, so it is asked for)
 nickpit git commits
@@ -522,18 +526,24 @@ nickpit gitlab mr --url https://gitlab.example.com/group/project/-/merge_request
 # Review a GitLab MR and post the result back as comments (summary + one per finding)
 nickpit gitlab mr --repo group/project --id 456 --publish
 
+# Review a PR on a Forgejo instance (Codeberg, or your own); the instance comes from
+# --url, or from forgejo_base_url / NICKPIT_FORGEJO_BASE_URL / --forgejo-base-url
+nickpit forgejo pr --url https://codeberg.org/owner/repo/pulls/789
+NICKPIT_FORGEJO_BASE_URL=https://codeberg.org nickpit forgejo pr --repo owner/repo --id 789 --publish
+
 ```
 
 ### Pick the MR/PR, Branch or Commit Interactively 🎯
 
-Every command that addresses a merge request or pull request — `gitlab mr`, `github pr`, and `chat --gitlab` — can pick it from a list instead of taking `--repo`/`--id`/`--url`. In a checkout of the repository, on a terminal, just leave the identifier out:
+Every command that addresses a merge request or pull request — `gitlab mr`, `github pr`, `forgejo pr`, and `chat --gitlab` — can pick it from a list instead of taking `--repo`/`--id`/`--url`. In a checkout of the repository, on a terminal, just leave the identifier out:
 
 ```bash
 # Open MRs of the project the origin remote points at, newest activity first
 nickpit gitlab mr
 
-# Same for GitHub and the chat command
+# Same for GitHub, Forgejo and the chat command
 nickpit github pr
+nickpit forgejo pr
 nickpit chat --gitlab
 
 # Force the list even where a target could be resolved without it
@@ -552,7 +562,7 @@ Nothing changes without a terminal: piped, redirected and daemon-spawned runs ke
 
 ### Publishing
 
-With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
+With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub and Forgejo this is a single PR review (the summary as the review body, findings as inline review comments; Forgejo has no multi-line comments, so a finding anchors to the first changed line of its range); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 

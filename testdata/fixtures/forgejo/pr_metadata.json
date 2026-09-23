@@ -1,0 +1,23 @@
+{
+  "number": 123,
+  "title": "Example PR",
+  "body": "PR description",
+  "base": {
+    "ref": "main",
+    "sha": "abc",
+    "repo": {
+      "full_name": "owner/repo",
+      "clone_url": "https://codeberg.org/owner/repo.git"
+    }
+  },
+  "head": {
+    "ref": "feature",
+    "sha": "def",
+    "repo": {
+      "full_name": "contrib/repo",
+      "clone_url": "https://codeberg.org/contrib/repo.git"
+    }
+  },
+  "merge_base": "abc",
+  "html_url": "https://codeberg.org/owner/repo/pulls/123"
+}

@@ -93,6 +93,8 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
+		yamlEntry("forgejo_token", yamlScalar(profile.ForgejoToken)),
+		yamlEntry("forgejo_base_url", yamlScalar(profile.ForgejoBaseURL)),
 		yamlEntry("asset_base_url", yamlScalar(profile.AssetBaseURL)),
 	}
 	return yamlMapping(entries...)
@@ -227,6 +229,16 @@ func exampleProfile(profile Profile) Profile {
 		profile.GitLabBaseURL = DefaultGitLabBaseURLRef
 	} else {
 		profile.GitLabBaseURL = canonicalEnvRef(profile.GitLabBaseURL)
+	}
+	if profile.ForgejoToken == "" {
+		profile.ForgejoToken = DefaultForgejoTokenRef
+	} else {
+		profile.ForgejoToken = canonicalEnvRef(profile.ForgejoToken)
+	}
+	if profile.ForgejoBaseURL == "" {
+		profile.ForgejoBaseURL = DefaultForgejoBaseURLRef
+	} else {
+		profile.ForgejoBaseURL = canonicalEnvRef(profile.ForgejoBaseURL)
 	}
 	return profile
 }
