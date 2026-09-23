@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/clipboard"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/spf13/cobra"
@@ -140,7 +138,7 @@ func (a *app) chooseSession(ctx context.Context, store *session.Store, opts sess
 		}
 		state = next
 		action, err := a.pickSessionAction(place, chosen)
-		if errors.Is(err, pick.ErrAborted) {
+		if isPickBack(err) {
 			// "Back", not "never mind": the list opens again where it was.
 			continue
 		}

@@ -335,13 +335,20 @@ func (a *app) runPickedLocalMode(cmd *cobra.Command, modes []*cobra.Command) err
 		a.pickNested = true
 		err = mode.RunE(mode, nil)
 		a.pickNested = false
-		if errors.Is(err, pick.ErrAborted) {
+		if isPickBack(err) {
 			// Only a prompt of the chosen mode can abort here: the review itself
 			// never draws one.
 			continue
 		}
 		return err
 	}
+}
+
+// isPickBack reports whether a nested prompt was left with Esc, which means
+// "back to the list that opened it". Ctrl-C and Ctrl-D also abort the prompt,
+// but as pick.ErrInterrupted: they end the run, as in any other picker.
+func isPickBack(err error) bool {
+	return errors.Is(err, pick.ErrAborted) && !errors.Is(err, pick.ErrInterrupted)
 }
 
 // openRequestList is the platform's half of picking a request: how to list the

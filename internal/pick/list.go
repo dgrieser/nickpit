@@ -13,6 +13,8 @@ const (
 	actionNone action = iota
 	actionSelect
 	actionAbort
+	// actionInterrupt leaves the list for the whole run (Ctrl-C, Ctrl-D).
+	actionInterrupt
 )
 
 // The picker's own colours. They are the 256-colour message palette of
@@ -389,6 +391,9 @@ func (l *list) apply(k key) action {
 			return actionNone
 		}
 		return actionAbort
+	case keyInterrupt:
+		// Ctrl-C leaves at once, open range or not: it is the key for "stop".
+		return actionInterrupt
 	case keyUp:
 		l.move(-1)
 	case keyDown:

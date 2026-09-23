@@ -1016,6 +1016,33 @@ func TestRunPickedLocalModeRunsTheChosenMode(t *testing.T) {
 	}
 }
 
+// TestRunPickedLocalModeInterruptQuits keeps Ctrl-C an abort of the run: in
+// the chosen mode's prompt it must not reopen the menu the way Esc does.
+func TestRunPickedLocalModeInterruptQuits(t *testing.T) {
+	calls := 0
+	a := &app{selectFn: func(opts pick.Options) (int, error) {
+		calls++
+		if opts.Nested {
+			return -1, pick.ErrInterrupted
+		}
+		return 0, nil
+	}}
+	nested := &cobra.Command{Use: "first", RunE: func(*cobra.Command, []string) error {
+		_, err := a.selectOne(pick.Options{Items: []pick.Item{{Cells: []string{"x"}}}})
+		return err
+	}}
+	err := a.runPickedLocalMode(&cobra.Command{Use: "git"}, []*cobra.Command{nested})
+	if !errors.Is(err, pick.ErrInterrupted) {
+		t.Fatalf("err = %v, want pick.ErrInterrupted", err)
+	}
+	if calls != 2 {
+		t.Fatalf("prompts = %d, want the menu and the nested prompt only", calls)
+	}
+	if code, quiet := quietExitCode(context.Background(), err); !quiet || code != 130 {
+		t.Fatalf("exit = %d/%v, want a quiet 130", code, quiet)
+	}
+}
+
 func TestRunPickedLocalModeAbortsFromTheMenu(t *testing.T) {
 	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrAborted }}
 	parent := &cobra.Command{Use: "git"}

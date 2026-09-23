@@ -211,6 +211,12 @@ func AuthorStyle(name string) string {
 // own "nothing selected" message rather than a failure.
 var ErrAborted = errors.New("selection aborted")
 
+// ErrInterrupted is the ErrAborted of Ctrl-C, Ctrl-D or a closed key source:
+// it matches ErrAborted, so callers that only care about "nothing selected"
+// need no change, while a nested prompt, whose Esc means "back", can tell the
+// user wanted out of the whole run.
+var ErrInterrupted = fmt.Errorf("%w: interrupted", ErrAborted)
+
 // ErrNoItems reports that there was nothing to choose from; the caller knows
 // what its empty list means and says so itself.
 var ErrNoItems = errors.New("nothing to select")
@@ -346,11 +352,14 @@ func selectFrom(state *list, screen *renderer, size func() (int, int), maxVisibl
 				return first, last, nil
 			case actionAbort:
 				return -1, -1, ErrAborted
+			case actionInterrupt:
+				return -1, -1, ErrInterrupted
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return -1, -1, ErrAborted
+				// Nobody is left to press a key, so there is nothing to go back to.
+				return -1, -1, ErrInterrupted
 			}
 			return -1, -1, fmt.Errorf("pick: reading the terminal: %w", readErr)
 		}

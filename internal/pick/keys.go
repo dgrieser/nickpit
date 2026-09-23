@@ -22,6 +22,10 @@ const (
 	keyNextView
 	keyPrevView
 	keyAbort
+	// keyInterrupt is Ctrl-C or Ctrl-D: leave the list like keyAbort, but
+	// report it as ErrInterrupted, so a nested prompt quits the run instead of
+	// going back.
+	keyInterrupt
 )
 
 // key is a decoded keypress; Rune is set only for keyRune.
@@ -51,7 +55,7 @@ func decode(buf []byte, more bool) (key, int) {
 	case 0x7f, 0x08:
 		return key{kind: keyBackspace}, 1
 	case 0x03, 0x04: // Ctrl-C, Ctrl-D
-		return key{kind: keyAbort}, 1
+		return key{kind: keyInterrupt}, 1
 	case 0x0e: // Ctrl-N
 		return key{kind: keyDown}, 1
 	case 0x10: // Ctrl-P
