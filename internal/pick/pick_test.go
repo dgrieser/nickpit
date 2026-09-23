@@ -1264,3 +1264,12 @@ func TestSelectViewWithOnlyALazyScopeIsNotEmpty(t *testing.T) {
 		t.Fatalf("err = %v, want the list to be worth drawing", err)
 	}
 }
+
+func TestHintNamesEscBackInANestedList(t *testing.T) {
+	l := newList(Options{Items: scriptedItems, Nested: true}, 24, false)
+	for _, width := range []int{200, 60} {
+		if got := l.hint(width); !strings.Contains(got, "Esc back") || strings.Contains(got, "abort") {
+			t.Fatalf("hint(%d) = %q, want Esc named back", width, got)
+		}
+	}
+}

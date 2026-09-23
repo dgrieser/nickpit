@@ -272,6 +272,9 @@ type app struct {
 	// the row inside it; nil falls back to selectFn, which answers in the scope
 	// the list opened on.
 	selectViewFn func(opts pick.Options) (int, int, error)
+	// pickNested is set while a mode menu waits behind the current prompt, so
+	// every picker drawn meanwhile names Esc "back" (pick.Options.Nested).
+	pickNested bool
 	// chatReviewReadOnly withholds the correction tool from a chat: the review
 	// under discussion was published by another user, whose notes carry it and
 	// which this token cannot rewrite. Set while the session is built.
@@ -827,12 +830,25 @@ func (v *trackedFloatValue) Type() string {
 }
 
 func (a *app) newGitCmd() *cobra.Command {
-	local := &cobra.Command{Use: "git", Short: "Review local git changes"}
-	local.AddCommand(a.newLocalReviewCmd("uncommitted"))
-	local.AddCommand(a.newLocalReviewCmd("staged"))
-	local.AddCommand(a.newLocalReviewCmd("unstaged"))
-	local.AddCommand(a.newLocalReviewCmd("commits"))
-	local.AddCommand(a.newLocalReviewCmd("branch"))
+	local := &cobra.Command{
+		Use:   "git",
+		Short: "Review local git changes (in a terminal, pick the mode from a list when none is given)",
+		Args:  cobra.NoArgs,
+	}
+	modes := make([]*cobra.Command, 0, len(localReviewModes))
+	for _, submode := range localReviewModes {
+		sub := a.newLocalReviewCmd(submode)
+		modes = append(modes, sub)
+		local.AddCommand(sub)
+	}
+	local.RunE = func(cmd *cobra.Command, _ []string) error {
+		if !a.interactiveSelect() {
+			// No terminal to ask on: the bare command keeps printing its help, as
+			// it did before it could prompt.
+			return cmd.Help()
+		}
+		return a.runPickedLocalMode(cmd, modes)
+	}
 	return local
 }
 
@@ -912,10 +928,14 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	return cmd
 }
 
+// localReviewModes are the submodes of `nickpit git`, in the order the command
+// registers them and the mode picker offers them.
+var localReviewModes = []string{"branch", "uncommitted", "unstaged", "staged", "commits"}
+
 func localReviewShort(submode string) string {
 	switch submode {
 	case "uncommitted":
-		return "Review staged and unstaged tracked changes against HEAD; untracked files excluded"
+		return "Review staged and unstaged tracked changes"
 	case "staged":
 		return "Review staged changes"
 	case "unstaged":
@@ -923,7 +943,7 @@ func localReviewShort(submode string) string {
 	case "commits":
 		return "Review a specific commit range"
 	case "branch":
-		return "Review a branch against a base branch"
+		return "Review against a base branch (PR Style)"
 	default:
 		return "Run a local review"
 	}

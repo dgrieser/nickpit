@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,6 +73,7 @@ func (a *app) selectOne(opts pick.Options) (int, error) {
 // selectRange draws opts and returns the ends of the chosen range, which are
 // the same row unless opts.Range is set.
 func (a *app) selectRange(opts pick.Options) (int, int, error) {
+	opts.Nested = opts.Nested || a.pickNested
 	if a.selectRangeFn != nil {
 		return a.selectRangeFn(opts)
 	}
@@ -90,6 +92,7 @@ func (a *app) selectRange(opts pick.Options) (int, int, error) {
 // selectView draws a multi-scope list and returns the scope the user ended in
 // together with the chosen row inside that scope's items.
 func (a *app) selectView(opts pick.Options) (int, int, error) {
+	opts.Nested = opts.Nested || a.pickNested
 	if a.selectViewFn != nil {
 		return a.selectViewFn(opts)
 	}
@@ -296,6 +299,49 @@ func (a *app) pickLocalRefs(ctx context.Context, submode, repoRoot string, expli
 		*refs.base, *refs.head = base, head
 	}
 	return nil
+}
+
+// runPickedLocalMode is bare `nickpit git` on a terminal: it asks which kind of
+// local change to review, then runs that submode exactly as if it had been
+// typed — its own prompts included. Esc in a prompt the chosen mode opens leads
+// back to this list, so a wrong mode costs one keypress; Esc here leaves.
+func (a *app) runPickedLocalMode(cmd *cobra.Command, modes []*cobra.Command) error {
+	items := make([]pick.Item, len(modes))
+	for i, mode := range modes {
+		items[i] = pick.Item{
+			Cells: []string{mode.Name(), mode.Short},
+			Match: mode.Name() + " " + mode.Short,
+		}
+	}
+	initial := 0
+	for {
+		index, err := a.selectOne(pick.Options{
+			Title:      "Local changes to review:",
+			Items:      items,
+			Initial:    initial,
+			CellStyles: []string{pick.StyleIdentifier, pick.StyleText},
+			Hint:       "↑/↓ move · type to filter · Enter select · Esc abort",
+		})
+		if err != nil {
+			return err
+		}
+		if index < 0 || index >= len(modes) {
+			return fmt.Errorf("no review mode selected")
+		}
+		initial = index
+		mode := modes[index]
+		a.printSelection("Reviewing ", mode.Name(), pick.StyleIdentifier, "")
+		mode.SetContext(cmd.Context())
+		a.pickNested = true
+		err = mode.RunE(mode, nil)
+		a.pickNested = false
+		if errors.Is(err, pick.ErrAborted) {
+			// Only a prompt of the chosen mode can abort here: the review itself
+			// never draws one.
+			continue
+		}
+		return err
+	}
 }
 
 // openRequestList is the platform's half of picking a request: how to list the

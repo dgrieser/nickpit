@@ -137,6 +137,11 @@ type Options struct {
 	// reads as "back"; a list that is the whole interaction leaves it off, so
 	// one press too many while clearing a filter cannot throw it away.
 	DismissOnBackspace bool
+	// Nested says the list was opened from another prompt, so Esc leads back
+	// to it rather than out of the run: the default key line names Esc "back"
+	// instead of "abort". Leaving still returns ErrAborted; going back is the
+	// caller's reading of it.
+	Nested bool
 	// CellStyles colours the columns, indexed like Item.Cells: one of the
 	// Style* codes, or "" to leave a column unstyled. Shorter than Cells is
 	// fine — the remaining columns stay unstyled.

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/pick"
@@ -956,4 +958,97 @@ func newTestRepo(t *testing.T) string {
 	runGitTestCommand(t, dir, "config", "user.name", "Test")
 	runGitTestCommand(t, dir, "commit", "-q", "--allow-empty", "-m", "first commit")
 	return dir
+}
+
+// TestRunPickedLocalModeRunsTheChosenMode walks the bare `nickpit git` menu:
+// Esc in the chosen mode's own prompt leads back to the menu, which reopens on
+// that mode, and the next choice runs as if it had been typed.
+func TestRunPickedLocalModeRunsTheChosenMode(t *testing.T) {
+	var ran []string
+	var prompts []pick.Options
+	answers := []struct {
+		index int
+		err   error
+	}{
+		{1, nil},              // menu: "second"
+		{-1, pick.ErrAborted}, // second's own prompt: Esc
+		{0, nil},              // menu again: "first"
+	}
+	a := &app{selectFn: func(opts pick.Options) (int, error) {
+		prompts = append(prompts, opts)
+		answer := answers[len(prompts)-1]
+		return answer.index, answer.err
+	}}
+	mode := func(name string, prompt bool) *cobra.Command {
+		return &cobra.Command{Use: name, Short: "review " + name, RunE: func(*cobra.Command, []string) error {
+			if prompt {
+				if _, err := a.selectOne(pick.Options{Items: []pick.Item{{Cells: []string{"x"}}}}); err != nil {
+					return err
+				}
+			}
+			ran = append(ran, name)
+			return nil
+		}}
+	}
+	modes := []*cobra.Command{mode("first", false), mode("second", true)}
+	parent := &cobra.Command{Use: "git"}
+	parent.SetContext(context.Background())
+	if err := a.runPickedLocalMode(parent, modes); err != nil {
+		t.Fatalf("runPickedLocalMode: %v", err)
+	}
+	if !slices.Equal(ran, []string{"first"}) {
+		t.Fatalf("ran = %v, want only the mode chosen last", ran)
+	}
+	if len(prompts) != 3 {
+		t.Fatalf("prompts = %d, want menu, nested prompt, menu", len(prompts))
+	}
+	if got := prompts[0].Items[1].Cells; !slices.Equal(got, []string{"second", "review second"}) {
+		t.Fatalf("menu row = %v, want the mode name and its short help", got)
+	}
+	if prompts[0].Nested || !prompts[1].Nested {
+		t.Fatalf("nested = %v/%v, want only the mode's own prompt nested", prompts[0].Nested, prompts[1].Nested)
+	}
+	if prompts[2].Initial != 1 {
+		t.Fatalf("menu reopened on row %d, want the mode left with Esc", prompts[2].Initial)
+	}
+	if a.pickNested {
+		t.Fatal("pickNested still set after the chosen mode returned")
+	}
+}
+
+func TestRunPickedLocalModeAbortsFromTheMenu(t *testing.T) {
+	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrAborted }}
+	parent := &cobra.Command{Use: "git"}
+	err := a.runPickedLocalMode(parent, []*cobra.Command{{Use: "first", RunE: func(*cobra.Command, []string) error {
+		t.Fatal("a mode ran although the menu was dismissed")
+		return nil
+	}}})
+	if !errors.Is(err, pick.ErrAborted) {
+		t.Fatalf("err = %v, want pick.ErrAborted", err)
+	}
+}
+
+// TestBareGitCommand keeps the non-terminal behaviour of `nickpit git`: help,
+// not a prompt, and an unknown mode is still an error.
+func TestBareGitCommand(t *testing.T) {
+	root := newRootCmd()
+	var out strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"git"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("nickpit git: %v", err)
+	}
+	for _, mode := range localReviewModes {
+		if !strings.Contains(out.String(), mode) {
+			t.Fatalf("help = %q, want mode %q listed", out.String(), mode)
+		}
+	}
+	root = newRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"git", "uncomitted"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("nickpit git uncomitted: err = %v, want unknown command", err)
+	}
 }
