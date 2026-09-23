@@ -114,3 +114,13 @@ func ownedBy(author userRef, user *User) bool {
 func (a *Adapter) ReadBaseFile(ctx context.Context, req model.ReviewRequest, path string) ([]byte, bool, error) {
 	return a.client.FetchBaseFile(ctx, req.Repo, req.Identifier, path)
 }
+
+// ListOpenRequests implements forge.Source over ListOpenPRs.
+func (a *Adapter) ListOpenRequests(ctx context.Context, repo string) ([]model.OpenRequest, error) {
+	return a.client.ListOpenPRs(ctx, repo)
+}
+
+// ListRequests implements forge.Source over ListPRs.
+func (a *Adapter) ListRequests(ctx context.Context, repo string) ([]model.OpenRequest, error) {
+	return a.client.ListPRs(ctx, repo)
+}

@@ -20,7 +20,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
-	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
+	"github.com/dgrieser/nickpit/internal/scm/forges"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/serve"
@@ -734,7 +734,7 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 		id:     opts.mrID,
 		rawURL: strings.TrimSpace(opts.rawURL),
 		pick:   opts.selectMR,
-	}, parseGitLabMRURL, "chat", "merge request")
+	}, glscm.Forge.ParseRequestURL, "chat", "merge request")
 	if err != nil {
 		return nil, err
 	}
@@ -998,8 +998,8 @@ func (a *app) chatEnsureCheckout(ctx context.Context, source model.ReviewSource,
 		prepare = git.NewCheckoutManager().Prepare
 	}
 	root, cleanup, err := prepare(ctx, *spec, git.CheckoutOptions{
-		Workdir: profile.Workdir,
-		Token:   checkoutToken(req.Mode, profile),
+		Workdir:     profile.Workdir,
+		Credentials: checkoutCredentials(req.Mode, profile),
 	})
 	if err != nil {
 		return err
@@ -1111,34 +1111,36 @@ func (a *app) chatSource(profile config.Profile, src session.Source, trustedHost
 			root = wd
 		}
 		return git.NewLocalSource(root), retrieval.NewLocalEngine(), nil
-	case model.ModeGitLab:
+	}
+	f, ok := forges.All.Lookup(model.ReviewMode(src.Mode))
+	if !ok {
+		return nil, nil, fmt.Errorf("chat: unsupported session mode %q", src.Mode)
+	}
+	token, profileBaseURL := forges.Credentials(f, profile)
+	apiBaseURL := profileBaseURL
+	if f.ConfigurableBaseURL() {
 		// The token always comes from the active profile and belongs to the
 		// profile's host. Sending it to a DIFFERENT host restored from a stored
 		// session would disclose it to another server, so a mismatch fails with
 		// the choice spelled out rather than silently picking either host. An
-		// explicit --gitlab-base-url is an informed override and wins
-		// (profile.GitLabBaseURL already carries it).
-		apiBaseURL := firstNonEmpty(src.BaseURL, profile.GitLabBaseURL)
-		if !trustedHost && a.gitlabBaseURL == "" && src.BaseURL != "" &&
-			glscm.NormalizeBaseURL(src.BaseURL) != glscm.NormalizeBaseURL(profile.GitLabBaseURL) {
-			return nil, nil, fmt.Errorf("chat: session was created against GitLab host %s, but the active profile targets %s and its token belongs there; select the session's profile, or pass --gitlab-base-url (with a matching token) to choose the host explicitly",
-				glscm.NormalizeBaseURL(src.BaseURL), glscm.NormalizeBaseURL(profile.GitLabBaseURL))
+		// explicit --<mode>-base-url is an informed override and wins (the
+		// profile's base URL already carries it).
+		apiBaseURL = firstNonEmpty(src.BaseURL, profileBaseURL)
+		override := a.forgeBaseURL(f.Mode())
+		if !trustedHost && override == "" && src.BaseURL != "" &&
+			f.NormalizeBaseURL(src.BaseURL) != f.NormalizeBaseURL(profileBaseURL) {
+			return nil, nil, fmt.Errorf("chat: session was created against %s host %s, but the active profile targets %s and its token belongs there; select the session's profile, or pass --%s-base-url (with a matching token) to choose the host explicitly",
+				f.Name(), f.NormalizeBaseURL(src.BaseURL), f.NormalizeBaseURL(profileBaseURL), f.Mode())
 		}
-		// On resume an explicit --gitlab-base-url wins over the stored host. A
+		// On resume an explicit --<mode>-base-url wins over the stored host. A
 		// just-created session's host already incorporates the override
 		// (chatSessionFromGitLab falls back to the profile host, which carries
 		// it), so it is left as chosen.
-		if a.gitlabBaseURL != "" && !trustedHost {
-			apiBaseURL = profile.GitLabBaseURL
+		if override != "" && !trustedHost {
+			apiBaseURL = profileBaseURL
 		}
-		adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
-		return adapter, retrieval.NewLocalEngine(), nil
-	case model.ModeGitHub:
-		adapter := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
-		return adapter, retrieval.NewLocalEngine(), nil
-	default:
-		return nil, nil, fmt.Errorf("chat: unsupported session mode %q", src.Mode)
 	}
+	return f.NewSource(apiBaseURL, token, profile.AssetBaseURL), retrieval.NewLocalEngine(), nil
 }
 
 // sameLLMEndpoint compares two LLM endpoint URLs ignoring insignificant
@@ -1200,7 +1202,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	project, mrID, baseURL := opts.repo, opts.mrID, ""
 	if strings.TrimSpace(opts.rawURL) != "" {
 		var err error
-		project, mrID, baseURL, err = parseGitLabMRURL(opts.rawURL)
+		project, mrID, baseURL, err = glscm.Forge.ParseRequestURL(opts.rawURL)
 		if err != nil {
 			return err
 		}
@@ -1845,8 +1847,8 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 		repoRoot = req.RepoRoot
 	}
 	scmBaseURL := ""
-	if req.Mode == model.ModeGitLab {
-		scmBaseURL = profile.GitLabBaseURL
+	if f, ok := forges.All.Lookup(req.Mode); ok && f.ConfigurableBaseURL() {
+		_, scmBaseURL = forges.Credentials(f, profile)
 	}
 	sess.Source = session.Source{
 		Mode:       string(req.Mode),

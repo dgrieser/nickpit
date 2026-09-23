@@ -40,13 +40,13 @@ func TestChatSourceRejectsMismatchedGitLabHost(t *testing.T) {
 		t.Fatalf("just-created session host rejected: %v", err)
 	}
 	// An explicit --gitlab-base-url override on resume wins.
-	a.gitlabBaseURL = "https://gitlab-c.example"
+	a.setForgeBaseURL(model.ModeGitLab, "https://gitlab-c.example")
 	profile.GitLabBaseURL = "https://gitlab-c.example"
 	if _, _, err := a.chatSource(profile, src, false); err != nil {
 		t.Fatalf("explicit override rejected: %v", err)
 	}
 	// Matching hosts in different spellings resume fine.
-	a.gitlabBaseURL = ""
+	a.setForgeBaseURL(model.ModeGitLab, "")
 	profile.GitLabBaseURL = "gitlab-a.example"
 	if _, _, err := a.chatSource(profile, src, false); err != nil {
 		t.Fatalf("matching host rejected: %v", err)
@@ -502,8 +502,8 @@ func TestChatEnsureCheckout(t *testing.T) {
 			if gotSpec.CloneURL != spec.CloneURL {
 				t.Fatalf("spec.CloneURL = %q, want %q", gotSpec.CloneURL, spec.CloneURL)
 			}
-			if opts.Workdir != "/work" || opts.Token != "tok" {
-				t.Fatalf("opts = %+v, want profile workdir and GitLab token", opts)
+			if opts.Workdir != "/work" || opts.Credentials != "oauth2:tok" {
+				t.Fatalf("opts = %+v, want profile workdir and the GitLab token as basic-auth credentials", opts)
 			}
 			return "/tmp/clone", func() {}, nil
 		}}

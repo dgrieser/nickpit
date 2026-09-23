@@ -259,8 +259,14 @@ type ReviewContext struct {
 	// deliberately NOT copied into prompt payloads; chat sessions persist them so
 	// a cached context's freshness can be checked against the live MR without a
 	// spurious first-resume refresh.
-	DiffBaseSHA         string             `json:"diff_base_sha,omitempty"`
-	DiffHeadSHA         string             `json:"diff_head_sha,omitempty"`
+	DiffBaseSHA string `json:"diff_base_sha,omitempty"`
+	DiffHeadSHA string `json:"diff_head_sha,omitempty"`
+	// DiffOmitsFileModes is set by a source whose diff carries no git file mode
+	// at all (the GitHub files API), so a symlink cannot be recognized from the
+	// diff alone and the reviewed tree has to be asked. Sources that do report
+	// modes leave it false and are never second-guessed: their marks describe
+	// the reviewed revision, which a checkout need not match.
+	DiffOmitsFileModes  bool               `json:"diff_omits_file_modes,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`

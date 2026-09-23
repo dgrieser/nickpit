@@ -63,7 +63,7 @@ func stampSymlinkFlags(ctx context.Context, reviewCtx *model.ReviewContext, runn
 	if reviewCtx == nil || reviewCtx.CheckoutRoot == "" || reviewCtx.DiffHeadSHA == "" {
 		return
 	}
-	markFromTree := sourceOmitsFileModes(reviewCtx.Mode)
+	markFromTree := reviewCtx.DiffOmitsFileModes
 	hasHunk := make(map[string]bool, len(reviewCtx.DiffHunks))
 	for _, hunk := range reviewCtx.DiffHunks {
 		hasHunk[hunk.FilePath] = true
@@ -193,13 +193,4 @@ func markedSymlink(blobs map[string]string, deletedLinks map[string]bool, path s
 		return true
 	}
 	return deletedLinks[path]
-}
-
-// sourceOmitsFileModes reports whether a review source's diff carries no git file
-// mode at all, so a symlink cannot be recognized from the diff alone and the
-// reviewed tree has to be asked. Sources that do report modes are never
-// second-guessed: their marks describe the reviewed revision, which a checkout
-// need not match.
-func sourceOmitsFileModes(mode model.ReviewMode) bool {
-	return mode == model.ModeGitHub
 }

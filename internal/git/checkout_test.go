@@ -79,7 +79,7 @@ func TestCheckoutManagerPrepareClone(t *testing.T) {
 		CloneURL: "https://github.com/owner/repo.git",
 		HeadRef:  "feature",
 		HeadSHA:  "deadbeef",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestCheckoutManagerPrepareWorktree(t *testing.T) {
 		CloneURL: "https://gitlab.com/group/project.git",
 		HeadRef:  "feature",
 		HeadSHA:  "cafebabe",
-	}, CheckoutOptions{Workdir: localRepo, Token: "secret"})
+	}, CheckoutOptions{Workdir: localRepo, Credentials: "x-access-token:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestCheckoutManagerPrepareCleansUpCloneOnFailure(t *testing.T) {
 		Repo:     "owner/repo",
 		CloneURL: "https://github.com/owner/repo.git",
 		HeadRef:  "feature",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -209,7 +209,7 @@ func TestCheckoutManagerFallsBackToHeadSHAWhenRefMissing(t *testing.T) {
 		CloneURL: "https://gitlab.com/group/project.git",
 		HeadRef:  "missing-branch",
 		HeadSHA:  "f970cb9b",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestCheckoutManagerErrorsWhenRefMissingAndNoHeadSHA(t *testing.T) {
 		Repo:     "group/project",
 		CloneURL: "https://gitlab.com/group/project.git",
 		HeadRef:  "missing-branch",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -284,7 +284,7 @@ func TestCheckoutManagerWrapsCombinedErrorWhenSHAFallbackFails(t *testing.T) {
 		CloneURL: "https://gitlab.com/group/project.git",
 		HeadRef:  "missing-branch",
 		HeadSHA:  "f970cb9b",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -306,7 +306,7 @@ func TestCheckoutManagerSkipsLsRemoteWhenHeadRefEmpty(t *testing.T) {
 		Repo:     "owner/repo",
 		CloneURL: "https://github.com/owner/repo.git",
 		HeadSHA:  "deadbeef",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestCheckoutManagerInsertsEndOfOptionsSeparator(t *testing.T) {
 		CloneURL: "https://github.com/owner/repo.git",
 		HeadRef:  "feature",
 		HeadSHA:  "deadbeef",
-	}, CheckoutOptions{Token: "secret"})
+	}, CheckoutOptions{Credentials: "x-access-token:secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestCheckoutManagerRejectsHostileSpecValues(t *testing.T) {
 			factory := &stubRunnerFactory{errs: map[string]error{}}
 			manager := NewCheckoutManager()
 			manager.newRunner = factory.runner
-			if _, _, err := manager.Prepare(context.Background(), tc.spec, CheckoutOptions{Token: "secret"}); err == nil {
+			if _, _, err := manager.Prepare(context.Background(), tc.spec, CheckoutOptions{Credentials: "x-access-token:secret"}); err == nil {
 				t.Fatal("expected validation error")
 			}
 			if len(factory.calls) != 0 {

@@ -14,7 +14,10 @@ import (
 
 type CheckoutOptions struct {
 	Workdir string
-	Token   string
+	// Credentials is the "user:token" pair git sends as HTTP basic auth to the
+	// clone URL, as rendered by the platform's forge.GitCredentials; empty
+	// clones anonymously.
+	Credentials string
 }
 
 type CheckoutManager struct {
@@ -69,7 +72,7 @@ func (m *CheckoutManager) prepareClone(ctx context.Context, spec model.CheckoutS
 	}
 	cleanup := func() { _ = m.removeAll(repoRoot) }
 
-	args := append(m.authArgs(spec.Provider, opts.Token), "clone", "--no-checkout", "--", spec.CloneURL, repoRoot)
+	args := append(m.authArgs(opts.Credentials), "clone", "--no-checkout", "--", spec.CloneURL, repoRoot)
 	if _, err := m.newRunner("").Run(ctx, args...); err != nil {
 		cleanup()
 		return "", nil, err
@@ -119,7 +122,7 @@ func (m *CheckoutManager) prepareWorktree(ctx context.Context, spec model.Checko
 
 func (m *CheckoutManager) fetchRevision(ctx context.Context, repoRoot string, spec model.CheckoutSpec, opts CheckoutOptions) error {
 	runner := m.newRunner(repoRoot)
-	auth := m.authArgs(spec.Provider, opts.Token)
+	auth := m.authArgs(opts.Credentials)
 
 	if spec.HeadRef == "" {
 		return m.fetchTarget(ctx, runner, auth, spec.CloneURL, spec.HeadSHA)
@@ -172,23 +175,20 @@ func (m *CheckoutManager) checkoutTarget(spec model.CheckoutSpec) string {
 	return "FETCH_HEAD"
 }
 
-func (m *CheckoutManager) authArgs(provider model.ReviewMode, token string) []string {
-	return authHeaderArgs(provider, token)
+func (m *CheckoutManager) authArgs(credentials string) []string {
+	return authHeaderArgs(credentials)
 }
 
-// authHeaderArgs renders a provider token as the per-invocation credential
-// header git clones and fetches with. Keeping it out of the repository config
-// keeps the token off disk. Shared with the history provider, which needs the
-// same credentials to deepen a shallow checkout of a private repository.
-func authHeaderArgs(provider model.ReviewMode, token string) []string {
-	if token == "" {
+// authHeaderArgs renders a "user:token" basic-auth pair as the per-invocation
+// credential header git clones and fetches with. Keeping it out of the
+// repository config keeps the token off disk. Shared with the history
+// provider, which needs the same credentials to deepen a shallow checkout of a
+// private repository.
+func authHeaderArgs(credentials string) []string {
+	if credentials == "" {
 		return nil
 	}
-	creds := "x-access-token:" + token
-	if provider == model.ModeGitLab {
-		creds = "oauth2:" + token
-	}
-	header := "http.extraHeader=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
+	header := "http.extraHeader=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
 	return []string{"-c", header}
 }
 

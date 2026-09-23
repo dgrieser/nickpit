@@ -725,6 +725,10 @@ func TestShallowCheckoutIsDeepenedOnceForConcurrentCalls(t *testing.T) {
 }
 
 func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
+	github := HostCredential{Host: "github.com", Credentials: "x-access-token:ghp-secret"}
+	gitlab := func(host string) HostCredential {
+		return HostCredential{Host: host, Credentials: "oauth2:glpat-secret"}
+	}
 	tests := []struct {
 		name    string
 		origin  string
@@ -734,7 +738,7 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 		{
 			name:    "github.com",
 			origin:  "https://github.com/acme/repo.git",
-			auth:    HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:    HistoryAuth{Hosts: []HostCredential{github}},
 			wantSet: true,
 		},
 		{
@@ -743,36 +747,17 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 			// while a broad configured host cannot be widened by a subdomain.
 			name:   "github subdomain",
 			origin: "https://api.github.com/acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			name:   "subdomain of a broad configured gitlab host",
 			origin: "https://attacker.example.com/acme/repo.git",
-			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://example.com/api/v4"},
+			auth:   HistoryAuth{Hosts: []HostCredential{gitlab("example.com")}},
 		},
 		{
 			name:    "broad configured gitlab host itself",
 			origin:  "https://example.com/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://example.com/api/v4"},
-			wantSet: true,
-		},
-		{
-			// A scheme-less base URL is accepted configuration; it must not
-			// silently resolve to gitlab.com.
-			name:   "gitlab.com origin with a scheme-less self-hosted base url",
-			origin: "https://gitlab.com/acme/repo.git",
-			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal"},
-		},
-		{
-			name:    "scheme-less self-hosted base url matches its own host",
-			origin:  "https://gitlab.internal/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal"},
-			wantSet: true,
-		},
-		{
-			name:    "scheme-less self-hosted base url with a port",
-			origin:  "https://gitlab.internal/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal:8443/api/v4"},
+			auth:    HistoryAuth{Hosts: []HostCredential{gitlab("example.com")}},
 			wantSet: true,
 		},
 		{
@@ -780,61 +765,68 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 			// that merely contains "github" must never receive the token.
 			name:   "lookalike github host",
 			origin: "https://github.attacker.example/acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			name:   "host with github as a prefix",
 			origin: "https://github.com.attacker.example/acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			name:   "unconfigured github enterprise host",
 			origin: "https://github.enterprise.internal/acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			name:    "configured self-hosted gitlab",
 			origin:  "https://gitlab.example.com/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
+			auth:    HistoryAuth{Hosts: []HostCredential{github, gitlab("gitlab.example.com")}},
 			wantSet: true,
 		},
 		{
 			name:   "gitlab host other than the configured one",
 			origin: "https://gitlab.other.example/acme/repo.git",
-			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
+			auth:   HistoryAuth{Hosts: []HostCredential{gitlab("gitlab.example.com")}},
 		},
 		{
-			name:    "gitlab.com without a configured base url",
-			origin:  "https://gitlab.com/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret"},
+			// The host is matched case-insensitively, as DNS is.
+			name:    "configured host in another case",
+			origin:  "https://GitLab.Example.com/acme/repo.git",
+			auth:    HistoryAuth{Hosts: []HostCredential{gitlab("gitlab.example.com")}},
 			wantSet: true,
+		},
+		{
+			// An entry without credentials (a platform without a token) never
+			// sends a header, even on its own host.
+			name:   "configured host without a token",
+			origin: "https://gitlab.example.com/acme/repo.git",
+			auth:   HistoryAuth{Hosts: []HostCredential{{Host: "gitlab.example.com"}}},
+		},
+		{
+			// An entry without a host (a platform that has no trusted host at
+			// all) never matches anything.
+			name:   "credentials without a host",
+			origin: "https://gitlab.example.com/acme/repo.git",
+			auth:   HistoryAuth{Hosts: []HostCredential{{Credentials: "oauth2:glpat-secret"}}},
 		},
 		{
 			// ssh remotes authenticate with keys; an Authorization header would
 			// only leak the token into the command line for no benefit.
 			name:   "ssh remote",
 			origin: "git@github.com:acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			// Plaintext http would put the token on the wire in clear, even on
 			// the right host.
 			name:   "plaintext http github",
 			origin: "http://github.com/acme/repo.git",
-			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+			auth:   HistoryAuth{Hosts: []HostCredential{github}},
 		},
 		{
 			name:   "plaintext http on the configured gitlab host",
 			origin: "http://gitlab.example.com/acme/repo.git",
-			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
-		},
-		{
-			// An http base URL only names the instance to trust; an https remote
-			// on that host still gets the token.
-			name:    "https remote with an http configured base url",
-			origin:  "https://gitlab.example.com/acme/repo.git",
-			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "http://gitlab.example.com/api/v4"},
-			wantSet: true,
+			auth:   HistoryAuth{Hosts: []HostCredential{gitlab("gitlab.example.com")}},
 		},
 	}
 
@@ -1363,7 +1355,7 @@ func TestDeepenFetchesOriginExplicitly(t *testing.T) {
 		joinArgs([]string{"rev-parse", "HEAD"}):                    "aaa111\n",
 	}}
 	resolved(runner, "HEAD", "aaa111")
-	history := NewExecHistory(HistoryAuth{GitHubToken: "ghp-secret"})
+	history := NewExecHistory(HistoryAuth{Hosts: []HostCredential{{Host: "github.com", Credentials: "x-access-token:ghp-secret"}}})
 	history.newRunner = func(string) Runner { return runner }
 	runner.match = func(args []string) (string, bool) {
 		return "", args[0] == "log"
@@ -1399,7 +1391,7 @@ func TestDeepenWithoutOriginCarriesNoCredentials(t *testing.T) {
 		joinArgs([]string{"config", "--get", "remote.origin.url"}): errors.New("exit status 1"),
 	}
 	resolved(runner, "HEAD", "aaa111")
-	history := NewExecHistory(HistoryAuth{GitHubToken: "ghp-secret", GitLabToken: "glpat-secret"})
+	history := NewExecHistory(HistoryAuth{Hosts: []HostCredential{{Host: "github.com", Credentials: "x-access-token:ghp-secret"}, {Host: "gitlab.com", Credentials: "oauth2:glpat-secret"}}})
 	history.newRunner = func(string) Runner { return runner }
 	runner.match = func(args []string) (string, bool) {
 		return "", args[0] == "log"

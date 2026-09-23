@@ -740,8 +740,8 @@ func TestSessionKindDecidesTheSourceColour(t *testing.T) {
 		info session.Info
 		want sessionKind
 	}{
-		{"gitlab", session.Info{Source: session.Source{Mode: "gitlab", Identifier: 42}}, kindGitLabRequest},
-		{"github", session.Info{Source: session.Source{Mode: "github", Identifier: 7}}, kindGitHubRequest},
+		{"gitlab", session.Info{Source: session.Source{Mode: "gitlab", Identifier: 42}}, kindRemoteRequest},
+		{"github", session.Info{Source: session.Source{Mode: "github", Identifier: 7}}, kindRemoteRequest},
 		{"branch", session.Info{Source: session.Source{Mode: "local", Submode: "branch", BaseRef: "origin/main", HeadRef: "feat/x"}}, kindBranchReview},
 		{"commits", session.Info{Source: session.Source{Mode: "local", Submode: "commits", BaseRef: sha, HeadRef: sha}}, kindCommitReview},
 		{"uncommitted", session.Info{Source: session.Source{Mode: "local", Submode: "uncommitted", Branch: "feat/x"}}, kindWorkingTree},

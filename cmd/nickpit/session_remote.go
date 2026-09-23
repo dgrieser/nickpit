@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
-	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
+	"github.com/dgrieser/nickpit/internal/scm/forge"
+	"github.com/dgrieser/nickpit/internal/scm/forges"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
@@ -118,9 +118,10 @@ func (f *remoteFinder) find(ctx context.Context) ([]remoteReview, error) {
 }
 
 // remoteSourceFor builds the platform half for the project the checkout points
-// at: GitHub when its remote says so, GitLab otherwise, and nothing at all
-// outside a checkout, without a project, or without the token that platform
-// needs — a picker must still open where no request can be read.
+// at: the platform whose host the remote names, and nothing at all outside a
+// checkout, without a project, on a host no platform is configured for, or
+// without the token that platform needs — a picker must still open where no
+// request can be read.
 func (a *app) remoteSourceFor(place sessionPlace, closed bool) *remoteSource {
 	if place.repo == "" {
 		return nil
@@ -129,65 +130,53 @@ func (a *app) remoteSourceFor(place sessionPlace, closed bool) *remoteSource {
 	if err != nil {
 		return nil
 	}
-	repo := place.repo
-	if isGitHubRemote(place.remoteURL) {
-		if profile.GitHubToken == "" {
-			return nil
-		}
-		client := ghscm.NewClient("", profile.GitHubToken)
-		adapter := ghscm.NewAdapter(client, profile.AssetBaseURL)
-		return &remoteSource{
-			mode:   model.ModeGitHub,
-			repo:   repo,
-			closed: closed,
-			list: func(ctx context.Context) ([]model.OpenRequest, error) {
-				if closed {
-					return client.ListPRs(ctx, repo)
-				}
-				return client.ListOpenPRs(ctx, repo)
-			},
-			reviews: func(ctx context.Context, id int) (map[string]*model.ReviewResult, error) {
-				// Read without the author check: a project reviewed by another
-				// group's bot (or by a colleague's token) carries markers this
-				// token cannot claim, and the scope exists to show exactly
-				// those. Nothing here writes back.
-				return adapter.ReviewResultsAnyAuthor(ctx, repo, id)
-			},
-			// GitHub's comment API is read here without thread structure, so a
-			// pull request's review prints without the replies to it.
-			threads: func(context.Context, int) ([]reviewThread, error) { return nil, nil },
-		}
-	}
-	if profile.GitLabToken == "" || !sameHost(place.remoteURL, profile.GitLabBaseURL) {
-		// A remote on a host this profile has no credentials for is not this
-		// profile's GitLab: asking it would send the token to the wrong server.
+	// A remote on a host this profile has no credentials for is not this
+	// profile's platform: asking it would send the token to the wrong server.
+	f, ok := forges.All.Detect(place.remoteURL, func(f forge.Forge) string {
+		_, baseURL := forges.Credentials(f, profile)
+		return baseURL
+	})
+	if !ok {
 		return nil
 	}
-	client := glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken)
-	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
-	return &remoteSource{
-		mode:    model.ModeGitLab,
+	token, baseURL := forges.Credentials(f, profile)
+	if token == "" {
+		return nil
+	}
+	repo := place.repo
+	source := f.NewSource(baseURL, token, profile.AssetBaseURL)
+	remote := &remoteSource{
+		mode:    f.Mode(),
 		repo:    repo,
-		baseURL: profile.GitLabBaseURL,
+		baseURL: baseURL,
 		closed:  closed,
 		list: func(ctx context.Context) ([]model.OpenRequest, error) {
 			if closed {
-				return client.ListMRs(ctx, repo)
+				return source.ListRequests(ctx, repo)
 			}
-			return client.ListOpenMRs(ctx, repo)
+			return source.ListOpenRequests(ctx, repo)
 		},
 		reviews: func(ctx context.Context, id int) (map[string]*model.ReviewResult, error) {
-			// Read without the author check: see the GitHub branch above.
-			return adapter.ReviewResultsAnyAuthor(ctx, repo, id)
+			// Read without the author check: a project reviewed by another
+			// group's bot (or by a colleague's token) carries markers this
+			// token cannot claim, and the scope exists to show exactly
+			// those. Nothing here writes back.
+			return source.ReviewResultsAnyAuthor(ctx, repo, id)
 		},
-		threads: func(ctx context.Context, id int) ([]reviewThread, error) {
-			discussions, err := client.MRDiscussions(ctx, repo, id)
+		// A platform whose comment API is read without thread structure prints
+		// a request's review without the replies to it.
+		threads: func(context.Context, int) ([]reviewThread, error) { return nil, nil },
+	}
+	if adapter, ok := source.(*glscm.Adapter); ok {
+		remote.threads = func(ctx context.Context, id int) ([]reviewThread, error) {
+			discussions, err := adapter.Client().MRDiscussions(ctx, repo, id)
 			if err != nil {
 				return nil, err
 			}
 			return gitlabReviewThreads(discussions), nil
-		},
+		}
 	}
+	return remote
 }
 
 // collect lists the open requests and reads the reviews each of them carries.
@@ -248,10 +237,7 @@ func (s *remoteSource) collect(ctx context.Context) ([]remoteReview, error) {
 
 // noun is the platform's word for what was being read.
 func (s *remoteSource) noun() string {
-	if s.mode == model.ModeGitHub {
-		return "pull requests"
-	}
-	return "merge requests"
+	return forgeRequestNoun(s.mode) + "s"
 }
 
 // scopeNoun names what the remote scope is listing, which the flag widens.
@@ -322,54 +308,6 @@ func sortRemoteReviews(rows []remoteReview, branch string) {
 	})
 }
 
-// isGitHubRemote reports whether a remote URL points at github.com. Anything
-// else is treated as the profile's GitLab, which is what NickPit's own commands
-// assume.
-func isGitHubRemote(remote string) bool {
-	host := remoteHost(remote)
-	return host == "github.com" || strings.HasSuffix(host, ".github.com")
-}
-
-// sameHost reports whether a git remote and an API base URL name the same
-// server, so a token is only ever offered to the host it belongs to. An
-// unreadable remote counts as the same host: the git remote is then no evidence
-// either way, and the profile's own host is what the rest of NickPit uses.
-func sameHost(remote, baseURL string) bool {
-	host := remoteHost(remote)
-	if host == "" {
-		return true
-	}
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || parsed.Hostname() == "" {
-		return false
-	}
-	return strings.EqualFold(host, parsed.Hostname())
-}
-
-// remoteHost is the host of a git remote URL, in either of the two shapes git
-// writes: a URL with a scheme, or the scp-style "git@host:group/project.git".
-func remoteHost(remote string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return ""
-	}
-	if strings.Contains(remote, "://") {
-		parsed, err := url.Parse(remote)
-		if err != nil {
-			return ""
-		}
-		return parsed.Hostname()
-	}
-	before, _, ok := strings.Cut(remote, ":")
-	if !ok {
-		return ""
-	}
-	if _, host, found := strings.Cut(before, "@"); found {
-		return host
-	}
-	return before
-}
-
 // actOnRemoteReview carries out the chosen action on a review that lives on an
 // open request: print it (with the conversation around it), copy that same text
 // unstyled, or chat about it — which resumes the review from the request's own
@@ -423,10 +361,7 @@ func (a *app) chatAboutRemoteReview(ctx context.Context, row remoteReview) error
 // remoteOriginLabel names where a copied review came from in its clipboard
 // confirmation.
 func remoteOriginLabel(row remoteReview) string {
-	if row.mode == model.ModeGitHub {
-		return fmt.Sprintf("GitHub PR %s#%d", textsan.StripControl(row.repo), row.id)
-	}
-	return fmt.Sprintf("GitLab MR %s!%d", textsan.StripControl(row.repo), row.id)
+	return fmt.Sprintf("%s %s%s%d", forgeRequestLabel(row.mode), textsan.StripControl(row.repo), requestSigil(row.mode), row.id)
 }
 
 // writeRemoteReview writes a published review with the replies its own threads
@@ -551,9 +486,5 @@ func reviewWithReplies(result *model.ReviewResult, threads []reviewThread) (*mod
 
 // remoteRequestLabel names a request the way its platform writes it.
 func remoteRequestLabel(row remoteReview) string {
-	marker := "!"
-	if row.mode == model.ModeGitHub {
-		marker = "#"
-	}
-	return fmt.Sprintf("%s%s%d", row.repo, marker, row.id)
+	return fmt.Sprintf("%s%s%d", row.repo, requestSigil(row.mode), row.id)
 }

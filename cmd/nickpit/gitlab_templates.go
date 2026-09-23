@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/textsan"
@@ -110,8 +111,8 @@ func (a *app) resolveTemplateTargets(flags templateFlags) ([]templateTarget, err
 			return nil, err
 		}
 		baseURL := cfg.GitLabBaseURL
-		if a.gitlabBaseURL != "" {
-			baseURL = a.gitlabBaseURL
+		if override := a.forgeBaseURL(model.ModeGitLab); override != "" {
+			baseURL = override
 		}
 		keyword := cfg.CommandKeyword
 		if flags.keyword != "" {

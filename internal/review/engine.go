@@ -23,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/scm/forges"
 	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
 	"github.com/dgrieser/nickpit/internal/toolchain"
@@ -209,11 +210,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		// The history tools read the same checkout the retrieval engine reads,
 		// but through git; the profile tokens let a shallow remote checkout be
 		// deepened on first use.
-		history: git.NewExecHistory(git.HistoryAuth{
-			GitHubToken:   profile.GitHubToken,
-			GitLabToken:   profile.GitLabToken,
-			GitLabBaseURL: profile.GitLabBaseURL,
-		}),
+		history: git.NewExecHistory(forges.HistoryAuth(profile)),
 		gitRunner: func(repoRoot string) git.Runner {
 			return git.ExecRunner{RepoRoot: repoRoot}
 		},
