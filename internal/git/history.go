@@ -186,25 +186,23 @@ var numstatEntry = regexp.MustCompile(`(?s)^(\d+|-)\t(\d+|-)\t(.*)$`)
 var hexRevision = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 
 // HistoryAuth carries the credentials used to deepen a shallow checkout of a
-// private repository, together with the hosts they belong to. A token is only
-// ever sent to its own provider's configured host: an origin URL is attacker
-// controlled in a fork PR/MR, so matching it loosely (any host merely
-// containing "github") would hand the token to https://github.attacker.example.
+// private repository, together with the hosts they belong to. A credential is
+// only ever sent to its own host: an origin URL is attacker controlled in a
+// fork PR/MR, so matching it loosely (any host merely containing "github")
+// would hand the token to https://github.attacker.example. The platforms
+// derive the entries (see forges.HistoryAuth); this package only matches.
 type HistoryAuth struct {
-	GitHubToken string
-	GitLabToken string
-	// GitLabBaseURL is the configured GitLab API base URL; its host is the only
-	// one the GitLab token is sent to. Empty means gitlab.com.
-	GitLabBaseURL string
+	Hosts []HostCredential
 }
 
-// defaultGitHubHost is the only host the GitHub token is sent to. GitHub
-// Enterprise hosts are not configurable anywhere in nickpit today, so there is
-// no other trusted host to derive.
-const defaultGitHubHost = "github.com"
-
-// defaultGitLabHost is used when no GitLab base URL is configured.
-const defaultGitLabHost = "gitlab.com"
+// HostCredential is one platform's basic-auth pair and the exact host it may
+// travel to.
+type HostCredential struct {
+	// Host is the trusted host, compared case-insensitively and exactly.
+	Host string
+	// Credentials is the "user:token" pair, as forge.GitCredentials renders it.
+	Credentials string
+}
 
 // ExecHistory reads history by running git. It is safe for concurrent use:
 // tool calls execute in parallel, and the one-time deepen of a shallow
@@ -748,14 +746,12 @@ func (h *ExecHistory) authArgsForRepo(originURL string) []string {
 	if !ok {
 		return nil
 	}
-	switch {
-	case hostMatches(host, defaultGitHubHost):
-		return authHeaderArgs(model.ModeGitHub, h.auth.GitHubToken)
-	case hostMatches(host, gitLabHost(h.auth.GitLabBaseURL)):
-		return authHeaderArgs(model.ModeGitLab, h.auth.GitLabToken)
-	default:
-		return nil
+	for _, entry := range h.auth.Hosts {
+		if entry.Credentials != "" && hostMatches(host, entry.Host) {
+			return authHeaderArgs(entry.Credentials)
+		}
 	}
+	return nil
 }
 
 // credentialHost extracts the host a credential header may be sent to. Only
@@ -796,29 +792,6 @@ func urlSchemeHost(raw string) (string, string) {
 func hostMatches(host, trusted string) bool {
 	trusted = strings.ToLower(strings.TrimSpace(trusted))
 	return trusted != "" && host == trusted
-}
-
-// gitLabHost is the host of the configured GitLab API base URL. The scheme of
-// that URL is irrelevant here — it only names the instance to trust; whether a
-// credential may travel is decided by the remote's own scheme in
-// credentialHost. Only genuinely empty configuration falls back to gitlab.com:
-// resolving a self-hosted instance to the public host would send its token to
-// gitlab.com origins.
-func gitLabHost(baseURL string) string {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		return defaultGitLabHost
-	}
-	// config canonicalizes gitlab_base_url on load, so a scheme is normally
-	// present. This repeats the prepend for callers that construct HistoryAuth
-	// themselves: without a scheme url.Parse reads "gitlab.internal:8443" as a
-	// scheme, and silently yielding no host would fall back to gitlab.com — the
-	// one outcome a self-hosted token must never have.
-	if !strings.Contains(baseURL, "://") {
-		baseURL = "https://" + baseURL
-	}
-	_, host := urlSchemeHost(baseURL)
-	return host
 }
 
 func remoteURL(ctx context.Context, runner Runner) string {

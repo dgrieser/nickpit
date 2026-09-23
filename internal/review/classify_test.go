@@ -84,12 +84,13 @@ func TestStampSymlinkFlagsKeepsReplacementEntriesDistinct(t *testing.T) {
 // the git-json diff format drops DiffFiles entirely.
 func TestStampSymlinkFlagsMarksEveryViewFromTheHeadTree(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
-		Mode:         model.ModeGitHub,
-		CheckoutRoot: "/checkout",
-		DiffHeadSHA:  "head111",
-		ChangedFiles: []model.ChangedFile{{Path: "templates"}, {Path: "main.go"}},
-		DiffFiles:    []model.DiffFile{{FilePath: "templates"}, {FilePath: "main.go"}},
-		DiffHunks:    []model.DiffHunk{{FilePath: "templates"}, {FilePath: "main.go"}},
+		Mode:               model.ModeGitHub,
+		DiffOmitsFileModes: true,
+		CheckoutRoot:       "/checkout",
+		DiffHeadSHA:        "head111",
+		ChangedFiles:       []model.ChangedFile{{Path: "templates"}, {Path: "main.go"}},
+		DiffFiles:          []model.DiffFile{{FilePath: "templates"}, {FilePath: "main.go"}},
+		DiffHunks:          []model.DiffHunk{{FilePath: "templates"}, {FilePath: "main.go"}},
 	}
 
 	runner := &symlinkTreeRunner{symlinks: []string{"templates"}}
@@ -112,10 +113,11 @@ func TestStampSymlinkFlagsMarksEveryViewFromTheHeadTree(t *testing.T) {
 // in the change's own commits is what states the mode.
 func TestStampSymlinkFlagsMarksDeletedSymlinksFromTheirDeletion(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
-		Mode:         model.ModeGitHub,
-		CheckoutRoot: "/checkout",
-		DiffHeadSHA:  "head111",
-		Commits:      []model.CommitSummary{{SHA: "c1"}},
+		Mode:               model.ModeGitHub,
+		DiffOmitsFileModes: true,
+		CheckoutRoot:       "/checkout",
+		DiffHeadSHA:        "head111",
+		Commits:            []model.CommitSummary{{SHA: "c1"}},
 		ChangedFiles: []model.ChangedFile{
 			{Path: "dir/link", Status: model.FileDeleted},
 			{Path: "main.go", Status: model.FileDeleted},
@@ -148,10 +150,11 @@ func TestStampSymlinkFlagsMarksDeletedSymlinksFromTheirDeletion(t *testing.T) {
 // stamp a locally symlinked path that is regular text in the reviewed change.
 func TestStampSymlinkFlagsSkipsWithoutReviewedHead(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
-		Mode:         model.ModeGitHub,
-		CheckoutRoot: "/checkout",
-		ChangedFiles: []model.ChangedFile{{Path: "templates"}},
-		DiffFiles:    []model.DiffFile{{FilePath: "templates"}},
+		Mode:               model.ModeGitHub,
+		DiffOmitsFileModes: true,
+		CheckoutRoot:       "/checkout",
+		ChangedFiles:       []model.ChangedFile{{Path: "templates"}},
+		DiffFiles:          []model.DiffFile{{FilePath: "templates"}},
 	}
 
 	runner := &symlinkTreeRunner{symlinks: []string{"templates"}}
@@ -172,11 +175,12 @@ func TestStampSymlinkFlagsTrustsModesOverCheckout(t *testing.T) {
 	for _, mode := range []model.ReviewMode{model.ModeLocal, model.ModeGitLab} {
 		t.Run(string(mode), func(t *testing.T) {
 			reviewCtx := &model.ReviewContext{
-				Mode:         mode,
-				CheckoutRoot: "/checkout",
-				DiffHeadSHA:  "head111",
-				ChangedFiles: []model.ChangedFile{{Path: "templates"}},
-				DiffFiles:    []model.DiffFile{{FilePath: "templates"}},
+				Mode:               mode,
+				DiffOmitsFileModes: mode == model.ModeGitHub,
+				CheckoutRoot:       "/checkout",
+				DiffHeadSHA:        "head111",
+				ChangedFiles:       []model.ChangedFile{{Path: "templates"}},
+				DiffFiles:          []model.DiffFile{{FilePath: "templates"}},
 			}
 
 			runner := &symlinkTreeRunner{symlinks: []string{"templates"}}
@@ -195,10 +199,11 @@ func TestStampSymlinkFlagsTrustsModesOverCheckout(t *testing.T) {
 // Without a checkout there is no index to ask, so no git call may be made.
 func TestStampSymlinkFlagsSkipsWithoutCheckout(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
-		Mode:         model.ModeGitHub,
-		DiffHeadSHA:  "head111",
-		ChangedFiles: []model.ChangedFile{{Path: "templates"}},
-		DiffFiles:    []model.DiffFile{{FilePath: "templates"}},
+		Mode:               model.ModeGitHub,
+		DiffOmitsFileModes: true,
+		DiffHeadSHA:        "head111",
+		ChangedFiles:       []model.ChangedFile{{Path: "templates"}},
+		DiffFiles:          []model.DiffFile{{FilePath: "templates"}},
 	}
 
 	runner := &symlinkTreeRunner{symlinks: []string{"templates"}}
@@ -217,12 +222,13 @@ func TestStampSymlinkFlagsSkipsWithoutCheckout(t *testing.T) {
 // onto one key would let the symlink's mark suppress the other file's text.
 func TestStampSymlinkFlagsKeepsPathsLiteral(t *testing.T) {
 	reviewCtx := &model.ReviewContext{
-		Mode:         model.ModeGitHub,
-		CheckoutRoot: "/checkout",
-		DiffHeadSHA:  "head111",
-		ChangedFiles: []model.ChangedFile{{Path: `a\b`}, {Path: "a/b"}},
-		DiffFiles:    []model.DiffFile{{FilePath: `a\b`}, {FilePath: "a/b"}},
-		DiffHunks:    []model.DiffHunk{{FilePath: `a\b`}, {FilePath: "a/b"}},
+		Mode:               model.ModeGitHub,
+		DiffOmitsFileModes: true,
+		CheckoutRoot:       "/checkout",
+		DiffHeadSHA:        "head111",
+		ChangedFiles:       []model.ChangedFile{{Path: `a\b`}, {Path: "a/b"}},
+		DiffFiles:          []model.DiffFile{{FilePath: `a\b`}, {FilePath: "a/b"}},
+		DiffHunks:          []model.DiffHunk{{FilePath: `a\b`}, {FilePath: "a/b"}},
 	}
 
 	stampSymlinkFlags(context.Background(), reviewCtx, &symlinkTreeRunner{symlinks: []string{`a\b`}})
@@ -243,9 +249,10 @@ func TestStampSymlinkFlagsReadsTargetForHunklessRename(t *testing.T) {
 	for _, mode := range []model.ReviewMode{model.ModeGitLab, model.ModeGitHub} {
 		t.Run(string(mode), func(t *testing.T) {
 			reviewCtx := &model.ReviewContext{
-				Mode:         mode,
-				CheckoutRoot: "/checkout",
-				DiffHeadSHA:  "head111",
+				Mode:               mode,
+				DiffOmitsFileModes: mode == model.ModeGitHub,
+				CheckoutRoot:       "/checkout",
+				DiffHeadSHA:        "head111",
 				ChangedFiles: []model.ChangedFile{
 					{Path: "dir/link2", Status: model.FileRenamed, OldPath: "dir/sub/link", Symlink: true},
 				},

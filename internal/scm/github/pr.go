@@ -219,7 +219,8 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		// files API reports no file modes, so a symlink can only be recognized by
 		// asking that exact tree; a base SHA is deliberately not set, because the
 		// API diffs against the merge base, which it does not report.
-		DiffHeadSHA: pr.Head.SHA,
+		DiffHeadSHA:        pr.Head.SHA,
+		DiffOmitsFileModes: true,
 	}, nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/pick"
+	"github.com/dgrieser/nickpit/internal/scm/forges"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/textsan"
 )
@@ -469,7 +470,11 @@ func verdictStyle(info session.Info) string {
 // sourceStyle colours what was reviewed by the kind of review it was, so an MR,
 // a branch and a working-tree review are told apart before the value is read.
 func sourceStyle(info session.Info) string {
-	return sessionKindStyles[sessionKindOf(info)]
+	kind := sessionKindOf(info)
+	if kind == kindRemoteRequest {
+		return forgeKindStyles[model.ReviewMode(info.Source.Mode)]
+	}
+	return sessionKindStyles[kind]
 }
 
 // sessionOfRow resolves a chosen row back to what it stands for: the item keys
@@ -697,26 +702,31 @@ const (
 	// kindUnknownReview is a review that recorded neither a request, refs nor a
 	// branch — all that is left of it is the directory it ran in.
 	kindUnknownReview sessionKind = iota
-	kindGitLabRequest
-	kindGitHubRequest
+	// kindRemoteRequest is a review of a merge or pull request; the platform
+	// is read from the session's mode, see forgeKindStyles.
+	kindRemoteRequest
 	kindBranchReview
 	kindCommitReview
 	kindWorkingTree
 )
 
 // sessionKindStyles colour the column per kind, from the 256-colour message
-// palette the picker draws in (tools/print_colors.sh): the two request kinds in
-// hues of their own, a branch in the aqua green a branch picker gives the
-// default ref, a commit range in the green a SHA wears, the working tree in
-// turquoise, and a review that can only be placed by its directory in the grey
-// of a path.
+// palette the picker draws in (tools/print_colors.sh): a request in the hue of
+// its platform (forgeKindStyles), a branch in the aqua green a branch picker
+// gives the default ref, a commit range in the green a SHA wears, the working
+// tree in turquoise, and a review that can only be placed by its directory in
+// the grey of a path.
 var sessionKindStyles = map[sessionKind]string{
-	kindGitLabRequest: "38;5;216",           // apricot
-	kindGitHubRequest: "38;5;105",           // purple-blue
 	kindBranchReview:  pick.StyleDefaultRef, // aqua green
 	kindCommitReview:  pick.StyleHash,       // hash green
 	kindWorkingTree:   "38;5;116",           // turquoise
 	kindUnknownReview: pick.StyleAge,        // grey
+}
+
+// forgeKindStyles colour a request row per platform, each in a hue of its own.
+var forgeKindStyles = map[model.ReviewMode]string{
+	model.ModeGitLab: "38;5;216", // apricot
+	model.ModeGitHub: "38;5;105", // purple-blue
 }
 
 // sessionKindOf classifies a session. The submode says what a review was of
@@ -725,15 +735,8 @@ var sessionKindStyles = map[sessionKind]string{
 // context whose head is not a commit at all was of the working tree.
 func sessionKindOf(info session.Info) sessionKind {
 	src := info.Source
-	switch model.ReviewMode(src.Mode) {
-	case model.ModeGitLab:
-		if src.Identifier > 0 {
-			return kindGitLabRequest
-		}
-	case model.ModeGitHub:
-		if src.Identifier > 0 {
-			return kindGitHubRequest
-		}
+	if _, ok := forges.All.Lookup(model.ReviewMode(src.Mode)); ok && src.Identifier > 0 {
+		return kindRemoteRequest
 	}
 	if src.Submode == uncommittedHeadRef || info.ContextHeadRef == uncommittedHeadRef {
 		return kindWorkingTree
@@ -763,10 +766,9 @@ func sessionKindOf(info session.Info) sessionKind {
 func sessionSourceLabel(place sessionPlace, info session.Info, origin sessionOrigin) string {
 	src := info.Source
 	switch sessionKindOf(info) {
-	case kindGitLabRequest:
-		return "GitLab MR !" + strconv.Itoa(src.Identifier)
-	case kindGitHubRequest:
-		return "GitHub PR #" + strconv.Itoa(src.Identifier)
+	case kindRemoteRequest:
+		mode := model.ReviewMode(src.Mode)
+		return forgeRequestLabel(mode) + " " + requestSigil(mode) + strconv.Itoa(src.Identifier)
 	case kindWorkingTree:
 		where := firstNonEmpty(sessionBranch(info), sessionWhereLabel(src, origin))
 		if where == "" {

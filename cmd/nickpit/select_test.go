@@ -13,6 +13,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/pick"
+	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // interactiveApp is an app that counts as interactive: the select seam stands
@@ -151,7 +152,7 @@ func TestResolveRequestTargetFlagPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, err := tc.app.resolveRequestTarget(tc.sel, parseGitLabMRURL, "", "merge request")
+			target, err := tc.app.resolveRequestTarget(tc.sel, glscm.Forge.ParseRequestURL, "", "merge request")
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want it to mention %q", err, tc.wantErr)
@@ -177,7 +178,7 @@ func changedFlags(names ...string) func(string) bool {
 }
 
 func TestResolveRequestTargetPrefixesErrors(t *testing.T) {
-	_, err := (&app{}).resolveRequestTarget(requestSelectors{repo: "g/p"}, parseGitLabMRURL, "chat", "merge request")
+	_, err := (&app{}).resolveRequestTarget(requestSelectors{repo: "g/p"}, glscm.Forge.ParseRequestURL, "chat", "merge request")
 	if err == nil || !strings.HasPrefix(err.Error(), "chat: ") {
 		t.Fatalf("err = %v, want it prefixed with the command name", err)
 	}
@@ -190,7 +191,7 @@ func TestResolveRequestTargetInfersRepoFromRemote(t *testing.T) {
 	runGitTestCommand(t, dir, "remote", "add", "origin", "git@gitlab.example.com:grp/proj.git")
 	t.Chdir(dir)
 
-	target, err := interactiveApp(0, nil).resolveRequestTarget(requestSelectors{pick: true}, parseGitLabMRURL, "", "merge request")
+	target, err := interactiveApp(0, nil).resolveRequestTarget(requestSelectors{pick: true}, glscm.Forge.ParseRequestURL, "", "merge request")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func TestResolveRequestTargetInfersRepoFromRemote(t *testing.T) {
 
 func TestResolveRequestTargetWithoutRemote(t *testing.T) {
 	t.Chdir(t.TempDir())
-	_, err := (&app{}).resolveRequestTarget(requestSelectors{id: 4}, parseGitLabMRURL, "", "merge request")
+	_, err := (&app{}).resolveRequestTarget(requestSelectors{id: 4}, glscm.Forge.ParseRequestURL, "", "merge request")
 	if err == nil || !strings.Contains(err.Error(), "--repo is required") {
 		t.Fatalf("err = %v, want it to ask for --repo", err)
 	}

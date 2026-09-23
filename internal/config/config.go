@@ -197,9 +197,10 @@ type Overrides struct {
 	TimeBudgetScale           *float64
 	ReasoningEffort           string
 	Workdir                   string
-	GitHubToken               string
-	GitLabToken               string
-	GitLabBaseURL             string
+	// ForgeTokens and ForgeBaseURLs carry the --<mode>-token and
+	// --<mode>-base-url flags, keyed by the platform's ReviewMode.
+	ForgeTokens   map[model.ReviewMode]string
+	ForgeBaseURLs map[model.ReviewMode]string
 }
 
 type defaultProfile struct {
@@ -1003,14 +1004,15 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.Workdir != "" {
 		profile.Workdir = overrides.Workdir
 	}
-	if overrides.GitHubToken != "" {
-		profile.GitHubToken = overrides.GitHubToken
+	for mode, token := range overrides.ForgeTokens {
+		if token != "" {
+			profile.setForgeToken(mode, token)
+		}
 	}
-	if overrides.GitLabToken != "" {
-		profile.GitLabToken = overrides.GitLabToken
-	}
-	if overrides.GitLabBaseURL != "" {
-		profile.GitLabBaseURL = overrides.GitLabBaseURL
+	for mode, baseURL := range overrides.ForgeBaseURLs {
+		if baseURL != "" {
+			profile.setForgeBaseURL(mode, baseURL)
+		}
 	}
 	return normalizeProfile(profile)
 }

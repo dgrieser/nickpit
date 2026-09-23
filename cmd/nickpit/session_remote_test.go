@@ -293,35 +293,6 @@ func TestGitLabReviewThreadsKeepOnlyAnswersToNickpit(t *testing.T) {
 	}
 }
 
-func TestRemoteHostDetection(t *testing.T) {
-	cases := []struct {
-		remote string
-		github bool
-	}{
-		{"git@github.com:owner/repo.git", true},
-		{"https://github.com/owner/repo.git", true},
-		{"git@gitlab.example.com:grp/proj.git", false},
-		{"https://gitlab.example.com/grp/proj.git", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := isGitHubRemote(c.remote); got != c.github {
-			t.Fatalf("isGitHubRemote(%q) = %v", c.remote, got)
-		}
-	}
-	// A token only ever goes to the host the remote names; an unreadable remote
-	// leaves the profile's own host in charge.
-	if !sameHost("git@gitlab.example.com:grp/proj.git", "https://gitlab.example.com/api/v4") {
-		t.Fatal("the project's own host was rejected")
-	}
-	if sameHost("git@gitlab.other.com:grp/proj.git", "https://gitlab.example.com/api/v4") {
-		t.Fatal("a token would have gone to a foreign host")
-	}
-	if !sameHost("", "https://gitlab.example.com/api/v4") {
-		t.Fatal("an unknown remote must not disable the configured host")
-	}
-}
-
 func TestClosedWidensTheRemoteListing(t *testing.T) {
 	place := sessionPlace{repo: "grp/nickpit", remoteURL: "git@gitlab.example.com:grp/nickpit.git", branch: "feat/x"}
 	a := &app{}

@@ -113,3 +113,13 @@ func (a *Adapter) reviewResults(ctx context.Context, project string, iid int, tr
 func (a *Adapter) ReadBaseFile(ctx context.Context, req model.ReviewRequest, path string) ([]byte, bool, error) {
 	return a.client.FetchBaseFile(ctx, req.Repo, req.Identifier, path)
 }
+
+// ListOpenRequests implements forge.Source over ListOpenMRs.
+func (a *Adapter) ListOpenRequests(ctx context.Context, project string) ([]model.OpenRequest, error) {
+	return a.client.ListOpenMRs(ctx, project)
+}
+
+// ListRequests implements forge.Source over ListMRs.
+func (a *Adapter) ListRequests(ctx context.Context, project string) ([]model.OpenRequest, error) {
+	return a.client.ListMRs(ctx, project)
+}
