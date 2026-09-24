@@ -3867,8 +3867,7 @@ func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
 	// One warning per scope: the deadline aborts every remaining call of that
 	// scope, and a warning per aborted call would bury the rest of the list.
 	warningsFromContext(ctx).once("time-budget-deadline:"+budget.scope,
-		"Time budget deadline reached for %s: elapsed=%s limit=%s overrun=%s; call aborted",
-		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetOverrun(budget, now)))
+		"Time budget deadline reached for %s: %s; call aborted", budget.scope, timeBudgetClock(budget, now))
 }
 
 // warnTimeBudgetSpeedup reports that a scope crossed its speed-up threshold and
@@ -3880,10 +3879,8 @@ func warnTimeBudgetSpeedup(ctx context.Context, budget activeTimeBudget, known b
 			"Time budget speed-up threshold reached; requests switched to urgent mode")
 		return
 	}
-	now := time.Now()
 	warningsFromContext(ctx).once("time-budget-speedup:"+budget.scope,
-		"Time budget speed-up threshold reached for %s: elapsed=%s limit=%s remaining=%s; requests switched to urgent mode",
-		budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetRemaining(budget, now)))
+		"Time budget speed-up threshold reached for %s: %s; requests switched to urgent mode", budget.scope, timeBudgetClock(budget, time.Now()))
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

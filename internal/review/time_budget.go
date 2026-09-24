@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -167,6 +168,16 @@ func timeBudgetOverrun(budget activeTimeBudget, now time.Time) time.Duration {
 		return 0
 	}
 	return overrun
+}
+
+// timeBudgetClock renders the elapsed/limit fields shared by every time budget
+// warning, ending in remaining= before the deadline and overrun= after it.
+func timeBudgetClock(budget activeTimeBudget, now time.Time) string {
+	clock := fmt.Sprintf("elapsed=%s limit=%s", model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)))
+	if now.Before(budget.deadline) {
+		return clock + " remaining=" + model.HumanWait(timeBudgetRemaining(budget, now))
+	}
+	return clock + " overrun=" + model.HumanWait(timeBudgetOverrun(budget, now))
 }
 
 func inheritedSpeedupThreshold(ctx context.Context) int {
