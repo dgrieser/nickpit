@@ -112,6 +112,11 @@ func TestSessionClipboardCopiesUnstyledReview(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess := saveSessionReview(t, store, "copied")
+			sess.Result.Warnings = []string{"time budget exceeded"}
+			sess.Result.NickpitVersion = "v9.9.9"
+			if err := store.Save(sess); err != nil {
+				t.Fatal(err)
+			}
 
 			var copied []byte
 			var out bytes.Buffer
@@ -129,14 +134,22 @@ func TestSessionClipboardCopiesUnstyledReview(t *testing.T) {
 			if strings.ContainsRune(string(copied), '\x1b') {
 				t.Fatalf("clipboard payload contains ANSI escapes:\n%q", copied)
 			}
+			// The run footer describes the run, not the review: it stays out of
+			// the copy, and so does the rule that would only lead into it.
+			for _, unwanted := range []string{"Warnings:", "NickPit:", "Tokens:"} {
+				if strings.Contains(string(copied), unwanted) {
+					t.Fatalf("clipboard payload carries the run footer (%q):\n%s", unwanted, copied)
+				}
+			}
+			if strings.HasSuffix(strings.TrimSpace(string(copied)), "---") {
+				t.Fatalf("clipboard payload ends with a dangling rule:\n%s", copied)
+			}
 			// The confirmation replaces the review: printing both would defeat the copy.
 			if strings.Contains(out.String(), "### copied") {
 				t.Fatalf("review printed alongside the copy:\n%s", out.String())
 			}
-			for _, want := range []string{"Copied review of session " + sess.ID, "via test-helper"} {
-				if !strings.Contains(out.String(), want) {
-					t.Fatalf("confirmation %q missing %q", out.String(), want)
-				}
+			if want := "Copied review of session " + sess.ID + " to the clipboard."; strings.TrimSpace(out.String()) != want {
+				t.Fatalf("confirmation = %q, want %q", out.String(), want)
 			}
 		})
 	}
@@ -451,7 +464,7 @@ func TestSessionReviewHistoryOutput(t *testing.T) {
 		t.Fatal("conflicting flags accepted")
 	}
 	a.outputFormat = "json"
-	if err := a.formatReviewHistory(&out, nil); err != nil || strings.TrimSpace(out.String()) != "[]" {
+	if err := a.formatReviewHistory(&out, nil, false); err != nil || strings.TrimSpace(out.String()) != "[]" {
 		t.Fatalf("empty history: %q %v", out.String(), err)
 	}
 }
@@ -1136,6 +1149,9 @@ func TestSessionActionPromptGoesBackAndCopies(t *testing.T) {
 	if !strings.Contains(string(copied), "### second") {
 		t.Fatalf("clipboard payload = %q, want the second session's review", copied)
 	}
+	if strings.Contains(string(copied), "Tokens:") {
+		t.Fatalf("clipboard payload carries the run footer:\n%s", copied)
+	}
 	if strings.Contains(out.String(), "### second") {
 		t.Fatalf("the review was printed as well as copied:\n%s", out.String())
 	}
@@ -1171,7 +1187,7 @@ func TestPickSessionActionOffersChat(t *testing.T) {
 }
 
 func TestClipboardConfirmationIsAnAside(t *testing.T) {
-	line := "Copied review of session abc to the clipboard (12 bytes) via pbcopy."
+	line := "Copied review of session abc to the clipboard."
 	styled := noteText(line, true)
 	if styled != "\x1b["+selectionStyle+"m"+line+"\x1b[0m" {
 		t.Fatalf("styled = %q, want the whole line in the aside's italic light grey", styled)

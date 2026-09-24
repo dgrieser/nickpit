@@ -1850,28 +1850,38 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 // and `nickpit session`. Markdown renders when stdout is a terminal and stays
 // unrendered for pipes; raw forces unrendered Markdown even on a terminal.
 func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
-	return a.reviewFormatter(w).FormatFindings(result)
+	return a.reviewFormatter(w, false).FormatFindings(result)
+}
+
+// formatReviewCopy renders a review for the clipboard: the same format
+// selection as formatReview, minus the run footer (warning count, version,
+// runtime, tokens), which describes the run rather than the review.
+func (a *app) formatReviewCopy(w io.Writer, result *model.ReviewResult) error {
+	return a.reviewFormatter(w, true).FormatFindings(result)
 }
 
 // formatWarnings prints only the run's warnings, in the same format selection
 // as formatReview.
 func (a *app) formatWarnings(w io.Writer, result *model.ReviewResult) error {
-	return a.reviewFormatter(w).FormatWarnings(result)
+	return a.reviewFormatter(w, false).FormatWarnings(result)
 }
 
-func (a *app) reviewFormatter(w io.Writer) output.Formatter {
-	switch {
-	case a.jsonOutput || a.outputFormat == "json":
+// reviewFormatter picks the output format; withoutFooter drops the run footer
+// from the text forms. JSON keeps its run fields either way: they are data
+// there, not decoration.
+func (a *app) reviewFormatter(w io.Writer, withoutFooter bool) output.Formatter {
+	if a.jsonOutput || a.outputFormat == "json" {
 		return output.NewJSONFormatter(w)
-	case a.outputFormat == "raw":
-		return output.NewMarkdownFormatter(w)
-	default:
-		useANSI := false
-		if f, ok := w.(*os.File); ok {
-			useANSI = isTerminal(f)
-		}
-		return output.NewTerminalFormatter(w, useANSI)
 	}
+	useANSI := false
+	if f, ok := w.(*os.File); ok && a.outputFormat != "raw" {
+		useANSI = isTerminal(f)
+	}
+	formatter := output.NewTerminalFormatter(w, useANSI)
+	if withoutFooter {
+		formatter.OmitFooter()
+	}
+	return formatter
 }
 
 func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
