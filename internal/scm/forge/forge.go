@@ -38,6 +38,10 @@ type Forge interface {
 	// RequestSigil is the character the platform writes before a request
 	// number, "#" or "!".
 	RequestSigil() string
+	// RequestHelp is the help text of the request subcommand and its flags,
+	// written per platform because each words its identifiers differently
+	// (a GitLab IID is not a global id, a GitLab repo is a group/name path).
+	RequestHelp() RequestHelp
 	// ConfigurableBaseURL reports whether the platform can be self-hosted, so
 	// the API base URL is configuration: a --<mode>-base-url flag exists, the
 	// host a session talked to is persisted, and a resumed session checks that
@@ -63,6 +67,16 @@ type Forge interface {
 	GitCredentials(token string) string
 	// NewSource builds the review source for one API host and token.
 	NewSource(baseURL, token, assetBaseURL string) Source
+}
+
+// RequestHelp is the help text of a platform's request subcommand.
+type RequestHelp struct {
+	// Short summarizes the subcommand, "Review a GitHub PR".
+	Short string
+	// Repo, ID and Publish describe the --repo, --id and --publish flags.
+	Repo    string
+	ID      string
+	Publish string
 }
 
 // Source is the review-path surface every platform adapter provides: resolve

@@ -746,8 +746,10 @@ func (h *ExecHistory) authArgsForRepo(originURL string) []string {
 	if !ok {
 		return nil
 	}
+	// The first entry for the host decides, even when it has no credentials:
+	// the platform owning a host is the one whose token may go there.
 	for _, entry := range h.auth.Hosts {
-		if entry.Credentials != "" && hostMatches(host, entry.Host) {
+		if hostMatches(host, entry.Host) {
 			return authHeaderArgs(entry.Credentials)
 		}
 	}

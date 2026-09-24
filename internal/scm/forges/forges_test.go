@@ -56,13 +56,19 @@ func TestHistoryAuthBindsEachTokenToItsHost(t *testing.T) {
 			t.Fatalf("hosts[%d] = %#v, want %#v", i, auth.Hosts[i], want[i])
 		}
 	}
-	// Without a base URL the GitLab token belongs to gitlab.com; without a
-	// token a platform contributes nothing.
+	// Without a base URL the GitLab token belongs to gitlab.com; a platform
+	// without a token still claims its host, with no credentials.
 	auth = HistoryAuth(config.Profile{GitLabToken: "glpat"})
-	if len(auth.Hosts) != 1 || auth.Hosts[0].Host != "gitlab.com" {
+	want = []git.HostCredential{
+		{Host: "github.com"},
+		{Host: "gitlab.com", Credentials: "oauth2:glpat"},
+	}
+	if len(auth.Hosts) != len(want) {
 		t.Fatalf("hosts = %#v", auth.Hosts)
 	}
-	if auth = HistoryAuth(config.Profile{}); len(auth.Hosts) != 0 {
-		t.Fatalf("hosts = %#v", auth.Hosts)
+	for i := range want {
+		if auth.Hosts[i] != want[i] {
+			t.Fatalf("hosts[%d] = %#v, want %#v", i, auth.Hosts[i], want[i])
+		}
 	}
 }

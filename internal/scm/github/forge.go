@@ -30,6 +30,15 @@ func (githubForge) RequestNoun() string    { return "pull request" }
 func (githubForge) RequestAbbrev() string  { return "PR" }
 func (githubForge) RequestSigil() string   { return "#" }
 
+func (githubForge) RequestHelp() forge.RequestHelp {
+	return forge.RequestHelp{
+		Short:   "Review a GitHub PR",
+		Repo:    "GitHub repo owner/name (inferred from git remote if omitted)",
+		ID:      "Pull request number (omit in a terminal to pick an open PR from a list)",
+		Publish: "Post the review back to the GitHub PR as a review (summary + one comment per finding)",
+	}
+}
+
 // ConfigurableBaseURL is false: only github.com is served.
 func (githubForge) ConfigurableBaseURL() bool { return false }
 

@@ -26,15 +26,14 @@ func Credentials(f forge.Forge, profile config.Profile) (token, baseURL string) 
 }
 
 // HistoryAuth builds the per-host credentials the history provider deepens a
-// shallow checkout with: one entry per platform that has a token, bound to the
-// host its configured base URL names.
+// shallow checkout with: one entry per platform, in registry order, bound to
+// the host its configured base URL names. A platform without a token still
+// claims its host with empty credentials, so a later platform configured with
+// the same host never lends it its token.
 func HistoryAuth(profile config.Profile) git.HistoryAuth {
 	var auth git.HistoryAuth
 	for _, f := range All {
 		token, baseURL := Credentials(f, profile)
-		if token == "" {
-			continue
-		}
 		auth.Hosts = append(auth.Hosts, git.HostCredential{
 			Host:        f.TrustedHost(baseURL),
 			Credentials: f.GitCredentials(token),
