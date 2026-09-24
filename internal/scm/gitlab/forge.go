@@ -27,6 +27,15 @@ func (gitlabForge) RequestNoun() string    { return "merge request" }
 func (gitlabForge) RequestAbbrev() string  { return "MR" }
 func (gitlabForge) RequestSigil() string   { return "!" }
 
+func (gitlabForge) RequestHelp() forge.RequestHelp {
+	return forge.RequestHelp{
+		Short:   "Review a GitLab merge request",
+		Repo:    "GitLab project group/name (inferred from git remote if omitted)",
+		ID:      "Merge request IID (omit in a terminal to pick an open MR from a list)",
+		Publish: "Post the review back to the GitLab MR as comments (summary + one per finding)",
+	}
+}
+
 // ConfigurableBaseURL is true: GitLab is commonly self-hosted.
 func (gitlabForge) ConfigurableBaseURL() bool { return true }
 
