@@ -41,11 +41,12 @@ func (e *Engine) runReviewerRound(ctx context.Context, s *reviewerSession, req a
 				findings = appendNewFindings(append([]model.Finding(nil), findings...), result.resp.Findings)
 			}
 			warningsFromContext(ctx).once("time-budget-deadline:"+budget.scope,
-				"Time budget deadline reached for %s: elapsed=%s limit=%s overrun=%s; %s stopped during %s; findings retained=%d",
-				budget.scope, model.HumanWait(timeBudgetElapsed(budget, now)), model.HumanWait(timeBudgetLimit(budget)), model.HumanWait(timeBudgetOverrun(budget, now)), s.agent.name, reviewerBudgetPhase(phase, nudge), len(findings))
+				"Time budget deadline reached for %s: agent=%s %s; stopped during %s; findings retained=%d",
+				budget.scope, s.agent.name, timeBudgetClock(budget, now), reviewerBudgetPhase(phase, nudge), len(findings))
 		} else if s.budgetStop != nil && err == nil {
 			warningsFromContext(ctx).once("reviewer-budget-finalized:"+s.agent.name,
-				"Time budget finalized %s during %s; no further nudge rounds", s.agent.name, reviewerBudgetPhase(phase, nudge))
+				"Time budget finalized for %s: agent=%s %s; stopped during %s; no further nudge rounds",
+				budget.scope, s.agent.name, timeBudgetClock(budget, time.Now()), reviewerBudgetPhase(phase, nudge))
 		}
 	}()
 	if ctx.Err() != nil {
@@ -176,13 +177,14 @@ func (s *reviewerSession) stopBeforeNudge(ctx context.Context) bool {
 		return false
 	}
 	budget, _ := timeBudgetFromContext(ctx)
-	reason := "finalized"
+	reason, event := "finalized", "finalized"
 	if isTimeBudgetDeadline(ctx) {
-		reason = "deadline"
+		reason, event = "deadline", "deadline reached"
 	}
 	s.budgetStop = &model.BudgetStop{Reason: reason, Scope: budget.scope, Phase: "between rounds", NudgeIndex: s.nudgeTurns}
 	warningsFromContext(ctx).once("reviewer-budget-finalized:"+s.agent.name,
-		"Time budget stopped %s between rounds; completed nudges=%d; findings retained=%d", s.agent.name, s.nudgeTurns, len(s.totalFindings))
+		"Time budget %s for %s: agent=%s %s; stopped between rounds after %d nudges; findings retained=%d",
+		event, budget.scope, s.agent.name, timeBudgetClock(budget, time.Now()), s.nudgeTurns, len(s.totalFindings))
 	return true
 }
 
