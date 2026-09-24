@@ -208,12 +208,17 @@ func (a *app) printSession(ctx context.Context, store *session.Store, sessionID 
 		return fmt.Errorf("session: %s has no saved review", sess.ID)
 	}
 	render, subject := a.formatReview, "review"
+	if clip {
+		render = a.formatReviewCopy
+	}
 	if opts.warnings {
 		render, subject = a.formatWarnings, "warnings"
 	}
 	if opts.history {
 		subject = "review history"
-		render = func(w io.Writer, _ *model.ReviewResult) error { return a.formatReviewHistory(w, sess.ReviewHistory) }
+		render = func(w io.Writer, _ *model.ReviewResult) error {
+			return a.formatReviewHistory(w, sess.ReviewHistory, clip)
+		}
 	}
 	origin := "session " + textsan.StripControl(sess.ID)
 	if err := a.emitReview(ctx, w, clip, subject, origin, func(out io.Writer) error {
@@ -244,12 +249,10 @@ func (a *app) emitReview(ctx context.Context, w io.Writer, clip bool, subject, o
 	if copyFn == nil {
 		copyFn = clipboard.Copy
 	}
-	helper, err := copyFn(ctx, buf.Bytes())
-	if err != nil {
+	if _, err := copyFn(ctx, buf.Bytes()); err != nil {
 		return err
 	}
-	confirmation := fmt.Sprintf("Copied %s of %s to the clipboard (%d bytes) via %s.",
-		subject, origin, buf.Len(), helper)
+	confirmation := fmt.Sprintf("Copied %s of %s to the clipboard.", subject, origin)
 	if _, err := fmt.Fprintln(w, noteText(confirmation, useColor(w))); err != nil {
 		// The clipboard already holds the content; a confirmation that could not be
 		// written (closed pipe, full disk) is not a failed copy, so warn instead of
@@ -282,7 +285,7 @@ func useColor(w io.Writer) bool {
 	return !noColor
 }
 
-func (a *app) formatReviewHistory(w io.Writer, history []session.ReviewRevision) error {
+func (a *app) formatReviewHistory(w io.Writer, history []session.ReviewRevision, clip bool) error {
 	if a.jsonOutput || a.outputFormat == "json" {
 		if history == nil {
 			history = []session.ReviewRevision{}
@@ -302,7 +305,11 @@ func (a *app) formatReviewHistory(w io.Writer, history []session.ReviewRevision)
 		if _, err := fmt.Fprintf(w, "## Review revision %d\n\nReplaced: %s\n\nReason: %s\n\n", revision.Result.Revision, revision.ReplacedAt.Format(time.RFC3339), textsan.StripControl(revision.Reason)); err != nil {
 			return err
 		}
-		if err := a.formatReview(w, revision.Result); err != nil {
+		format := a.formatReview
+		if clip {
+			format = a.formatReviewCopy
+		}
+		if err := format(w, revision.Result); err != nil {
 			return err
 		}
 	}

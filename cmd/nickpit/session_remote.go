@@ -321,7 +321,8 @@ func (a *app) actOnRemoteReview(ctx context.Context, remote *remoteFinder, row r
 		return fmt.Errorf("session: --history reads a saved session's archived revisions; %s carries only its current review",
 			remoteRequestLabel(row))
 	}
-	render := func(out io.Writer) error { return a.writeRemoteReview(ctx, remote.source, row, out) }
+	clip := action == sessionActionCopy
+	render := func(out io.Writer) error { return a.writeRemoteReview(ctx, remote.source, row, out, clip) }
 	if opts.warnings {
 		render = func(out io.Writer) error { return a.formatWarnings(out, row.result) }
 	}
@@ -329,7 +330,7 @@ func (a *app) actOnRemoteReview(ctx context.Context, remote *remoteFinder, row r
 	if opts.warnings {
 		subject = "warnings"
 	}
-	if err := a.emitReview(ctx, w, action == sessionActionCopy, subject, remoteOriginLabel(row), render); err != nil {
+	if err := a.emitReview(ctx, w, clip, subject, remoteOriginLabel(row), render); err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
 	return nil
@@ -369,7 +370,8 @@ func remoteOriginLabel(row remoteReview) string {
 // the summary's under the summary. It is one document either way: the JSON form
 // carries the replies as fields, the markdown and terminal forms as text inside
 // the review.
-func (a *app) writeRemoteReview(ctx context.Context, source *remoteSource, row remoteReview, out io.Writer) error {
+// clip drops the run footer, as for any review copied to the clipboard.
+func (a *app) writeRemoteReview(ctx context.Context, source *remoteSource, row remoteReview, out io.Writer, clip bool) error {
 	threads, err := source.threads(ctx, row.id)
 	if err != nil {
 		// The review is what was asked for; replies that could not be read are
@@ -379,6 +381,9 @@ func (a *app) writeRemoteReview(ctx context.Context, source *remoteSource, row r
 	withReplies, err := reviewWithReplies(row.result, threads)
 	if err != nil {
 		return err
+	}
+	if clip {
+		return a.formatReviewCopy(out, withReplies)
 	}
 	return a.formatReview(out, withReplies)
 }

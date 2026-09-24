@@ -210,7 +210,7 @@ func TestRemoteReviewCarriesTheRepliesToIt(t *testing.T) {
 	remote := fakeRemote(nil, nil, threads, nil)
 	row := remoteReview{mode: model.ModeGitLab, repo: "grp/nickpit", id: 42, result: result}
 	var out bytes.Buffer
-	if err := (&app{outputFormat: "raw"}).writeRemoteReview(context.Background(), remote.source, row, &out); err != nil {
+	if err := (&app{outputFormat: "raw"}).writeRemoteReview(context.Background(), remote.source, row, &out, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -226,7 +226,7 @@ func TestRemoteReviewCarriesTheRepliesToIt(t *testing.T) {
 		t.Fatalf("replies still read as a bullet list:\n%s", text)
 	}
 	out.Reset()
-	if err := (&app{jsonOutput: true}).writeRemoteReview(context.Background(), remote.source, row, &out); err != nil {
+	if err := (&app{jsonOutput: true}).writeRemoteReview(context.Background(), remote.source, row, &out, false); err != nil {
 		t.Fatal(err)
 	}
 	var decoded model.ReviewResult

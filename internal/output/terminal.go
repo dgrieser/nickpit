@@ -33,9 +33,10 @@ const (
 // finding, with badge labels in place of the badge SVGs and markdown bodies
 // rendered for the terminal. A dim footer keeps token usage and warning count.
 type TerminalFormatter struct {
-	w       io.Writer
-	useANSI bool
-	width   int
+	w          io.Writer
+	useANSI    bool
+	width      int
+	omitFooter bool
 }
 
 // NewMarkdownFormatter emits the same review layout as TerminalFormatter but
@@ -77,6 +78,14 @@ func RuleWidth(f *os.File) int {
 	return terminalDefaultWidth
 }
 
+// OmitFooter drops the closing rule and the run footer (warning count,
+// version, runtime, tokens): they describe the run, not the review, so a copy
+// meant to be pasted elsewhere leaves them out.
+func (f *TerminalFormatter) OmitFooter() *TerminalFormatter {
+	f.omitFooter = true
+	return f
+}
+
 // SetWidth overrides the detected terminal width (test hook).
 func (f *TerminalFormatter) SetWidth(n int) {
 	if n > 0 {
@@ -97,8 +106,10 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		f.writeRule(&b)
 		f.writeFinding(&b, finding)
 	}
-	f.writeRule(&b)
-	f.writeFooter(&b, result)
+	if !f.omitFooter {
+		f.writeRule(&b)
+		f.writeFooter(&b, result)
+	}
 
 	_, err := io.WriteString(f.w, b.String())
 	return err

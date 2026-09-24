@@ -91,6 +91,38 @@ func TestTerminalFormatter(t *testing.T) {
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
 }
 
+func TestTerminalFormatterOmitFooter(t *testing.T) {
+	result := &model.ReviewResult{
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "Summary text",
+		Warnings:           []string{"time budget exceeded"},
+		NickpitVersion:     "v1.2.3",
+		RuntimeSeconds:     60,
+		TokensUsed:         model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}
+	var full, bare bytes.Buffer
+	if err := NewTerminalFormatter(&full, false).FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewTerminalFormatter(&bare, false).OmitFooter().FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	for _, footer := range []string{"Warnings:", "NickPit: v1.2.3", "Runtime:", "Tokens:"} {
+		if !strings.Contains(full.String(), footer) {
+			t.Fatalf("default output lost footer line %q:\n%s", footer, full.String())
+		}
+		if strings.Contains(bare.String(), footer) {
+			t.Fatalf("OmitFooter output still has %q:\n%s", footer, bare.String())
+		}
+	}
+	if strings.Contains(bare.String(), "---") {
+		t.Fatalf("OmitFooter output keeps the closing rule:\n%s", bare.String())
+	}
+	if !strings.Contains(bare.String(), "Summary text") {
+		t.Fatalf("OmitFooter output lost the review:\n%s", bare.String())
+	}
+}
+
 func TestNewTerminalFormatterNilFileWriter(t *testing.T) {
 	var f *os.File
 	formatter := NewTerminalFormatter(f, false)
