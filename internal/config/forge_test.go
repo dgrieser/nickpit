@@ -46,3 +46,41 @@ func TestForgeOverridesApply(t *testing.T) {
 		t.Fatalf("github token = %q", profile.GitHubToken)
 	}
 }
+
+func TestForgejoCredentialsLoadAndCanonicalize(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "test-model")
+	t.Setenv("FORGEJO_TOKEN", "bare-forgejo")
+	t.Setenv("NICKPIT_FORGEJO_TOKEN", "prefixed-forgejo")
+	t.Setenv("NICKPIT_FORGEJO_BASE_URL", "codeberg.org")
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The NICKPIT_ name wins, and the base URL is canonicalized once on load
+	// like the GitLab one.
+	if profile.ForgeToken(model.ModeForgejo) != "prefixed-forgejo" {
+		t.Fatalf("forgejo token = %q", profile.ForgejoToken)
+	}
+	if profile.ForgeBaseURL(model.ModeForgejo) != "https://codeberg.org/api/v1" {
+		t.Fatalf("forgejo base url = %q", profile.ForgejoBaseURL)
+	}
+	// Unlike GitLab there is no default instance: unset stays empty.
+	t.Setenv("NICKPIT_FORGEJO_BASE_URL", "")
+	if _, profile, err = Load("", Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if profile.ForgejoBaseURL != "" {
+		t.Fatalf("forgejo base url = %q, want no default host", profile.ForgejoBaseURL)
+	}
+	// The flag overrides land in the same fields.
+	profile, err = applyOverrides(Profile{Model: "m", BaseURL: "https://llm.example"}, Overrides{
+		ForgeTokens:   map[model.ReviewMode]string{model.ModeForgejo: "flag-token"},
+		ForgeBaseURLs: map[model.ReviewMode]string{model.ModeForgejo: "http://forge.internal:3000"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ForgejoToken != "flag-token" || profile.ForgejoBaseURL != "http://forge.internal:3000/api/v1" {
+		t.Fatalf("forgejo overrides = %q, %q", profile.ForgejoToken, profile.ForgejoBaseURL)
+	}
+}

@@ -118,6 +118,14 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers; clones with the basic-auth credentials the platform renders (`forge.GitCredentials`), never a bare token.
 - `internal/scm/forge/forge.go`: The `Forge` interface every platform implements (identity and wording, base-URL and trusted-host rules, request URL parsing, remote detection, git credentials, and `NewSource`), the `Source` interface its adapters provide (resolve, checkout, base files, publish, listing, review reassembly), the ordered `Registry` with `Lookup`/`Detect`, and the remote-host helpers. Depends on `internal/model` only.
 - `internal/scm/forges/forges.go`: The wiring of every known platform: the `All` registry in detection order, and the helpers joining a platform to the profile that holds its credentials (`Credentials`, `HistoryAuth`).
+- `internal/scm/forgejo/forge.go`: Forgejo (and Gitea) as a `forge.Forge`: configurable base URL with no default instance, PR URL parsing (any host, `owner/repo/pulls/N` after an optional instance subpath), same-host remote detection only once an instance is configured, `oauth2` git credentials.
+- `internal/scm/forgejo/adapter.go`: Forgejo adapter wiring, plus reassembly of published reviews from the carrier markers on the PR's reviews, per-review inline comments, and issue comments (author-verified).
+- `internal/scm/forgejo/client.go`: Forgejo API client (`/api/v1`, `token` auth scheme, page/limit pagination following `Link` headers, raw text downloads).
+- `internal/scm/forgejo/pr.go`: Pull request loading and review source construction from the downloaded `.diff` (the files API carries no patch), plus `FetchBaseFile` (raw endpoint against the base repository at `base.sha`).
+- `internal/scm/forgejo/prlist.go`: Open pull requests of a repo as `model.OpenRequest` rows for the interactive picker.
+- `internal/scm/forgejo/position.go`: Forgejo inline-comment position mapping (`new_position`, single line).
+- `internal/scm/forgejo/publish.go`: Forgejo review/comment publishing.
+- `internal/scm/forgejo/user.go`: Authenticated token owner lookup, used to verify carrier-marker authorship.
 - `internal/scm/github/forge.go`: GitHub as a `forge.Forge`: fixed api.github.com host, PR URL parsing, github.com remote detection, `x-access-token` git credentials.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring, plus reassembly of published reviews from the carrier markers on the PR's reviews, review comments, and issue comments (author-verified).
 - `internal/scm/github/client.go`: GitHub API client.

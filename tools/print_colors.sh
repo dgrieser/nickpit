@@ -655,6 +655,11 @@ printf '      %s  %s  %s  %s\n' \
   "$(pick_cell '38;5;221' 'Error, 0 findings   ')" \
   "$(pick_cell '38;5;244' '2d')"
 printf '      %s  %s  %s  %s\n' \
+  "$(pick_cell '38;5;71' '3c1d9e40')" \
+  "$(pick_cell '38;5;79' 'Forgejo PR #4       ')" \
+  "$(pick_cell '38;5;156' 'Correct, 0 findings ')" \
+  "$(pick_cell '38;5;244' '5d')"
+printf '      %s  %s  %s  %s\n' \
   "$(pick_cell '38;5;71' 'b05f808d')" \
   "$(pick_cell '38;5;48' 'origin')$(pick_cell '38;5;244' '/')$(pick_cell '38;5;48' 'main..feat/x')" \
   "$(pick_cell '38;5;244' 'No verdict, 0 finds ')" \
@@ -662,7 +667,7 @@ printf '      %s  %s  %s  %s\n' \
 printf '  %s%s%s%s%s%s%s\n' \
   "$(s '38;5;244' '1 of 570')" "$(s '38;5;244' ' · ')" "$(s '38;5;242' 'branch')" "$(s '38;5;244' ' · ')" \
   "$(s '1;38;5;189' '[repository]')" "$(s '38;5;244' ' · ')" "$(s '38;5;242' 'remote · all')"
-printf '  %s\n' "$(grey 'kind of review: 216 GitLab MR · 105 GitHub PR · 48 branch · 71 commit range · 116 working tree · 244 unknown')"
+printf '  %s\n' "$(grey 'kind of review: 216 GitLab MR · 105 GitHub PR · 79 Forgejo PR · 48 branch · 71 commit range · 116 working tree · 244 unknown')"
 printf '  %s\n\n' "$(grey 'verdict: 156 Correct · 203 Incorrect · 221 anything else · 244 none recorded')"
 
 printf '  %s\n' "$(grey 'NO_COLOR drops every code above and keeps the layout, the ❯ marker and the ★ column')"

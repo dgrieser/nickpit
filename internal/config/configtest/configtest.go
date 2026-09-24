@@ -12,7 +12,7 @@ import (
 // They are cleared alongside every NICKPIT_* variable so a developer's shell or
 // a CI runner cannot make a test pass (or fail) through ambient credentials.
 var credentialEnvNames = []string{
-	"GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_BASE_URL",
+	"GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_BASE_URL", "FORGEJO_TOKEN", "FORGEJO_BASE_URL",
 	"OPENROUTER_API_KEY", "MITTWALD_LLM_API_KEY", "MISTRAL_API_KEY",
 	"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "NVIDIA_API_KEY",
 }

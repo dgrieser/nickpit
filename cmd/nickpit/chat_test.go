@@ -53,6 +53,33 @@ func TestChatSourceRejectsMismatchedGitLabHost(t *testing.T) {
 	}
 }
 
+// A Forgejo session names its instance; without one anywhere there is no host
+// to talk to, and the error says where to configure it.
+func TestChatSourceRequiresForgejoInstance(t *testing.T) {
+	a := &app{}
+	profile := config.Profile{ForgejoToken: "tok"}
+	src := session.Source{Mode: string(model.ModeForgejo)}
+	if _, _, err := a.chatSource(profile, src, false); err == nil || !strings.Contains(err.Error(), "forgejo_base_url") {
+		t.Fatalf("a session without an instance must be rejected, got: %v", err)
+	}
+	// The host the session recorded is enough.
+	src.BaseURL = "https://codeberg.org/api/v1"
+	if _, _, err := a.chatSource(profile, src, true); err != nil {
+		t.Fatalf("session host rejected: %v", err)
+	}
+	// Resumed without an instance in the profile, it is refused, and the error
+	// says the profile has no host rather than naming an empty one.
+	if _, _, err := a.chatSource(profile, src, false); err == nil || !strings.Contains(err.Error(), "configures no Forgejo host") || strings.Contains(err.Error(), "targets  ") {
+		t.Fatalf("resume without a profile instance must be rejected clearly, got: %v", err)
+	}
+	// And a resumed session on another instance than the profile's is refused
+	// the way a GitLab one is.
+	profile.ForgejoBaseURL = "https://forge.internal/api/v1"
+	if _, _, err := a.chatSource(profile, src, false); err == nil || !strings.Contains(err.Error(), "--forgejo-base-url") {
+		t.Fatalf("resumed mismatched host must be rejected, got: %v", err)
+	}
+}
+
 // An explicitly ephemeral chat from an external source must not require a
 // session store — minimal environments (no HOME/XDG_CACHE_HOME) cannot even
 // resolve its directory.

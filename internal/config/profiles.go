@@ -188,6 +188,12 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.GitLabBaseURL != "" {
 		base.GitLabBaseURL = override.GitLabBaseURL
 	}
+	if override.ForgejoToken != "" {
+		base.ForgejoToken = override.ForgejoToken
+	}
+	if override.ForgejoBaseURL != "" {
+		base.ForgejoBaseURL = override.ForgejoBaseURL
+	}
 	if override.AssetBaseURL != "" {
 		base.AssetBaseURL = override.AssetBaseURL
 	}

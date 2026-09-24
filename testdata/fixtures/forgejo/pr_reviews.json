@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "body": "Looks risky",
+    "state": "COMMENT",
+    "comments_count": 1,
+    "user": {"login": "reviewer"},
+    "submitted_at": "2024-01-01T00:00:00Z"
+  },
+  {
+    "id": 2,
+    "body": "",
+    "state": "APPROVED",
+    "comments_count": 0,
+    "user": {"login": "maintainer"},
+    "submitted_at": "2024-01-02T00:00:00Z"
+  }
+]
