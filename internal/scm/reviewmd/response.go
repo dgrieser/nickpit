@@ -188,9 +188,9 @@ func responseStatusText(status ResponseStatus) string {
 	var muteInstructions []string
 	if muteEmoji != "" {
 		muteInstructions = append(muteInstructions,
-			fmt.Sprintf("react with :%s: on this post to mute this thread or on %s to mute all NickPit threads", muteEmoji, requestTerm))
+			fmt.Sprintf("react with :%s: on this thread or on the %s", muteEmoji, requestTerm))
 	}
-	muteInstructions = append(muteInstructions, "add "+command("mute")+" on its own line to your comment")
+	muteInstructions = append(muteInstructions, "reply "+command("mute"))
 	muteText := strings.Join(muteInstructions, ", or ")
 	if status.OptIn {
 		request := "NickPit responds if you add " + command("respond") + " on its own line to your comment"

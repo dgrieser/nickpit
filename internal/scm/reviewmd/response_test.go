@@ -12,7 +12,7 @@ func TestResponseFooterUpsertAndStrip(t *testing.T) {
 	}
 	withFooter := UpsertResponseFooter(body, status)
 	if !strings.Contains(withFooter, "NickPit responds to comments") || !strings.Contains(withFooter, ":mute:") ||
-		!strings.Contains(withFooter, "add `/nickpit mute` on its own line to your comment") {
+		!strings.Contains(withFooter, "or reply `/nickpit mute`.") {
 		t.Fatalf("footer = %q", withFooter)
 	}
 	if got := StripMarkers(withFooter); got != "visible review" {
@@ -111,14 +111,14 @@ func TestResponseFooterDisabledRendersMarkersOnly(t *testing.T) {
 func TestResponseFooterUsesPlatformRequestTerm(t *testing.T) {
 	status := ResponseStatus{Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit", RequestTerm: "PR"}
 	body := UpsertResponseFooter("review", status)
-	if !strings.Contains(body, "react with :mute: on this post to mute this thread or on PR to mute all NickPit threads") {
+	if !strings.Contains(body, "react with :mute: on this thread or on the PR, or reply `/nickpit mute`.") {
 		t.Fatalf("PR footer = %q", body)
 	}
 	status.MRMuted = true
 	if muted := UpsertResponseFooter("review", status); !strings.Contains(muted, "remove :mute: from PR") {
 		t.Fatalf("muted PR footer = %q", muted)
 	}
-	if dflt := UpsertResponseFooter("review", ResponseStatus{Enabled: true, MuteEmoji: "mute"}); !strings.Contains(dflt, "on MR to mute all NickPit threads") {
+	if dflt := UpsertResponseFooter("review", ResponseStatus{Enabled: true, MuteEmoji: "mute"}); !strings.Contains(dflt, "or on the MR,") {
 		t.Fatalf("default term footer = %q", dflt)
 	}
 }
