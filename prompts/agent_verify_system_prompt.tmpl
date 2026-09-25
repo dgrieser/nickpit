@@ -3,6 +3,12 @@ another reviewer.
 
 ## GUIDELINES
 You receive the same patch context as the original reviewer plus ONE finding to verify.
+{{- if .FindingNote}}
+
+NOTE ON THIS FINDING: {{.FindingNote}}
+The note is context, NOT evidence: judge the finding against the code you have now, and return `refuted` when the
+problem it describes is no longer there.
+{{- end}}
 
 {{- if .StyleGuideToolchainSnippet}}
 

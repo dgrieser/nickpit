@@ -146,14 +146,17 @@ func TestVerifyPublishedStepNotesOutdatedAndRecordsRefutations(t *testing.T) {
 	if len(vr.resp.Findings) != 0 {
 		t.Fatal("refuted published finding stayed in its group")
 	}
-	var verifyPrompt string
+	var system, user string
 	for _, r := range client.requests {
 		if r.SchemaKind == llm.SchemaKindVerify {
-			verifyPrompt = r.Messages[len(r.Messages)-1].Content
+			system, user = r.Messages[0].Content, r.Messages[len(r.Messages)-1].Content
 		}
 	}
-	if !strings.Contains(verifyPrompt, `"note": "Published by an earlier review`) {
-		t.Fatalf("verifier did not see the outdated note:\n%s", verifyPrompt)
+	if !strings.Contains(system, "NOTE ON THIS FINDING: an earlier review of this change published it") {
+		t.Fatalf("verifier system prompt lacks the outdated note:\n%s", system)
+	}
+	if strings.Contains(user, "note") {
+		t.Fatal("note leaked into the finding payload")
 	}
 }
 
@@ -222,5 +225,22 @@ func TestMechanicalDedupeRecordsAbsorptions(t *testing.T) {
 	}
 	if l.survivor(loser) != out[0].ID {
 		t.Fatalf("absorption not recorded: %v", l.into)
+	}
+}
+
+func TestVerifierPromptOmitsNoteSectionWithoutNote(t *testing.T) {
+	client := &scriptedVerifyLLM{}
+	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{reconcileTestFinding("00000000-0000-4000-8000-000000000002", "main.go", "Missing guard")}},
+		run:  model.AgentRun{Name: "Security", Role: "review", Status: model.AgentRunStatusOK},
+	}}
+	if _, _, err := e.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "", "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background())); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range client.requests {
+		if r.SchemaKind == llm.SchemaKindVerify && strings.Contains(r.Messages[0].Content, "NOTE ON THIS FINDING") {
+			t.Fatalf("note section rendered without a note:\n%s", r.Messages[0].Content)
+		}
 	}
 }

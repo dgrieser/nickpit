@@ -17,8 +17,8 @@ import (
 )
 
 // publishedFindingNote tells the verifier where a published finding came from.
-const publishedFindingNote = "Published by an earlier review of this change, possibly against an older revision. " +
-	"The code may have changed since: confirm the problem still exists in the current code, and refute it if it is gone."
+const publishedFindingNote = "an earlier review of this change published it, possibly against an older revision, " +
+	"so it might be outdated. Confirm the problem still exists in the current code."
 
 // loadPublishedStepFunc fills the published group with the open findings of
 // the review already on the change request, so the next steps verify and merge

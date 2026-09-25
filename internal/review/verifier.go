@@ -30,8 +30,9 @@ type VerifyRequest struct {
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
 	DiffFormat                model.DiffFormat
-	// Note is provenance shown to the verifier with the finding, e.g. that it
-	// was published on an older revision and may be outdated.
+	// Note is provenance the verifier's system prompt states for the finding,
+	// e.g. that it was published on an older revision and may be outdated.
+	// The prompt section is left out entirely when it is empty.
 	Note string
 }
 
@@ -120,6 +121,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
+		FindingNote                string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -128,12 +130,13 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools:                   true,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
+		FindingNote:                req.Note,
 	})
 	if err != nil {
 		return nil, usage, agentToolCounts{}, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.Note, req.DisableSuggestions, req.DiffFormat)
+	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, usage, agentToolCounts{}, err
 	}
@@ -191,7 +194,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{FindingNote: req.Note})
 			},
 		})
 		if err != nil {
@@ -395,9 +398,8 @@ func truncateFindingTitle(title string) string {
 }
 
 // buildFindingAgentUserPrompt renders the verifier payload: the full review
-// context plus the one finding under examination, with its provenance note
-// when there is one.
-func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, note string, disableSuggestions bool, format model.DiffFormat) (string, error) {
+// context plus the one finding under examination.
+func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
@@ -415,14 +417,12 @@ func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.
 		Priority     int                `json:"priority"`
 		CodeLocation model.CodeLocation `json:"code_location"`
 		Suggestions  []model.Suggestion `json:"suggestions,omitempty"`
-		Note         string             `json:"note,omitempty"`
 	}{
 		ID:           finding.ID,
 		Title:        finding.Title,
 		Body:         finding.Body,
 		Priority:     model.PriorityRank(finding.Priority),
 		CodeLocation: finding.CodeLocation,
-		Note:         note,
 	}
 	if !disableSuggestions {
 		submitted.Suggestions = finding.Suggestions

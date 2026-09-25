@@ -2729,6 +2729,7 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 type noToolsPromptOptions struct {
 	DiffScopeEnabled      bool
 	UnusedIdentifierKinds string
+	FindingNote           string
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool, options ...noToolsPromptOptions) ([]llm.Message, error) {
@@ -2751,6 +2752,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		StyleGuideToolchainSnippet string
 		DiffScopeEnabled           bool
 		UnusedIdentifierKinds      string
+		FindingNote                string
 	}{
 		OutputSchemaSnippet:        snippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -2760,6 +2762,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 		DiffScopeEnabled:           promptOptions.DiffScopeEnabled,
 		UnusedIdentifierKinds:      promptOptions.UnusedIdentifierKinds,
+		FindingNote:                promptOptions.FindingNote,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
