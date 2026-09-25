@@ -74,7 +74,13 @@ func (e *Engine) verifyPublishedStepFunc() stepFunc {
 		}
 		results := []agentResult{vr}
 		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+workflow.PublishedGroupID, sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, "Published", publishedFindingNote, sc.categorizeAgentContext(), budgets)
+		// The diff-scope filter is for new findings. A published finding
+		// whose lines left the diff (e.g. a later commit fixed it elsewhere or
+		// reverted them) must still reach the verifier, or it could never be
+		// resolved; it was in scope when it was published.
+		req := sc.Req
+		req.DisableDiffScope = true
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, req, st.limiter, "Published", publishedFindingNote, sc.categorizeAgentContext(), budgets)
 		st.setVectorResponse(workflow.PublishedGroupID, results[0].resp)
 		st.addVerificationTelemetry(workflow.PublishedGroupID, telemetry, warnings)
 		st.mu.Lock()

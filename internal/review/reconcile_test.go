@@ -244,3 +244,29 @@ func TestVerifierPromptOmitsNoteSectionWithoutNote(t *testing.T) {
 		}
 	}
 }
+
+// A published finding whose lines left the diff must still be verified, or a
+// later fix elsewhere could never resolve it.
+func TestVerifyPublishedStepIgnoresDiffScope(t *testing.T) {
+	client := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
+		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.9, Remarks: "Fixed in the caller."}},
+	}}
+	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	reviewCtx := sampleReviewCtx()
+	reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}}
+	st := newPipelineState(reviewCtx, nil)
+	id := "00000000-0000-4000-8000-000000000003"
+	outside := reconcileTestFinding(id, "other.go", "Missing guard far from the diff")
+	outside.CodeLocation.LineRange = model.LineRange{Start: 50, End: 50}
+	st.setGroup(workflow.PublishedGroupID, agentResult{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{outside}},
+		run:  model.AgentRun{Name: "Published Findings", Role: "published"},
+	}, nil)
+	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly, DisableWorkflowTimeBudget: true}
+	if err := e.verifyPublishedStepFunc()(context.Background(), e.stepContext(nil, req), st); err != nil {
+		t.Fatal(err)
+	}
+	if st.publishedRefuted[id] != "Fixed in the caller." {
+		t.Fatalf("out-of-diff published finding was not verified: refuted=%v warnings=%v", st.publishedRefuted, st.warnings.list())
+	}
+}
