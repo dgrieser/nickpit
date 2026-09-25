@@ -866,6 +866,9 @@ type verificationTelemetry struct {
 	// never disagree.
 	CategorizeRun *model.AgentRun
 	VerifyRun     *model.AgentRun
+	// Refuted maps the id of every finding the verifier refuted and the policy
+	// dropped to the verifier's remarks.
+	Refuted map[string]string
 }
 
 // verifyAndFilterVectorFindings is the atomic workflow operation: deterministic
@@ -874,7 +877,7 @@ type verificationTelemetry struct {
 // categorize carries the classifier's own engine clone and request, which
 // differ from the verifier's when the verify step configures a categorize
 // override (e.g. model: "@small"); the zero value means "same as the verifier".
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName, findingNote string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
 	telemetry := verificationTelemetry{}
 	categorizeEngine, categorizeReq := e, req
 	if categorize.Engine != nil {
@@ -907,6 +910,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts := verifyOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
+	opts.FindingNote = findingNote
 	verifyCtx, verifyCancel := budgets.verify.startOrCanceled()
 	defer verifyCancel()
 	verifyResults, verifyRun, verifyWarnings, err := e.verifyAll(verifyCtx, reviewCtx, findings, opts)
@@ -962,6 +966,10 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			switch reason {
 			case "refuted":
 				counts.refuted++
+				if telemetry.Refuted == nil {
+					telemetry.Refuted = map[string]string{}
+				}
+				telemetry.Refuted[finding.ID] = v.Remarks
 			case "unverified":
 				counts.unverified++
 			}
@@ -1189,7 +1197,7 @@ func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints 
 // multiple suggestion candidates stay unfolded so the agent can select the
 // single best suggestion. Returns the reduced list and how many findings were
 // absorbed; zero absorbed returns the input slice untouched.
-func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int) {
+func mechanicallyDedupeFindings(ctx context.Context, findings []model.Finding) ([]model.Finding, int) {
 	clusters := dedupe.Clusters(findings, dedupe.Duplicate)
 	if len(clusters) == len(findings) {
 		return findings, 0
@@ -1208,7 +1216,9 @@ func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int)
 			out = append(out, members...)
 			continue
 		}
-		out = append(out, dedupe.FoldCluster(members))
+		folded := dedupe.FoldCluster(members)
+		absorptionsFromContext(ctx).record(folded.ID, members)
+		out = append(out, folded)
 	}
 	absorbed := len(findings) - len(out)
 	if absorbed == 0 {
@@ -1243,7 +1253,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 			continue
 		}
 		originalCount := len(result.resp.Findings)
-		if reduced, absorbed := mechanicallyDedupeFindings(result.resp.Findings); absorbed > 0 {
+		if reduced, absorbed := mechanicallyDedupeFindings(ctx, result.resp.Findings); absorbed > 0 {
 			resp := cloneReviewResponse(result.resp)
 			resp.Findings = reduced
 			vectorResults[i].resp = resp
@@ -1430,7 +1440,7 @@ func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, c
 		for _, idx := range cluster {
 			clusterFindings = append(clusterFindings, findings[idx])
 		}
-		reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+		reduced, folded := mechanicallyDedupeFindings(ctx, clusterFindings)
 		absorbed += folded
 		if len(reduced) == 1 {
 			outcomes[ci] = reduced
@@ -1524,6 +1534,9 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 		return cluster, e.failMergeRun(run, model.AgentRunStatusPartial, invalid)
 	}
 	findings := cloneReviewResponse(result.resp).Findings
+	for _, f := range findings {
+		absorptionsFromContext(ctx).recordIDs(f.ID, f.MergedFrom)
+	}
 	stripMergedFrom(findings)
 	return findings, markMergeRun(run, model.AgentRunStatusOK, nil)
 }

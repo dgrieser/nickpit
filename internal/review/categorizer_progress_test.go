@@ -80,6 +80,7 @@ func TestVerifyProgressPrintsVerdictDrop(t *testing.T) {
 		model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly},
 		NewLimiter(1),
 		"Security",
+		"",
 		internalAgentContext{},
 		disabledVerifyPhaseBudgets(context.Background()),
 	)

@@ -24,6 +24,11 @@
 #   finalize                  finalize priorities/confidence/wording
 #   verdict                   decide top-level correctness/explanation
 #   summarize                 shorten each finalized body for readability
+#   load-published            load the open findings of the review already
+#                             published on the merge request into their own
+#                             group (publishing GitLab runs; empty otherwise)
+#   verify:published          verify those findings again, noting they may be
+#                             outdated; refuted ones are resolved on publish
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
 # child can be a `lane:` — a list of steps that run sequentially within the
@@ -326,6 +331,26 @@ steps:
                 toolchain: true
                 project_context: true
         name: Best practices
+        config:
+          time_budget:
+            max_seconds: 2400
+      # On a re-review, the open findings of the review already published on
+      # the merge request are verified again against the current code, marked
+      # as possibly outdated, and then merged with the new findings. A refuted
+      # one is resolved on publish; the rest update their threads in place.
+      # Empty unless publishing to a source that can read the published review
+      # (GitLab) and a review is already there.
+      - lane:
+          - type: load-published
+          - type: verify:published
+            config:
+              scope: finding
+              categorize:
+                model: "@small"
+                time_budget:
+                  weight: 5
+                  max_seconds: 30
+        name: Published findings
         config:
           time_budget:
             max_seconds: 2400

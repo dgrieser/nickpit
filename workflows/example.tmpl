@@ -22,6 +22,11 @@
 #   finalize                  finalize priorities/confidence/wording
 #   verdict                   decide top-level correctness/explanation
 #   summarize                 shorten each finalized body for readability
+#   load-published            load the open findings of the review already
+#                             published on the merge request into their own
+#                             group (publishing GitLab runs; empty otherwise)
+#   verify:published          verify those findings again, noting they may be
+#                             outdated; refuted ones are resolved on publish
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
 # child can be a `lane:` — a list of steps that run sequentially within the

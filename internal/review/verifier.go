@@ -30,6 +30,9 @@ type VerifyRequest struct {
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
 	DiffFormat                model.DiffFormat
+	// Note is provenance shown to the verifier with the finding, e.g. that it
+	// was published on an older revision and may be outdated.
+	Note string
 }
 
 type VerifyOptions struct {
@@ -50,6 +53,8 @@ type VerifyOptions struct {
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
+	// FindingNote is attached to every finding of the call (VerifyRequest.Note).
+	FindingNote string
 }
 
 type verifyResult struct {
@@ -128,7 +133,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		return nil, usage, agentToolCounts{}, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DiffFormat)
+	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.Note, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, usage, agentToolCounts{}, err
 	}
@@ -285,6 +290,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
+				Note:                      opts.FindingNote,
 			}
 			result, usage, findingCounts, err := e.verifyFinding(ctx, req)
 			mu.Lock()
@@ -389,8 +395,9 @@ func truncateFindingTitle(title string) string {
 }
 
 // buildFindingAgentUserPrompt renders the verifier payload: the full review
-// context plus the one finding under examination.
-func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {
+// context plus the one finding under examination, with its provenance note
+// when there is one.
+func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, note string, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
@@ -408,12 +415,14 @@ func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.
 		Priority     int                `json:"priority"`
 		CodeLocation model.CodeLocation `json:"code_location"`
 		Suggestions  []model.Suggestion `json:"suggestions,omitempty"`
+		Note         string             `json:"note,omitempty"`
 	}{
 		ID:           finding.ID,
 		Title:        finding.Title,
 		Body:         finding.Body,
 		Priority:     model.PriorityRank(finding.Priority),
 		CodeLocation: finding.CodeLocation,
+		Note:         note,
 	}
 	if !disableSuggestions {
 		submitted.Suggestions = finding.Suggestions

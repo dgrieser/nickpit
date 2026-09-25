@@ -78,6 +78,10 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}, Context: fullContext()}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}}
 	}
+	parallel = append(parallel, StepEntry{Name: "Published findings", Lane: []StepEntry{
+		{Type: StepLoadPublished},
+		{Type: StepVerifyPrefix + PublishedGroupID, Config: &StepOverride{Scope: &finding, Categorize: &AgentOverride{Model: &small, TimeBudget: &TimeBudget{Weight: &weight5, MaxSeconds: &max30}}}},
+	}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}})
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max360}}},
 		{Name: "Review", Parallel: parallel},
@@ -178,11 +182,16 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 		t.Fatal("expected a parallel reviewer group")
 		return
 	}
-	if len(parallel.Parallel) != len(ReviewVectorIDs) {
-		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))
+	// One lane per reviewer, then the published-findings lane.
+	if len(parallel.Parallel) != len(ReviewVectorIDs)+1 {
+		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs)+1)
+	}
+	published := parallel.Parallel[len(ReviewVectorIDs)]
+	if len(published.Lane) != 2 || published.Lane[0].Type != StepLoadPublished || published.Lane[1].Type != StepVerifyPrefix+PublishedGroupID {
+		t.Fatalf("published lane = %+v", published)
 	}
 	wantLane := []string{StepReviewPrefix, StepVerifyPrefix, StepDedupePrefix}
-	for i, lane := range parallel.Parallel {
+	for i, lane := range parallel.Parallel[:len(ReviewVectorIDs)] {
 		if !lane.IsLane() || len(lane.Lane) != len(wantLane) {
 			t.Fatalf("parallel child %d is not a %d-step lane: %+v", i, len(wantLane), lane)
 		}
@@ -1335,5 +1344,64 @@ func TestValidateRejectsNegativeMaxOutputRetries(t *testing.T) {
 	}}
 	if err := unlimited.Validate(); err != nil {
 		t.Fatalf("zero max_output_retries rejected: %v", err)
+	}
+}
+
+func TestLoadPublishedLane(t *testing.T) {
+	spec, err := Load(writeSpec(t, `
+version: 1
+steps:
+  - parallel:
+      - lane:
+          - type: review:security
+          - type: verify:security
+      - lane:
+          - type: load-published
+          - type: verify:published
+            config:
+              scope: finding
+  - type: merge
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadPublishedRejections(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"verify without load": {`
+version: 1
+steps:
+  - type: verify:published
+`, "requires a preceding load-published"},
+		"published is not a reviewer": {`
+version: 1
+steps:
+  - type: load-published
+  - type: dedupe:published
+`, "unknown reviewer vector"},
+		"two lanes load published": {`
+version: 1
+steps:
+  - parallel:
+      - lane:
+          - type: load-published
+      - lane:
+          - type: load-published
+`, "more than one lane"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec, err := Load(writeSpec(t, tc.body))
+			if err == nil {
+				err = spec.Validate()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want mention of %q", err, tc.want)
+			}
+		})
 	}
 }

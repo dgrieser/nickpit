@@ -42,6 +42,15 @@ const (
 	StepFinalize       = "finalize"
 	StepVerdict        = "verdict"
 	StepSummarize      = "summarize"
+	// StepLoadPublished loads the open findings of the review already
+	// published on the change request into their own group, so a re-review
+	// verifies, merges, and publishes them together with its new findings.
+	StepLoadPublished = "load-published"
+
+	// PublishedGroupID names the group load-published fills. verify:published
+	// verifies it like a reviewer's findings; it is the only non-reviewer id a
+	// per-vector step accepts.
+	PublishedGroupID = "published"
 
 	StepReviewPrefix  = "review:"
 	StepExtractPrefix = "reasoning-extract:"
@@ -1059,11 +1068,18 @@ func (s Spec) Validate() error {
 		}
 		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix} {
 			if v, ok := vectorOf(entry.Type, prefix); ok && !reviewed[v] && !laneReviewed[v] {
-				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step or earlier in the same lane)", idx, entry.Type, StepReviewPrefix, v)
+				producer := StepReviewPrefix + v
+				if v == PublishedGroupID {
+					producer = StepLoadPublished
+				}
+				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s step (in an earlier step or earlier in the same lane)", idx, entry.Type, producer)
 			}
 		}
 		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
 			return v, nil
+		}
+		if entry.Type == StepLoadPublished {
+			return PublishedGroupID, nil
 		}
 		return "", nil
 	}
@@ -1376,6 +1392,11 @@ func validateOutputRetries(retries *int) error {
 
 // stepVectorAny returns the vector id when t is a per-vector step of any kind.
 func stepVectorAny(t string) (string, bool) {
+	// load-published fills only its own group, so like a reviewer it may run
+	// in a lane of a parallel group.
+	if t == StepLoadPublished {
+		return PublishedGroupID, true
+	}
 	for _, prefix := range perVectorPrefixes {
 		if v, ok := vectorOf(t, prefix); ok {
 			return v, true
@@ -1392,15 +1413,18 @@ func isPerVectorStep(t string) bool {
 
 func validateStepType(t string) error {
 	switch t {
-	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
+	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize, StepLoadPublished:
 		return nil
 	case "":
 		return fmt.Errorf("missing step type")
 	}
 	for _, prefix := range perVectorPrefixes {
 		if v, ok := vectorOf(t, prefix); ok {
+			if v == PublishedGroupID && prefix == StepVerifyPrefix {
+				return nil
+			}
 			if !validVector(v) {
-				return fmt.Errorf("unknown reviewer vector %q (valid: %s)", v, strings.Join(ReviewVectorIDs, ", "))
+				return fmt.Errorf("unknown reviewer vector %q (valid: %s; verify: also accepts %s)", v, strings.Join(ReviewVectorIDs, ", "), PublishedGroupID)
 			}
 			return nil
 		}

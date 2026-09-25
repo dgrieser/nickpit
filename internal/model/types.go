@@ -133,7 +133,12 @@ type ReviewResult struct {
 	// restores it, so a chat rebuilt from MR/PR markers recreates the SAME
 	// filtered context the review saw — never files the review deliberately
 	// withheld. Pipeline results emitted to stdout leave it nil.
-	ContextOptions     *ContextOptions `json:"context_options,omitempty"`
+	ContextOptions *ContextOptions `json:"context_options,omitempty"`
+	// Reconciliation is set when the reconcile step folded this run into the
+	// review already published on the change request: the result then carries
+	// that review's id and findings, and publishers update it in place instead
+	// of posting a second review. It is run-local and never serialized.
+	Reconciliation     *Reconciliation `json:"-"`
 	Findings           []Finding       `json:"findings"`
 	OverallCorrectness string          `json:"overall_correctness"`
 	OverallExplanation string          `json:"overall_explanation"`
@@ -1000,6 +1005,36 @@ type BaseFileSource interface {
 // PostReview is set, so non-publishing sources (local) are unaffected.
 type ReviewPublisher interface {
 	PublishReview(ctx context.Context, req ReviewRequest, result *ReviewResult) error
+}
+
+// PublishedReview is the review a change request already carries, as the
+// reconcile step needs it. Review is the one whose summary thread is current;
+// Foreign holds open findings that earlier runs published under other review
+// ids (before re-reviews updated one review in place), so a new run does not
+// repost them.
+type PublishedReview struct {
+	Review  *ReviewResult
+	Foreign []Finding
+}
+
+// PublishedReviewSource is implemented by sources that can read the review
+// already published on the change request. The reconcile step uses it to fold
+// a re-review into that review. It returns nil (and no error) when the change
+// request carries no complete review of this token's own.
+type PublishedReviewSource interface {
+	PublishedReview(ctx context.Context, req ReviewRequest) (*PublishedReview, error)
+}
+
+// Reconciliation records how a run was folded into a published review. Before
+// is that review as it was read, so the publisher can detect and merge
+// corrections made to it while the run was in flight. The ID lists name the
+// findings the run added, resolved, and updated.
+type Reconciliation struct {
+	Before   *ReviewResult
+	HeadSHA  string
+	Added    []string
+	Resolved []string
+	Updated  []string
 }
 
 // OpenRequest is one open merge request or pull request as the interactive

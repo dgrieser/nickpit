@@ -75,6 +75,14 @@ type PipelineState struct {
 	// and failure paths emit static text not worth an LLM call.
 	verdictOverall string
 	summarizeRuns  []model.AgentRun
+	// published is the review already on the change request, set by the
+	// load-published step; publishedRefuted maps the published findings the
+	// verifier refuted to its remarks. assemble folds the result into that
+	// review (reconcilePublished) and hands the publisher the reconciliation.
+	published        *model.PublishedReview
+	publishedRefuted map[string]string
+	absorbed         *absorptionLog
+	reconciliation   *model.Reconciliation
 	// Verification runs: one categorize and one verify run per executed verify
 	// step, each aggregating every finding that step handled. The per-reviewer
 	// steps are keyed by vector so aggregateTelemetry can emit them in
@@ -507,6 +515,9 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	// Engine internals with no access to the pipeline state report warnings
 	// through the context-carried log.
 	ctx = withWarnings(ctx, st.warnings)
+	// Merge records which finding absorbed which (see absorptionLog).
+	st.absorbed = &absorptionLog{}
+	ctx = withAbsorptions(ctx, st.absorbed)
 	var segments []model.SegmentRuntime
 	for unitIdx, unit := range p.units {
 		unitStart := time.Now()
@@ -651,9 +662,26 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	if res == nil {
 		res = st.materializeFromGroups(req)
 	}
+	st.mu.Lock()
+	if st.published != nil && !st.allReviewersFailedLocked() {
+		// A run whose reviewers all crashed says nothing about the code and
+		// must not replace the published verdict; it is published (or not) as
+		// a fresh run.
+		headSHA := ""
+		if st.Enriched != nil {
+			headSHA = st.Enriched.DiffHeadSHA
+		}
+		st.reconciliation = reconcilePublished(res, st.published, st.publishedRefuted, st.absorbed, headSHA)
+	}
+	st.mu.Unlock()
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
+		// Findings kept from the published review are exempt: they were in
+		// scope when published, and the publisher can only update them, never
+		// drop them.
+		published, fresh := splitPublishedFindings(res.Findings, st.reconciliation)
 		var dropped []model.Finding
-		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
+		res.Findings, dropped = filterFindingsByDiffScope(fresh, st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
+		res.Findings = append(published, res.Findings...)
 		for i, finding := range dropped {
 			if p.engine.logger != nil {
 				p.engine.logger.ProgressFor(
@@ -673,6 +701,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 			}
 		}
 	}
+	res.Reconciliation = st.reconciliation
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
 	res.Warnings = appendAgentRunWarnings(st.warnings.list(), allRuns, st.contextErr)
@@ -892,6 +921,12 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 		return bs, nil
 	case workflow.StepSummarize:
 		bs.run = e.summarizeStepFunc(entry.FindingsFrom)
+		return bs, nil
+	case workflow.StepLoadPublished:
+		bs.run = e.loadPublishedStepFunc()
+		return bs, nil
+	case workflow.StepVerifyPrefix + workflow.PublishedGroupID:
+		bs.run = e.verifyPublishedStepFunc()
 		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {

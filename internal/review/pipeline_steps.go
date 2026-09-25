@@ -476,7 +476,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		}
 		vr := st.vectorResults()
 		budgets := verifyPhaseBudgetStarters(ctx, "verify", sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", sc.categorizeAgentContext(), budgets)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", "", sc.categorizeAgentContext(), budgets)
 		st.writeBackVectorResults(vr)
 		st.addVerificationTelemetry("", telemetry, warnings)
 		if err != nil {
@@ -506,7 +506,7 @@ func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 		}
 		results := []agentResult{vr}
 		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+vectorID, sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, sc.categorizeAgentContext(), budgets)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, "", sc.categorizeAgentContext(), budgets)
 		st.addVerificationTelemetry(vectorID, telemetry, warnings)
 		if err != nil {
 			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
@@ -762,7 +762,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			for _, idx := range cluster {
 				clusterFindings = append(clusterFindings, findings[idx])
 			}
-			reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+			reduced, folded := mechanicallyDedupeFindings(ctx, clusterFindings)
 			absorbed += folded
 			if len(reduced) == 1 {
 				outcomes <- clusterMergeOutcome{index: ci, findings: reduced}

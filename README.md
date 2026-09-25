@@ -554,6 +554,8 @@ Nothing changes without a terminal: piped, redirected and daemon-spawned runs ke
 
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge. Confidence scores are not rendered in the terminal output or in published comments — they remain in `--output json` and in the hidden review envelope. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
+On GitLab, a re-review updates the review already on the MR instead of posting a second one.
+
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 
 ## Discuss a Review (Chat) 💬
@@ -684,7 +686,9 @@ Triggers:
   - `/nickpit status` — reply with the MR's review state
   - `/nickpit help` — reply with the command list
 
-  The command must be the comment's first non-blank line; anything after it on that line is ignored, so `/nickpit review please` works like `/nickpit review`. A bare `/nickpit` replies with the command list. A command quoted further down a comment is deliberately not executed.
+  The command must be the comment's first non-blank line. Commands take no instructions: `/nickpit review please check X` runs a normal review and replies that the extra text was ignored (for `status`, `help`, and `abort` the notice comes first in the usual reply). A bare `/nickpit` replies with the command list. A command quoted further down a comment is deliberately not executed.
+
+  A comment that @-mentions the bot outside NickPit's own threads (a top-level comment, or a reply in someone else's thread) gets a short reply pointing to the review threads and the commands.
 
 Reactions track the review: when it starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables), and a `/nickpit review` comment gets the same acknowledgement on the comment itself (default `:eyes:`, `ack_emoji: ""` disables). When the review ends, both are **replaced** by its outcome — `done_emoji` (default `:white_check_mark:`) once it landed, `fail_emoji` (default `:x:`) when it could not be delivered (a failed run, or an MR that turned out not to be reviewable, e.g. closed meanwhile). An aborted review only loses the in-progress reaction: nothing went wrong. Set an outcome emoji to `""` to only revoke instead. Because the outcome replaces the in-progress reaction, `start_emoji: ""` leaves the MR undecorated end to end. `/nickpit abort` is acknowledged with `abort_emoji` (default `:stop_button:`), and `status`, `help`, and `abort` also get a comment reply, threaded under the command.
 
