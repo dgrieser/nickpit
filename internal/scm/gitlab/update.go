@@ -169,7 +169,11 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		}
 	}
 	rootChanged := current.OverallCorrectness != after.OverallCorrectness || current.OverallExplanation != after.OverallExplanation || current.OverallConfidenceScore != after.OverallConfidenceScore
-	if len(changed) == 0 && !rootChanged {
+	// The context options ride only in the summary envelope. A change there
+	// (a re-review run with other filters) must still reach it, or a later
+	// chat rebuilds the old context, but it changes nothing visible.
+	contextChanged := !reflect.DeepEqual(current.ContextOptions, after.ContextOptions)
+	if len(changed) == 0 && !rootChanged && !contextChanged {
 		return current, nil
 	}
 	operation := req.Operation
@@ -237,7 +241,9 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	}
 	marker := updateItemMarker(transaction.Operation, len(transaction.Items))
 	body = reviewmd.TransferResponseFooter(previous, body+"\n\n"+marker)
-	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || req.Operation != "")
+	// Archive the previous summary only when the review visibly changed; a
+	// context-only update would archive an identical copy.
+	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || (req.Operation != "" && len(changed) > 0))
 	if err != nil {
 		return nil, err
 	}

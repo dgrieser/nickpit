@@ -163,3 +163,65 @@ func TestReconciledReplyBodyWithoutChanges(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestPublishReconciledPersistsContextOnlyChange(t *testing.T) {
+	s, a, before := newUpdateServer(t)
+	after, _ := before.Clone()
+	after.ContextOptions = &model.ContextOptions{ExcludePaths: []string{"vendor/**"}}
+	after.Reconciliation = &model.Reconciliation{Before: before, HeadSHA: "headsha"}
+	if err := a.PublishReview(context.Background(), model.ReviewRequest{Repo: "group/project", Identifier: 456}, after); err != nil {
+		t.Fatal(err)
+	}
+	discussions := s.snapshot()
+	got := reviewmd.ReviewResultsByID(ownedBodies(discussions, 7))[before.ReviewID]
+	if got == nil || got.ContextOptions == nil || len(got.ContextOptions.ExcludePaths) != 1 {
+		t.Fatalf("context options not persisted: %+v", got)
+	}
+	root := findUpdateTarget(discussions, 7, before.ReviewID, "")
+	if len(reviewmd.ReadHistory(root.Body).Entries) != 0 {
+		t.Fatal("context-only update archived an identical summary")
+	}
+}
+
+func TestPublishReconciledReportsOnlyAppliedChanges(t *testing.T) {
+	s, a, before := newUpdateServer(t)
+	// A chat correction lands on the finding while the re-review runs.
+	corrected, _ := before.Clone()
+	corrected.Findings[0].Title = "Corrected by chat"
+	if _, err := a.UpdateReview(context.Background(), "group/project", 456, updateRequest(before, corrected)); err != nil {
+		t.Fatal(err)
+	}
+	// The re-review planned to rewrite that finding and add a new one.
+	after, _ := before.Clone()
+	after.Findings[0].Body = "Re-review wording."
+	after.Findings = append(after.Findings, reconcileFinding("added", "Second problem"))
+	after.Reconciliation = &model.Reconciliation{Before: before, HeadSHA: "headsha", Added: []string{"added"}, Updated: []string{"finding"}}
+	if err := a.PublishReview(context.Background(), model.ReviewRequest{Repo: "group/project", Identifier: 456}, after); err != nil {
+		t.Fatal(err)
+	}
+	discussions := s.snapshot()
+	root := findUpdateTarget(discussions, 7, before.ReviewID, "")
+	var reply string
+	for _, d := range discussions {
+		if d.ID == root.DiscussionID {
+			reply = d.Notes[len(d.Notes)-1].Body
+		}
+	}
+	if !strings.Contains(reply, "Second problem") || strings.Contains(reply, "**Updated**") {
+		t.Fatalf("reply reports discarded change: %q", reply)
+	}
+}
+
+func TestReconciledChanges(t *testing.T) {
+	closed := reconcileFinding("closed", "Closed")
+	closed.Resolution = &model.FindingResolution{Reason: "Fixed."}
+	before := &model.ReviewResult{Findings: []model.Finding{reconcileFinding("same", "Same"), reconcileFinding("edit", "Edit"), reconcileFinding("fix", "Fix"), closed}}
+	published, _ := before.Clone()
+	published.Findings[1].Revision = 1
+	published.Findings[2].Resolution = &model.FindingResolution{Reason: "Fixed."}
+	published.Findings = append(published.Findings, reconcileFinding("new", "New"))
+	got := reconciledChanges(before, published)
+	if strings.Join(got.Added, ",") != "new" || strings.Join(got.Resolved, ",") != "fix" || strings.Join(got.Updated, ",") != "edit" {
+		t.Fatalf("changes = %+v", got)
+	}
+}

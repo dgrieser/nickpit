@@ -136,8 +136,12 @@ func (a *Adapter) publishReconciled(ctx context.Context, req model.ReviewRequest
 		if err != nil {
 			return fmt.Errorf("gitlab publish: updating review %s: %w", before.ReviewID, err)
 		}
+		// Report what this publish changed, not what the run planned: a
+		// replay onto a concurrent correction can discard planned changes.
+		report := reconciledChanges(before, published)
+		report.HeadSHA = rec.HeadSHA
 		var errs []error
-		if err := a.replyReconciled(ctx, req, published, rec); err != nil {
+		if err := a.replyReconciled(ctx, req, published, report); err != nil {
 			errs = append(errs, fmt.Errorf("re-review reply: %w", err))
 		}
 		// Earlier runs could leave carrier-only notes behind; this review now
@@ -191,6 +195,31 @@ func rebaseReconciled(before, after, current *model.ReviewResult) (*model.Review
 		}
 	}
 	return out, nil
+}
+
+// reconciledChanges lists the findings published added, resolved, and
+// updated relative to before, the review it replaced.
+func reconciledChanges(before, published *model.ReviewResult) *model.Reconciliation {
+	out := &model.Reconciliation{Before: before}
+	prior := make(map[string]model.Finding, len(before.Findings))
+	for _, f := range before.Findings {
+		prior[f.ID] = f
+	}
+	for _, f := range published.Findings {
+		old, ok := prior[f.ID]
+		switch {
+		case !ok:
+			out.Added = append(out.Added, f.ID)
+		case old.Resolution != nil:
+		case f.Resolution != nil:
+			out.Resolved = append(out.Resolved, f.ID)
+		case f.Revision != old.Revision:
+			// UpdateReview stamps the new revision on exactly the findings
+			// it rewrote.
+			out.Updated = append(out.Updated, f.ID)
+		}
+	}
+	return out
 }
 
 // replyReconciled answers in the summary thread with what the re-review
