@@ -866,9 +866,26 @@ type verificationTelemetry struct {
 	// never disagree.
 	CategorizeRun *model.AgentRun
 	VerifyRun     *model.AgentRun
-	// Refuted maps the id of every finding the verifier refuted and the policy
-	// dropped to the verifier's remarks.
-	Refuted map[string]string
+	// Refuted maps group id → finding id → the verifier's remarks for every
+	// finding the verifier refuted and the policy dropped.
+	Refuted map[string]map[string]string
+}
+
+// verifyGroup is what verification needs to know about one finding group,
+// aligned with the agentResults it verifies: its id, the provenance note the
+// verifier is told, and whether the group skips the diff-scope filter. A
+// reviewer group has only an id.
+type verifyGroup struct {
+	id              string
+	note            string
+	exemptDiffScope bool
+}
+
+func groupAt(groups []verifyGroup, i int) verifyGroup {
+	if i < len(groups) {
+		return groups[i]
+	}
+	return verifyGroup{}
 }
 
 // verifyAndFilterVectorFindings is the atomic workflow operation: deterministic
@@ -877,13 +894,13 @@ type verificationTelemetry struct {
 // categorize carries the classifier's own engine clone and request, which
 // differ from the verifier's when the verify step configures a categorize
 // override (e.g. model: "@small"); the zero value means "same as the verifier".
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName, findingNote string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, groups []verifyGroup, req model.ReviewRequest, limiter *Limiter, reviewerName string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
 	telemetry := verificationTelemetry{}
 	categorizeEngine, categorizeReq := e, req
 	if categorize.Engine != nil {
 		categorizeEngine, categorizeReq = categorize.Engine, categorize.Req
 	}
-	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, req)
+	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, groups, req)
 	// The classifier runs inside its own share of the step budget when the spec
 	// gives it one, so its failure mode is a bounded phase rather than the whole
 	// verify step. The verifier's share is started separately below and is not
@@ -910,7 +927,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts := verifyOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
-	opts.FindingNote = findingNote
+	for _, ref := range refs {
+		opts.FindingNotes = append(opts.FindingNotes, groupAt(groups, ref.vectorIdx).note)
+	}
 	verifyCtx, verifyCancel := budgets.verify.startOrCanceled()
 	defer verifyCancel()
 	verifyResults, verifyRun, verifyWarnings, err := e.verifyAll(verifyCtx, reviewCtx, findings, opts)
@@ -966,10 +985,15 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			switch reason {
 			case "refuted":
 				counts.refuted++
-				if telemetry.Refuted == nil {
-					telemetry.Refuted = map[string]string{}
+				if id := groupAt(groups, ref.vectorIdx).id; id != "" {
+					if telemetry.Refuted == nil {
+						telemetry.Refuted = map[string]map[string]string{}
+					}
+					if telemetry.Refuted[id] == nil {
+						telemetry.Refuted[id] = map[string]string{}
+					}
+					telemetry.Refuted[id][finding.ID] = v.Remarks
 				}
-				telemetry.Refuted[finding.ID] = v.Remarks
 			case "unverified":
 				counts.unverified++
 			}
@@ -1009,7 +1033,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	return telemetry, warnings, nil
 }
 
-func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) []string {
+// prepareFindingsForVerification applies the diff-scope filter to every group
+// that is not exempt from it (see verifyGroup).
+func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, groups []verifyGroup, req model.ReviewRequest) []string {
 	if req.DisableDiffScope || reviewCtx == nil || reviewCtx.DiffScopeHunks == nil {
 		return nil
 	}
@@ -1018,7 +1044,7 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 	var warnings []string
 	for i := range vectorResults {
 		resp := vectorResults[i].resp
-		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 {
+		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 || groupAt(groups, i).exemptDiffScope {
 			continue
 		}
 		kept := make([]model.Finding, 0, len(resp.Findings))

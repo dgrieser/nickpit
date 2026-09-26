@@ -474,11 +474,22 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
-		vr := st.vectorResults()
+		// The same group-aware verification as verify:<group>, over every
+		// group: each imported group's provenance applies to its findings.
+		st.mu.Lock()
+		vr := st.vectorResultsLocked()
+		var groups []verifyGroup
+		for _, id := range st.groupOrder {
+			if g := st.groupByID[id]; g.filled {
+				groups = append(groups, st.verifyGroupLocked(id))
+			}
+		}
+		st.mu.Unlock()
 		budgets := verifyPhaseBudgetStarters(ctx, "verify", sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", "", sc.categorizeAgentContext(), budgets)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, groups, sc.Req, st.limiter, "", sc.categorizeAgentContext(), budgets)
 		st.writeBackVectorResults(vr)
 		st.addVerificationTelemetry("", telemetry, warnings)
+		st.addRefuted(telemetry.Refuted)
 		if err != nil {
 			sc.Engine.logf(ctx, "Verifier failed before merge: categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
@@ -487,29 +498,36 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 	}
 }
 
-// verifyVectorStepFunc verifies and filters one reviewer group's findings in
-// place, admitted through the run-shared verify limiter. Per-finding verifier
-// failures are kept as unverified findings with warnings; a soft-failed or
-// empty reviewer is a graceful no-op.
-func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
+// verifyVectorStepFunc verifies and filters one finding group in place — a
+// reviewer's or an imported one — admitted through the run-shared verify
+// limiter. An imported group's provenance applies: its note is told to the
+// verifier, and a group exempt from diff scope skips that filter. Refutations
+// are recorded on the group. Per-finding verifier failures are kept as
+// unverified findings with warnings; a soft-failed or empty group is a
+// graceful no-op.
+func (e *Engine) verifyVectorStepFunc(groupID string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		vr, ok := st.vectorResult(vectorID)
+		vr, ok := st.vectorResult(groupID)
 		if !ok {
-			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s step", vectorID, vectorID)
+			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s or import-findings (group: %s) step", groupID, groupID, groupID)
 		}
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) == 0 {
 			return nil
 		}
-		vector, ok := reviewVectorByID(vectorID)
-		if !ok {
-			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
+		name := groupID
+		if vector, ok := reviewVectorByID(groupID); ok {
+			name = vector.name
 		}
+		st.mu.Lock()
+		groups := []verifyGroup{st.verifyGroupLocked(groupID)}
+		st.mu.Unlock()
 		results := []agentResult{vr}
-		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+vectorID, sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, "", sc.categorizeAgentContext(), budgets)
-		st.addVerificationTelemetry(vectorID, telemetry, warnings)
+		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+groupID, sc.Override, sc.Req, sc.Engine.logf)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, groups, sc.Req, st.limiter, name, sc.categorizeAgentContext(), budgets)
+		st.addVerificationTelemetry(groupID, telemetry, warnings)
+		st.addRefuted(telemetry.Refuted)
 		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed for group: group=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
 		}
 		return nil
@@ -729,6 +747,13 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
 			})
 			st.mu.Unlock()
+			// Nothing survived, yet published findings may still need closing
+			// (all refuted) or carrying as open records.
+			if fused.hasReconcile {
+				if err := e.reconcileStepFunc(reconcileGroup(fused.reconcile), fused.verdict.Config, fused.summarize.Config, fused.hasSummarize)(ctx, mergeSC, st); err != nil {
+					return err
+				}
+			}
 			verdictCtx, verdictCancel := verdictBudget.startOrCanceled()
 			defer verdictCancel()
 			if err := e.verdictStepFunc(nil)(verdictCtx, verdictSC, st); err != nil {
@@ -880,6 +905,13 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalizeWG.Wait()
 		finalizedFindings := appendClusterFindings(finalizedByCluster)
+		// The summaries were cut from the finalized findings before the ids
+		// below change (normalization, reconcile renames); their original ids
+		// let the join map each summary back to its finalized finding.
+		originalIDs := make([]string, len(finalizedFindings))
+		for i := range finalizedFindings {
+			originalIDs[i] = finalizedFindings[i].ID
+		}
 		if overwrote := normalizeFindingIDsWithSeen(finalizedFindings, nil); overwrote > 0 {
 			mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
@@ -890,8 +922,35 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			})
 		}
 
+		// Reconcile at the verdict's barrier: every cluster is finalized, and
+		// the verdict must see the reconciled set. Renames happen in place, so
+		// the summarized findings still adopt their ids by position below;
+		// dropped duplicates leave the verdict input and so the final set.
+		verdictInput := finalizedFindings
+		// activeMask marks, by position in finalizedFindings, what stays active
+		// after reconcile; the summaries adopt ids by position, so they are
+		// filtered the same way (ids alone can collide after renames).
+		var activeMask []bool
+		if fused.hasReconcile {
+			filters := verdictFiltersOf(verdictSC.Req)
+			if fused.hasSummarize {
+				filters.summarizePriorityThreshold = summarizeSC.Req.PriorityThreshold
+			}
+			plan, err := st.reconcileForGroup(ctx, mergeSC.Engine, reconcileGroup(fused.reconcile), finalizedFindings, filters)
+			if err != nil {
+				return err
+			}
+			if plan != nil {
+				activeMask = plan.keepMask(finalizedFindings)
+				verdictInput = plan.apply(finalizedFindings)
+				st.mu.Lock()
+				st.reconciled = plan
+				st.mu.Unlock()
+			}
+		}
+
 		base := &model.ReviewResult{
-			Findings:               finalizedFindings,
+			Findings:               verdictInput,
 			OverallCorrectness:     aggregateOverallCorrectness(mergeInputs, rawMergedCount),
 			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), rawMergedCount, absorbed, llmClusters),
 			OverallConfidenceScore: maxOverallConfidence(mergeInputs),
@@ -918,22 +977,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalFindings := verdict.Findings
 		if fused.hasSummarize {
-			finalFindings = appendClusterFindings(summarizedByCluster)
-			// Summarize ran on a pre-normalization clone, so adopt the IDs already
-			// assigned to finalizedFindings (same findings, same per-cluster order)
-			// rather than re-normalizing — re-normalizing would generate fresh random
-			// IDs and drift from the verdict's view. Fall back to normalization only
-			// if the counts somehow disagree.
-			if len(finalFindings) == len(finalizedFindings) {
-				for i := range finalFindings {
-					finalFindings[i].ID = finalizedFindings[i].ID
-					if finalFindings[i].Verification != nil {
-						finalFindings[i].Verification.ID = finalizedFindings[i].ID
-					}
-				}
-			} else {
-				normalizeFindingIDsWithSeen(finalFindings, nil)
-			}
+			finalFindings = adoptFinalizedIdentity(appendClusterFindings(summarizedByCluster), finalizedFindings, originalIDs, activeMask)
 			finalFindings = keepFindingsByID(finalFindings, findingIDSet(verdict.Findings))
 		}
 		verdict.Findings = finalFindings
@@ -1179,7 +1223,9 @@ func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *
 }
 
 func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
-	opts := verdictOptionsFromStep(sc, st.contextNotes)
+	contextNotes, openRecords := st.verdictInputs()
+	opts := verdictOptionsFromStep(sc, contextNotes)
+	opts.OpenRecords = openRecords
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		if verdict != nil {
@@ -1196,6 +1242,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		}
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 		applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
+		in.OverallExplanation = withOpenRecordsNotice(in.OverallExplanation, opts.OpenRecords)
 		run.Name = "verdict"
 		run.Role = "verdict"
 		run.Status = model.AgentRunStatusFailed
@@ -1480,13 +1527,14 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			st.setResultLocked(st.materializeFromGroupsLocked(sc.Req))
 		}
 		in := st.result
-		contextNotes := st.contextNotes
 		st.mu.Unlock()
+		contextNotes, openRecords := st.verdictInputs()
 
 		if in == nil {
 			return nil
 		}
 		opts := verdictOptionsFromStep(sc, contextNotes)
+		opts.OpenRecords = openRecords
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -1497,6 +1545,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings.addf("Verdict failed: %v; using merged overall fields", err)
 			applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
+			in.OverallExplanation = withOpenRecordsNotice(in.OverallExplanation, openRecords)
 			verdictRun.Name = "verdict"
 			verdictRun.Role = "verdict"
 			verdictRun.Status = model.AgentRunStatusFailed
@@ -1654,4 +1703,39 @@ func stripInjectedGroupSuggestions(groups []injectedGroup) {
 	for gi := range groups {
 		model.StripSuggestions(groups[gi].findings)
 	}
+}
+
+// adoptFinalizedIdentity maps each summarized finding back to the finalized
+// finding it was cut from and gives it that finding's current id. Summarize
+// ran on a clone taken before the ids changed (normalization of invalid or
+// colliding ids, reconcile renames), and its own priority filter may have
+// left some findings out, so the mapping goes by the original id rather than
+// by position; findings sharing an original id are matched in order, which
+// summarize preserves. A finding the reconcile plan dropped (activeMask false)
+// is left out, whatever id it now carries: after a rename a dropped original
+// and the survivor on its thread share one. Summaries that map to nothing are
+// dropped too; they could only resurface with an id the verdict never saw.
+func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs []string, activeMask []bool) []model.Finding {
+	positions := make(map[string][]int, len(originalIDs))
+	for i, id := range originalIDs {
+		positions[id] = append(positions[id], i)
+	}
+	out := summarized[:0]
+	for _, f := range summarized {
+		queue := positions[f.ID]
+		if len(queue) == 0 {
+			continue
+		}
+		i := queue[0]
+		positions[f.ID] = queue[1:]
+		if activeMask != nil && !activeMask[i] {
+			continue
+		}
+		f.ID = finalized[i].ID
+		if f.Verification != nil {
+			f.Verification.ID = f.ID
+		}
+		out = append(out, f)
+	}
+	return out
 }

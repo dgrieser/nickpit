@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -26,137 +27,249 @@ func reconcileTestFinding(id, file, title string) model.Finding {
 		CodeLocation: model.CodeLocation{FilePath: file, LineRange: model.LineRange{Start: 3, End: 3}, Content: "call()"}}
 }
 
-func TestReconcilePublishedMapsFindingsOntoPublishedReview(t *testing.T) {
+func testBaseline() *model.PublishedReview {
 	closed := reconcileTestFinding("closed", "c.go", "Leaked file handle")
 	closed.Resolution = &model.FindingResolution{Reason: "Fixed."}
-	prior := &model.ReviewResult{ReviewID: "published", Revision: 3, Findings: []model.Finding{
-		reconcileTestFinding("kept", "a.go", "Missing nil check on user lookup"),
-		reconcileTestFinding("changed", "b.go", "Unbounded retry loop"),
-		reconcileTestFinding("refuted", "d.go", "Race on cache map"),
-		reconcileTestFinding("folded", "e.go", "SQL built from user input"),
-		reconcileTestFinding("dropped", "f.go", "Token logged in plain text"),
-		closed,
-		reconcileTestFinding("renamed", "i.go", "Stale cache entry after logout"),
-	}}
-	published := &model.PublishedReview{Review: prior, Foreign: []model.Finding{{ID: "legacy", Title: "Old legacy thread", CodeLocation: model.CodeLocation{FilePath: "g.go"}}}}
+	return &model.PublishedReview{
+		Review: &model.ReviewResult{ReviewID: "published", Revision: 3, Findings: []model.Finding{
+			reconcileTestFinding("kept", "a.go", "Missing nil check on user lookup"),
+			reconcileTestFinding("changed", "b.go", "Unbounded retry loop"),
+			reconcileTestFinding("refuted", "d.go", "Race on cache map"),
+			reconcileTestFinding("folded", "e.go", "SQL built from user input"),
+			reconcileTestFinding("dropped", "f.go", "Token logged in plain text"),
+			closed,
+			reconcileTestFinding("renamed", "i.go", "Stale cache entry after logout"),
+		}},
+		Foreign: []model.Finding{{ID: "legacy", Title: "Old legacy thread", CodeLocation: model.CodeLocation{FilePath: "g.go"}}},
+	}
+}
 
-	kept := prior.Findings[0]
+func TestPlanReconcileDecidesBeforeTheVerdict(t *testing.T) {
+	baseline := testBaseline()
+	kept := baseline.Review.Findings[0]
 	kept.ConfidenceScore = 0.95 // only provenance moved
-	changed := prior.Findings[1]
+	changed := baseline.Review.Findings[1]
 	changed.Body = "The retry loop never stops when the server keeps failing."
 	folded := reconcileTestFinding("merge-survivor", "e.go", "SQL built from user input")
 	folded.Body = "Merged wording."
-	res := &model.ReviewResult{OverallExplanation: "Run verdict.", Findings: []model.Finding{
+	active := []model.Finding{
 		kept, changed, folded,
 		reconcileTestFinding("dup-of-kept", "a.go", "Missing nil check on user lookup"),
 		reconcileTestFinding("dup-of-foreign", "g.go", "Old legacy thread"),
 		reconcileTestFinding("new", "h.go", "Division by zero on empty input"),
 		reconcileTestFinding("merge-renamed", "i.go", "Session invalidation leaves user data readable"),
-	}}
+	}
 	absorbed := &absorptionLog{}
 	absorbed.recordIDs("merge-renamed", []string{"renamed"})
-	rec := reconcilePublished(res, published, map[string]string{"refuted": "The cache map is now guarded by a mutex. It was added in the last commit."}, absorbed, "head123")
+	plan, err := planReconcile(active, baseline, map[string]string{"refuted": "The cache map is now guarded by a mutex. It was added in the last commit."}, absorbed, "head123", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if res.ReviewID != "published" || res.Revision != 3 {
-		t.Fatalf("identity = %s rev %d", res.ReviewID, res.Revision)
+	if plan.renames["merge-survivor"] != "folded" || len(plan.renames) != 1 {
+		t.Fatalf("renames = %v", plan.renames)
 	}
+	if !plan.drop["dup-of-kept"] || !plan.drop["dup-of-foreign"] || len(plan.drop) != 2 {
+		t.Fatalf("drop = %v", plan.drop)
+	}
+	if len(plan.openRecords) != 1 || plan.openRecords[0].ID != "dropped" {
+		t.Fatalf("open records = %+v", plan.openRecords)
+	}
+	if r := plan.records["refuted"].Resolution; r == nil || r.Reason != "The cache map is now guarded by a mutex." {
+		t.Fatalf("refuted record = %+v", r)
+	}
+	if r := plan.records["renamed"].Resolution; r == nil || r.Reason != "Merged into the finding \u201cSession invalidation leaves user data readable\u201d of this re-review." {
+		t.Fatalf("merged-away record = %+v", r)
+	}
+
+	// The active set the verdict sees: renamed in place, duplicates gone.
+	stayActive := plan.apply(active)
+	if active[2].ID != "folded" || len(active) != 7 {
+		t.Fatal("apply must rename in place without reordering")
+	}
+	var ids []string
+	for _, f := range stayActive {
+		ids = append(ids, f.ID)
+	}
+	if strings.Join(ids, ",") != "kept,changed,folded,new,merge-renamed" {
+		t.Fatalf("active = %v", ids)
+	}
+
+	// Layout only places what the plan decided.
+	out := plan.layout(stayActive)
 	byID := map[string]model.Finding{}
-	var order []string
-	for _, f := range res.Findings {
+	ids = nil
+	for _, f := range out {
 		byID[f.ID] = f
-		order = append(order, f.ID)
+		ids = append(ids, f.ID)
 	}
-	if strings.Join(order, ",") != "kept,changed,refuted,folded,dropped,closed,renamed,new,merge-renamed" {
-		t.Fatalf("order = %v", order)
+	if strings.Join(ids, ",") != "kept,changed,refuted,folded,dropped,closed,renamed,new,merge-renamed" {
+		t.Fatalf("layout = %v", ids)
 	}
 	if byID["kept"].ConfidenceScore != 0.8 {
 		t.Fatal("provenance-only change rewrote the published finding")
 	}
-	if byID["changed"].Body != changed.Body || byID["folded"].Body != "Merged wording." {
+	if byID["changed"].Body != changed.Body || byID["folded"].Body != "Merged wording." || byID["folded"].Revision != 0 {
 		t.Fatalf("updated findings = %+v / %+v", byID["changed"], byID["folded"])
 	}
-	if r := byID["refuted"].Resolution; r == nil || r.Reason != "The cache map is now guarded by a mutex." {
-		t.Fatalf("refuted resolution = %+v", r)
-	}
-	if byID["dropped"].Resolution != nil || byID["dropped"].Body != prior.Findings[4].Body {
+	if byID["dropped"].Resolution != nil || byID["dropped"].Body != baseline.Review.Findings[4].Body {
 		t.Fatal("a finding dropped without refutation must stay as published")
-	}
-	if r := byID["renamed"].Resolution; r == nil || r.Reason != "Merged into the finding \u201cSession invalidation leaves user data readable\u201d of this re-review." {
-		t.Fatalf("merged-away resolution = %+v", r)
-	}
-	if strings.Join(rec.Added, ",") != "new,merge-renamed" || strings.Join(rec.Resolved, ",") != "refuted,renamed" || strings.Join(rec.Updated, ",") != "changed,folded" {
-		t.Fatalf("reconciliation = %+v", rec)
-	}
-	if rec.Before != prior || rec.HeadSHA != "head123" {
-		t.Fatalf("reconciliation header = %+v", rec)
 	}
 }
 
-func TestLoadPublishedStepFillsGroupWithOpenFindings(t *testing.T) {
+func TestImportFindingsSources(t *testing.T) {
 	closed := reconcileTestFinding("closed", "c.go", "Closed")
 	closed.Resolution = &model.FindingResolution{Reason: "Fixed."}
 	published := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published", Findings: []model.Finding{
 		reconcileTestFinding("open", "a.go", "Open"), closed,
 	}}}
+	file := writeFindingsFile(t, "scanner.json", model.ReviewResult{Findings: []model.Finding{reconcileTestFinding("00000000-0000-4000-8000-000000000009", "s.go", "Scanner hit")}})
 	for name, tc := range map[string]struct {
-		source model.ReviewSource
-		req    model.ReviewRequest
-		want   int
+		source   model.ReviewSource
+		req      model.ReviewRequest
+		cfg      importConfig
+		want     int
+		baseline bool
 	}{
-		"publishing":         {&publishedSource{published: published}, model.ReviewRequest{PostReview: true}, 1},
-		"not publishing":     {&publishedSource{published: published}, model.ReviewRequest{}, 0},
-		"first review":       {&publishedSource{}, model.ReviewRequest{PostReview: true}, 0},
-		"source cannot read": {stubSource{}, model.ReviewRequest{PostReview: true}, 0},
+		"published, publishing":     {&publishedSource{published: published}, model.ReviewRequest{PostReview: true}, importConfig{group: "published", source: workflow.ImportSourcePublishedReview}, 1, true},
+		"published, not publishing": {&publishedSource{published: published}, model.ReviewRequest{}, importConfig{group: "published", source: workflow.ImportSourcePublishedReview}, 0, false},
+		"published, first review":   {&publishedSource{}, model.ReviewRequest{PostReview: true}, importConfig{group: "published", source: workflow.ImportSourcePublishedReview}, 0, false},
+		"published, cannot read":    {stubSource{}, model.ReviewRequest{PostReview: true}, importConfig{group: "published", source: workflow.ImportSourcePublishedReview}, 0, false},
+		"file":                      {stubSource{}, model.ReviewRequest{}, importConfig{group: "scanner", source: workflow.ImportSourceFile, findingsFrom: []string{file}, note: "Static scanner."}, 1, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := NewEngine(tc.source, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 			st := newPipelineState(&model.ReviewContext{}, nil)
-			if err := e.loadPublishedStepFunc()(context.Background(), e.stepContext(nil, tc.req), st); err != nil {
+			entry := workflow.StepEntry{Type: workflow.StepImportFindings, FindingsFrom: tc.cfg.findingsFrom,
+				Config: &workflow.StepOverride{Group: &tc.cfg.group, Source: &tc.cfg.source, Note: &tc.cfg.note}}
+			if err := e.importFindingsStepFunc(entry)(context.Background(), e.stepContext(nil, tc.req), st); err != nil {
 				t.Fatal(err)
 			}
-			vr, ok := st.vectorResult(workflow.PublishedGroupID)
+			vr, ok := st.vectorResult(tc.cfg.group)
 			if !ok || len(vr.resp.Findings) != tc.want {
 				t.Fatalf("group = %+v, %v", vr.resp, ok)
 			}
-			if (st.published != nil) != (tc.want > 0) {
-				t.Fatalf("published state = %+v", st.published)
+			prov := st.groupProvenance(tc.cfg.group)
+			if prov == nil || (prov.Baseline != nil) != tc.baseline {
+				t.Fatalf("provenance = %+v", prov)
+			}
+			if tc.cfg.source == workflow.ImportSourcePublishedReview && (!prov.ExemptDiffScope || prov.Note != publishedFindingNote) {
+				t.Fatalf("published provenance = %+v", prov)
+			}
+			if tc.cfg.source == workflow.ImportSourceFile && (prov.ExemptDiffScope || prov.Note != "Static scanner.") {
+				t.Fatalf("file provenance = %+v", prov)
 			}
 		})
 	}
 }
 
-func TestVerifyPublishedStepNotesOutdatedAndRecordsRefutations(t *testing.T) {
-	client := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
-		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.9, Remarks: "The guard exists now."}},
+// verify:<group> applies an imported group's provenance: its note reaches the
+// verifier, an exempt group skips the diff-scope filter, and refutations are
+// recorded on the group.
+func TestVerifyImportedGroupAppliesProvenance(t *testing.T) {
+	for name, exempt := range map[string]bool{"exempt": true, "in scope only": false} {
+		t.Run(name, func(t *testing.T) {
+			client := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
+				{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.9, Remarks: "Fixed in the caller."}},
+			}}
+			e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+			reviewCtx := sampleReviewCtx()
+			reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}}
+			st := newPipelineState(reviewCtx, nil)
+			id := "00000000-0000-4000-8000-000000000003"
+			outside := reconcileTestFinding(id, "other.go", "Missing guard far from the diff")
+			outside.CodeLocation.LineRange = model.LineRange{Start: 50, End: 50}
+			st.setImportedGroup("imported", agentResult{
+				resp: &llm.ReviewResponse{Findings: []model.Finding{outside}},
+				run:  model.AgentRun{Name: "Imported", Role: "import"},
+			}, groupProvenance{Note: "might be outdated", ExemptDiffScope: exempt})
+			req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly, DisableWorkflowTimeBudget: true}
+			if err := e.verifyVectorStepFunc("imported")(context.Background(), e.stepContext(nil, req), st); err != nil {
+				t.Fatal(err)
+			}
+			var system string
+			for _, r := range client.requests {
+				if r.SchemaKind == llm.SchemaKindVerify {
+					system = r.Messages[0].Content
+				}
+			}
+			if !exempt {
+				if system != "" {
+					t.Fatal("an out-of-diff finding of a non-exempt group reached the verifier")
+				}
+				return
+			}
+			if !strings.Contains(system, "NOTE ON THIS FINDING: might be outdated") {
+				t.Fatalf("verifier system prompt lacks the note:\n%s", system)
+			}
+			st.mu.Lock()
+			refuted := st.groupByID["imported"].refuted[id]
+			st.mu.Unlock()
+			if refuted != "Fixed in the caller." {
+				t.Fatalf("refutation not recorded: %q", refuted)
+			}
+		})
+	}
+}
+
+func TestFlatReconcileStepAppliesPlanAndFeedsVerdictNotes(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published", Findings: []model.Finding{
+		reconcileTestFinding("open", "a.go", "Missing nil check on user lookup"),
+		reconcileTestFinding("carried", "b.go", "Token logged in plain text"),
+	}}}
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	st := newPipelineState(&model.ReviewContext{DiffHeadSHA: "head123"}, nil)
+	st.absorbed = &absorptionLog{}
+	st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}, run: model.AgentRun{Role: "import"}}, groupProvenance{Baseline: baseline})
+	st.result = &model.ReviewResult{Findings: []model.Finding{
+		reconcileTestFinding("run-1", "a.go", "Missing nil check on user lookup"),
+		reconcileTestFinding("run-2", "h.go", "Division by zero on empty input"),
 	}}
-	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
-	st := newPipelineState(sampleReviewCtx(), nil)
-	st.setGroup(workflow.PublishedGroupID, agentResult{
-		resp: &llm.ReviewResponse{Findings: []model.Finding{reconcileTestFinding("00000000-0000-4000-8000-000000000001", "main.go", "Missing guard")}},
-		run:  model.AgentRun{Name: "Published Findings", Role: "published"},
-	}, nil)
-	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly, DisableWorkflowTimeBudget: true}
-	if err := e.verifyPublishedStepFunc()(context.Background(), e.stepContext(nil, req), st); err != nil {
+	if err := e.reconcileStepFunc("published", nil, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
 		t.Fatal(err)
 	}
-	if st.publishedRefuted["00000000-0000-4000-8000-000000000001"] != "The guard exists now." {
-		t.Fatalf("refuted = %v", st.publishedRefuted)
+	if st.reconciled == nil || st.result.Findings[0].ID != "open" || len(st.result.Findings) != 2 {
+		t.Fatalf("result after reconcile = %+v", st.result.Findings)
 	}
-	vr, _ := st.vectorResult(workflow.PublishedGroupID)
-	if len(vr.resp.Findings) != 0 {
-		t.Fatal("refuted published finding stayed in its group")
+	if _, records := st.verdictInputs(); len(records) != 1 || records[0].ID != "carried" {
+		t.Fatalf("verdict open records = %+v", records)
 	}
-	var system, user string
-	for _, r := range client.requests {
-		if r.SchemaKind == llm.SchemaKindVerify {
-			system, user = r.Messages[0].Content, r.Messages[len(r.Messages)-1].Content
-		}
+	res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+	if res.ReviewID != "published" || res.Reconciliation == nil || res.Reconciliation.HeadSHA != "head123" || len(res.Findings) != 3 {
+		t.Fatalf("assembled = %+v", res)
 	}
-	if !strings.Contains(system, "NOTE ON THIS FINDING: an earlier review of this change published it") {
-		t.Fatalf("verifier system prompt lacks the outdated note:\n%s", system)
+}
+
+func TestReconcileSkipsWithoutBaselineOrWhenReviewersCollapsed(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published"}}
+	for name, setup := range map[string]func(st *PipelineState){
+		"no baseline": func(st *PipelineState) {
+			st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{})
+		},
+		"collapsed": func(st *PipelineState) {
+			st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+			st.setGroup("security", agentResult{run: model.AgentRun{Role: "review", Status: model.AgentRunStatusFailed}}, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+			st := newPipelineState(&model.ReviewContext{}, nil)
+			setup(st)
+			st.result = &model.ReviewResult{}
+			if err := e.reconcileStepFunc("published", nil, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+				t.Fatal(err)
+			}
+			if st.reconciled != nil {
+				t.Fatal("reconcile planned without a usable baseline")
+			}
+		})
 	}
-	if strings.Contains(user, "note") {
-		t.Fatal("note leaked into the finding payload")
+}
+
+func TestDefaultSpecBinds(t *testing.T) {
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	if _, err := e.BuildPipeline(workflow.DefaultSpec()); err != nil {
+		t.Fatalf("default spec does not bind: %v", err)
 	}
 }
 
@@ -172,24 +285,6 @@ func TestResolutionSentence(t *testing.T) {
 	}
 	if got := resolutionSentence(strings.Repeat("a", 400)); len([]rune(got)) > 240 {
 		t.Fatalf("long remarks not bounded: %d runes", len([]rune(got)))
-	}
-}
-
-func TestSplitPublishedFindings(t *testing.T) {
-	rec := &model.Reconciliation{Before: &model.ReviewResult{Findings: []model.Finding{{ID: "p"}}}}
-	published, fresh := splitPublishedFindings([]model.Finding{{ID: "p"}, {ID: "n"}}, rec)
-	if len(published) != 1 || len(fresh) != 1 || fresh[0].ID != "n" {
-		t.Fatalf("split = %v / %v", published, fresh)
-	}
-	if published, fresh := splitPublishedFindings([]model.Finding{{ID: "n"}}, nil); published != nil || len(fresh) != 1 {
-		t.Fatal("no reconciliation must keep every finding fresh")
-	}
-}
-
-func TestDefaultSpecBindsPublishedLane(t *testing.T) {
-	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
-	if _, err := e.BuildPipeline(workflow.DefaultSpec()); err != nil {
-		t.Fatalf("default spec does not bind: %v", err)
 	}
 }
 
@@ -235,7 +330,7 @@ func TestVerifierPromptOmitsNoteSectionWithoutNote(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{reconcileTestFinding("00000000-0000-4000-8000-000000000002", "main.go", "Missing guard")}},
 		run:  model.AgentRun{Name: "Security", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	if _, _, err := e.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "", "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background())); err != nil {
+	if _, _, err := e.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, nil, model.ReviewRequest{}, NewLimiter(1), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background())); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range client.requests {
@@ -245,28 +340,321 @@ func TestVerifierPromptOmitsNoteSectionWithoutNote(t *testing.T) {
 	}
 }
 
-// A published finding whose lines left the diff must still be verified, or a
-// later fix elsewhere could never resolve it.
-func TestVerifyPublishedStepIgnoresDiffScope(t *testing.T) {
+// The plan is made on the verdict's final active set: a finding the verdict
+// would filter out neither closes the published finding it absorbed nor keeps
+// a published finding active.
+func TestReconcileAppliesVerdictFiltersBeforePlanning(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published", Findings: []model.Finding{
+		reconcileTestFinding("absorbed", "i.go", "Stale cache entry after logout"),
+		reconcileTestFinding("weak", "a.go", "Missing nil check on user lookup"),
+	}}}
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	st := newPipelineState(&model.ReviewContext{}, nil)
+	st.absorbed = &absorptionLog{}
+	st.absorbed.recordIDs("survivor", []string{"absorbed"})
+	st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+	survivor := reconcileTestFinding("survivor", "i.go", "Session invalidation leaves user data readable")
+	survivor.ConfidenceScore = 0.3
+	weak := baseline.Review.Findings[1]
+	weak.ConfidenceScore = 0.2
+	strong := reconcileTestFinding("strong", "h.go", "Division by zero on empty input")
+	st.result = &model.ReviewResult{Findings: []model.Finding{survivor, weak, strong}}
+	threshold := 0.5
+	verdict := &workflow.StepOverride{ConfidenceThreshold: &threshold}
+	if err := e.reconcileStepFunc("published", verdict, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.result.Findings) != 1 || st.result.Findings[0].ID != "strong" {
+		t.Fatalf("active after reconcile = %+v", st.result.Findings)
+	}
+	_, records := st.verdictInputs()
+	var ids []string
+	for _, r := range records {
+		ids = append(ids, r.ID)
+	}
+	if strings.Join(ids, ",") != "absorbed,weak" {
+		t.Fatalf("open records = %v, want both published findings kept open", ids)
+	}
+	res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+	for _, f := range res.Findings {
+		if f.Resolution != nil {
+			t.Fatalf("finding %s closed although nothing replaced it", f.ID)
+		}
+	}
+}
+
+// layout keeps a published finding open when the finding that absorbed it is
+// not published after all.
+func TestLayoutReopensMergedAwayFindingWithoutSurvivor(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published", Findings: []model.Finding{
+		reconcileTestFinding("absorbed", "i.go", "Stale cache entry after logout"),
+	}}}
+	absorbed := &absorptionLog{}
+	absorbed.recordIDs("survivor", []string{"absorbed"})
+	survivor := reconcileTestFinding("survivor", "i.go", "Session invalidation leaves user data readable")
+	plan, err := planReconcile([]model.Finding{survivor}, baseline, nil, absorbed, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.records["absorbed"].Resolution == nil {
+		t.Fatal("plan should resolve the absorbed finding")
+	}
+	out := plan.layout(nil)
+	if len(out) != 1 || out[0].Resolution != nil {
+		t.Fatalf("layout = %+v, want the published finding open", out)
+	}
+}
+
+// Bare verify and verify:<group> share group-aware verification.
+func TestBareVerifyHonorsImportedGroupProvenance(t *testing.T) {
 	client := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
-		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.9, Remarks: "Fixed in the caller."}},
+		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.9, Remarks: "Gone."}},
 	}}
 	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	reviewCtx := sampleReviewCtx()
 	reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}}
-	st := newPipelineState(reviewCtx, nil)
-	id := "00000000-0000-4000-8000-000000000003"
-	outside := reconcileTestFinding(id, "other.go", "Missing guard far from the diff")
-	outside.CodeLocation.LineRange = model.LineRange{Start: 50, End: 50}
-	st.setGroup(workflow.PublishedGroupID, agentResult{
-		resp: &llm.ReviewResponse{Findings: []model.Finding{outside}},
-		run:  model.AgentRun{Name: "Published Findings", Role: "published"},
-	}, nil)
+	st := newPipelineState(reviewCtx, []string{"security"})
+	reviewerOutside := reconcileTestFinding("00000000-0000-4000-8000-000000000011", "other.go", "Reviewer finding outside the diff")
+	reviewerOutside.CodeLocation.LineRange = model.LineRange{Start: 70, End: 70}
+	st.setGroup("security", agentResult{resp: &llm.ReviewResponse{Findings: []model.Finding{reviewerOutside}}, run: model.AgentRun{Name: "Security", Role: "review"}}, nil)
+	id := "00000000-0000-4000-8000-000000000012"
+	importedOutside := reconcileTestFinding(id, "other.go", "Published finding outside the diff")
+	importedOutside.CodeLocation.LineRange = model.LineRange{Start: 50, End: 50}
+	st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{Findings: []model.Finding{importedOutside}}, run: model.AgentRun{Name: "Imported", Role: "import"}},
+		groupProvenance{Note: "might be outdated", ExemptDiffScope: true})
 	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly, DisableWorkflowTimeBudget: true}
-	if err := e.verifyPublishedStepFunc()(context.Background(), e.stepContext(nil, req), st); err != nil {
+	if err := e.verifyStepFunc(nil)(context.Background(), e.stepContext(nil, req), st); err != nil {
 		t.Fatal(err)
 	}
-	if st.publishedRefuted[id] != "Fixed in the caller." {
-		t.Fatalf("out-of-diff published finding was not verified: refuted=%v warnings=%v", st.publishedRefuted, st.warnings.list())
+	var verified []string
+	for _, r := range client.requests {
+		if r.SchemaKind == llm.SchemaKindVerify {
+			verified = append(verified, r.Messages[0].Content)
+		}
+	}
+	if len(verified) != 1 || !strings.Contains(verified[0], "NOTE ON THIS FINDING: might be outdated") {
+		t.Fatalf("verified %d findings, want only the exempt imported one with its note", len(verified))
+	}
+	st.mu.Lock()
+	refuted := st.groupByID["published"].refuted[id]
+	st.mu.Unlock()
+	if refuted != "Gone." {
+		t.Fatalf("bare verify did not record the refutation: %q", refuted)
+	}
+}
+
+func TestVerdictDeterministicPathNamesOpenRecords(t *testing.T) {
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	p0 := 0
+	blocking := reconcileTestFinding("blocking", "a.go", "Credentials written to the log")
+	blocking.Priority = &p0
+	for name, tc := range map[string]struct {
+		records     []model.Finding
+		correctness string
+	}{
+		"minor record": {[]model.Finding{reconcileTestFinding("minor", "b.go", "Unbounded retry loop")}, "patch is correct"},
+		// Records shape wording only; correctness comes from active findings.
+		"blocking record": {[]model.Finding{blocking}, "patch is correct"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, run, err := e.Verdict(context.Background(), &model.ReviewContext{}, &model.ReviewResult{}, VerdictOptions{DisablePatchSummary: true, OpenRecords: tc.records})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != model.AgentRunStatusSkipped {
+				t.Fatal("deterministic path called the agent")
+			}
+			if out.OverallCorrectness != tc.correctness || !strings.Contains(out.OverallExplanation, "1 finding from an earlier review of this change stays open without re-verification in this run: P") {
+				t.Fatalf("verdict = %q / %q", out.OverallCorrectness, out.OverallExplanation)
+			}
+		})
+	}
+}
+
+// Diff scope is decided before planning and agrees with assembly: a
+// replacement that takes over a published thread is exempt in both (the
+// verdict assesses it and it is published), while a new finding outside the
+// diff is filtered before the verdict ever sees it.
+func TestReconcileAppliesDiffScopeBeforePlanning(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published", Findings: []model.Finding{
+		reconcileTestFinding("published", "other.go", "Missing guard far from the diff"),
+	}}}
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	reviewCtx := &model.ReviewContext{
+		DiffScopeHunks: []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}},
+		ChangedFiles:   []model.ChangedFile{{Path: "main.go", Status: model.FileModified}},
+	}
+	st := newPipelineState(reviewCtx, nil)
+	st.absorbed = &absorptionLog{}
+	st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+	replacement := reconcileTestFinding("replacement", "other.go", "Missing guard far from the diff")
+	replacement.CodeLocation.LineRange = model.LineRange{Start: 90, End: 90}
+	outside := reconcileTestFinding("outside", "far.go", "Unrelated finding outside the diff")
+	outside.CodeLocation.LineRange = model.LineRange{Start: 12, End: 12}
+	st.result = &model.ReviewResult{Findings: []model.Finding{replacement, outside}}
+	if err := e.reconcileStepFunc("published", nil, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.result.Findings) != 1 || st.result.Findings[0].ID != "published" {
+		t.Fatalf("verdict input = %+v, want only the replacement under the published id", st.result.Findings)
+	}
+	res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+	if len(res.Findings) != 1 || res.Findings[0].ID != "published" || res.Findings[0].CodeLocation.LineRange.Start != 90 {
+		t.Fatalf("assembled = %+v, want the replacement the verdict saw", res.Findings)
+	}
+}
+
+type failingVerdictLLM struct{}
+
+func (failingVerdictLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	return nil, errors.New("model unavailable")
+}
+
+// A failed verdict still names the open records, in the flat and the fused
+// (runVerdictShard) paths.
+func TestVerdictFailureKeepsOpenRecordsNotice(t *testing.T) {
+	record := reconcileTestFinding("carried", "b.go", "Token logged in plain text")
+	newState := func() *PipelineState {
+		st := newPipelineState(&model.ReviewContext{}, nil)
+		st.reconciled = &reconcilePlan{openRecords: []model.Finding{record}}
+		active := reconcileTestFinding("active", "a.go", "Missing nil check on user lookup")
+		st.result = &model.ReviewResult{OverallExplanation: "Merged.", Findings: []model.Finding{active}}
+		return st
+	}
+	e := NewEngine(stubSource{}, failingVerdictLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	sc := e.stepContext(nil, model.ReviewRequest{MaxOutputRetries: 1, DisableWorkflowTimeBudget: true})
+
+	flat := newState()
+	if err := e.verdictStepFunc(nil)(context.Background(), sc, flat); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(flat.result.OverallExplanation, "Token logged in plain text") {
+		t.Fatalf("flat fallback explanation = %q", flat.result.OverallExplanation)
+	}
+
+	fused := newState()
+	out, _, _ := runVerdictShard(context.Background(), sc, fused, fused.result)
+	if !strings.Contains(out.OverallExplanation, "Token logged in plain text") {
+		t.Fatalf("fused fallback explanation = %q", out.OverallExplanation)
+	}
+}
+
+// A confirmed published finding outside the latest diff that merge folded into
+// a duplicate keeping the duplicate's id keeps its diff exemption: identity is
+// resolved before the filters, so it stays active and counts for the verdict.
+// Also when the absorbing finding's title no longer matches the thread, the
+// absorber inherits the exemption through merge provenance.
+func TestReconcileKeepsDiffExemptionThroughMerge(t *testing.T) {
+	p0 := 0
+	published := reconcileTestFinding("published", "other.go", "Credentials written to the log")
+	published.Priority = &p0
+	published.CodeLocation.LineRange = model.LineRange{Start: 90, End: 90}
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published-review", Findings: []model.Finding{published}}}
+	reviewCtx := &model.ReviewContext{
+		DiffScopeHunks: []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}},
+		ChangedFiles:   []model.ChangedFile{{Path: "main.go", Status: model.FileModified}},
+	}
+	for name, tc := range map[string]struct {
+		title      string
+		wantActive string
+		wantMerged bool
+	}{
+		"duplicate keeps its id": {"Credentials written to the log", "published", false},
+		"absorber retitled":      {"Secrets leak through debug logging of the request", "survivor", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+			st := newPipelineState(reviewCtx, nil)
+			st.absorbed = &absorptionLog{}
+			st.absorbed.recordIDs("survivor", []string{"published"})
+			st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+			survivor := reconcileTestFinding("survivor", "other.go", tc.title)
+			survivor.Priority = &p0
+			survivor.CodeLocation.LineRange = model.LineRange{Start: 90, End: 90}
+			st.result = &model.ReviewResult{Findings: []model.Finding{survivor}}
+			if err := e.reconcileStepFunc("published", nil, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+				t.Fatal(err)
+			}
+			if len(st.result.Findings) != 1 || st.result.Findings[0].ID != tc.wantActive {
+				t.Fatalf("active = %+v, want %s kept for the verdict", st.result.Findings, tc.wantActive)
+			}
+			if _, records := st.verdictInputs(); len(records) != 0 {
+				t.Fatalf("open records = %+v, want none", records)
+			}
+			res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+			byID := map[string]model.Finding{}
+			for _, f := range res.Findings {
+				byID[f.ID] = f
+			}
+			if _, ok := byID[tc.wantActive]; !ok {
+				t.Fatalf("assembly dropped the exempt finding: %+v", res.Findings)
+			}
+			if merged := byID["published"].Resolution != nil; merged != tc.wantMerged {
+				t.Fatalf("published resolution = %+v, want merged=%v", byID["published"].Resolution, tc.wantMerged)
+			}
+		})
+	}
+}
+
+// Thread survivors are chosen after the filters: a published candidate that
+// fails the confidence threshold does not crowd out a confident duplicate,
+// which then takes over the thread.
+func TestReconcileChoosesThreadSurvivorAfterFilters(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published-review", Findings: []model.Finding{
+		reconcileTestFinding("published", "a.go", "Missing nil check on user lookup"),
+	}}}
+	for name, tc := range map[string]struct {
+		publishedConfidence, duplicateConfidence float64
+		wantBody                                 string
+	}{
+		"published candidate filtered": {0.1, 0.95, "duplicate wording"},
+		"both pass, published kept":    {0.9, 0.95, "published wording"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+			st := newPipelineState(&model.ReviewContext{}, nil)
+			st.absorbed = &absorptionLog{}
+			st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+			candidate := baseline.Review.Findings[0]
+			candidate.ConfidenceScore, candidate.Body = tc.publishedConfidence, "published wording"
+			duplicate := reconcileTestFinding("duplicate", "a.go", "Missing nil check on user lookup")
+			duplicate.ConfidenceScore, duplicate.Body = tc.duplicateConfidence, "duplicate wording"
+			st.result = &model.ReviewResult{Findings: []model.Finding{candidate, duplicate}}
+			threshold := 0.5
+			verdict := &workflow.StepOverride{ConfidenceThreshold: &threshold}
+			if err := e.reconcileStepFunc("published", verdict, nil, false)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+				t.Fatal(err)
+			}
+			if len(st.result.Findings) != 1 || st.result.Findings[0].ID != "published" || st.result.Findings[0].Body != tc.wantBody {
+				t.Fatalf("active = %+v, want one finding on the published thread with %q", st.result.Findings, tc.wantBody)
+			}
+			if _, records := st.verdictInputs(); len(records) != 0 {
+				t.Fatalf("open records = %+v, want none", records)
+			}
+		})
+	}
+}
+
+// A summarize step after the verdict filters the published result too, so a
+// stricter summarize threshold counts in reconcile's plan.
+func TestReconcileAppliesSummarizePriorityFilter(t *testing.T) {
+	baseline := &model.PublishedReview{Review: &model.ReviewResult{ReviewID: "published-review", Findings: []model.Finding{
+		reconcileTestFinding("published", "a.go", "Missing nil check on user lookup"),
+	}}}
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	st := newPipelineState(&model.ReviewContext{}, nil)
+	st.absorbed = &absorptionLog{}
+	st.setImportedGroup("published", agentResult{resp: &llm.ReviewResponse{}}, groupProvenance{Baseline: baseline})
+	st.result = &model.ReviewResult{Findings: []model.Finding{baseline.Review.Findings[0]}} // P2
+	threshold := "p1"
+	summarize := &workflow.StepOverride{PriorityThreshold: &threshold}
+	if err := e.reconcileStepFunc("published", nil, summarize, true)(context.Background(), e.stepContext(nil, model.ReviewRequest{}), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.result.Findings) != 0 {
+		t.Fatalf("active = %+v, want the P2 finding filtered by summarize's p1", st.result.Findings)
+	}
+	if _, records := st.verdictInputs(); len(records) != 1 {
+		t.Fatalf("open records = %+v, want the published finding kept open", records)
 	}
 }

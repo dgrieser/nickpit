@@ -54,8 +54,10 @@ type VerifyOptions struct {
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
-	// FindingNote is attached to every finding of the call (VerifyRequest.Note).
-	FindingNote string
+	// FindingNotes, aligned with the findings of the call, is each finding's
+	// provenance note (VerifyRequest.Note); empty entries and a short slice
+	// mean no note.
+	FindingNotes []string
 }
 
 type verifyResult struct {
@@ -293,7 +295,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
-				Note:                      opts.FindingNote,
+				Note:                      findingNote(opts.FindingNotes, idx),
 			}
 			result, usage, findingCounts, err := e.verifyFinding(ctx, req)
 			mu.Lock()
@@ -442,4 +444,12 @@ func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.
 		return "", fmt.Errorf("%s: encoding combined payload: %w", agentKind, err)
 	}
 	return string(out), nil
+}
+
+// findingNote returns the note of finding idx, or "".
+func findingNote(notes []string, idx int) string {
+	if idx < len(notes) {
+		return notes[idx]
+	}
+	return ""
 }

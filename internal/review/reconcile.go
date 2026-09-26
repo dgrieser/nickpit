@@ -9,171 +9,392 @@ import (
 	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/dedupe"
-	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
-// publishedFindingNote tells the verifier where a published finding came from.
-const publishedFindingNote = "an earlier review of this change published it, possibly against an older revision, " +
-	"so it might be outdated. Confirm the problem still exists in the current code."
+// reconcilePlan is the reconcile step's decision about how the run folds into
+// the review a published-review import brought in. The step computes it once,
+// before the verdict; the run's active findings then carry the published ids,
+// and assembly only lays the plan out.
+type reconcilePlan struct {
+	baseline *model.PublishedReview
+	headSHA  string
+	// renames maps a run finding's id to the published id it takes over:
+	// merge folded that published finding into it, and it still matches the
+	// published thread.
+	renames map[string]string
+	// drop holds run findings that duplicate a thread already on the change
+	// request (another published finding, or a foreign one).
+	drop map[string]bool
+	// records holds, per published id, the version to publish unless an
+	// active finding with that id replaces it: resolved findings as they are,
+	// refuted or merged-away ones resolved, and the rest unchanged.
+	records map[string]model.Finding
+	// openRecords are the published findings that stay open without having
+	// been re-verified in this run. The verdict gets them as explicit input
+	// (VerdictOptions.OpenRecords), so it cannot contradict threads left open.
+	openRecords []model.Finding
+	// exempt holds the ids (after renames) exempt from diff scope: published
+	// ids and findings that absorbed a published finding. Assembly's final
+	// safeguard honours the same set.
+	exempt map[string]bool
+	// mergedInto maps a published id resolved as merged away to the id of
+	// the active finding that absorbed it. layout keeps the published finding
+	// open should that finding not be published after all.
+	mergedInto map[string]string
+}
 
-// loadPublishedStepFunc fills the published group with the open findings of
-// the review already on the change request, so the next steps verify and merge
-// them together with the reviewers' findings. The group stays empty when the
-// run does not publish, the source cannot read published reviews, or there is
-// no review yet; a read failure is a warning and leaves the run a fresh review.
-func (e *Engine) loadPublishedStepFunc() stepFunc {
-	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		group := agentResult{
-			resp: &llm.ReviewResponse{},
-			run:  model.AgentRun{Name: "Published Findings", Role: "published", Status: model.AgentRunStatusSkipped},
-		}
-		defer func() { st.setGroup(workflow.PublishedGroupID, group, nil) }()
-		source, ok := e.source.(model.PublishedReviewSource)
-		if !sc.Req.PostReview || !ok {
-			return nil
-		}
-		published, err := source.PublishedReview(ctx, sc.Req)
-		if err != nil {
-			st.addWarningf("Could not read the published review: %v; publishing this run as a new review", err)
-			return nil
-		}
-		if published == nil || published.Review == nil {
-			return nil
-		}
-		for _, f := range published.Review.Findings {
-			if f.Resolution == nil {
-				// The verifier and the later steps see the text as published,
-				// not the provenance of the run that first produced it.
-				group.resp.Findings = append(group.resp.Findings, currentFinding(f))
+// verdictFilters are every filter a finding still passes after reconcile:
+// the final diff-scope safeguard assembly applies and the verdict's own
+// priority/confidence filters. Reconcile applies them first, so its plan is
+// made on the final active set and nothing later removes a finding it
+// counted on.
+type verdictFilters struct {
+	priorityThreshold   string
+	confidenceThreshold float64
+	diffScope           bool
+	// summarizePriorityThreshold is the priority filter of a summarize step
+	// that follows the verdict: the published result keeps only findings
+	// that pass both, so reconcile applies it too.
+	summarizePriorityThreshold string
+}
+
+func verdictFiltersOf(req model.ReviewRequest) verdictFilters {
+	return verdictFilters{priorityThreshold: req.PriorityThreshold, confidenceThreshold: req.ConfidenceThreshold, diffScope: !req.DisableDiffScope}
+}
+
+// finalActive applies the filters and returns the ids that stay. Exempt ids
+// skip the diff-scope safeguard (see planReconcile).
+func (f verdictFilters) finalActive(findings []model.Finding, exempt map[string]bool, reviewCtx *model.ReviewContext) (map[string]bool, error) {
+	if f.diffScope && reviewCtx != nil && reviewCtx.DiffScopeHunks != nil {
+		var skip, fresh []model.Finding
+		for _, finding := range findings {
+			if exempt[finding.ID] {
+				skip = append(skip, finding)
+			} else {
+				fresh = append(fresh, finding)
 			}
 		}
-		group.run.Status, group.run.Findings = model.AgentRunStatusOK, len(group.resp.Findings)
-		st.mu.Lock()
-		st.published = published
-		st.mu.Unlock()
-		sc.Engine.logProgress(logging.StageReview, logging.StateDone, fmt.Sprintf("published review=%s open=%d", published.Review.ReviewID, len(group.resp.Findings)))
-		return nil
+		fresh, _ = filterFindingsByDiffScope(fresh, reviewCtx.DiffScopeHunks, reviewCtx.ChangedFiles)
+		findings = append(skip, fresh...)
 	}
+	filtered, _, err := filterResultByDisplayPriority(&model.ReviewResult{Findings: findings}, f.priorityThreshold)
+	if err != nil {
+		return nil, err
+	}
+	if f.summarizePriorityThreshold != "" {
+		if filtered, _, err = filterResultByDisplayPriority(filtered, f.summarizePriorityThreshold); err != nil {
+			return nil, err
+		}
+	}
+	filtered, _, err = filterByConfidenceThreshold(filtered, f.confidenceThreshold)
+	if err != nil {
+		return nil, err
+	}
+	kept := make(map[string]bool, len(filtered.Findings))
+	for _, finding := range filtered.Findings {
+		kept[finding.ID] = true
+	}
+	return kept, nil
 }
 
-// verifyPublishedStepFunc verifies the published group like a reviewer's
-// findings, with a note that each one may be outdated. It records which ones
-// the verifier refuted, so publishing can resolve them with its remarks.
-func (e *Engine) verifyPublishedStepFunc() stepFunc {
-	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		vr, ok := st.vectorResult(workflow.PublishedGroupID)
-		if !ok {
-			return fmt.Errorf("workflow: verify:%s requires a preceding %s step", workflow.PublishedGroupID, workflow.StepLoadPublished)
-		}
-		if vr.resp == nil || len(vr.resp.Findings) == 0 {
-			return nil
-		}
-		results := []agentResult{vr}
-		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+workflow.PublishedGroupID, sc.Override, sc.Req, sc.Engine.logf)
-		// The diff-scope filter is for new findings. A published finding
-		// whose lines left the diff (e.g. a later commit fixed it elsewhere or
-		// reverted them) must still reach the verifier, or it could never be
-		// resolved; it was in scope when it was published.
-		req := sc.Req
-		req.DisableDiffScope = true
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, req, st.limiter, "Published", publishedFindingNote, sc.categorizeAgentContext(), budgets)
-		st.setVectorResponse(workflow.PublishedGroupID, results[0].resp)
-		st.addVerificationTelemetry(workflow.PublishedGroupID, telemetry, warnings)
-		st.mu.Lock()
-		st.publishedRefuted = telemetry.Refuted
-		st.mu.Unlock()
-		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed for published findings: warnings=%d error=%v", len(warnings), err)
-			return err
-		}
-		return nil
-	}
-}
+// eligibleFunc filters a view of the active findings (published ids already
+// adopted) and returns the ids that stay; exempt ids skip the diff-scope
+// safeguard. A nil eligibleFunc keeps everything.
+type eligibleFunc func(view []model.Finding, exempt map[string]bool) (map[string]bool, error)
 
-// reconcilePublished folds the assembled result into the published review so
-// the publisher updates that review in place. Published findings keep their
-// ids, including one merge folded into a new finding that still matches its
-// thread (the rule publishers use for already-posted comments). Per published
-// finding:
-//   - still in the result: its current text, unless only provenance changed;
-//   - refuted by the verifier: resolved with the verifier's remarks;
-//   - merged into a finding of the result that no longer matches its thread:
-//     resolved, pointing at that finding, which is posted as a new one;
-//   - otherwise dropped along the way (diff scope, filters): kept unchanged,
-//     since that is no proof it is fixed.
-//
-// New findings duplicating a published or foreign thread are dropped; the
-// rest are added.
-func reconcilePublished(res *model.ReviewResult, published *model.PublishedReview, refuted map[string]string, absorbed *absorptionLog, headSHA string) *model.Reconciliation {
-	prior := published.Review
-	priorByID := make(map[string]model.Finding, len(prior.Findings))
+// planReconcile computes the plan for the run's active findings, in four
+// passes:
+//  1. Candidates. A finding carrying a published id, or matching an open
+//     published thread (the rule publishers use for already-posted
+//     comments, also when merge kept a duplicate's id), is a candidate for
+//     that thread. A finding matching a foreign thread is dropped.
+//  2. Eligibility. Candidates, and findings that absorbed a published finding,
+//     are exempt from diff scope: they were in scope when published. eligible
+//     applies the remaining filters to every finding; what it removes is
+//     dropped. No thread is reserved before this, so a candidate that fails a
+//     filter cannot crowd out one that passes.
+//  3. Survivors. Each thread keeps one surviving candidate: the one already
+//     carrying the published id, else the most confident. It takes over the
+//     thread's id; the other candidates are dropped as duplicates.
+//  4. Records, for every published finding without a survivor: refuted by the
+//     verifier → resolved with its remarks; merged into an active finding
+//     that no longer matches its thread → resolved, pointing at that finding,
+//     which is posted as new; otherwise (dropped by a filter or the
+//     classifier) → kept open unchanged, since that proves nothing.
+func planReconcile(active []model.Finding, baseline *model.PublishedReview, refuted map[string]string, absorbed *absorptionLog, headSHA string, eligible eligibleFunc) (*reconcilePlan, error) {
+	plan := &reconcilePlan{baseline: baseline, headSHA: headSHA, renames: map[string]string{}, drop: map[string]bool{}, records: map[string]model.Finding{}, mergedInto: map[string]string{}, exempt: map[string]bool{}}
+	prior := baseline.Review
+	published := make(map[string]bool, len(prior.Findings))
 	var open []model.Finding
 	for _, f := range prior.Findings {
-		priorByID[f.ID] = f
+		published[f.ID] = true
 		if f.Resolution == nil {
 			open = append(open, postedShell(f))
 		}
 	}
-	current := make(map[string]model.Finding)
-	var fresh []model.Finding
-	for _, f := range res.Findings {
-		if _, ok := priorByID[f.ID]; ok {
-			current[f.ID] = f
-		} else {
-			fresh = append(fresh, f)
+	// 1. Candidates.
+	thread := map[string]string{}
+	for _, f := range active {
+		if published[f.ID] {
+			thread[f.ID] = f.ID
+		} else if i := matchPosted(f, open); i >= 0 {
+			thread[f.ID] = open[i].ID
+		} else if matchPosted(f, baseline.Foreign) >= 0 {
+			plan.drop[f.ID] = true
 		}
 	}
-	rec := &model.Reconciliation{Before: prior, HeadSHA: headSHA}
-	var added []model.Finding
-	for _, f := range fresh {
-		if i := matchPosted(f, open); i >= 0 {
-			if _, taken := current[open[i].ID]; !taken {
-				// Merge folded the published finding into this one.
-				f.ID = open[i].ID
-				current[f.ID] = f
-			}
-			continue
-		}
-		if matchPosted(f, published.Foreign) >= 0 {
-			continue
-		}
-		f.Revision, f.Resolution = 0, nil
-		added = append(added, f)
-		rec.Added = append(rec.Added, f.ID)
-	}
-	resultTitles := make(map[string]string, len(res.Findings))
-	for _, f := range res.Findings {
-		resultTitles[f.ID], _, _, _ = reviewmd.FindingDisplay(f)
-	}
-	merged := make([]model.Finding, 0, len(prior.Findings)+len(added))
+	// 2. Eligibility.
+	absorbedPublished := map[string]bool{}
 	for _, p := range prior.Findings {
-		switch f, ok := current[p.ID]; {
-		case p.Resolution != nil:
-			merged = append(merged, p)
-		case ok && !sameDisplayedFinding(p, f):
-			f.Revision, f.Resolution = p.Revision, nil
-			merged = append(merged, f)
-			rec.Updated = append(rec.Updated, p.ID)
-		case ok:
-			merged = append(merged, p)
-		case refuted[p.ID] != "":
-			merged = append(merged, resolvedFinding(p, resolutionSentence(refuted[p.ID])))
-			rec.Resolved = append(rec.Resolved, p.ID)
-		case resultTitles[absorbed.survivor(p.ID)] != "":
-			title := resultTitles[absorbed.survivor(p.ID)]
-			merged = append(merged, resolvedFinding(p, boundedResolution("Merged into the finding \u201c"+title+"\u201d of this re-review.")))
-			rec.Resolved = append(rec.Resolved, p.ID)
-		default:
-			merged = append(merged, p)
+		if survivor := absorbed.survivor(p.ID); survivor != "" {
+			absorbedPublished[survivor] = true
 		}
 	}
-	res.Findings = append(merged, added...)
-	res.ReviewID, res.Revision, res.CreatedAt = prior.ReviewID, prior.Revision, prior.CreatedAt
-	return rec
+	var view []model.Finding
+	exempt := map[string]bool{}
+	for _, f := range active {
+		if plan.drop[f.ID] {
+			continue
+		}
+		view = append(view, f)
+		if thread[f.ID] != "" || absorbedPublished[f.ID] {
+			exempt[f.ID] = true
+		}
+	}
+	if eligible != nil {
+		kept, err := eligible(view, exempt)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range view {
+			if !kept[f.ID] {
+				plan.drop[f.ID] = true
+			}
+		}
+	}
+	// 3. Survivors.
+	survivorOf := map[string]model.Finding{}
+	for _, f := range active {
+		pid := thread[f.ID]
+		if pid == "" || plan.drop[f.ID] {
+			continue
+		}
+		current, taken := survivorOf[pid]
+		switch {
+		case !taken:
+			survivorOf[pid] = f
+		case current.ID != pid && (f.ID == pid || f.ConfidenceScore > current.ConfidenceScore):
+			plan.drop[current.ID] = true
+			survivorOf[pid] = f
+		default:
+			plan.drop[f.ID] = true
+		}
+	}
+	for pid, f := range survivorOf {
+		if f.ID != pid {
+			plan.renames[f.ID] = pid
+		}
+	}
+	viewID := func(id string) string {
+		if pid, ok := plan.renames[id]; ok {
+			return pid
+		}
+		return id
+	}
+	for id := range exempt {
+		if !plan.drop[id] {
+			plan.exempt[viewID(id)] = true
+		}
+	}
+	// 4. Records.
+	titles := map[string]string{}
+	for _, f := range active {
+		if !plan.drop[f.ID] {
+			titles[f.ID], _, _, _ = reviewmd.FindingDisplay(f)
+		}
+	}
+	for _, p := range prior.Findings {
+		_, present := survivorOf[p.ID]
+		survivor := absorbed.survivor(p.ID)
+		switch {
+		case p.Resolution != nil || present:
+			plan.records[p.ID] = p
+		case refuted[p.ID] != "":
+			plan.records[p.ID] = resolvedFinding(p, resolutionSentence(refuted[p.ID]))
+		case survivor != "" && titles[survivor] != "":
+			plan.records[p.ID] = resolvedFinding(p, boundedResolution("Merged into the finding \u201c"+titles[survivor]+"\u201d of this re-review."))
+			plan.mergedInto[p.ID] = viewID(survivor)
+		default:
+			plan.records[p.ID] = p
+			plan.openRecords = append(plan.openRecords, p)
+		}
+	}
+	return plan, nil
+}
+
+// keepMask reports, by position, which findings stay active. Take it before
+// apply: after the renames a dropped original and the survivor that took over
+// its thread can carry the same id, so only position still tells them apart.
+func (p *reconcilePlan) keepMask(findings []model.Finding) []bool {
+	mask := make([]bool, len(findings))
+	for i, f := range findings {
+		mask[i] = !p.drop[f.ID]
+	}
+	return mask
+}
+
+// apply renames the active findings in place (order and length unchanged, so
+// positional id adoption downstream keeps working) and returns the ones that
+// stay active: all but the dropped duplicates.
+func (p *reconcilePlan) apply(findings []model.Finding) []model.Finding {
+	kept := make([]model.Finding, 0, len(findings))
+	for i := range findings {
+		f := &findings[i]
+		if p.drop[f.ID] {
+			continue
+		}
+		if pid, ok := p.renames[f.ID]; ok {
+			f.ID = pid
+			if f.Verification != nil {
+				f.Verification.ID = pid
+			}
+		}
+		kept = append(kept, *f)
+	}
+	return kept
+}
+
+// layout composes the findings to publish: the published review's findings
+// in their order, each replaced by the active finding with its id unless only
+// provenance changed (so the thread is not rewritten for nothing), then the
+// run's new findings. It decides nothing the plan did not already decide.
+func (p *reconcilePlan) layout(active []model.Finding) []model.Finding {
+	byID := make(map[string]model.Finding, len(active))
+	for _, f := range active {
+		byID[f.ID] = f
+	}
+	out := make([]model.Finding, 0, len(p.baseline.Review.Findings)+len(active))
+	for _, prior := range p.baseline.Review.Findings {
+		record := p.records[prior.ID]
+		if into, merged := p.mergedInto[prior.ID]; merged {
+			if _, published := byID[into]; !published {
+				// The absorbing finding did not make it (a later step dropped
+				// it); closing the thread would leave nothing in its place.
+				record = prior
+			}
+		}
+		if f, ok := byID[prior.ID]; ok && record.Resolution == nil && !sameDisplayedFinding(record, f) {
+			f.Revision, f.Resolution = prior.Revision, nil
+			out = append(out, f)
+			continue
+		}
+		out = append(out, record)
+	}
+	for _, f := range active {
+		if _, published := p.records[f.ID]; !published {
+			f.Revision, f.Resolution = 0, nil
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// isPublished reports whether id belongs to the published review.
+func (p *reconcilePlan) isPublished(id string) bool {
+	_, ok := p.records[id]
+	return ok
+}
+
+// exemptFromDiffScope reports whether active finding id skips the final
+// diff-scope safeguard.
+func (p *reconcilePlan) exemptFromDiffScope(id string) bool {
+	return p.isPublished(id) || p.exempt[id]
+}
+
+// reconcileForGroup builds the plan for the group a reconcile step names, or
+// returns nil when there is nothing to reconcile with: the import found no
+// published review, or every reviewer crashed (such a run says nothing about
+// the code and must not replace the published verdict).
+//
+// The plan is made on the final active set: the diff-scope safeguard and the
+// verdict's filters run first, and the findings they remove count as dropped. A published finding removed
+// that way stays open as a record, and a finding that absorbed a published
+// one only closes it when it survives.
+func (st *PipelineState) reconcileForGroup(ctx context.Context, e *Engine, group string, active []model.Finding, filters verdictFilters) (*reconcilePlan, error) {
+	st.mu.Lock()
+	g := st.groupByID[group]
+	if g == nil || g.provenance == nil || g.provenance.Baseline == nil {
+		st.mu.Unlock()
+		return nil, nil
+	}
+	if st.allReviewersFailedLocked() {
+		st.mu.Unlock()
+		st.addWarningf("Reconcile skipped: every reviewer failed, so the published review stays as it is")
+		return nil, nil
+	}
+	baseline, refuted := g.provenance.Baseline, g.refuted
+	headSHA := ""
+	if st.Enriched != nil {
+		headSHA = st.Enriched.DiffHeadSHA
+	}
+	reviewCtx := st.Enriched
+	st.mu.Unlock()
+	plan, err := planReconcile(active, baseline, refuted, st.absorbed, headSHA, func(view []model.Finding, exempt map[string]bool) (map[string]bool, error) {
+		return filters.finalActive(view, exempt, reviewCtx)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reconcile: applying final filters: %w", err)
+	}
+	e.logProgress(logging.StageReview, logging.StateDone, fmt.Sprintf("reconcile review=%s renamed=%d dropped=%d open_records=%d", baseline.Review.ReviewID, len(plan.renames), len(plan.drop), len(plan.openRecords)))
+	return plan, nil
+}
+
+// reconcileStepFunc is the flat reconcile step: it plans against the flat
+// result and applies the plan to it. Inside a pipeline the fused runner does
+// the same right before the verdict.
+//
+// verdictOverride is the config of the verdict step that must directly follow
+// (Spec.Validate enforces it), summarizeOverride that of a summarize step
+// right after it (nil when there is none): reconcile applies their filters.
+func (e *Engine) reconcileStepFunc(group string, verdictOverride, summarizeOverride *workflow.StepOverride, hasSummarize bool) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		filters := verdictFiltersOf(e.stepContext(verdictOverride, sc.Req).Req)
+		if hasSummarize {
+			filters.summarizePriorityThreshold = e.stepContext(summarizeOverride, sc.Req).Req.PriorityThreshold
+		}
+		st.mu.Lock()
+		if st.result == nil {
+			st.setResultLocked(st.materializeFromGroupsLocked(sc.Req))
+		}
+		in := st.result
+		st.mu.Unlock()
+		plan, err := st.reconcileForGroup(ctx, sc.Engine, group, in.Findings, filters)
+		if plan == nil || err != nil {
+			return err
+		}
+		out, err := in.Clone()
+		if err != nil {
+			return fmt.Errorf("reconcile: cloning result: %w", err)
+		}
+		out.Findings = plan.apply(out.Findings)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		st.setFilteredResultLocked(out)
+		st.reconciled = plan
+		return nil
+	}
+}
+
+// reconcileGroup returns the group a reconcile step entry names.
+func reconcileGroup(entry workflow.StepEntry) string {
+	if entry.Config != nil && entry.Config.Group != nil {
+		return *entry.Config.Group
+	}
+	return ""
 }
 
 // resolvedFinding closes a published finding with reason, the way the chat
@@ -243,27 +464,6 @@ func matchPosted(f model.Finding, posted []model.Finding) int {
 	return i
 }
 
-// splitPublishedFindings separates the findings a reconciliation kept from
-// the published review from the run's own. Without a reconciliation every
-// finding is the run's own.
-func splitPublishedFindings(findings []model.Finding, rec *model.Reconciliation) (published, fresh []model.Finding) {
-	if rec == nil || rec.Before == nil {
-		return nil, findings
-	}
-	ids := make(map[string]struct{}, len(rec.Before.Findings))
-	for _, f := range rec.Before.Findings {
-		ids[f.ID] = struct{}{}
-	}
-	for _, f := range findings {
-		if _, ok := ids[f.ID]; ok {
-			published = append(published, f)
-		} else {
-			fresh = append(fresh, f)
-		}
-	}
-	return published, fresh
-}
-
 // allReviewersFailedLocked reports whether every reviewer that ran failed,
 // the same collapse the CLI reports as a failed review. The caller must hold
 // st.mu.
@@ -285,7 +485,7 @@ func (st *PipelineState) allReviewersFailedLocked() bool {
 // absorptionLog records which finding merge folded each finding into, so a
 // published finding merged into one that no longer matches its thread can be
 // closed instead of lingering. Merge strips its own provenance before findings
-// leave the step; this keeps the part reconcilePublished needs.
+// leave the step; this keeps the part reconcile needs.
 type absorptionLog struct {
 	mu   sync.Mutex
 	into map[string]string

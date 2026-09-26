@@ -38,7 +38,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/update.go`: Independent correction agent; validates selected-finding replacements and terminal resolutions, or assesses review-level disputes without generating verdicts, publishing, or exposing history.
-- `internal/review/reconcile.go`: `load-published` / `verify:published` steps (published findings re-verified as a group, noted as possibly outdated) and the post-merge mapping that folds a re-review into the published review (identity, refuted → resolved).
+- `internal/review/import.go`: `import-findings` step; imports findings from a file or the published review into a named group with provenance (verifier note, diff-scope exemption, baseline review).
+- `internal/review/reconcile.go`: `reconcile` step; plans before the verdict how the run folds into the imported published review (adopted ids, dropped duplicates, resolved and still-open records) and lays the plan out at assembly. Also the merge absorption log.
 - `internal/review/update_summary.go`: Reuses default-workflow finding and overall summarization passes for corrections, including small-model routing and failure fallback, while preserving unchanged and resolved findings.
 - `internal/review/update_workflow.go`: Executes the embedded `workflows/update.yaml` correction stages. Durable jobs checkpoint its result before publishing.
 - `internal/workflow/update.go`: Loads the built-in correction YAML with the shared spec parser; no external override path.
@@ -138,7 +139,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/savedreply.go`: Comment templates ("saved replies") per scope — user, project, or group: listing and prefix-scoped idempotent sync (create/update/prune, dry run).
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
-- `internal/scm/gitlab/reconcile.go`: Reads the published review for `load-published` and publishes reconciled re-reviews through `UpdateReview`, replaying them onto concurrent chat corrections.
+- `internal/scm/gitlab/reconcile.go`: Reads the published review for `import-findings` (source `published-review`) and publishes reconciled re-reviews through `UpdateReview`, replaying them onto concurrent chat corrections.
 - `internal/scm/gitlab/update.go`: Original-review-scoped revision publishing, linked location replacements, durable pending updates, and crash recovery.
 - `internal/scm/gitlab/lock*.go`: Reentrant process-safe MR write locks shared by publishing, corrections, and response controls.
 - `internal/scm/reviewmd/history.go`: Bounded flat comment archives, hidden update/thread metadata, and highest-current-revision carrier selection.

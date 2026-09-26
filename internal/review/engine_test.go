@@ -529,21 +529,24 @@ type multiAgentLLM struct {
 	categorizeCalls int
 	// categorizeDrop titles the findings the categorize stub suppresses; each
 	// gets the confirmation category, so the filter removes it before verify.
-	categorizeDrop    map[string]bool
-	contextSystem     string
-	vectorContext     map[string]string
-	vectorSystem      map[string]string
-	vectorNudge       map[string]string
-	events            []string
-	contextFailErr    error
-	vectorFailErr     map[string]error
-	verifyInvalid     map[string]bool
-	vectorFindings    map[string]int
-	dedupeResponses   []*llm.ReviewResponse
-	dedupeFailErr     error
-	mergeResponses    []*llm.ReviewResponse
-	mergeFailErr      error
-	finalizeFailErr   error
+	categorizeDrop  map[string]bool
+	contextSystem   string
+	vectorContext   map[string]string
+	vectorSystem    map[string]string
+	vectorNudge     map[string]string
+	events          []string
+	contextFailErr  error
+	vectorFailErr   map[string]error
+	verifyInvalid   map[string]bool
+	vectorFindings  map[string]int
+	dedupeResponses []*llm.ReviewResponse
+	dedupeFailErr   error
+	mergeResponses  []*llm.ReviewResponse
+	mergeFailErr    error
+	finalizeFailErr error
+	// finalizeDemote sets the finalized priority of the findings with these
+	// ids, as a finalizer demoting them would.
+	finalizeDemote    map[string]int
 	finalizeRequests  []*llm.ReviewRequest
 	verdictRequests   []*llm.ReviewRequest
 	summarizeRequests []*llm.ReviewRequest
@@ -696,6 +699,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				Priority:        model.PriorityRank(findings[i].Priority),
 				ConfidenceScore: 0.8,
 				Remarks:         "finalized",
+			}
+			if priority, ok := s.finalizeDemote[findings[i].ID]; ok {
+				findings[i].Finalization.Priority = priority
 			}
 		}
 		return &llm.ReviewResponse{

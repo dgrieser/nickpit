@@ -2054,7 +2054,9 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 		return nil
 	}
 	for _, entry := range spec.FlatSteps() {
-		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) {
+		// An import-findings step names its own source; --findings never
+		// retargets it.
+		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) && entry.Type != workflow.StepImportFindings {
 			entry.FindingsFrom = findings
 			return nil
 		}
@@ -2411,8 +2413,8 @@ func stepModelRequirements(stepType string, disableJSONResponseFormat bool) mode
 		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
 		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
 		return reviewerModelRequirements(disableJSONResponseFormat)
-	case stepType == workflow.StepLoadPublished:
-		// Reads the merge request; no model involved.
+	case stepType == workflow.StepImportFindings, stepType == workflow.StepReconcile:
+		// Import reads files or the merge request; reconcile is bookkeeping.
 		return modelCapabilityRequirements{}
 	case stepType == workflow.StepDedupe,
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
