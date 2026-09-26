@@ -154,7 +154,7 @@ func TestPrepareFindingsForVerificationAggregatesOutOfDiffWarnings(t *testing.T)
 	}}
 	engine := NewEngine(nil, nil, nil, config.Profile{})
 
-	warnings := engine.prepareFindingsForVerification(context.Background(), ctx, results, model.ReviewRequest{})
+	warnings := engine.prepareFindingsForVerification(context.Background(), ctx, results, nil, model.ReviewRequest{})
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "Dropped 2 out-of-diff finding(s) from Security") {
 		t.Fatalf("warnings = %v", warnings)
 	}

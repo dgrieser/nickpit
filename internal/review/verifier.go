@@ -30,6 +30,10 @@ type VerifyRequest struct {
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
 	DiffFormat                model.DiffFormat
+	// Note is provenance the verifier's system prompt states for the finding,
+	// e.g. that it was published on an older revision and may be outdated.
+	// The prompt section is left out entirely when it is empty.
+	Note string
 }
 
 type VerifyOptions struct {
@@ -50,6 +54,10 @@ type VerifyOptions struct {
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
+	// FindingNotes, aligned with the findings of the call, is each finding's
+	// provenance note (VerifyRequest.Note); empty entries and a short slice
+	// mean no note.
+	FindingNotes []string
 }
 
 type verifyResult struct {
@@ -115,6 +123,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
+		FindingNote                string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -123,6 +132,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools:                   true,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
+		FindingNote:                req.Note,
 	})
 	if err != nil {
 		return nil, usage, agentToolCounts{}, fmt.Errorf("verify: rendering system prompt: %w", err)
@@ -186,7 +196,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{FindingNote: req.Note})
 			},
 		})
 		if err != nil {
@@ -285,6 +295,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
+				Note:                      findingNote(opts.FindingNotes, idx),
 			}
 			result, usage, findingCounts, err := e.verifyFinding(ctx, req)
 			mu.Lock()
@@ -433,4 +444,12 @@ func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.
 		return "", fmt.Errorf("%s: encoding combined payload: %w", agentKind, err)
 	}
 	return string(out), nil
+}
+
+// findingNote returns the note of finding idx, or "".
+func findingNote(notes []string, idx int) string {
+	if idx < len(notes) {
+		return notes[idx]
+	}
+	return ""
 }

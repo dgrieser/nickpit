@@ -2325,3 +2325,163 @@ func TestWorkflowFlatStricterSummarizePriorityKeepsVerdictProvenance(t *testing.
 		t.Fatalf("overall explanation = %q, want summarized verdict text", result.OverallExplanation)
 	}
 }
+
+// A re-review through the fused pipeline: the published review's findings are
+// imported, merged with the run's, and reconciled at the verdict barrier, so
+// the verdict and the summarized findings see the published ids.
+func TestWorkflowFusedReconcileAdoptsPublishedIDsBeforeVerdict(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	published := verifiedPipelineFinding("44444444-4444-4444-8444-444444444444", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	other := verifiedPipelineFinding("55555555-5555-4555-8555-555555555555", "Reject malformed config input", "other.go", 90, 2)
+	engine.source = &publishedSource{published: &model.PublishedReview{Review: &model.ReviewResult{
+		ReviewID: "published-review", Revision: 2, Findings: []model.Finding{published, other},
+	}}}
+	duplicate := verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	duplicate.ConfidenceScore = 0.9 // survives the mechanical fold
+	fresh := verifiedPipelineFinding("77777777-7777-4777-8777-777777777777", "Division by zero on empty input", "calc.go", 40, 2)
+	runFile := writeFindingsFile(t, "run.json", model.ReviewResult{Findings: []model.Finding{duplicate, fresh}})
+	group, source := "published", workflow.ImportSourcePublishedReview
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepImportFindings, Config: &workflow.StepOverride{Group: &group, Source: &source}},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{runFile}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepReconcile, Config: &workflow.StepOverride{Group: &group}},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PostReview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReviewID != "published-review" || result.Reconciliation == nil {
+		t.Fatalf("result not reconciled: id=%s rec=%+v", result.ReviewID, result.Reconciliation)
+	}
+	if len(client.verdictRequests) != 1 {
+		t.Fatalf("verdict requests = %d", len(client.verdictRequests))
+	}
+	verdictInput := client.verdictRequests[0].Messages[len(client.verdictRequests[0].Messages)-1].Content
+	if strings.Contains(verdictInput, duplicate.ID) || !strings.Contains(verdictInput, published.ID) {
+		t.Fatal("verdict saw the run's id instead of the adopted published id")
+	}
+	byID := map[string]model.Finding{}
+	for _, f := range result.Findings {
+		byID[f.ID] = f
+	}
+	if _, ok := byID[duplicate.ID]; ok || len(result.Findings) != 3 {
+		t.Fatalf("findings = %v, want published pair plus the new one", byID)
+	}
+	if f, ok := byID[published.ID]; !ok || f.Summarization == nil {
+		t.Fatalf("adopted finding lost its summary: %+v", f)
+	}
+	if _, ok := byID[fresh.ID]; !ok {
+		t.Fatal("new finding missing")
+	}
+}
+
+// When the published candidate fails the verdict's filter and a duplicate
+// takes over its thread, the summaries must follow the survivor: both carry
+// the published id after the rename, so only position tells them apart. The
+// surviving duplicate is ordered before the dropped original here.
+func TestWorkflowFusedReconcileSummariesFollowThreadSurvivor(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	// The published candidate lands at P3, below the verdict's p1 threshold.
+	candidate := verifiedPipelineFinding("44444444-4444-4444-8444-444444444444", "Fix cleanup behavior alpha", "m.go", 60, 3)
+	engine.source = &publishedSource{published: &model.PublishedReview{Review: &model.ReviewResult{
+		ReviewID: "published-review", Findings: []model.Finding{candidate},
+	}}}
+	// Same thread (file and title), far enough apart not to fold mechanically.
+	duplicate := verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	other := verifiedPipelineFinding("77777777-7777-4777-8777-777777777777", "Reject malformed config input", "other.go", 90, 1)
+	runFile := writeFindingsFile(t, "run.json", model.ReviewResult{Findings: []model.Finding{duplicate, other}})
+	group, source, threshold := "published", workflow.ImportSourcePublishedReview, "p1"
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepImportFindings, Config: &workflow.StepOverride{Group: &group, Source: &source}},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{runFile}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepReconcile, Config: &workflow.StepOverride{Group: &group}},
+			{Type: workflow.StepVerdict, Config: &workflow.StepOverride{PriorityThreshold: &threshold}},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PostReview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onThread []model.Finding
+	for _, f := range result.Findings {
+		if f.ID == candidate.ID {
+			onThread = append(onThread, f)
+		}
+	}
+	if len(onThread) != 1 {
+		t.Fatalf("findings on the published thread = %d, want exactly the survivor", len(onThread))
+	}
+	if got := onThread[0]; got.CodeLocation.LineRange.Start != 1 || model.PriorityRank(got.Priority) != 1 {
+		t.Fatalf("published thread carries %+v, want the surviving duplicate (m.go:1, P1)", got)
+	}
+}
+
+// A finding finalized below the run's priority threshold is left out of the
+// summarize input, so the summaries no longer line up with the finalized
+// findings by position. The join maps them by original identity instead,
+// keeping the survivor that took over the published thread.
+func TestWorkflowFusedReconcileMapsSummariesWhenSummarizeInputShrinks(t *testing.T) {
+	// The finalizer demotes the published candidate from P1 to P3, below the
+	// run's p2 threshold: it passes the pre-merge filter, then reconcile, the
+	// summarize input filter, and the verdict all drop it.
+	candidate := verifiedPipelineFinding("44444444-4444-4444-8444-444444444444", "Fix cleanup behavior alpha", "m.go", 60, 1)
+	client := &multiAgentLLM{finalizeDemote: map[string]int{candidate.ID: 3}}
+	engine := pipelineTestEngine(client)
+	engine.source = &publishedSource{published: &model.PublishedReview{Review: &model.ReviewResult{
+		ReviewID: "published-review", Findings: []model.Finding{candidate},
+	}}}
+	duplicate := verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	other := verifiedPipelineFinding("77777777-7777-4777-8777-777777777777", "Reject malformed config input", "other.go", 90, 1)
+	runFile := writeFindingsFile(t, "run.json", model.ReviewResult{Findings: []model.Finding{duplicate, other}})
+	group, source := "published", workflow.ImportSourcePublishedReview
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepImportFindings, Config: &workflow.StepOverride{Group: &group, Source: &source}},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{runFile}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepReconcile, Config: &workflow.StepOverride{Group: &group}},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PostReview: true, PriorityThreshold: "p2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]model.Finding{}
+	for _, f := range result.Findings {
+		byID[f.ID] = f
+	}
+	got, ok := byID[candidate.ID]
+	if !ok || got.CodeLocation.LineRange.Start != 1 || model.PriorityRank(got.Priority) != 1 || got.Summarization == nil {
+		t.Fatalf("published thread = %+v (present=%v), want the summarized survivor at m.go:1, P1", got, ok)
+	}
+	if _, ok := byID[other.ID]; !ok {
+		t.Fatal("unrelated finding lost in the join")
+	}
+}

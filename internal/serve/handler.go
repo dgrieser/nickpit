@@ -406,6 +406,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("command received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "command", "command": decision.Command.String()})
 	case decision.Kind == TriggerNone:
+		if decision.Reason == "no command" && decision.NoteID != 0 {
+			go h.replyMentionHelp(group, event.Project.ID, decision)
+		}
 		h.log.Debug("ignoring event", "project", event.Project.PathWithNamespace, "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "ignored", "reason": decision.Reason})
 	default:
@@ -580,6 +583,9 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			h.dispatcher.queueAckCleanup(reviewEvent, ackNotes)
 			return false
 		}
+		if decision.IgnoredText {
+			go h.reply(group, projectID, decision, ignoredTextNotice(h.cfg.CommandKeyword, decision.Command))
+		}
 	case CommandAbort:
 		outcome := h.dispatcher.Abort(projectID, decision.IID)
 		go func() {
@@ -592,13 +598,13 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			if decision.NoteID == 0 && !outcome.Found {
 				return
 			}
-			h.reply(group, projectID, decision, abortText(outcome))
+			h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, abortText(outcome)))
 		}()
 	case CommandStatus:
 		info := h.dispatcher.JobInfo(projectID, decision.IID)
-		go h.reply(group, projectID, decision, statusText(info))
+		go h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, statusText(info)))
 	case CommandHelp:
-		go h.reply(group, projectID, decision, helpText(h.cfg.CommandKeyword))
+		go h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, helpText(h.cfg.CommandKeyword)))
 	case CommandUnknown:
 		go h.reply(group, projectID, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
 	}
@@ -828,12 +834,15 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 			return true, false
 		}
 		ours = state.Ours
+		if !ours {
+			h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+			h.replyMentionHelp(group, projectID, decision)
+			return false, false
+		}
 		// Reconcile lazily once ownership is confirmed, even when current policy
 		// denies this comment. Otherwise a restart with changed response config
 		// can leave the root's visible instructions stale indefinitely.
-		if ours {
-			go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
-		}
+		go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
 		if decision.Requested && decision.NoteID == state.Root.ID {
 			return false, ours
 		}
@@ -851,6 +860,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	}
 	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+		h.replyMentionHelp(group, projectID, decision)
 		return false, false
 	}
 	// Do not consume a denied opt-in/muted event. A later explicit request on
@@ -1016,6 +1026,20 @@ func (h *Handler) releaseChatAck(group *Group, projectID int, decision Decision)
 
 // reply answers a command, threaded under its note when the payload carried a
 // discussion id and GitLab accepts the reply, as a plain MR note otherwise.
+// replyMentionHelp answers a comment outside NickPit's own threads that
+// @-mentions the bot with short help, once per note: webhook redeliveries of
+// the same note are dropped.
+func (h *Handler) replyMentionHelp(group *Group, projectID int, decision Decision) {
+	if group == nil || !mentionsUser(decision.PromptBody, group.BotUsername) {
+		return
+	}
+	if !h.chatSeen.markNew(decision.NoteID) {
+		return
+	}
+	h.log.Info("answering mention outside nickpit threads", "iid", decision.IID, "note", decision.NoteID)
+	h.reply(group, projectID, decision, mentionHelpText(h.cfg.CommandKeyword))
+}
+
 func (h *Handler) reply(group *Group, projectID int, decision Decision, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
 	defer cancel()

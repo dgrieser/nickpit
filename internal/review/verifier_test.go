@@ -446,7 +446,7 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(0), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, nil, model.ReviewRequest{}, NewLimiter(0), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly}
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, nil, req, NewLimiter(1), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly}
-	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
+	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, nil, req, NewLimiter(1), "", internalAgentContext{}, disabledVerifyPhaseBudgets(context.Background()))
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}

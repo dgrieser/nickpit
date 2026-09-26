@@ -24,6 +24,16 @@ func (c *Client) CreateMRNotePath(ctx context.Context, project string, iid int, 
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// CreateMRInternalNote posts a top-level internal note. nickpit uses it for
+// notes that only hold hidden data (fallback carrier chunks and staged
+// review-update records): internal keeps them out of the public timeline, and
+// only project members with at least the Reporter role see them. Callers label
+// such bodies with reviewmd.CarrierNotice so they never render empty.
+func (c *Client) CreateMRInternalNote(ctx context.Context, project string, iid int, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escapeProject(project), iid)
+	return c.Post(ctx, path, map[string]any{"body": body, "internal": true}, nil)
+}
+
 // ReplyToMRDiscussion adds a note to an existing merge request discussion so
 // command replies land threaded under the comment that issued them.
 func (c *Client) ReplyToMRDiscussion(ctx context.Context, projectID, iid int, discussionID, body string) error {

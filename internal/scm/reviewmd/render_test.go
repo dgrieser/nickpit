@@ -370,6 +370,16 @@ func TestCarrierNotesReassemble(t *testing.T) {
 	if len(notes) == 0 {
 		t.Fatal("carrier notes empty")
 	}
+	// The notice keeps the note from rendering as an empty comment, while
+	// every marker-only check still sees nothing visible.
+	for _, note := range notes {
+		if !strings.HasPrefix(note, CarrierNotice+"\n\n") {
+			t.Fatalf("carrier note lacks the notice line: %q", note[:min(len(note), 80)])
+		}
+		if got := StripMarkers(note); got != "" {
+			t.Fatalf("StripMarkers(carrier) = %q, want empty", got)
+		}
+	}
 	byID := ReviewResultsByID(notes)
 	got := byID["rev-c"]
 	if got == nil {

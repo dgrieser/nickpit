@@ -26,6 +26,14 @@ type ReviewUpdateRequest struct {
 	// OnStaged checkpoints that the recovery transaction is active before any
 	// visible review post changes.
 	OnStaged func() error
+	// AllowAdditions lets After carry findings the published review does not
+	// have yet; each opens a new thread. A re-review folded into the published
+	// review uses it; a chat correction never adds findings.
+	AllowAdditions bool
+	// SkipDiffCheck publishes even when the MR diff moved away from
+	// BaseSHA/HeadSHA. A re-review describes the head it reviewed, just like a
+	// first publish; a chat correction must never apply to a moved diff.
+	SkipDiffCheck bool
 }
 
 // UpdateConflict identifies a stale evaluation, rather than an execution failure.
@@ -108,7 +116,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	if err != nil {
 		return nil, err
 	}
-	if req.HeadSHA == "" || info.DiffRefs.HeadSHA != req.HeadSHA || (req.BaseSHA != "" && info.DiffRefs.BaseSHA != req.BaseSHA) {
+	if !req.SkipDiffCheck && (req.HeadSHA == "" || info.DiffRefs.HeadSHA != req.HeadSHA || (req.BaseSHA != "" && info.DiffRefs.BaseSHA != req.BaseSHA)) {
 		return nil, &UpdateConflict{Kind: "MR diff"}
 	}
 	if req.Validate != nil {
@@ -120,7 +128,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	if err != nil {
 		return nil, err
 	}
-	if len(after.Findings) != len(current.Findings) {
+	if !req.AllowAdditions && len(after.Findings) != len(current.Findings) {
 		return nil, fmt.Errorf("update cannot add or remove finding identities")
 	}
 	beforeByID := map[string]model.Finding{}
@@ -128,15 +136,25 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		beforeByID[f.ID] = f
 	}
 	seen := make(map[string]bool, len(after.Findings))
+	added := map[string]bool{}
 	var changed []model.Finding
 	after.Revision = current.Revision + 1
 	for i := range after.Findings {
 		f := &after.Findings[i]
 		before, ok := beforeByID[f.ID]
-		if !ok || seen[f.ID] {
+		if seen[f.ID] || (!ok && (!req.AllowAdditions || f.ID == "")) {
 			return nil, fmt.Errorf("update contains unknown or repeated finding %s", f.ID)
 		}
 		seen[f.ID] = true
+		if !ok {
+			if f.Resolution != nil {
+				return nil, fmt.Errorf("added finding %s cannot be resolved", f.ID)
+			}
+			added[f.ID] = true
+			f.Revision = after.Revision
+			changed = append(changed, *f)
+			continue
+		}
 		if !reflect.DeepEqual(before, *f) {
 			if before.Resolution != nil {
 				return nil, fmt.Errorf("resolved finding %s cannot change", f.ID)
@@ -145,8 +163,17 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 			changed = append(changed, *f)
 		}
 	}
+	for id := range beforeByID {
+		if !seen[id] {
+			return nil, fmt.Errorf("update cannot remove finding %s", id)
+		}
+	}
 	rootChanged := current.OverallCorrectness != after.OverallCorrectness || current.OverallExplanation != after.OverallExplanation || current.OverallConfidenceScore != after.OverallConfidenceScore
-	if len(changed) == 0 && !rootChanged {
+	// The context options ride only in the summary envelope. A change there
+	// (a re-review run with other filters) must still reach it, or a later
+	// chat rebuilds the old context, but it changes nothing visible.
+	contextChanged := !reflect.DeepEqual(current.ContextOptions, after.ContextOptions)
+	if len(changed) == 0 && !rootChanged && !contextChanged {
 		return current, nil
 	}
 	operation := req.Operation
@@ -163,7 +190,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		old := targets[finding.ID]
 		previous := old.Body
 		original := beforeByID[finding.ID]
-		if previous == "" {
+		if previous == "" && !added[finding.ID] {
 			previous, _ = render.FindingBodyCarried(original, locationPrefix(original))
 		}
 		body, carried := render.FindingBodyCarried(finding, locationPrefix(finding))
@@ -171,7 +198,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 			return nil, fmt.Errorf("updated finding %s exceeds current carrier budget", finding.ID)
 		}
 		item := updateItem{Target: old, FindingID: finding.ID}
-		moved := finding.Resolution == nil && (original.CodeLocation.FilePath != finding.CodeLocation.FilePath || original.CodeLocation.LineRange != finding.CodeLocation.LineRange)
+		moved := !added[finding.ID] && finding.Resolution == nil && (original.CodeLocation.FilePath != finding.CodeLocation.FilePath || original.CodeLocation.LineRange != finding.CodeLocation.LineRange)
 		ref := reviewmd.ReadThreadReference(old.Body)
 		if moved && old.NoteID != 0 {
 			copy := old
@@ -214,7 +241,9 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	}
 	marker := updateItemMarker(transaction.Operation, len(transaction.Items))
 	body = reviewmd.TransferResponseFooter(previous, body+"\n\n"+marker)
-	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || req.Operation != "")
+	// Archive the previous summary only when the review visibly changed; a
+	// context-only update would archive an identical copy.
+	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || (req.Operation != "" && len(changed) > 0))
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +383,7 @@ func (a *Adapter) stageReviewUpdate(ctx context.Context, project string, iid int
 		if err != nil {
 			return err
 		}
-		if err := a.client.CreateMRNotePath(ctx, project, iid, marker); err != nil {
+		if err := a.client.CreateMRInternalNote(ctx, project, iid, reviewmd.WithCarrierNotice(marker)); err != nil {
 			return err
 		}
 	}
@@ -362,7 +391,7 @@ func (a *Adapter) stageReviewUpdate(ctx context.Context, project string, iid int
 	if err != nil {
 		return err
 	}
-	return a.client.CreateMRNotePath(ctx, project, iid, marker)
+	return a.client.CreateMRInternalNote(ctx, project, iid, reviewmd.WithCarrierNotice(marker))
 }
 
 // RecoverReviewUpdates completes activated transactions. Unactivated fragments

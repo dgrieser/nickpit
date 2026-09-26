@@ -536,14 +536,28 @@ func UniqueFindingsByID(findings []model.Finding) []model.Finding {
 	return out
 }
 
+// CarrierNotice is the one visible line of a note that exists only to carry
+// hidden data: a fallback carrier chunk or a staged review-update record.
+// Without it GitLab shows such a note as an empty bot comment. StripMarkers
+// removes it, so every "is this body only markers?" check still treats these
+// notes as hidden data rather than as visible comments.
+const CarrierNotice = "_NickPit review data for follow-up discussions. Safe to ignore._"
+
+// WithCarrierNotice prefixes a marker-only body with CarrierNotice.
+func WithCarrierNotice(markers string) string {
+	return CarrierNotice + "\n\n" + markers
+}
+
 // StripMarkers removes every nickpit hidden marker (`<!-- nickpit:... -->`) from
-// s. SCM adapters apply it when normalizing existing comments into prompt
-// context, so the (potentially large) carrier payloads are never re-sent to the
-// model as opaque comment text; the raw bodies remain available separately for
-// carrier reassembly.
+// s, along with the CarrierNotice line that labels marker-only notes. SCM
+// adapters apply it when normalizing existing comments into prompt context, so
+// the (potentially large) carrier payloads are never re-sent to the model as
+// opaque comment text; the raw bodies remain available separately for carrier
+// reassembly.
 func StripMarkers(s string) string {
 	s = StripHistory(s)
 	s = StripResponseFooter(s)
+	s = strings.ReplaceAll(s, CarrierNotice, "")
 	if !strings.Contains(s, MarkerOpen) {
 		// Trim like the marker path below does, so "was this body only
 		// markers/whitespace?" checks behave identically on both paths.
@@ -1020,8 +1034,8 @@ const carrierNoteMaxDecodedBytes = maxCarrierTotalDecodedBytes / 2
 // suppressed for idempotency, or a publish where some posts failed — still
 // leaves the full data on the MR/PR for a later chat to reassemble by review
 // id. Callers pass only the findings that lack their own per-finding carrier.
-// The bodies are only HTML-comment markers, so they render empty. Returns nil
-// when the result has no review id.
+// Each body is the CarrierNotice line followed by HTML-comment markers, so it
+// renders as that one line. Returns nil when the result has no review id.
 func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Finding) []string {
 	if result == nil || result.ReviewID == "" {
 		return nil
@@ -1031,7 +1045,7 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 	markers, decoded := 0, 0
 	flush := func() {
 		if b.Len() > 0 {
-			notes = append(notes, b.String())
+			notes = append(notes, WithCarrierNotice(b.String()))
 			b.Reset()
 			markers, decoded = 0, 0
 		}
@@ -1050,7 +1064,7 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 		// count, or decoded payload total (the reader's per-body decompression
 		// budget — highly compressible envelopes can blow it while staying small
 		// encoded, and the reader would silently drop the tail).
-		if b.Len() > 0 && (b.Len()+1+len(marker) > carrierNoteMaxBytes ||
+		if b.Len() > 0 && (len(CarrierNotice)+2+b.Len()+1+len(marker) > carrierNoteMaxBytes ||
 			markers >= maxCarriersPerBody ||
 			decoded+size > carrierNoteMaxDecodedBytes) {
 			flush()

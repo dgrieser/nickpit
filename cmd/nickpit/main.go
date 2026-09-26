@@ -1012,12 +1012,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				log.Warn(notice)
 			}
 
-			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (int, error) {
-				user, err := client.CurrentUser(ctx)
-				if err != nil {
-					return 0, err
-				}
-				return user.ID, nil
+			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (*glscm.User, error) {
+				return client.CurrentUser(ctx)
 			})
 			if len(warnings) > 0 {
 				// Reaction replacement cannot safely revoke an award until the
@@ -2058,7 +2054,9 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 		return nil
 	}
 	for _, entry := range spec.FlatSteps() {
-		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) {
+		// An import-findings step names its own source; --findings never
+		// retargets it.
+		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) && entry.Type != workflow.StepImportFindings {
 			entry.FindingsFrom = findings
 			return nil
 		}
@@ -2415,6 +2413,9 @@ func stepModelRequirements(stepType string, disableJSONResponseFormat bool) mode
 		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
 		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
 		return reviewerModelRequirements(disableJSONResponseFormat)
+	case stepType == workflow.StepImportFindings, stepType == workflow.StepReconcile:
+		// Import reads files or the merge request; reconcile is bookkeeping.
+		return modelCapabilityRequirements{}
 	case stepType == workflow.StepDedupe,
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
 		stepType == workflow.StepMerge,

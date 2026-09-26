@@ -78,8 +78,8 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	set, _ := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t1", WebhookSecret: "hook-secret"},
 		{Path: "platform/legacy", Token: "t2", WebhookSecret: "legacy-secret"},
-	}, server.URL, func(ctx context.Context, client *gitlab.Client) (int, error) {
-		return fakeBotUserID, nil
+	}, server.URL, func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error) {
+		return &gitlab.User{ID: fakeBotUserID, Username: "nickpit-bot"}, nil
 	})
 	lookup := &countingTopicLookup{}
 	// The handler reads the review ack emoji from the dispatcher's config —

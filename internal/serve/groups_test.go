@@ -26,8 +26,8 @@ func newTestGroupSetWithURL(t *testing.T, baseURL string) *GroupSet {
 	t.Helper()
 	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t", WebhookSecret: "s"},
-	}, baseURL, func(ctx context.Context, client *gitlab.Client) (int, error) {
-		return fakeBotUserID, nil
+	}, baseURL, func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error) {
+		return &gitlab.User{ID: fakeBotUserID, Username: "nickpit-bot"}, nil
 	})
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %v", warnings)
@@ -117,8 +117,8 @@ func TestGroupCheckSecretEmptyStoredSecretRejectsAll(t *testing.T) {
 }
 
 func TestNewGroupSetBotLookup(t *testing.T) {
-	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
-		return 999, nil
+	lookup := func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error) {
+		return &gitlab.User{ID: 999}, nil
 	}
 	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t", WebhookSecret: "s"},
@@ -135,8 +135,8 @@ func TestNewGroupSetBotLookup(t *testing.T) {
 }
 
 func TestNewGroupSetBotLookupFailureIsWarning(t *testing.T) {
-	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
-		return 0, errors.New("boom")
+	lookup := func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error) {
+		return nil, errors.New("boom")
 	}
 	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t", WebhookSecret: "s"},
@@ -150,8 +150,8 @@ func TestNewGroupSetBotLookupFailureIsWarning(t *testing.T) {
 }
 
 func TestNewGroupSetRejectsInvalidBotID(t *testing.T) {
-	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
-		return 0, nil
+	lookup := func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error) {
+		return &gitlab.User{}, nil
 	}
 	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t", WebhookSecret: "s"},

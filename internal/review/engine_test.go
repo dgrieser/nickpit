@@ -529,21 +529,24 @@ type multiAgentLLM struct {
 	categorizeCalls int
 	// categorizeDrop titles the findings the categorize stub suppresses; each
 	// gets the confirmation category, so the filter removes it before verify.
-	categorizeDrop    map[string]bool
-	contextSystem     string
-	vectorContext     map[string]string
-	vectorSystem      map[string]string
-	vectorNudge       map[string]string
-	events            []string
-	contextFailErr    error
-	vectorFailErr     map[string]error
-	verifyInvalid     map[string]bool
-	vectorFindings    map[string]int
-	dedupeResponses   []*llm.ReviewResponse
-	dedupeFailErr     error
-	mergeResponses    []*llm.ReviewResponse
-	mergeFailErr      error
-	finalizeFailErr   error
+	categorizeDrop  map[string]bool
+	contextSystem   string
+	vectorContext   map[string]string
+	vectorSystem    map[string]string
+	vectorNudge     map[string]string
+	events          []string
+	contextFailErr  error
+	vectorFailErr   map[string]error
+	verifyInvalid   map[string]bool
+	vectorFindings  map[string]int
+	dedupeResponses []*llm.ReviewResponse
+	dedupeFailErr   error
+	mergeResponses  []*llm.ReviewResponse
+	mergeFailErr    error
+	finalizeFailErr error
+	// finalizeDemote sets the finalized priority of the findings with these
+	// ids, as a finalizer demoting them would.
+	finalizeDemote    map[string]int
 	finalizeRequests  []*llm.ReviewRequest
 	verdictRequests   []*llm.ReviewRequest
 	summarizeRequests []*llm.ReviewRequest
@@ -696,6 +699,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				Priority:        model.PriorityRank(findings[i].Priority),
 				ConfidenceScore: 0.8,
 				Remarks:         "finalized",
+			}
+			if priority, ok := s.finalizeDemote[findings[i].ID]; ok {
+				findings[i].Finalization.Priority = priority
 			}
 		}
 		return &llm.ReviewResponse{
@@ -3846,7 +3852,7 @@ func TestMechanicallyDedupeFindingsFoldsDuplicateClusters(t *testing.T) {
 	distinct := mergeTestFindingWithID("Improve unrelated subsystem", 5)
 	distinct.CodeLocation.FilePath = "other.go"
 
-	reduced, absorbed := mechanicallyDedupeFindings([]model.Finding{a, b, distinct})
+	reduced, absorbed := mechanicallyDedupeFindings(context.Background(), []model.Finding{a, b, distinct})
 
 	if absorbed != 1 || len(reduced) != 2 {
 		t.Fatalf("reduced = %d absorbed = %d, want 2/1", len(reduced), absorbed)
@@ -3855,7 +3861,7 @@ func TestMechanicallyDedupeFindingsFoldsDuplicateClusters(t *testing.T) {
 		t.Fatalf("distinct finding lost: %#v", reduced)
 	}
 
-	untouched, absorbed := mechanicallyDedupeFindings([]model.Finding{a, distinct})
+	untouched, absorbed := mechanicallyDedupeFindings(context.Background(), []model.Finding{a, distinct})
 	if absorbed != 0 || len(untouched) != 2 {
 		t.Fatalf("no-duplicate input changed: %d/%d", len(untouched), absorbed)
 	}
@@ -3867,7 +3873,7 @@ func TestMechanicallyDedupeFindingsRoutesSuggestionChoiceToLLM(t *testing.T) {
 	b := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
 	b.Suggestions = []model.Suggestion{{Body: "better candidate"}}
 
-	reduced, absorbed := mechanicallyDedupeFindings([]model.Finding{a, b})
+	reduced, absorbed := mechanicallyDedupeFindings(context.Background(), []model.Finding{a, b})
 
 	if absorbed != 0 || len(reduced) != 2 {
 		t.Fatalf("reduced = %d absorbed = %d, want unchanged 2/0 for agent selection", len(reduced), absorbed)

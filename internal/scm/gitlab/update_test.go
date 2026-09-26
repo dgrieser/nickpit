@@ -26,6 +26,7 @@ type updateServer struct {
 	positionAttempts       int
 	visibleWrites          int
 	loseActivationResponse bool
+	internalBodies         []string
 }
 
 func newUpdateServer(t *testing.T) (*updateServer, *Adapter, *model.ReviewResult) {
@@ -117,6 +118,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Body     string    `json:"body"`
 		Position *position `json:"position"`
+		Internal bool      `json:"internal"`
 	}
 	if r.Method == http.MethodPost || r.Method == http.MethodPut {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -142,7 +144,22 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.Method == http.MethodPost {
+		for i, d := range s.discussions {
+			if tail != "/discussions/"+d.ID+"/notes" {
+				continue
+			}
+			s.next++
+			n := DiscussionNote{ID: s.next, Body: payload.Body, AuthorID: 7, AuthorName: "nickpit"}
+			s.discussions[i].Notes = append(s.discussions[i].Notes, n)
+			write(noteJSON(n))
+			return
+		}
+	}
 	if r.Method == http.MethodPost && (tail == "/notes" || tail == "/discussions") {
+		if payload.Internal {
+			s.internalBodies = append(s.internalBodies, payload.Body)
+		}
 		if payload.Position != nil {
 			s.positionAttempts++
 			if s.rejectPositions {

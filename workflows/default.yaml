@@ -232,6 +232,28 @@ steps:
         config:
           time_budget:
             max_seconds: 2400
+      # On a re-review, the open findings of the review already published on
+      # the merge request are imported, verified again against the current
+      # code (the verifier is told they may be outdated), and merged with the
+      # new findings. Empty unless publishing to a source that can read the
+      # published review (GitLab) and a review is already there.
+      - lane:
+          - type: import-findings
+            config:
+              group: published
+              source: published-review
+          - type: verify:published
+            config:
+              scope: finding
+              categorize:
+                model: "@small"
+                time_budget:
+                  weight: 5
+                  max_seconds: 30
+        name: Published findings
+        config:
+          time_budget:
+            max_seconds: 2400
     name: Review
   - pipeline:
       - type: merge
@@ -252,6 +274,14 @@ steps:
           scope: cluster
           time_budget:
             weight: 30
+      # Folds the run into the imported published review before the verdict:
+      # imported findings keep their threads, refuted or merged-away ones are
+      # resolved, and ones that were not re-verified stay open as records the
+      # verdict sees as read-only context. No model calls.
+      - type: reconcile
+        config:
+          scope: all
+          group: published
       - type: verdict
         config:
           model: "@small"

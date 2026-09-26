@@ -18,6 +18,9 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	if result == nil {
 		return nil
 	}
+	if rec := result.Reconciliation; rec != nil && rec.Before != nil && rec.Before.ReviewID == result.ReviewID {
+		return a.publishReconciled(ctx, req, result)
+	}
 	ctx, unlock, err := a.client.LockMR(ctx, req.Repo, req.Identifier)
 	if err != nil {
 		return err
@@ -93,7 +96,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			}
 		}
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
-			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
+			if err := a.client.CreateMRInternalNote(ctx, req.Repo, req.Identifier, body); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 				carrierFailed = true
 			}
