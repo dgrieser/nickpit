@@ -206,7 +206,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody)
 	}
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err == nil && len(respBody) > maxResponseBytes {
+		return nil, nil, fmt.Errorf("forgejo: response body exceeds %d bytes", maxResponseBytes)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
