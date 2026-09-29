@@ -203,6 +203,25 @@ func TestClientWithoutBaseURLFails(t *testing.T) {
 	}
 }
 
+func TestGetRawRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		chunk := make([]byte, 32<<10)
+		for remaining := maxResponseBytes + 1; remaining > 0; {
+			n := min(remaining, len(chunk))
+			if _, err := w.Write(chunk[:n]); err != nil {
+				return
+			}
+			remaining -= n
+		}
+	}))
+	defer server.Close()
+
+	_, err := NewClient(server.URL, "").GetRaw(context.Background(), "/oversized.diff")
+	if err == nil || !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("GetRaw() error = %v, want response size limit error", err)
+	}
+}
+
 // Forgejo's rel="next" links are absolute, AppURL plus the full request URI,
 // so they repeat the API base's path. The server here only answers on the real
 // endpoint path, so following a link that doubles the base would 404.

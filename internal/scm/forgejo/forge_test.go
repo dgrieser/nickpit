@@ -27,6 +27,7 @@ func TestParseRequestURL(t *testing.T) {
 		{"http://forge.internal:3000/team/app/pulls/7/commits", "team/app", 7, "http://forge.internal:3000"},
 		{"https://git.example.com/forgejo/team/app/pulls/7", "team/app", 7, "https://git.example.com/forgejo"},
 		{"https://git.example.com/tools/forgejo/team/app/pulls/7/files", "team/app", 7, "https://git.example.com/tools/forgejo"},
+		{"https://host/instance/owner/pulls/pulls/7", "owner/pulls", 7, "https://host/instance"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {

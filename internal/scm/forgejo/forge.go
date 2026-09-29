@@ -68,10 +68,10 @@ func (forgejoForge) ParseRequestURL(raw string) (string, int, string, error) {
 		return "", 0, "", fmt.Errorf("--url must include a Forgejo host")
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	// The first "pulls" segment with an owner and a repository before it and
+	// The final "pulls" segment with an owner and a repository before it and
 	// a number after it; whatever precedes the owner is the instance subpath.
+	pulls := -1
 	for i := len(parts) - 2; i >= 2; i-- {
-	for i := 2; i+1 < len(parts); i++ {
 		if parts[i] == "pulls" {
 			pulls = i
 			break
