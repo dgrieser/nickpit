@@ -403,6 +403,80 @@ func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testi
 	}
 }
 
+// Finalize skips only findings the group's verdict will drop, so the skip
+// uses the verdict step's threshold, never finalize's own.
+func TestWorkflowFusedFinalizeSkipUsesVerdictThreshold(t *testing.T) {
+	low, high := 0.5, 0.9
+	for name, tc := range map[string]struct {
+		finalize, verdict *float64
+		wantFinalize      int
+		wantFindings      int
+	}{
+		"verdict keeps the finding": {finalize: &high, verdict: &low, wantFinalize: 1, wantFindings: 1},
+		"verdict drops the finding": {finalize: &low, verdict: &high, wantFinalize: 0, wantFindings: 0},
+		"no threshold anywhere":     {wantFinalize: 1, wantFindings: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &multiAgentLLM{}
+			engine := pipelineTestEngine(client)
+			path := writeFindingsFile(t, "single.json", model.ReviewResult{
+				Findings: []model.Finding{
+					verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix blended issue", "a.go", 1, 1),
+				},
+			})
+			spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+				{Pipeline: []workflow.StepEntry{
+					{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+					{Type: workflow.StepFinalize, Config: &workflow.StepOverride{ConfidenceThreshold: tc.finalize}},
+					{Type: workflow.StepVerdict, Config: &workflow.StepOverride{ConfidenceThreshold: tc.verdict}},
+				}},
+			}}
+			pipeline, err := engine.BuildPipeline(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(client.finalizeRequests) != tc.wantFinalize || len(result.Findings) != tc.wantFindings {
+				t.Fatalf("finalize requests = %d, findings = %d; want %d, %d", len(client.finalizeRequests), len(result.Findings), tc.wantFinalize, tc.wantFindings)
+			}
+			for _, f := range result.Findings {
+				if f.Finalization == nil || !strings.Contains(f.Finalization.Body, "FINALIZED_MARKER") {
+					t.Fatalf("published finding skipped finalization: %+v", f.Finalization)
+				}
+			}
+		})
+	}
+}
+
+// A flat finalize step cannot know whether a verdict follows, so it finalizes
+// every finding whatever the threshold.
+func TestWorkflowFlatFinalizeNeverSkips(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix low confidence issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepFinalize, FindingsFrom: []string{path}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, ConfidenceThreshold: 0.83})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.finalizeRequests) != 1 || len(result.Findings) != 1 {
+		t.Fatalf("finalize requests = %d, findings = %d; want 1, 1", len(client.finalizeRequests), len(result.Findings))
+	}
+}
+
 func TestWorkflowFusedPostMergePriorityFilterUsesFinalizedPriority(t *testing.T) {
 	client := &finalizingPriorityDowngradeLLM{}
 	engine := pipelineTestEngine(client)

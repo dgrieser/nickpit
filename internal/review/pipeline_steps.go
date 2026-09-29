@@ -868,7 +868,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				finalizeCtx, finalizeCancel := finalizeBudget.startOrCanceled()
 				defer finalizeCancel()
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
-				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult, shardLabel)
+				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult, shardLabel, verdictSC.Req.ConfidenceThreshold)
 
 				// Snapshot the summarize input before releasing the finalize barrier.
 				// After the barrier the verdict path normalizes finalized finding IDs
@@ -1133,7 +1133,6 @@ func finalizeOptionsFromStep(sc *stepContext, contextNotes string) FinalizeOptio
 		RepoRoot:                  sc.Req.RepoRoot,
 		DiffFormat:                sc.Req.DiffFormat,
 		PriorityThreshold:         sc.Req.PriorityThreshold,
-		ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
 		ContextNotes:              contextNotes,
 	}
 }
@@ -1176,9 +1175,13 @@ func shardProgressName(base, label string) string {
 	return base + " " + label
 }
 
-func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult, shardLabel string) (*model.ReviewResult, *model.AgentRun, []string) {
+// runFinalizeShard finalizes one merge cluster of a pipeline group. verdictThreshold
+// is the confidence threshold of the group's verdict step, which always follows
+// and filters with it, so findings below it skip the finalizer.
+func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult, shardLabel string, verdictThreshold float64) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := finalizeOptionsFromStep(sc, st.contextNotes)
 	opts.ShardLabel = shardLabel
+	opts.ConfidenceThreshold = verdictThreshold
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 	if err != nil {
 		if finalized != nil {

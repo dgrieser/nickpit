@@ -40,16 +40,20 @@ type FinalizeOptions struct {
 	// shard's live-progress bar; it never affects the telemetry run name.
 	ShardLabel string
 	// ConfidenceThreshold lets findings whose finalized confidence falls
-	// below it skip the finalizer; <=0 finalizes every finding.
+	// below it skip the finalizer; <=0 finalizes every finding. Only callers
+	// that know a verdict filtering with this very threshold follows may set it.
 	ConfidenceThreshold float64
 }
 
 // Finalize rewrites the findings for publishing. Findings whose finalized
-// confidence already falls below the threshold skip the finalizer: Verdict's
-// confidence filter drops them anyway, so they pass through with the review's
-// own text and that confidence.
+// confidence already falls below opts.ConfidenceThreshold skip the finalizer:
+// the verdict that follows drops them anyway, so they pass through with the
+// review's own text and that confidence.
 func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts FinalizeOptions) (*model.ReviewResult, model.AgentRun, error) {
 	in, skipped := e.splitLowConfidence(in, opts.ConfidenceThreshold)
+	if opts.DisableSuggestions {
+		model.StripSuggestions(skipped)
+	}
 	out, run, err := e.finalize(ctx, reviewCtx, in, opts)
 	if out != nil {
 		out.Findings = append(out.Findings, skipped...)

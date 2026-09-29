@@ -1569,7 +1569,7 @@ func TestFinalizeShardSurfacesMismatchWarningWhenItHappens(t *testing.T) {
 		{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA},
 	}}
 
-	_, run, warnings := runFinalizeShard(context.Background(), sc, st, in, "#1")
+	_, run, warnings := runFinalizeShard(context.Background(), sc, st, in, "#1", 0)
 	if run == nil || run.Status == model.AgentRunStatusFailed {
 		t.Fatalf("run = %#v, want a successful shard", run)
 	}
@@ -1578,5 +1578,25 @@ func TestFinalizeShardSurfacesMismatchWarningWhenItHappens(t *testing.T) {
 	}
 	if got := progress.String(); !strings.Contains(got, "Warning    [test] warn "+warnings[0]) {
 		t.Errorf("progress missing the shard warning:\n%s", got)
+	}
+}
+
+// A finding that skips the finalizer still honors DisableSuggestions.
+func TestFinalizeSkippedFindingsHonorDisableSuggestions(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	f := verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix low confidence issue", "a.go", 1, 1)
+	f.Suggestions = []model.Suggestion{{Body: "fix()"}}
+	out, _, err := engine.Finalize(context.Background(), &model.ReviewContext{}, &model.ReviewResult{Findings: []model.Finding{f}},
+		FinalizeOptions{ConfidenceThreshold: 0.83, DisableSuggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.finalizeRequests) != 0 || len(out.Findings) != 1 {
+		t.Fatalf("finalize requests = %d, findings = %d; want a skipped finding", len(client.finalizeRequests), len(out.Findings))
+	}
+	got := out.Findings[0]
+	if len(got.Suggestions) != 0 || got.Finalization == nil || len(got.Finalization.Suggestions) != 0 {
+		t.Fatalf("skipped finding kept suggestions: %+v / %+v", got.Suggestions, got.Finalization)
 	}
 }
