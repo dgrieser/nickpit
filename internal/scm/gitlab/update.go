@@ -64,9 +64,10 @@ func (a *Adapter) ValidateReviewState(ctx context.Context, project string, iid i
 }
 
 type updateTarget struct {
-	DiscussionID string `json:"discussion_id"`
-	NoteID       int    `json:"note_id"`
-	Body         string `json:"body"`
+	DiscussionID string    `json:"discussion_id"`
+	NoteID       int       `json:"note_id"`
+	Body         string    `json:"body"`
+	CreatedAt    time.Time `json:"created_at,omitzero"`
 }
 
 type updateItem struct {
@@ -224,7 +225,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 		item.Marker = updateItemMarker(transaction.Operation, len(transaction.Items))
 		body += "\n\n" + item.Marker
 		body = reviewmd.TransferResponseFooter(previous, body)
-		item.Body, err = reviewmd.WithHistory(previous, body, "Finding", transaction.At, true)
+		item.Body, err = reviewmd.WithHistory(previous, body, "Finding", old.CreatedAt, transaction.At, true)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +244,7 @@ func (a *Adapter) UpdateReview(ctx context.Context, project string, iid int, req
 	body = reviewmd.TransferResponseFooter(previous, body+"\n\n"+marker)
 	// Archive the previous summary only when the review visibly changed; a
 	// context-only update would archive an identical copy.
-	body, err = reviewmd.WithHistory(previous, body, "Review", transaction.At, rootChanged || (req.Operation != "" && len(changed) > 0))
+	body, err = reviewmd.WithHistory(previous, body, "Review", root.CreatedAt, transaction.At, rootChanged || (req.Operation != "" && len(changed) > 0))
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +347,7 @@ func indexUpdateTargets(discussions []MRDiscussion, userID int, rid string) map[
 			}
 		}
 		if current := targets[f]; current.NoteID == 0 || rev > revisions[f] {
-			targets[f] = updateTarget{DiscussionID: d.ID, NoteID: n.ID, Body: n.Body}
+			targets[f] = updateTarget{DiscussionID: d.ID, NoteID: n.ID, Body: n.Body, CreatedAt: n.CreatedAt}
 			revisions[f] = rev
 		}
 	}
@@ -491,7 +492,7 @@ func (a *Adapter) applyReviewUpdate(ctx context.Context, project string, iid, us
 			body := reviewmd.FindingReferenceMarker(transaction.ReviewID, item.FindingID) + "\n\nFinding moved to the [updated discussion](" + link + ").\n\n" + reviewmd.ThreadReferenceMarker(reviewmd.ThreadReference{ReviewID: transaction.ReviewID, FindingID: item.FindingID, Next: target.DiscussionID})
 			marker := item.Marker + "\n<!-- nickpit:redirect -->"
 			body = reviewmd.TransferResponseFooter(item.Redirect.Body, body+"\n\n"+marker)
-			body, err = reviewmd.WithHistory(item.Redirect.Body, body, "Finding", transaction.At, true)
+			body, err = reviewmd.WithHistory(item.Redirect.Body, body, "Finding", item.Redirect.CreatedAt, transaction.At, true)
 			if err != nil {
 				return err
 			}

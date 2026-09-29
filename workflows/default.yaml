@@ -7,7 +7,8 @@ steps:
     name: Context
     config:
       time_budget:
-        max_seconds: 360
+        max_seconds: 420
+        speedup_threshold: 70
   # Each review lane caps at 2400s and its steps split that cap by weight.
   # verify 30 + dedupe 15 leaves the review step the implicit remainder, 55% = 22m.
   # Do not write that 55 out as an explicit `weight` on the review step: a weight

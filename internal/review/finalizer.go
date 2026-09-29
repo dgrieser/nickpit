@@ -39,9 +39,25 @@ type FinalizeOptions struct {
 	// ShardLabel, when set (e.g. "#2"), distinguishes a per-cluster finalize
 	// shard's live-progress bar; it never affects the telemetry run name.
 	ShardLabel string
+	// ConfidenceThreshold lets findings whose finalized confidence falls
+	// below it skip the finalizer; <=0 finalizes every finding.
+	ConfidenceThreshold float64
 }
 
+// Finalize rewrites the findings for publishing. Findings whose finalized
+// confidence already falls below the threshold skip the finalizer: Verdict's
+// confidence filter drops them anyway, so they pass through with the review's
+// own text and that confidence.
 func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts FinalizeOptions) (*model.ReviewResult, model.AgentRun, error) {
+	in, skipped := e.splitLowConfidence(in, opts.ConfidenceThreshold)
+	out, run, err := e.finalize(ctx, reviewCtx, in, opts)
+	if out != nil {
+		out.Findings = append(out.Findings, skipped...)
+	}
+	return out, run, err
+}
+
+func (e *Engine) finalize(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts FinalizeOptions) (*model.ReviewResult, model.AgentRun, error) {
 	if reviewCtx == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: nil review context")
 	}
@@ -55,7 +71,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	model.KeepFirstSuggestion(prepared.Findings)
 	in = prepared
 	if len(in.Findings) == 0 {
-		return in, model.AgentRun{Name: "Finalize Review", Role: "finalize"}, nil
+		return in, model.AgentRun{Name: "Finalize Review", Role: "finalize", Status: model.AgentRunStatusSkipped}, nil
 	}
 
 	systemTemplate, err := e.loadPrompt("agent_finalize_system_prompt.tmpl")
@@ -569,43 +585,76 @@ func priorityRankOrThreshold(priority *int, thresholdRank int) int {
 	return model.PriorityRank(priority)
 }
 
-// applyWeightedConfidence overwrites finalization.confidence_score with a
-// deterministic weighted average of the review confidence and the verifier's
-// confidence, rounded to two decimals. Moved out of the LLM prompt because LLMs
-// are unreliable at arithmetic. Missing confidence defaults to 0.0: a non-finding
-// (a verifier-refuted "no issue" affirmation; see isNonFindingVerification) carries
-// no real confidence, and a finding with no verification has no confidence signal to
-// trust — neither is padded from the reviewer's self-assessment. A genuine refutation
-// kept for review keeps its blended confidence. Hallucinated findings with no input
-// match are skipped (no value applied).
+// applyWeightedConfidence overwrites finalization.confidence_score with
+// weightedConfidence of the matching input finding. Hallucinated findings with
+// no input match are skipped (no value applied).
 func applyWeightedConfidence(out, in []model.Finding) {
 	for i := range out {
 		if out[i].Finalization == nil {
 			continue
 		}
-		orig := findInputMatch(out[i], in)
-		if orig == nil {
-			continue
+		if orig := findInputMatch(out[i], in); orig != nil {
+			out[i].Finalization.ConfidenceScore = weightedConfidence(*orig)
 		}
-		if orig.Verification == nil {
-			out[i].Finalization.ConfidenceScore = 0.0
-			continue
-		}
-		if isNonFindingVerification(orig.Verification) {
-			out[i].Finalization.ConfidenceScore = 0.0
-			continue
-		}
-		review := orig.ConfidenceScore
-		verify := orig.Verification.ConfidenceScore
-		score := finalizeVerificationWeight*verify + finalizeReviewWeight*review
-		if math.Abs(verify-review) > finalizeDivergenceClamp {
-			lower := math.Min(verify, review)
-			if score > lower {
-				score = lower
-			}
-		}
-		out[i].Finalization.ConfidenceScore = roundConfidenceScore(score)
 	}
+}
+
+// weightedConfidence is a deterministic weighted average of the review
+// confidence and the verifier's confidence, rounded to two decimals. Moved out
+// of the LLM prompt because LLMs are unreliable at arithmetic. Missing
+// confidence defaults to 0.0: a non-finding (a verifier-refuted "no issue"
+// affirmation; see isNonFindingVerification) carries no real confidence, and a
+// finding with no verification has no confidence signal to trust — neither is
+// padded from the reviewer's self-assessment. A genuine refutation kept for
+// review keeps its blended confidence.
+func weightedConfidence(f model.Finding) float64 {
+	if f.Verification == nil || isNonFindingVerification(f.Verification) {
+		return 0.0
+	}
+	review := f.ConfidenceScore
+	verify := f.Verification.ConfidenceScore
+	score := finalizeVerificationWeight*verify + finalizeReviewWeight*review
+	if math.Abs(verify-review) > finalizeDivergenceClamp {
+		score = math.Min(score, math.Min(verify, review))
+	}
+	return roundConfidenceScore(score)
+}
+
+// finalizedConfidence is the confidence Finalize assigns a finding: the
+// reviewer's own for an unverified one (preserveUnverifiedReviewFinalizations),
+// weightedConfidence otherwise. It never depends on the finalizer's output, so
+// it is known before the finalizer runs.
+func finalizedConfidence(f model.Finding) float64 {
+	if isUnverifiedVerification(f.Verification) {
+		return f.ConfidenceScore
+	}
+	return weightedConfidence(f)
+}
+
+// splitLowConfidence separates the findings below threshold from the ones
+// worth finalizing. Skipped findings carry their review text as finalization.
+func (e *Engine) splitLowConfidence(in *model.ReviewResult, threshold float64) (*model.ReviewResult, []model.Finding) {
+	if in == nil || threshold <= 0 {
+		return in, nil
+	}
+	var kept, skipped []model.Finding
+	for _, f := range in.Findings {
+		confidence := finalizedConfidence(f)
+		if f.Resolution != nil || confidence >= threshold {
+			kept = append(kept, f)
+			continue
+		}
+		f.Finalization = reviewFinalization(f)
+		f.Finalization.ConfidenceScore = confidence
+		skipped = append(skipped, f)
+	}
+	if len(skipped) == 0 {
+		return in, nil
+	}
+	e.logProgress(logging.StageFinalize, logging.StateSkip, fmt.Sprintf("findings=%d confidence below threshold=%.2f", len(skipped), threshold))
+	out := *in
+	out.Findings = kept
+	return &out, skipped
 }
 
 func preserveUnverifiedReviewFinalizations(out, in []model.Finding) {

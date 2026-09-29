@@ -13,6 +13,8 @@ const historyPrefix = MarkerOpen + "history:"
 const HistoryOmittedNotice = "Earlier history entries were omitted to fit this comment."
 const NoteMaxBytes = carrierNoteMaxBytes
 
+// HistoryEntry is one archived version of a comment. At is when that version
+// was written.
 type HistoryEntry struct {
 	At   time.Time `json:"at"`
 	Body string    `json:"body"`
@@ -21,6 +23,10 @@ type HistoryEntry struct {
 type CommentHistory struct {
 	Entries []HistoryEntry `json:"entries"`
 	Omitted bool           `json:"omitted,omitempty"`
+	// Since is when the current body was written; archiving it stamps its
+	// entry with this time. Archives written before it existed stamped each
+	// entry with the time it was replaced instead (see restampLegacyHistory).
+	Since time.Time `json:"since,omitzero"`
 }
 
 // StripHistory recognizes only our fenced block, so nested user <details> and
@@ -66,10 +72,21 @@ func ReadHistory(body string) CommentHistory {
 // WithHistory stores only the previous current body, never a recursive copy of
 // its history. Each entry's hidden metadata is encoded once in the archive;
 // only sanitized visible markdown is rendered in the collapsible section.
-func WithHistory(previous, current, label string, at time.Time, archive bool) (string, error) {
-	history := ReadHistory(previous)
+// Entries are stamped with the time their body was written: the archive's
+// Since, or created (when the note was posted; zero if unknown) for a body
+// that never replaced another. at is when current replaces previous.
+func WithHistory(previous, current, label string, created, at time.Time, archive bool) (string, error) {
+	history := restampLegacyHistory(ReadHistory(previous), created)
 	if archive && strings.TrimSpace(previous) != "" {
-		history.Entries = append([]HistoryEntry{{At: at.UTC(), Body: StripHistory(previous)}}, history.Entries...)
+		written := history.Since
+		if written.IsZero() {
+			written = created
+		}
+		if written.IsZero() {
+			written = at
+		}
+		history.Entries = append([]HistoryEntry{{At: written.UTC(), Body: StripHistory(previous)}}, history.Entries...)
+		history.Since = at.UTC()
 	}
 	current = StripHistory(current)
 	if len(current) > NoteMaxBytes {
@@ -92,6 +109,28 @@ func WithHistory(previous, current, label string, at time.Time, archive bool) (s
 		history.Entries = history.Entries[:len(history.Entries)-1]
 		history.Omitted = true
 	}
+}
+
+// restampLegacyHistory converts an archive written before Since existed. Its
+// entries carry the time they were replaced: the newest one was replaced when
+// the current body was written, and each older one when the next newer one
+// was, so the stamps shift by one. The oldest entry was written when the note
+// was posted; when that is unknown, or older entries were omitted, it keeps
+// its old stamp.
+func restampLegacyHistory(h CommentHistory, created time.Time) CommentHistory {
+	if !h.Since.IsZero() || len(h.Entries) == 0 {
+		return h
+	}
+	h.Since = h.Entries[0].At
+	for i := range h.Entries {
+		switch {
+		case i+1 < len(h.Entries):
+			h.Entries[i].At = h.Entries[i+1].At
+		case !h.Omitted && !created.IsZero():
+			h.Entries[i].At = created.UTC()
+		}
+	}
+	return h
 }
 
 func renderHistory(h CommentHistory, label string) string {

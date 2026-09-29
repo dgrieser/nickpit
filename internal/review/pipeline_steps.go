@@ -1133,6 +1133,7 @@ func finalizeOptionsFromStep(sc *stepContext, contextNotes string) FinalizeOptio
 		RepoRoot:                  sc.Req.RepoRoot,
 		DiffFormat:                sc.Req.DiffFormat,
 		PriorityThreshold:         sc.Req.PriorityThreshold,
+		ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
 		ContextNotes:              contextNotes,
 	}
 }

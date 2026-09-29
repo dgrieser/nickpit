@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -141,8 +142,8 @@ func (a *Adapter) publishReconciled(ctx context.Context, req model.ReviewRequest
 		report := reconciledChanges(before, published)
 		report.HeadSHA = rec.HeadSHA
 		var errs []error
-		if err := a.resolveDiscussions(ctx, req, published.ReviewID, report.Resolved); err != nil {
-			errs = append(errs, fmt.Errorf("resolving discussions: %w", err))
+		if err := a.syncThreadResolution(ctx, req, published, report.Resolved); err != nil {
+			errs = append(errs, fmt.Errorf("syncing thread resolution: %w", err))
 		}
 		if err := a.replyReconciled(ctx, req, published, report); err != nil {
 			errs = append(errs, fmt.Errorf("re-review reply: %w", err))
@@ -154,12 +155,15 @@ func (a *Adapter) publishReconciled(ctx context.Context, req model.ReviewRequest
 	}
 }
 
-// resolveDiscussions resolves the GitLab discussions of the findings the
-// re-review resolved, so a closed finding is also a closed thread. Threads
-// GitLab cannot resolve (a general note rather than a discussion) or already
-// resolved are left as they are.
-func (a *Adapter) resolveDiscussions(ctx context.Context, req model.ReviewRequest, reviewID string, findingIDs []string) error {
-	if len(findingIDs) == 0 {
+// syncThreadResolution matches thread state to the published review. The
+// discussions of the findings the re-review resolved are resolved, so a closed
+// finding is also a closed thread. While findings stay open the summary thread
+// is unresolved, so an update, and the reply announcing it, is not folded away
+// under a thread someone resolved after an earlier review. Threads GitLab
+// cannot resolve (a general note rather than a discussion) are left alone.
+func (a *Adapter) syncThreadResolution(ctx context.Context, req model.ReviewRequest, published *model.ReviewResult, resolved []string) error {
+	open := slices.ContainsFunc(published.Findings, func(f model.Finding) bool { return f.Resolution == nil })
+	if len(resolved) == 0 && !open {
 		return nil
 	}
 	user, err := a.client.CurrentUser(ctx)
@@ -176,16 +180,24 @@ func (a *Adapter) resolveDiscussions(ctx context.Context, req model.ReviewReques
 			roots[d.ID] = d.Notes[0]
 		}
 	}
-	targets := indexUpdateTargets(discussions, user.ID, reviewID)
-	var errs []error
-	for _, id := range findingIDs {
-		target := targets[id]
+	targets := indexUpdateTargets(discussions, user.ID, published.ReviewID)
+	set := func(findingID string, want bool) error {
+		target := targets[findingID]
 		root, ok := roots[target.DiscussionID]
-		if target.DiscussionID == "" || !ok || !root.Resolvable || root.Resolved {
-			continue
+		if target.DiscussionID == "" || !ok || !root.Resolvable || root.Resolved == want {
+			return nil
 		}
-		if err := a.client.ResolveMRDiscussion(ctx, req.Repo, req.Identifier, target.DiscussionID); err != nil {
+		return a.client.SetMRDiscussionResolved(ctx, req.Repo, req.Identifier, target.DiscussionID, want)
+	}
+	var errs []error
+	for _, id := range resolved {
+		if err := set(id, true); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", id, err))
+		}
+	}
+	if open {
+		if err := set("", false); err != nil {
+			errs = append(errs, fmt.Errorf("summary: %w", err))
 		}
 	}
 	return errors.Join(errs...)

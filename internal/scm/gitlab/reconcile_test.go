@@ -2,8 +2,10 @@ package gitlab
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
@@ -44,6 +46,8 @@ func TestPublishedReviewNilWithoutSummary(t *testing.T) {
 
 func TestPublishReconciledUpdatesReviewInPlace(t *testing.T) {
 	s, a, before := newUpdateServer(t)
+	posted := time.Date(2026, 9, 22, 14, 58, 0, 0, time.UTC)
+	s.discussions[0].Notes[0].CreatedAt = posted
 	after, _ := before.Clone()
 	after.Findings = append(after.Findings, reconcileFinding("added", "New nil dereference"))
 	after.OverallExplanation = "The re-review found one more problem."
@@ -61,8 +65,8 @@ func TestPublishReconciledUpdatesReviewInPlace(t *testing.T) {
 		t.Fatal("re-review created a second review")
 	}
 	root := findUpdateTarget(discussions, 7, before.ReviewID, "")
-	if len(reviewmd.ReadHistory(root.Body).Entries) != 1 {
-		t.Fatal("summary did not archive the previous verdict")
+	if h := reviewmd.ReadHistory(root.Body); len(h.Entries) != 1 || !h.Entries[0].At.Equal(posted) {
+		t.Fatalf("summary did not archive the previous verdict under its posting time: %+v", h.Entries)
 	}
 	if kept := findUpdateTarget(discussions, 7, before.ReviewID, "finding"); len(reviewmd.ReadHistory(kept.Body).Entries) != 0 {
 		t.Fatal("unchanged published finding was rewritten")
@@ -245,6 +249,40 @@ func TestPublishReconciledResolvesDiscussionsOfResolvedFindings(t *testing.T) {
 			}
 			if len(s.resolvedDiscussions) != want || (want == 1 && s.resolvedDiscussions[0] != "finding-thread") {
 				t.Fatalf("resolved discussions = %v, want %d for the finding thread", s.resolvedDiscussions, want)
+			}
+		})
+	}
+}
+
+// A summary thread someone resolved after an earlier review is reopened while
+// the re-review leaves findings open, so the update and its reply are not
+// folded away. Once no finding is open, the thread is left as it is.
+func TestPublishReconciledReopensSummaryWhileFindingsOpen(t *testing.T) {
+	for name, resolveAll := range map[string]bool{"open finding": false, "all resolved": true} {
+		t.Run(name, func(t *testing.T) {
+			s, a, before := newUpdateServer(t)
+			s.resolvable = true
+			for i := range s.discussions {
+				s.discussions[i].Notes[0].Resolved = true
+			}
+			after, _ := before.Clone()
+			after.OverallExplanation = "Re-reviewed."
+			if resolveAll {
+				after.Findings[0].Resolution = &model.FindingResolution{Reason: "The guard exists now."}
+			}
+			after.Reconciliation = &model.Reconciliation{Before: before, HeadSHA: "headsha"}
+			if err := a.PublishReview(context.Background(), model.ReviewRequest{Repo: "group/project", Identifier: 456}, after); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"root"}
+			if resolveAll {
+				want = nil
+			}
+			if !slices.Equal(s.unresolvedDiscussions, want) {
+				t.Fatalf("unresolved discussions = %v, want %v", s.unresolvedDiscussions, want)
+			}
+			if len(s.resolvedDiscussions) != 0 {
+				t.Fatalf("resolved discussions = %v, want none: every thread already was", s.resolvedDiscussions)
 			}
 		})
 	}

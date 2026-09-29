@@ -55,9 +55,20 @@ The new lane allocation is 1,320 seconds for review, 720 for verification
 are 450 / 270 / 90 / 90 seconds. Parent deadlines still apply, and overlapping
 pipeline stages do not turn these shares into additive execution times.
 
-The outer sequential bound is 6 + 40 + 15 = 61 minutes. Ordinary speed-up
+The outer sequential bound is 7 + 40 + 15 = 62 minutes (see the follow-up
+below for the context step). Ordinary speed-up
 thresholds remain at 80%. Review retains its *implicit* 55% remainder: writing
 an explicit review weight would also enable its internal phase split.
 
 After rollout, compare urgent-completion success, helper timeouts and token
 cost, verification outcomes, and deadline counts by model and workload size.
+
+## Follow-up — 2026-09-29
+
+A production re-review's context agent crossed its 80% speed-up threshold at
+4m48s of 360 s. The tool-free completion then had about 65 seconds after the
+reasoning summary and hit the deadline: it still carries every file the agent
+read, and the 27B model's earlier turns alone took 38–78 seconds. Context now
+gets 420 s with `speedup_threshold: 70`, so exploration keeps about the
+old 294 s and urgent completion, reasoning summary included, gets 126 s. One run is a single observation; recheck context
+deadline counts after rollout.

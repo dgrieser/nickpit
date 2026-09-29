@@ -10,7 +10,7 @@ import (
 
 func TestHistoryWithoutArchiveAllowsExactNoteBudget(t *testing.T) {
 	current := strings.Repeat("x", NoteMaxBytes)
-	got, err := WithHistory("", current, "Finding", time.Now(), false)
+	got, err := WithHistory("", current, "Finding", time.Time{}, time.Now(), false)
 	if err != nil || got != current {
 		t.Fatalf("exact-size current comment rejected: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestHistoryFlatAndExcludedFromReassembly(t *testing.T) {
 	f.Title = "New title"
 	f.Body = "New evidence"
 	current, _ := render.FindingBodyCarried(f, "")
-	first, err := WithHistory(original, current, "Finding", at, true)
+	first, err := WithHistory(original, current, "Finding", time.Time{}, at, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestHistoryFlatAndExcludedFromReassembly(t *testing.T) {
 	f.Title = "Latest title"
 	f.Body = "Latest evidence"
 	current, _ = render.FindingBodyCarried(f, "")
-	second, err := WithHistory(first, current, "Finding", at.Add(time.Minute), true)
+	second, err := WithHistory(first, current, "Finding", time.Time{}, at.Add(time.Minute), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,17 +62,75 @@ func TestHistoryFlatAndExcludedFromReassembly(t *testing.T) {
 	}
 }
 
+// Each archived version is stamped with the time it was written, not the time
+// a later version replaced it: the first with the note's creation, later ones
+// with the time the edit that wrote them happened.
+func TestHistoryStampsEntriesWithWrittenTime(t *testing.T) {
+	posted := time.Date(2026, 9, 22, 14, 58, 0, 0, time.UTC)
+	edited := time.Date(2026, 9, 23, 19, 27, 0, 0, time.UTC)
+	rereviewed := time.Date(2026, 9, 29, 10, 46, 0, 0, time.UTC)
+	first, err := WithHistory("original", "edited", "Review", posted, edited, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := WithHistory(first, "rereviewed", "Review", posted, rereviewed, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHistory(second)
+	if len(h.Entries) != 2 || !h.Entries[0].At.Equal(edited) || !h.Entries[1].At.Equal(posted) || !h.Since.Equal(rereviewed) {
+		t.Fatalf("history = %+v", h)
+	}
+	if !strings.Contains(second, "**2026-09-23T19:27:00Z**\n\nedited") || !strings.Contains(second, "**2026-09-22T14:58:00Z**\n\noriginal") {
+		t.Fatalf("rendered stamps do not match the archived versions: %s", second)
+	}
+	// Without a creation time the first version falls back to its replacement.
+	fallback, err := WithHistory("original", "edited", "Review", time.Time{}, edited, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadHistory(fallback).Entries[0].At; !got.Equal(edited) {
+		t.Fatalf("fallback stamp = %s", got)
+	}
+}
+
+// An archive from before Since existed carries replacement times; the next
+// write shifts them onto the versions they belong to.
+func TestHistoryRestampsLegacyArchive(t *testing.T) {
+	posted := time.Date(2026, 9, 22, 14, 58, 0, 0, time.UTC)
+	firstEdit := time.Date(2026, 9, 23, 19, 26, 0, 0, time.UTC)
+	secondEdit := time.Date(2026, 9, 23, 19, 27, 0, 0, time.UTC)
+	now := time.Date(2026, 9, 29, 10, 46, 0, 0, time.UTC)
+	legacy := CommentHistory{Entries: []HistoryEntry{{At: secondEdit, Body: "first edit"}, {At: firstEdit, Body: "original"}}}
+	marker, _ := encodeMarker(historyPrefix, legacy)
+	previous := historyStart + "\n" + marker + "\n" + historyEnd + "\n\nsecond edit"
+	body, err := WithHistory(previous, "rereviewed", "Review", posted, now, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHistory(body)
+	want := []time.Time{secondEdit, firstEdit, posted}
+	if len(h.Entries) != len(want) || !h.Since.Equal(now) {
+		t.Fatalf("history = %+v", h)
+	}
+	for i, at := range want {
+		if !h.Entries[i].At.Equal(at) {
+			t.Fatalf("entry %d (%q) stamped %s, want %s", i, h.Entries[i].Body, h.Entries[i].At, at)
+		}
+	}
+}
+
 func TestHistoryDropsOldestAndKeepsNotice(t *testing.T) {
 	previous := strings.Repeat("old evidence ", 5000)
 	current := "current evidence"
-	body, err := WithHistory(previous, current, "Finding", time.Now(), true)
+	body, err := WithHistory(previous, current, "Finding", time.Time{}, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(body) > NoteMaxBytes || !ReadHistory(body).Omitted || !strings.Contains(body, HistoryOmittedNotice) || StripMarkers(body) != current {
 		t.Fatal("history not bounded or notice missing")
 	}
-	next, err := WithHistory(body, "next evidence", "Finding", time.Now(), true)
+	next, err := WithHistory(body, "next evidence", "Finding", time.Time{}, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}

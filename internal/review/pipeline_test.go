@@ -396,6 +396,11 @@ func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testi
 	if len(client.verdictRequests) != 0 {
 		t.Fatalf("verdict requests = %d, want skipped verdict agent after filter removed all findings", len(client.verdictRequests))
 	}
+	// The blended confidence (0.6*0.9 + 0.4*0.7 = 0.82) is known before
+	// finalize, so the finalizer never spends a call on a finding verdict drops.
+	if len(client.finalizeRequests) != 0 {
+		t.Fatalf("finalize requests = %d, want none for a finding below the confidence threshold", len(client.finalizeRequests))
+	}
 }
 
 func TestWorkflowFusedPostMergePriorityFilterUsesFinalizedPriority(t *testing.T) {

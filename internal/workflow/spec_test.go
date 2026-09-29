@@ -53,7 +53,8 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	all := ScopeAll
 	finding := ScopeFinding
 	reviewer := ScopeReviewer
-	max360 := 360
+	max420 := 420
+	speedup70 := 70
 	max900 := 900
 	importedGroup := "imported"
 	importedSource := ImportSourcePublishedReview
@@ -89,7 +90,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 		{Type: StepDedupePrefix + importedGroup, Config: &StepOverride{Scope: &reviewer}},
 	}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}})
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
-		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max360}}},
+		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max420, SpeedupThreshold: &speedup70}}},
 		{Name: "Review", Parallel: parallel},
 		{Name: "Finalize", Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight50}, Context: fullContext()}},

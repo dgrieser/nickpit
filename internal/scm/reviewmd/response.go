@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -45,19 +44,17 @@ func HasResponseFooter(body string) bool {
 	return strings.Contains(body, responseFooterStart)
 }
 
-// PolicyFingerprint identifies the CONFIGURATION inputs that shape a rendered
-// footer's instructions. Live per-thread state (mute reactions, the command
-// marker) is deliberately excluded: those change through their own events,
-// which reconcile the affected root directly.
+// PolicyFingerprint identifies the footer this configuration renders. It hashes
+// the rendered text rather than the settings, so a reworded footer goes stale
+// exactly like a renamed emoji does. Live per-thread state (mute reactions, the
+// command marker) is deliberately excluded: those change through their own
+// events, which reconcile the affected root directly. Rendering once unmuted
+// and once with every blocker set covers every phrase either state can show.
 func (s ResponseStatus) PolicyFingerprint() string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		strconv.FormatBool(s.Enabled),
-		strconv.FormatBool(s.OptIn),
-		s.MuteEmoji,
-		s.RequestEmoji,
-		s.CommandKeyword,
-		s.requestTerm(),
-	}, "\x00")))
+	unmuted, muted := s, s
+	unmuted.CommandMuted, unmuted.MRMuted, unmuted.ThreadMuted = false, false, false
+	muted.CommandMuted, muted.MRMuted, muted.ThreadMuted = true, true, true
+	sum := sha256.Sum256([]byte(responseFooterVisible(unmuted) + "\x00" + responseFooterVisible(muted)))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -125,13 +122,21 @@ func UpsertResponseFooter(body string, status ResponseStatus) string {
 	for _, env := range CollectFindingEnvelopes(base) {
 		resolved = resolved || env.Finding.Resolution != nil
 	}
-	if text := responseStatusText(status); text != "" && !resolved {
-		b.WriteString("---\n\n*")
-		b.WriteString(text)
-		b.WriteString("*\n")
+	if !resolved {
+		b.WriteString(responseFooterVisible(status))
 	}
 	b.WriteString(responseFooterEnd)
 	return b.String()
+}
+
+// responseFooterVisible renders the visible part of a response footer, or ""
+// when chat is disabled.
+func responseFooterVisible(status ResponseStatus) string {
+	text := responseStatusText(status)
+	if text == "" {
+		return ""
+	}
+	return "---\n\n*" + text + "*\n"
 }
 
 // TransferResponseFooter keeps live command/policy metadata when a correction
