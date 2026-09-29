@@ -10,11 +10,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
-// publishedFindingNote is the provenance the verifier is told for findings
-// imported from the published review, unless the step sets its own note.
-const publishedFindingNote = "an earlier review of this change published it, possibly against an older revision, " +
-	"so it might be outdated. Confirm the problem still exists in the current code."
-
 // groupProvenance describes where an imported group's findings came from and
 // how the generic group steps treat them.
 type groupProvenance struct {
@@ -28,6 +23,13 @@ type groupProvenance struct {
 	// Baseline is the published review the findings came from; reconcile
 	// folds the run into it.
 	Baseline *model.PublishedReview
+	// PreferInMerge makes the group's findings the survivors of any merge
+	// cluster they end up in, keeping their ids (see findingLog.prefer).
+	PreferInMerge bool
+	// SkipDedupe skips dedupe steps for the group unless forced
+	// (ReviewRequest.ForceDedupeImported): its findings were already
+	// deduplicated when they were first reported.
+	SkipDedupe bool
 }
 
 // importConfig is an import-findings step's configuration.
@@ -68,6 +70,13 @@ func (e *Engine) importFindingsStepFunc(entry workflow.StepEntry) stepFunc {
 			run.Status = model.AgentRunStatusSkipped
 		}
 		st.setImportedGroup(cfg.group, agentResult{resp: &llm.ReviewResponse{Findings: findings}, run: run}, provenance)
+		if provenance.PreferInMerge {
+			ids := make([]string, 0, len(findings))
+			for _, f := range findings {
+				ids = append(ids, f.ID)
+			}
+			findingLogFrom(ctx).prefer(ids)
+		}
 		sc.Engine.logProgress(logging.StageReview, logging.StateDone, fmt.Sprintf("imported group=%s source=%s findings=%d", cfg.group, cfg.source, len(findings)))
 		return nil
 	}
@@ -81,7 +90,19 @@ func (e *Engine) importFindingsStepFunc(entry workflow.StepEntry) stepFunc {
 //     source supports it. A read failure is a warning: the run then publishes
 //     as a fresh review.
 func (e *Engine) importFindings(ctx context.Context, req model.ReviewRequest, cfg importConfig) ([]model.Finding, groupProvenance, error) {
-	provenance := groupProvenance{Source: cfg.source, Note: cfg.note}
+	// Each source's defaults live in workflows/import_sources.yaml; a step's
+	// own note replaces the default one.
+	defaults, known := workflow.ImportSourceDefaultsFor(cfg.source)
+	if !known {
+		return nil, groupProvenance{}, fmt.Errorf("workflow: unknown import source %q", cfg.source)
+	}
+	provenance := groupProvenance{
+		Source: cfg.source, Note: defaults.Note,
+		ExemptDiffScope: defaults.ExemptDiffScope, PreferInMerge: defaults.PreferInMerge, SkipDedupe: defaults.SkipDedupe,
+	}
+	if cfg.note != "" {
+		provenance.Note = cfg.note
+	}
 	switch cfg.source {
 	case workflow.ImportSourceFile:
 		groups, err := loadFindingsFiles(cfg.findingsFrom)
@@ -94,10 +115,6 @@ func (e *Engine) importFindings(ctx context.Context, req model.ReviewRequest, cf
 		}
 		return findings, provenance, nil
 	case workflow.ImportSourcePublishedReview:
-		if provenance.Note == "" {
-			provenance.Note = publishedFindingNote
-		}
-		provenance.ExemptDiffScope = true
 		source, ok := e.source.(model.PublishedReviewSource)
 		if !req.PostReview || !ok {
 			return nil, provenance, nil

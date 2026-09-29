@@ -38,8 +38,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/update.go`: Independent correction agent; validates selected-finding replacements and terminal resolutions, or assesses review-level disputes without generating verdicts, publishing, or exposing history.
-- `internal/review/import.go`: `import-findings` step; imports findings from a file or the published review into a named group with provenance (verifier note, diff-scope exemption, baseline review).
-- `internal/review/reconcile.go`: `reconcile` step; plans before the verdict how the run folds into the imported published review (adopted ids, dropped duplicates, resolved and still-open records) and lays the plan out at assembly. Also the merge absorption log.
+- `internal/review/import.go`: `import-findings` step; imports findings from a file or the published review into a named group with provenance (verifier note, diff-scope exemption, merge preference, dedupe skip, baseline review).
+- `internal/review/reconcile.go`: `reconcile` step (last step; maps the final findings onto the published review an imported group came from and resolves removed imported findings with their recorded reason) and the run's finding log (why each finding left the run, which ids merge prefers).
 - `internal/review/update_summary.go`: Reuses default-workflow finding and overall summarization passes for corrections, including small-model routing and failure fallback, while preserving unchanged and resolved findings.
 - `internal/review/update_workflow.go`: Executes the embedded `workflows/update.yaml` correction stages. Durable jobs checkpoint its result before publishing.
 - `internal/workflow/update.go`: Loads the built-in correction YAML with the shared spec parser; no external override path.
@@ -80,6 +80,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/model/types.go`: Shared domain types for requests, results, findings, verification, finalization, SCM data, toolchain data, and token usage.
 - `internal/model/format.go`: Human-readable formatting helpers for model values.
 - `internal/tokenestimate/tokenestimate.go`: Central prompt-token estimation API and current four-bytes-per-token heuristic.
+- `internal/workflow/import_sources.go`: Loads the embedded `workflows/import_sources.yaml` defaults (verifier note, diff-scope exemption, merge preference, dedupe skip) per `import-findings` source, strictly and only for the sources the engine reads.
 - `internal/workflow/spec.go`: Workflow YAML schema, parsing, default workflow construction, aliases, step config, and validation.
 
 ## Deduplication
@@ -199,7 +200,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `prompts/`: Agent system prompts and shared prompt snippets.
 - `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts.
-- `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews and internal-only `update.yaml` for chat corrections.
+- `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews, internal-only `update.yaml` for chat corrections, and `import_sources.yaml` with the per-source defaults of `import-findings`.
 - `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, and styleguide detectors. All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
 - `assets/`: Static assets used by output or packaging.
 - `testdata/`: Fixtures and golden data used by tests.

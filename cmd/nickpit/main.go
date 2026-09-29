@@ -240,6 +240,7 @@ type app struct {
 	disableDiffScope              bool
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
+	forceDedupeImported           bool
 	disablePatchSummary           bool
 	disableSuggestions            bool
 	requirePublish                bool
@@ -446,6 +447,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
+	root.PersistentFlags().BoolVar(&cli.forceDedupeImported, "force-dedupe-imported", false, "Also run dedupe steps on imported findings that skip them by default (findings imported from the published review were deduplicated when first published)")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().BoolVar(&cli.requirePublish, "require-publish", false, "Fail unless the requested review is published successfully")
@@ -1630,6 +1632,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	req.DisableDiffScope = a.disableDiffScope
 	req.DisableReasoningExtract = a.disableReasoningExtract
+	req.ForceDedupeImported = a.forceDedupeImported
 	if profile.ForceAllNudges {
 		req.ForceAllNudges = true
 	}

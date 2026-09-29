@@ -23,7 +23,13 @@ func MergeFindings(a, b model.Finding) model.Finding {
 		(b.ConfidenceScore == a.ConfidenceScore && len(b.Body) > len(a.Body)) {
 		base, other = b, a
 	}
+	return MergeOnto(base, other)
+}
 
+// MergeOnto folds other into base by the MergeFindings rules, but base keeps
+// its id and text whatever the confidences: callers use it when one finding
+// of a cluster must survive (an imported one, say).
+func MergeOnto(base, other model.Finding) model.Finding {
 	out := base
 	out.ConfidenceScore = noisyOr(base.ConfidenceScore, other.ConfidenceScore)
 	out.Priority = mostCriticalPriority(base.Priority, other.Priority)
@@ -64,6 +70,20 @@ func FoldCluster(findings []model.Finding) model.Finding {
 	out := ordered[0]
 	for _, f := range ordered[1:] {
 		out = MergeFindings(out, f)
+	}
+	return out
+}
+
+// FoldClusterOnto folds others into base, in descending confidence order,
+// keeping base's id and text (see MergeOnto).
+func FoldClusterOnto(base model.Finding, others []model.Finding) model.Finding {
+	ordered := append([]model.Finding(nil), others...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].ConfidenceScore > ordered[j].ConfidenceScore
+	})
+	out := base
+	for _, f := range ordered {
+		out = MergeOnto(out, f)
 	}
 	return out
 }

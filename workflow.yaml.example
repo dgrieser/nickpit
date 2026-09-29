@@ -28,8 +28,9 @@
 #                             (see "Importing findings" below)
 #   verify:<group>            verify an imported group like a reviewer's
 #   dedupe:<group>            de-duplicate an imported group
-#   reconcile                 fold the run into the review imported with
-#                             source published-review (see below)
+#   reconcile                 last step: map the final findings onto the
+#                             review imported with source published-review
+#                             (see below)
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
 # child can be a `lane:` — a list of steps that run sequentially within the
@@ -41,7 +42,7 @@
 # label derived from its contents.
 #
 # A `pipeline:` group is the explicit, streamed post-review tail:
-#   merge → finalize → [reconcile →] verdict, optionally followed by summarize.
+#   merge → finalize → verdict, optionally followed by summarize.
 # Its steps overlap with no barriers between them: each merge cluster flows
 # straight into finalize (and summarize) as soon as it is ready, while other
 # clusters are still merging; verdict gates on all finalizes and runs once.
@@ -337,16 +338,20 @@ steps:
           time_budget:
             max_seconds: 2400
       # On a re-review, the open findings of the review already published on
-      # the merge request are imported, verified again against the current
-      # code (the verifier is told they may be outdated), and merged with the
-      # new findings. Empty unless publishing to a source that can read the
-      # published review (GitLab) and a review is already there.
+      # the merge request are imported and go through the same process as new
+      # ones: classified, verified again against the current code (the
+      # verifier is told they may be outdated), and merged with the new
+      # findings, where an imported finding survives any cluster it is in.
+      # Empty unless publishing to a source that can read the published review
+      # (GitLab) and a review is already there. dedupe:imported is a no-op
+      # unless forced with --force-dedupe-imported: the imported findings were
+      # deduplicated when first published.
       - lane:
           - type: import-findings
             config:
-              group: published
+              group: imported
               source: published-review
-          - type: verify:published
+          - type: verify:imported
             config:
               scope: finding
               categorize:
@@ -354,7 +359,10 @@ steps:
                 time_budget:
                   weight: 5
                   max_seconds: 30
-        name: Published findings
+          - type: dedupe:imported
+            config:
+              scope: reviewer
+        name: Imported findings
         config:
           time_budget:
             max_seconds: 2400
@@ -378,14 +386,6 @@ steps:
           scope: cluster
           time_budget:
             weight: 30
-      # Folds the run into the imported published review before the verdict:
-      # imported findings keep their threads, refuted or merged-away ones are
-      # resolved, and ones that were not re-verified stay open as records the
-      # verdict sees as read-only context. No model calls.
-      - type: reconcile
-        config:
-          scope: all
-          group: published
       - type: verdict
         config:
           model: "@small"
@@ -402,6 +402,15 @@ steps:
     config:
       time_budget:
         max_seconds: 900
+  # Maps the final findings onto the published review the imported group came
+  # from: imported findings still present update their threads, the ones the
+  # run removed are resolved with the reason (refuted, classified out, merged,
+  # below a threshold), and new findings open new threads. No model calls.
+  - type: reconcile
+    name: Reconcile
+    config:
+      scope: all
+      group: imported
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
@@ -597,30 +606,34 @@ steps:
 #            json format;
 #            published-review: the open findings of the review this token
 #            already published on the merge request (GitLab, publishing runs
-#            only; the group stays empty otherwise). The verifier then skips
-#            the diff-scope filter for them: leaving the diff proves nothing.
-#   note     provenance the verifier is told for each finding; the
-#            published-review source says "might be outdated" by default
-# `reconcile` (config: group: <a published-review import>) runs after
-# finalize and directly before verdict (in a pipeline, or flat), and nothing
-# after it may replace the findings (merge, finalize, findings_from). It
-# marks the candidates for each open published thread (findings carrying its
-# id or matching it), applies the final diff-scope safeguard (candidates, and
-# findings merge folded a published one into, are exempt), the verdict's
-# priority/confidence filters, and the priority filter of a summarize step
-# right after the verdict, and only then lets each thread keep one
-# surviving candidate, which takes over its id. The plan is thus made on the
-# final findings. Imported findings keep their threads, refuted or merged-away ones
-# are resolved, and ones that were not re-verified stay open as records the
-# verdict gets as explicit read-only input: they shape its wording (also on
-# its deterministic and failure paths) but never its correctness.
+#            only; the group stays empty otherwise). The imported findings go
+#            through the run like new findings, with three differences: the
+#            verifier skips the diff-scope filter for them (leaving the diff
+#            proves nothing), merge keeps an imported finding as the survivor
+#            of any cluster it is in (its id and text, extended by the
+#            duplicates), and dedupe steps skip them unless forced
+#            (`force_dedupe_imported: true` on the dedupe step, or
+#            --force-dedupe-imported): they were deduplicated when published.
+#   note     provenance the verifier is told for each finding, replacing the
+#            source's default note
+# Each source's defaults (note, diff-scope exemption, merge preference, dedupe
+# skip) are defined in the embedded workflows/import_sources.yaml.
+# `reconcile` (config: group: <a published-review import>) is the last step.
+# It maps the final findings onto that published review: an imported finding
+# still present updates its thread; one the run removed is resolved (and its
+# GitLab discussion with it), with the reason the removing step recorded:
+# refuted, classified out, merged into another finding, or below a priority
+# or confidence threshold; one lost without a recorded reason stays open
+# unchanged. New findings open new threads. It makes no model calls.
 #
 # steps:
 #   - parallel:
 #       - lane:
 #           - type: import-findings
-#             config: { group: published, source: published-review }
-#           - type: verify:published
+#             config: { group: imported, source: published-review }
+#           - type: verify:imported
+#           - type: dedupe:imported
+#             config: { force_dedupe_imported: true }
 #       - lane:
 #           - type: import-findings
 #             findings_from: scanner.json
@@ -629,9 +642,9 @@ steps:
 #   - pipeline:
 #       - type: merge
 #       - type: finalize
-#       - type: reconcile
-#         config: { group: published }
 #       - type: verdict
+#   - type: reconcile
+#     config: { group: imported }
 #
 # ---------------------------------------------------------------------------
 # Findings injection: `findings_from` on a verify, dedupe, or merge step is the

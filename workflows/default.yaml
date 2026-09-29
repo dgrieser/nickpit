@@ -233,16 +233,20 @@ steps:
           time_budget:
             max_seconds: 2400
       # On a re-review, the open findings of the review already published on
-      # the merge request are imported, verified again against the current
-      # code (the verifier is told they may be outdated), and merged with the
-      # new findings. Empty unless publishing to a source that can read the
-      # published review (GitLab) and a review is already there.
+      # the merge request are imported and go through the same process as new
+      # ones: classified, verified again against the current code (the
+      # verifier is told they may be outdated), and merged with the new
+      # findings, where an imported finding survives any cluster it is in.
+      # Empty unless publishing to a source that can read the published review
+      # (GitLab) and a review is already there. dedupe:imported is a no-op
+      # unless forced with --force-dedupe-imported: the imported findings were
+      # deduplicated when first published.
       - lane:
           - type: import-findings
             config:
-              group: published
+              group: imported
               source: published-review
-          - type: verify:published
+          - type: verify:imported
             config:
               scope: finding
               categorize:
@@ -250,7 +254,10 @@ steps:
                 time_budget:
                   weight: 5
                   max_seconds: 30
-        name: Published findings
+          - type: dedupe:imported
+            config:
+              scope: reviewer
+        name: Imported findings
         config:
           time_budget:
             max_seconds: 2400
@@ -274,14 +281,6 @@ steps:
           scope: cluster
           time_budget:
             weight: 30
-      # Folds the run into the imported published review before the verdict:
-      # imported findings keep their threads, refuted or merged-away ones are
-      # resolved, and ones that were not re-verified stay open as records the
-      # verdict sees as read-only context. No model calls.
-      - type: reconcile
-        config:
-          scope: all
-          group: published
       - type: verdict
         config:
           model: "@small"
@@ -298,3 +297,12 @@ steps:
     config:
       time_budget:
         max_seconds: 900
+  # Maps the final findings onto the published review the imported group came
+  # from: imported findings still present update their threads, the ones the
+  # run removed are resolved with the reason (refuted, classified out, merged,
+  # below a threshold), and new findings open new threads. No model calls.
+  - type: reconcile
+    name: Reconcile
+    config:
+      scope: all
+      group: imported

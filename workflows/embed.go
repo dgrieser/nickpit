@@ -19,6 +19,11 @@ var defaultSpecYAML []byte
 //go:embed update.yaml
 var updateSpecYAML []byte
 
+// importSourcesYAML holds the defaults of the import-findings sources.
+//
+//go:embed import_sources.yaml
+var importSourcesYAML []byte
+
 // exampleTemplate is the documented form of the default spec: prose plus a
 // {{SPEC}} marker that ExampleYAML replaces with default.yaml verbatim.
 //
@@ -32,3 +37,6 @@ func Default() []byte { return bytes.Clone(defaultSpecYAML) }
 // Update returns a copy of the built-in correction workflow. It is not loaded
 // from user configuration.
 func Update() []byte { return bytes.Clone(updateSpecYAML) }
+
+// ImportSources returns a copy of the embedded import-source defaults.
+func ImportSources() []byte { return bytes.Clone(importSourcesYAML) }

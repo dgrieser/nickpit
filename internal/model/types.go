@@ -69,10 +69,14 @@ type ReviewRequest struct {
 	ForceAllNudges bool
 	// MaxFindings caps the findings each review agent may report across its
 	// initial pass and nudges; 0 = unlimited.
-	MaxFindings               int
-	DisableDiffScope          bool
-	DisableParallelToolCalls  bool
-	DisableReasoningExtract   bool
+	MaxFindings              int
+	DisableDiffScope         bool
+	DisableParallelToolCalls bool
+	DisableReasoningExtract  bool
+	// ForceDedupeImported runs dedupe steps on imported groups that skip it
+	// by default (findings imported from the published review were already
+	// deduplicated when they were first published).
+	ForceDedupeImported       bool
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
 	DisableWorkflowTimeBudget bool

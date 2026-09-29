@@ -11,7 +11,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
@@ -35,12 +34,6 @@ type VerdictOptions struct {
 	// ConfidenceThreshold removes low-confidence findings before verdict
 	// reasoning. It uses finalized/display confidence; <=0 disables the filter.
 	ConfidenceThreshold float64
-	// OpenRecords are findings an earlier review published that stay open
-	// without being re-verified in this run (see the reconcile step). They
-	// shape the wording only: correctness and confidence come from the active
-	// findings alone. The agent sees them as `open_records`, and the
-	// deterministic and failure paths name them (openRecordsNotice).
-	OpenRecords []model.Finding
 }
 
 func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts VerdictOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -68,6 +61,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if priorityDropped > 0 {
 		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("priority filter dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold)))
 		e.logf(ctx, "Verdict priority filter: dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold))
+		findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(opts.PriorityThreshold))
 	}
 	in = filtered
 	filtered, drops, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
@@ -80,6 +74,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		e.logf(ctx, "Verdict confidence filter: dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold)
 		for _, drop := range drops {
 			e.logf(ctx, "Verdict confidence filter dropped finding: id=%s confidence=%.2f source=%s threshold=%.2f title=%q", drop.ID, drop.Confidence, drop.Source, opts.ConfidenceThreshold, drop.Title)
+			findingLogFrom(ctx).remove(drop.ID, confidenceDropReason(opts.ConfidenceThreshold))
 		}
 	}
 	in = filtered
@@ -116,7 +111,6 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		} else {
 			out.OverallExplanation = "No finalized findings remained."
 		}
-		out.OverallExplanation = withOpenRecordsNotice(out.OverallExplanation, opts.OpenRecords)
 		return out, model.AgentRun{Name: "Verdict Review", Role: "verdict", Status: model.AgentRunStatusSkipped}, nil
 	}
 
@@ -143,14 +137,12 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		DisablePatchSummary        bool
 		DisableSuggestions         bool
 		StyleGuideToolchainSnippet string
-		HasOpenRecords             bool
 	}{
 		OutputSchemaSnippet:        outputSchemaSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		DisableSuggestions:         opts.DisableSuggestions,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
-		HasOpenRecords:             len(opts.OpenRecords) > 0,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
@@ -174,7 +166,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 			return nil, model.AgentRun{}, err
 		}
 	}
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.OpenRecords, opts.ContextNotes, thresholdRank, opts.DisableSuggestions, opts.DiffFormat)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.DisableSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -321,7 +313,7 @@ func verdictFilterConfidence(finding model.Finding) (float64, string) {
 	return finding.ConfidenceScore, "review"
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, openRecords []model.Finding, contextNotes string, thresholdRank int, disableSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -361,17 +353,6 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 	}
 	if strings.TrimSpace(contextNotes) != "" {
 		payloadMap["notes"] = contextNotes
-	}
-	if len(openRecords) > 0 {
-		records := make([]map[string]any, 0, len(openRecords))
-		for _, f := range openRecords {
-			title, body, rank, _ := reviewmd.FindingDisplay(f)
-			records = append(records, map[string]any{
-				"id": f.ID, "title": title, "body": body, "priority": rank,
-				"priority_floor": priorityFloor(f, thresholdRank), "code_location": f.CodeLocation,
-			})
-		}
-		payloadMap["open_records"] = records
 	}
 	user, err := llm.RenderJSON(payloadMap)
 	if err != nil {
@@ -516,31 +497,4 @@ func findingConfidence(f model.Finding) float64 {
 		return f.Verification.ConfidenceScore
 	}
 	return f.ConfidenceScore
-}
-
-// withOpenRecordsNotice appends openRecordsNotice to explanation when there
-// are open records.
-func withOpenRecordsNotice(explanation string, records []model.Finding) string {
-	if len(records) == 0 {
-		return explanation
-	}
-	if strings.TrimSpace(explanation) == "" {
-		return openRecordsNotice(records)
-	}
-	return explanation + " " + openRecordsNotice(records)
-}
-
-// openRecordsNotice names the still-open records for a verdict that did not
-// go through the agent.
-func openRecordsNotice(records []model.Finding) string {
-	titles := make([]string, 0, len(records))
-	for _, f := range records {
-		title, _, rank, _ := reviewmd.FindingDisplay(f)
-		titles = append(titles, fmt.Sprintf("P%d %s", rank, title))
-	}
-	noun, verb := "findings", "stay"
-	if len(records) == 1 {
-		noun, verb = "finding", "stays"
-	}
-	return fmt.Sprintf("%d %s from an earlier review of this change %s open without re-verification in this run: %s.", len(records), noun, verb, strings.Join(titles, "; "))
 }

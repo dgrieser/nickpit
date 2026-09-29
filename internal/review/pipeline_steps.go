@@ -489,7 +489,6 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, groups, sc.Req, st.limiter, "", sc.categorizeAgentContext(), budgets)
 		st.writeBackVectorResults(vr)
 		st.addVerificationTelemetry("", telemetry, warnings)
-		st.addRefuted(telemetry.Refuted)
 		if err != nil {
 			sc.Engine.logf(ctx, "Verifier failed before merge: categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
@@ -525,7 +524,6 @@ func (e *Engine) verifyVectorStepFunc(groupID string) stepFunc {
 		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+groupID, sc.Override, sc.Req, sc.Engine.logf)
 		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, groups, sc.Req, st.limiter, name, sc.categorizeAgentContext(), budgets)
 		st.addVerificationTelemetry(groupID, telemetry, warnings)
-		st.addRefuted(telemetry.Refuted)
 		if err != nil {
 			sc.Engine.logf(ctx, "Verifier failed for group: group=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
@@ -541,6 +539,10 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 		vr, ok := st.vectorResult(vectorID)
 		if !ok {
 			return fmt.Errorf("workflow: dedupe:%s requires a preceding review:%s step", vectorID, vectorID)
+		}
+		if skipsDedupe(st.groupProvenance(vectorID), sc.Req) {
+			sc.Engine.logf(ctx, "Dedupe skipped for imported group %s: its findings were already deduplicated when first reported (force with --force-dedupe-imported or force_dedupe_imported)", vectorID)
+			return nil
 		}
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
 			return nil
@@ -585,8 +587,29 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 		if err != nil {
 			return err
 		}
-		vr := st.vectorResults()
-		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
+		// Groups that skip dedupe (see groupProvenance.SkipDedupe) sit this
+		// one out unless it is forced.
+		st.mu.Lock()
+		vr := st.vectorResultsLocked()
+		var subset []agentResult
+		var positions []int
+		i := 0
+		for _, id := range st.groupOrder {
+			g := st.groupByID[id]
+			if !g.filled {
+				continue
+			}
+			if !skipsDedupe(g.provenance, sc.Req) {
+				subset = append(subset, vr[i])
+				positions = append(positions, i)
+			}
+			i++
+		}
+		st.mu.Unlock()
+		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, subset, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
+		for j, pos := range positions {
+			vr[pos] = subset[j]
+		}
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.dedupeRuns = append(st.dedupeRuns, runs...)
@@ -639,6 +662,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		}
 
 		filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
+		findingLogFrom(ctx).removeDropped(mergeResult.resp.Findings, filtered, priorityDropReason(req.PriorityThreshold))
 		if sc.Engine.logger != nil {
 			sc.Engine.logger.LiveFindings(logging.FindingUpdate{
 				Duplicate: max(len(verifiedMergeInputs)-len(mergeResult.resp.Findings), 0),
@@ -747,13 +771,6 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
 			})
 			st.mu.Unlock()
-			// Nothing survived, yet published findings may still need closing
-			// (all refuted) or carrying as open records.
-			if fused.hasReconcile {
-				if err := e.reconcileStepFunc(reconcileGroup(fused.reconcile), fused.verdict.Config, fused.summarize.Config, fused.hasSummarize)(ctx, mergeSC, st); err != nil {
-					return err
-				}
-			}
 			verdictCtx, verdictCancel := verdictBudget.startOrCanceled()
 			defer verdictCancel()
 			if err := e.verdictStepFunc(nil)(verdictCtx, verdictSC, st); err != nil {
@@ -829,6 +846,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			mergeInputVerification(merged, verifiedMergeInputs)
 			rawMergedByCluster[outcome.index] = merged
 			filtered := filterByPriority(merged, mergeSC.Req.PriorityThreshold)
+			findingLogFrom(ctx).removeDropped(merged, filtered, priorityDropReason(mergeSC.Req.PriorityThreshold))
 			if outcome.hasRun {
 				run := outcome.run
 				mergeRunsByCluster[outcome.index] = &run
@@ -922,35 +940,8 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			})
 		}
 
-		// Reconcile at the verdict's barrier: every cluster is finalized, and
-		// the verdict must see the reconciled set. Renames happen in place, so
-		// the summarized findings still adopt their ids by position below;
-		// dropped duplicates leave the verdict input and so the final set.
-		verdictInput := finalizedFindings
-		// activeMask marks, by position in finalizedFindings, what stays active
-		// after reconcile; the summaries adopt ids by position, so they are
-		// filtered the same way (ids alone can collide after renames).
-		var activeMask []bool
-		if fused.hasReconcile {
-			filters := verdictFiltersOf(verdictSC.Req)
-			if fused.hasSummarize {
-				filters.summarizePriorityThreshold = summarizeSC.Req.PriorityThreshold
-			}
-			plan, err := st.reconcileForGroup(ctx, mergeSC.Engine, reconcileGroup(fused.reconcile), finalizedFindings, filters)
-			if err != nil {
-				return err
-			}
-			if plan != nil {
-				activeMask = plan.keepMask(finalizedFindings)
-				verdictInput = plan.apply(finalizedFindings)
-				st.mu.Lock()
-				st.reconciled = plan
-				st.mu.Unlock()
-			}
-		}
-
 		base := &model.ReviewResult{
-			Findings:               verdictInput,
+			Findings:               finalizedFindings,
 			OverallCorrectness:     aggregateOverallCorrectness(mergeInputs, rawMergedCount),
 			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), rawMergedCount, absorbed, llmClusters),
 			OverallConfidenceScore: maxOverallConfidence(mergeInputs),
@@ -977,7 +968,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalFindings := verdict.Findings
 		if fused.hasSummarize {
-			finalFindings = adoptFinalizedIdentity(appendClusterFindings(summarizedByCluster), finalizedFindings, originalIDs, activeMask)
+			finalFindings = adoptFinalizedIdentity(appendClusterFindings(summarizedByCluster), finalizedFindings, originalIDs)
 			finalFindings = keepFindingsByID(finalFindings, findingIDSet(verdict.Findings))
 		}
 		verdict.Findings = finalFindings
@@ -1218,14 +1209,13 @@ func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *
 	}
 	if dropped > 0 {
 		sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+		findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 	}
 	return filtered, nil
 }
 
 func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
-	contextNotes, openRecords := st.verdictInputs()
-	opts := verdictOptionsFromStep(sc, contextNotes)
-	opts.OpenRecords = openRecords
+	opts := verdictOptionsFromStep(sc, st.contextNotes)
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		if verdict != nil {
@@ -1237,12 +1227,12 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 			// failure path (the flat pipeline pre-filters, the fused one not).
 			if dropped > 0 {
 				sc.Engine.logf(ctx, "Verdict fallback dropped findings below display priority threshold: count=%d", dropped)
+				findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			}
 			in = filtered
 		}
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 		applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
-		in.OverallExplanation = withOpenRecordsNotice(in.OverallExplanation, opts.OpenRecords)
 		run.Name = "verdict"
 		run.Role = "verdict"
 		run.Status = model.AgentRunStatusFailed
@@ -1488,6 +1478,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		} else if dropped > 0 {
 			sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			findingLogFrom(ctx).removeDropped(finalized.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			finalized = filtered
 		}
 		st.setResultLocked(finalized)
@@ -1527,14 +1518,13 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			st.setResultLocked(st.materializeFromGroupsLocked(sc.Req))
 		}
 		in := st.result
+		contextNotes := st.contextNotes
 		st.mu.Unlock()
-		contextNotes, openRecords := st.verdictInputs()
 
 		if in == nil {
 			return nil
 		}
 		opts := verdictOptionsFromStep(sc, contextNotes)
-		opts.OpenRecords = openRecords
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -1545,7 +1535,6 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings.addf("Verdict failed: %v; using merged overall fields", err)
 			applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
-			in.OverallExplanation = withOpenRecordsNotice(in.OverallExplanation, openRecords)
 			verdictRun.Name = "verdict"
 			verdictRun.Role = "verdict"
 			verdictRun.Status = model.AgentRunStatusFailed
@@ -1605,6 +1594,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		} else if dropped > 0 {
 			sc.Engine.logf(ctx, "Summarize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			in = filtered
 			st.mu.Lock()
 			// A stricter per-step priority_threshold than verdict's can empty the
@@ -1707,15 +1697,13 @@ func stripInjectedGroupSuggestions(groups []injectedGroup) {
 
 // adoptFinalizedIdentity maps each summarized finding back to the finalized
 // finding it was cut from and gives it that finding's current id. Summarize
-// ran on a clone taken before the ids changed (normalization of invalid or
-// colliding ids, reconcile renames), and its own priority filter may have
-// left some findings out, so the mapping goes by the original id rather than
-// by position; findings sharing an original id are matched in order, which
-// summarize preserves. A finding the reconcile plan dropped (activeMask false)
-// is left out, whatever id it now carries: after a rename a dropped original
-// and the survivor on its thread share one. Summaries that map to nothing are
-// dropped too; they could only resurface with an id the verdict never saw.
-func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs []string, activeMask []bool) []model.Finding {
+// ran on a clone taken before normalization repaired invalid or colliding ids,
+// and its own priority filter may have left some findings out, so the mapping
+// goes by the original id rather than by position; findings sharing an
+// original id are matched in order, which summarize preserves. Summaries that
+// map to nothing are dropped; they could only resurface with an id the verdict
+// never saw.
+func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs []string) []model.Finding {
 	positions := make(map[string][]int, len(originalIDs))
 	for i, id := range originalIDs {
 		positions[id] = append(positions[id], i)
@@ -1728,9 +1716,6 @@ func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs [
 		}
 		i := queue[0]
 		positions[f.ID] = queue[1:]
-		if activeMask != nil && !activeMask[i] {
-			continue
-		}
 		f.ID = finalized[i].ID
 		if f.Verification != nil {
 			f.Verification.ID = f.ID
@@ -1738,4 +1723,11 @@ func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs [
 		out = append(out, f)
 	}
 	return out
+}
+
+// skipsDedupe reports whether a group with this provenance sits out dedupe:
+// imported groups can be marked as already deduplicated, which a forced run
+// (ReviewRequest.ForceDedupeImported) overrides.
+func skipsDedupe(provenance *groupProvenance, req model.ReviewRequest) bool {
+	return provenance != nil && provenance.SkipDedupe && !req.ForceDedupeImported
 }

@@ -1,0 +1,32 @@
+# Import sources are embedded into the binary and used by the import-findings
+# step. Keep this file data-only: each entry is the provenance an imported
+# group starts from, and the engine implements how each source is read, so
+# every source it knows must appear here and nothing else may.
+#
+# note:
+#   Provenance the verifier is told for every finding of the group. A step's
+#   own `note:` replaces it.
+# exempt_diff_scope:
+#   Skip the diff-scope filter for the group, in verification and in the final
+#   safeguard: the findings were in scope when first reported, and leaving the
+#   diff proves nothing.
+# prefer_in_merge:
+#   Keep the group's findings as the survivors of any merge cluster they end
+#   up in, with their ids; duplicates only extend them.
+# skip_dedupe:
+#   Skip dedupe steps for the group unless forced (--force-dedupe-imported or
+#   force_dedupe_imported on the step): its findings were already
+#   deduplicated when first reported.
+sources:
+  # The step's findings_from files, in the --output json format.
+  file: {}
+  # The open findings of the review this token already published on the
+  # merge request (GitLab, publishing runs only).
+  published-review:
+    note: >-
+      an earlier review of this change published it, possibly against an older
+      revision, so it might be outdated. Confirm the problem still exists in the
+      current code.
+    exempt_diff_scope: true
+    prefer_in_merge: true
+    skip_dedupe: true

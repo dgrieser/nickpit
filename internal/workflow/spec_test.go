@@ -25,11 +25,14 @@ func TestDefaultSpecsValidate(t *testing.T) {
 		t.Fatalf("DefaultSpec invalid: %v", err)
 	}
 	full := DefaultSpec()
-	last := full.Steps[len(full.Steps)-1]
-	if !last.IsPipeline() {
-		t.Fatalf("DefaultSpec last step is not a pipeline: %+v", last)
+	if reconcile := full.Steps[len(full.Steps)-1]; reconcile.Type != StepReconcile {
+		t.Fatalf("DefaultSpec last step = %+v, want reconcile", reconcile)
 	}
-	wantTail := []string{StepMerge, StepFinalize, StepReconcile, StepVerdict, StepSummarize}
+	last := full.Steps[len(full.Steps)-2]
+	if !last.IsPipeline() {
+		t.Fatalf("DefaultSpec step before reconcile is not a pipeline: %+v", last)
+	}
+	wantTail := []string{StepMerge, StepFinalize, StepVerdict, StepSummarize}
 	if len(last.Pipeline) != len(wantTail) {
 		t.Fatalf("DefaultSpec pipeline has %d steps, want %d", len(last.Pipeline), len(wantTail))
 	}
@@ -52,8 +55,8 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	reviewer := ScopeReviewer
 	max360 := 360
 	max900 := 900
-	publishedGroup := "published"
-	publishedSource := ImportSourcePublishedReview
+	importedGroup := "imported"
+	importedSource := ImportSourcePublishedReview
 	max2400 := 2400
 	max30 := 30
 	weight5 := 5
@@ -80,9 +83,10 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}, Context: fullContext()}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}}
 	}
-	parallel = append(parallel, StepEntry{Name: "Published findings", Lane: []StepEntry{
-		{Type: StepImportFindings, Config: &StepOverride{Group: &publishedGroup, Source: &publishedSource}},
-		{Type: StepVerifyPrefix + publishedGroup, Config: &StepOverride{Scope: &finding, Categorize: &AgentOverride{Model: &small, TimeBudget: &TimeBudget{Weight: &weight5, MaxSeconds: &max30}}}},
+	parallel = append(parallel, StepEntry{Name: "Imported findings", Lane: []StepEntry{
+		{Type: StepImportFindings, Config: &StepOverride{Group: &importedGroup, Source: &importedSource}},
+		{Type: StepVerifyPrefix + importedGroup, Config: &StepOverride{Scope: &finding, Categorize: &AgentOverride{Model: &small, TimeBudget: &TimeBudget{Weight: &weight5, MaxSeconds: &max30}}}},
+		{Type: StepDedupePrefix + importedGroup, Config: &StepOverride{Scope: &reviewer}},
 	}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max2400}}})
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max360}}},
@@ -90,10 +94,10 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 		{Name: "Finalize", Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight50}, Context: fullContext()}},
 			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
-			{Type: StepReconcile, Config: &StepOverride{Scope: &all, Group: &publishedGroup}},
 			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight10}}},
 			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight10}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max900}}},
+		{Type: StepReconcile, Name: "Reconcile", Config: &StepOverride{Scope: &all, Group: &importedGroup}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
@@ -185,13 +189,13 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 		t.Fatal("expected a parallel reviewer group")
 		return
 	}
-	// One lane per reviewer, then the published-findings lane.
+	// One lane per reviewer, then the imported-findings lane.
 	if len(parallel.Parallel) != len(ReviewVectorIDs)+1 {
 		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs)+1)
 	}
-	published := parallel.Parallel[len(ReviewVectorIDs)]
-	if len(published.Lane) != 2 || published.Lane[0].Type != StepImportFindings || published.Lane[1].Type != StepVerifyPrefix+"published" {
-		t.Fatalf("published lane = %+v", published)
+	imported := parallel.Parallel[len(ReviewVectorIDs)]
+	if len(imported.Lane) != 3 || imported.Lane[0].Type != StepImportFindings || imported.Lane[1].Type != StepVerifyPrefix+"imported" || imported.Lane[2].Type != StepDedupePrefix+"imported" {
+		t.Fatalf("imported lane = %+v", imported)
 	}
 	wantLane := []string{StepReviewPrefix, StepVerifyPrefix, StepDedupePrefix}
 	for i, lane := range parallel.Parallel[:len(ReviewVectorIDs)] {
@@ -1361,13 +1365,15 @@ steps:
       - lane:
           - type: import-findings
             config:
-              group: published
+              group: imported
               source: published-review
               note: may be outdated
-          - type: verify:published
+          - type: verify:imported
             config:
               scope: finding
-          - type: dedupe:published
+          - type: dedupe:imported
+            config:
+              force_dedupe_imported: true
       - lane:
           - type: import-findings
             findings_from: scanner.json
@@ -1377,10 +1383,10 @@ steps:
   - pipeline:
       - type: merge
       - type: finalize
-      - type: reconcile
-        config:
-          group: published
       - type: verdict
+  - type: reconcile
+    config:
+      group: imported
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -1395,8 +1401,8 @@ func TestImportFindingsRejections(t *testing.T) {
 		"verify without import": {`
 version: 1
 steps:
-  - type: verify:published
-`, "requires a preceding import-findings (group: published)"},
+  - type: verify:imported
+`, "requires a preceding import-findings (group: imported)"},
 		"missing group": {`
 version: 1
 steps:
@@ -1421,7 +1427,7 @@ version: 1
 steps:
   - type: import-findings
     findings_from: a.json
-    config: {group: published, source: published-review}
+    config: {group: imported, source: published-review}
 `, "takes no findings_from"},
 		"two published imports": {`
 version: 1
@@ -1456,71 +1462,49 @@ steps:
   - type: import-findings
     findings_from: a.json
     config: {group: scanner}
-  - pipeline:
-      - type: merge
-      - type: finalize
-      - type: reconcile
-        config: {group: scanner}
-      - type: verdict
+  - type: merge
+  - type: reconcile
+    config: {group: scanner}
 `, "is not imported with source published-review"},
-		"reconcile before finalize": {`
+		"reconcile without findings": {`
 version: 1
 steps:
   - type: import-findings
-    config: {group: published, source: published-review}
-  - type: merge
+    config: {group: imported, source: published-review}
   - type: reconcile
-    config: {group: published}
-`, "must follow finalize"},
-		"reconcile after verdict": {`
+    config: {group: imported}
+`, "needs a preceding merge"},
+		"reconcile not last": {`
 version: 1
 steps:
   - type: import-findings
-    config: {group: published, source: published-review}
+    config: {group: imported, source: published-review}
   - type: merge
   - type: finalize
+  - type: reconcile
+    config: {group: imported}
   - type: verdict
-  - type: reconcile
-    config: {group: published}
-`, "must be directly followed by \"verdict\""},
-		"summarize between reconcile and verdict": {`
+`, "must be the last step"},
+		"reconcile inside pipeline": {`
 version: 1
 steps:
   - type: import-findings
-    config: {group: published, source: published-review}
-  - type: merge
-  - type: finalize
-  - type: reconcile
-    config: {group: published}
-  - type: summarize
-  - type: verdict
-`, "must be directly followed by \"verdict\""},
-		"finalize after reconcile": {`
-version: 1
-steps:
-  - type: import-findings
-    config: {group: published, source: published-review}
-  - type: merge
-  - type: finalize
-  - type: reconcile
-    config: {group: published}
-  - type: verdict
-  - type: finalize
-`, "would replace the reconciled findings"},
-		"injected summarize after reconciled pipeline": {`
-version: 1
-steps:
-  - type: import-findings
-    config: {group: published, source: published-review}
+    config: {group: imported, source: published-review}
   - pipeline:
       - type: merge
       - type: finalize
       - type: reconcile
-        config: {group: published}
+        config: {group: imported}
       - type: verdict
-  - type: summarize
-    findings_from: other.json
-`, "would replace the reconciled findings"},
+`, "must be \"verdict\""},
+		"force_dedupe_imported on verify": {`
+version: 1
+steps:
+  - type: import-findings
+    config: {group: imported, source: published-review}
+  - type: verify:imported
+    config: {force_dedupe_imported: true}
+`, "force_dedupe_imported"},
 		"import after merge": {`
 version: 1
 steps:
@@ -1543,18 +1527,18 @@ steps:
 	}
 }
 
-func TestFlatReconcileBeforeVerdictValidates(t *testing.T) {
+func TestFlatReconcileAsLastStepValidates(t *testing.T) {
 	spec, err := Load(writeSpec(t, `
 version: 1
 steps:
   - type: import-findings
-    config: {group: published, source: published-review}
+    config: {group: imported, source: published-review}
   - type: merge
   - type: finalize
-  - type: reconcile
-    config: {group: published}
   - type: verdict
   - type: summarize
+  - type: reconcile
+    config: {group: imported}
 `))
 	if err != nil {
 		t.Fatal(err)

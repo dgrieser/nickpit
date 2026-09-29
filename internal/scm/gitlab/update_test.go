@@ -27,6 +27,10 @@ type updateServer struct {
 	visibleWrites          int
 	loseActivationResponse bool
 	internalBodies         []string
+	// resolvable marks every discussion resolvable; resolvedDiscussions
+	// records the discussions resolved through the API.
+	resolvable          bool
+	resolvedDiscussions []string
 }
 
 func newUpdateServer(t *testing.T) (*updateServer, *Adapter, *model.ReviewResult) {
@@ -62,7 +66,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteJSON := func(n DiscussionNote) map[string]any {
-		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
+		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "resolvable": s.resolvable, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
 	}
 	discussionJSON := func(d MRDiscussion) map[string]any {
 		notes := []any{}
@@ -127,6 +131,13 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == http.MethodPut {
+		for _, d := range s.discussions {
+			if tail == "/discussions/"+d.ID {
+				s.resolvedDiscussions = append(s.resolvedDiscussions, d.ID)
+				write(discussionJSON(d))
+				return
+			}
+		}
 		for i, d := range s.discussions {
 			for j, n := range d.Notes {
 				if tail != fmt.Sprintf("/discussions/%s/notes/%d", d.ID, n.ID) {

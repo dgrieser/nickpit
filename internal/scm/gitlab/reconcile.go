@@ -141,6 +141,9 @@ func (a *Adapter) publishReconciled(ctx context.Context, req model.ReviewRequest
 		report := reconciledChanges(before, published)
 		report.HeadSHA = rec.HeadSHA
 		var errs []error
+		if err := a.resolveDiscussions(ctx, req, published.ReviewID, report.Resolved); err != nil {
+			errs = append(errs, fmt.Errorf("resolving discussions: %w", err))
+		}
 		if err := a.replyReconciled(ctx, req, published, report); err != nil {
 			errs = append(errs, fmt.Errorf("re-review reply: %w", err))
 		}
@@ -149,6 +152,43 @@ func (a *Adapter) publishReconciled(ctx context.Context, req model.ReviewRequest
 		a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, published.ReviewID)
 		return errors.Join(errs...)
 	}
+}
+
+// resolveDiscussions resolves the GitLab discussions of the findings the
+// re-review resolved, so a closed finding is also a closed thread. Threads
+// GitLab cannot resolve (a general note rather than a discussion) or already
+// resolved are left as they are.
+func (a *Adapter) resolveDiscussions(ctx context.Context, req model.ReviewRequest, reviewID string, findingIDs []string) error {
+	if len(findingIDs) == 0 {
+		return nil
+	}
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return err
+	}
+	discussions, err := a.client.MRDiscussions(ctx, req.Repo, req.Identifier)
+	if err != nil {
+		return err
+	}
+	roots := make(map[string]DiscussionNote, len(discussions))
+	for _, d := range discussions {
+		if len(d.Notes) > 0 {
+			roots[d.ID] = d.Notes[0]
+		}
+	}
+	targets := indexUpdateTargets(discussions, user.ID, reviewID)
+	var errs []error
+	for _, id := range findingIDs {
+		target := targets[id]
+		root, ok := roots[target.DiscussionID]
+		if target.DiscussionID == "" || !ok || !root.Resolvable || root.Resolved {
+			continue
+		}
+		if err := a.client.ResolveMRDiscussion(ctx, req.Repo, req.Identifier, target.DiscussionID); err != nil {
+			errs = append(errs, fmt.Errorf("finding %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // rebaseReconciled replays a re-review onto corrections that landed while it

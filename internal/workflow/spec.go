@@ -46,9 +46,9 @@ const (
 	// review already published on the change request, ...) into a named group
 	// that verify:<group> / dedupe:<group> and merge treat like a reviewer's.
 	StepImportFindings = "import-findings"
-	// StepReconcile folds the run into the review an import-findings step
-	// imported with source published-review, before the verdict, so a
-	// re-review updates that review instead of posting another one.
+	// StepReconcile maps the run's final findings onto the review an
+	// import-findings step imported with source published-review, as the last
+	// step, so a re-review updates that review instead of posting another one.
 	StepReconcile = "reconcile"
 
 	StepReviewPrefix  = "review:"
@@ -230,9 +230,13 @@ type StepOverride struct {
 	MaxReasoningSeconds   *int `yaml:"max_reasoning_seconds"`
 
 	// Stage-specific tunables.
-	NudgeCount                *int     `yaml:"nudge_count"`
-	MaxFindings               *int     `yaml:"max_findings"`
-	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
+	NudgeCount              *int  `yaml:"nudge_count"`
+	MaxFindings             *int  `yaml:"max_findings"`
+	DisableReasoningExtract *bool `yaml:"disable_reasoning_extract"`
+	// ForceDedupeImported (dedupe steps only) deduplicates imported groups
+	// that skip dedupe by default, such as findings imported from the
+	// published review.
+	ForceDedupeImported       *bool    `yaml:"force_dedupe_imported"`
 	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
 	DisableSuggestions        *bool    `yaml:"disable_suggestions"`
@@ -495,6 +499,9 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		// probed as unable to honor it.
 		p.DisableJSONResponseFormat = true
 		req.DisableJSONResponseFormat = true
+	}
+	if o.ForceDedupeImported != nil {
+		req.ForceDedupeImported = *o.ForceDedupeImported
 	}
 	if o.DisableReasoningExtract != nil {
 		req.DisableReasoningExtract = *o.DisableReasoningExtract
@@ -936,6 +943,9 @@ func allowedStepOverrideKeys(stepType string) []string {
 	if stepAcceptsContextInclude(stepType) {
 		allowed = append(allowed, ContextIncludeKey)
 	}
+	if stepType == StepDedupe || strings.HasPrefix(stepType, StepDedupePrefix) {
+		allowed = append(allowed, "force_dedupe_imported")
+	}
 	switch stepType {
 	case StepImportFindings:
 		allowed = append(allowed, "group", "source", "note")
@@ -1045,22 +1055,10 @@ func (s Spec) Validate() error {
 	// reconcile step must name a published-review import.
 	imported := map[string]string{}
 	merged := false
-	finalized := false
+	// flat reports whether an earlier step produced the flat result reconcile
+	// maps onto the published review.
+	flat := false
 	idx := 0
-	// reconciled is set once a reconcile step ran; wantVerdict while a flat
-	// reconcile still waits for the verdict that must directly follow it.
-	reconciled, wantVerdict := false, false
-	// replacesReconciled rejects steps that would replace the result a
-	// reconcile step already planned against.
-	replacesReconciled := func(entry StepEntry) error {
-		if !reconciled {
-			return nil
-		}
-		if entry.IsPipeline() || entry.Type == StepMerge || entry.Type == StepFinalize || entry.Type == StepReconcile || len(entry.FindingsFrom) > 0 {
-			return fmt.Errorf("workflow: step %d: %q after reconcile would replace the reconciled findings", idx+1, entry.Type)
-		}
-		return nil
-	}
 	// validate checks one plain step's type and dependencies, returning the
 	// vector it reviews (if any). Per-vector follow-up steps (verify, dedupe,
 	// nudge, reasoning-extract) depend on a review of the same vector, which
@@ -1127,11 +1125,11 @@ func (s Spec) Validate() error {
 			}
 			return group, nil
 		case StepReconcile:
-			if err := validateReconcile(entry, imported, finalized); err != nil {
+			if err := validateReconcile(entry, imported, flat); err != nil {
 				return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 			}
-		case StepFinalize:
-			finalized = true
+		case StepMerge, StepFinalize, StepVerdict, StepSummarize:
+			flat = true
 		}
 		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
 			return v, nil
@@ -1141,13 +1139,6 @@ func (s Spec) Validate() error {
 	for _, entry := range s.Steps {
 		if entry.IsLane() {
 			return fmt.Errorf("workflow: lane is only allowed inside a parallel group")
-		}
-		if wantVerdict && entry.Type != StepVerdict {
-			return fmt.Errorf("workflow: step %d: %q must be directly followed by %q", idx, StepReconcile, StepVerdict)
-		}
-		wantVerdict = false
-		if err := replacesReconciled(entry); err != nil {
-			return err
 		}
 		if entry.IsPipeline() {
 			if err := validateGroupTimeBudget("pipeline", entry.Config); err != nil {
@@ -1159,15 +1150,7 @@ func (s Spec) Validate() error {
 			if err := validatePipelineGroup(entry, &idx); err != nil {
 				return err
 			}
-			for _, child := range entry.Pipeline {
-				if child.Type == StepReconcile {
-					if err := validateReconcile(child, imported, true); err != nil {
-						return fmt.Errorf("workflow: pipeline: %w", err)
-					}
-					reconciled = true
-				}
-			}
-			finalized = true
+			flat = true
 			// The pipeline group contains the merge; anything mutating groups
 			// afterwards is discarded.
 			merged = true
@@ -1222,12 +1205,13 @@ func (s Spec) Validate() error {
 		if entry.Type == StepMerge {
 			merged = true
 		}
-		if entry.Type == StepReconcile {
-			reconciled, wantVerdict = true, true
-		}
 	}
-	if wantVerdict {
-		return fmt.Errorf("workflow: %q must be directly followed by %q", StepReconcile, StepVerdict)
+	// reconcile maps the run's final findings onto the published review, so
+	// it runs last: any later step would change what it mapped.
+	for i, entry := range s.Steps {
+		if entry.Type == StepReconcile && i != len(s.Steps)-1 {
+			return fmt.Errorf("workflow: %q must be the last step", StepReconcile)
+		}
 	}
 	return nil
 }
@@ -1396,16 +1380,13 @@ func validatePipelineGroup(entry StepEntry, idx *int) error {
 	want := []pipelineMember{
 		{StepMerge, ScopeCluster},
 		{StepFinalize, ScopeCluster},
+		{StepVerdict, ScopeAll},
 	}
-	if len(entry.Pipeline) > 2 && entry.Pipeline[2].Type == StepReconcile {
-		want = append(want, pipelineMember{StepReconcile, ScopeAll})
-	}
-	want = append(want, pipelineMember{StepVerdict, ScopeAll})
-	if len(entry.Pipeline) == len(want)+1 {
+	n := len(entry.Pipeline)
+	if n == 4 {
 		want = append(want, pipelineMember{StepSummarize, ScopeCluster})
-	}
-	if len(entry.Pipeline) != len(want) {
-		return fmt.Errorf("workflow: pipeline must be merge → finalize → [reconcile →] verdict, optionally followed by summarize")
+	} else if n != 3 {
+		return fmt.Errorf("workflow: pipeline must be merge → finalize → verdict, optionally followed by summarize")
 	}
 	for i, child := range entry.Pipeline {
 		*idx++
@@ -1645,9 +1626,9 @@ func validateImport(entry StepEntry, imported map[string]string) (string, error)
 
 // validateReconcile checks a reconcile step: it runs after finalize and folds
 // the run into a group imported from the published review.
-func validateReconcile(entry StepEntry, imported map[string]string, finalized bool) error {
-	if !finalized {
-		return fmt.Errorf("%q must follow finalize", StepReconcile)
+func validateReconcile(entry StepEntry, imported map[string]string, flat bool) error {
+	if !flat {
+		return fmt.Errorf("%q needs a preceding merge, finalize, verdict, summarize, or pipeline step that produces the findings it maps", StepReconcile)
 	}
 	if entry.Config == nil || entry.Config.Group == nil {
 		return fmt.Errorf("%q needs config.group naming a %s import", StepReconcile, ImportSourcePublishedReview)

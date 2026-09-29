@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -76,9 +75,10 @@ type PipelineState struct {
 	// and failure paths emit static text not worth an LLM call.
 	verdictOverall string
 	summarizeRuns  []model.AgentRun
-	// absorbed is merge provenance (which finding absorbed which); reconciled
-	// is the reconcile step's plan, laid out by assemble.
-	absorbed   *absorptionLog
+	// findings records what happened to findings that left the run (see
+	// findingLog); reconciled is the reconcile step's plan, laid out by
+	// assemble.
+	findings   *findingLog
 	reconciled *reconcilePlan
 	// Verification runs: one categorize and one verify run per executed verify
 	// step, each aggregating every finding that step handled. The per-reviewer
@@ -222,9 +222,6 @@ type groupEntry struct {
 	// provenance is set for groups an import-findings step filled; nil for
 	// reviewer groups.
 	provenance *groupProvenance
-	// refuted maps the findings of this group the verifier refuted (and the
-	// drop policy removed) to the verifier's remarks.
-	refuted map[string]string
 }
 
 func newPipelineState(reviewCtx *model.ReviewContext, reviewOrder []string) *PipelineState {
@@ -259,23 +256,6 @@ func (st *PipelineState) groupProvenance(id string) *groupProvenance {
 	return nil
 }
 
-// addRefuted records verifier refutations per group (group id → finding id →
-// remarks).
-func (st *PipelineState) addRefuted(refuted map[string]map[string]string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	for id, findings := range refuted {
-		g := st.groupByID[id]
-		if g == nil {
-			continue
-		}
-		if g.refuted == nil {
-			g.refuted = map[string]string{}
-		}
-		maps.Copy(g.refuted, findings)
-	}
-}
-
 // verifyGroupLocked describes group id for verification; the caller must
 // hold st.mu.
 func (st *PipelineState) verifyGroupLocked(id string) verifyGroup {
@@ -284,17 +264,6 @@ func (st *PipelineState) verifyGroupLocked(id string) verifyGroup {
 		group.note, group.exemptDiffScope = g.provenance.Note, g.provenance.ExemptDiffScope
 	}
 	return group
-}
-
-// verdictInputs returns the verdict's context notes and the reconcile plan's
-// still-open records, which the verdict receives as explicit input.
-func (st *PipelineState) verdictInputs() (string, []model.Finding) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.reconciled == nil {
-		return st.contextNotes, nil
-	}
-	return st.contextNotes, st.reconciled.openRecords
 }
 
 func (st *PipelineState) setGroup(id string, result agentResult, session *reviewerSession) {
@@ -511,17 +480,6 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		if err != nil {
 			return nil, err
 		}
-		if entry.Type == workflow.StepReconcile && i+1 < len(spec.Steps) {
-			// A flat reconcile applies the filters of the verdict that
-			// directly follows it (Spec.Validate enforces the order), and of a
-			// summarize step right after that.
-			var summarize *workflow.StepOverride
-			hasSummarize := i+2 < len(spec.Steps) && spec.Steps[i+2].Type == workflow.StepSummarize
-			if hasSummarize {
-				summarize = spec.Steps[i+2].Config
-			}
-			bs.run = e.reconcileStepFunc(reconcileGroup(entry), spec.Steps[i+1].Config, summarize, hasSummarize)
-		}
 		p.units = append(p.units, planUnit{lanes: []boundLane{{name: entry.Name, steps: []boundStep{bs}}}})
 		p.needsSource = p.needsSource || bs.needsSource
 	}
@@ -541,8 +499,6 @@ type postMergeFusedSpec struct {
 	verdict      workflow.StepEntry
 	summarize    workflow.StepEntry
 	hasSummarize bool
-	reconcile    workflow.StepEntry
-	hasReconcile bool
 	labels       []string
 }
 
@@ -560,10 +516,6 @@ func fusedSpecFromPipeline(entry workflow.StepEntry) postMergeFusedSpec {
 		case workflow.StepFinalize:
 			fused.finalize = child
 			fused.labels = append(fused.labels, workflow.StepFinalize)
-		case workflow.StepReconcile:
-			fused.reconcile = child
-			fused.hasReconcile = true
-			fused.labels = append(fused.labels, workflow.StepReconcile)
 		case workflow.StepVerdict:
 			fused.verdict = child
 			fused.labels = append(fused.labels, workflow.StepVerdict)
@@ -591,9 +543,10 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	// Engine internals with no access to the pipeline state report warnings
 	// through the context-carried log.
 	ctx = withWarnings(ctx, st.warnings)
-	// Merge records which finding absorbed which (see absorptionLog).
-	st.absorbed = &absorptionLog{}
-	ctx = withAbsorptions(ctx, st.absorbed)
+	// Steps record what happened to findings that leave the run, and which
+	// findings merge must prefer (see findingLog).
+	st.findings = &findingLog{}
+	ctx = withFindingLog(ctx, st.findings)
 	var segments []model.SegmentRuntime
 	for unitIdx, unit := range p.units {
 		unitStart := time.Now()
@@ -740,12 +693,11 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	}
 	plan := st.reconciled
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
-		// The reconcile plan's exempt findings (published ones, and ones that
-		// absorbed a published finding) skip it: they were in scope when
-		// published, and reconcile already counted on them.
+		// Findings of the published review skip it: they were in scope when
+		// published, and leaving the diff proves nothing.
 		var published, fresh []model.Finding
 		for _, f := range res.Findings {
-			if plan != nil && plan.exemptFromDiffScope(f.ID) {
+			if plan != nil && plan.isPublished(f.ID) {
 				published = append(published, f)
 			} else {
 				fresh = append(fresh, f)
@@ -775,7 +727,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	}
 	if plan != nil {
 		// The reconcile step decided everything; this only lays out the
-		// published review's findings around the active ones.
+		// published review's findings around the final ones.
 		res.Findings = plan.layout(res.Findings)
 		res.ReviewID, res.Revision, res.CreatedAt = plan.baseline.Review.ReviewID, plan.baseline.Review.Revision, plan.baseline.Review.CreatedAt
 		res.Reconciliation = &model.Reconciliation{Before: plan.baseline.Review, HeadSHA: plan.headSHA}
@@ -1004,7 +956,7 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 		bs.run = e.importFindingsStepFunc(entry)
 		return bs, nil
 	case workflow.StepReconcile:
-		bs.run = e.reconcileStepFunc(reconcileGroup(entry), nil, nil, false)
+		bs.run = e.reconcileStepFunc(reconcileGroup(entry))
 		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {

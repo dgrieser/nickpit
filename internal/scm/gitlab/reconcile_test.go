@@ -225,3 +225,27 @@ func TestReconciledChanges(t *testing.T) {
 		t.Fatalf("changes = %+v", got)
 	}
 }
+
+// A finding the re-review resolved also gets its GitLab discussion resolved,
+// when GitLab can resolve it.
+func TestPublishReconciledResolvesDiscussionsOfResolvedFindings(t *testing.T) {
+	for name, resolvable := range map[string]bool{"resolvable": true, "general note": false} {
+		t.Run(name, func(t *testing.T) {
+			s, a, before := newUpdateServer(t)
+			s.resolvable = resolvable
+			after, _ := before.Clone()
+			after.Findings[0].Resolution = &model.FindingResolution{Reason: "The guard exists now."}
+			after.Reconciliation = &model.Reconciliation{Before: before, HeadSHA: "headsha"}
+			if err := a.PublishReview(context.Background(), model.ReviewRequest{Repo: "group/project", Identifier: 456}, after); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if resolvable {
+				want = 1
+			}
+			if len(s.resolvedDiscussions) != want || (want == 1 && s.resolvedDiscussions[0] != "finding-thread") {
+				t.Fatalf("resolved discussions = %v, want %d for the finding thread", s.resolvedDiscussions, want)
+			}
+		})
+	}
+}

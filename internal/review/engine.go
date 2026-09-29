@@ -784,6 +784,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		counts := dropsByVector[ref.vectorIdx]
 		dropCategorized, reason := shouldDropCategories(categories, opts.DropPolicy)
 		if dropCategorized {
+			findingLogFrom(ctx).remove(finding.ID, categorizeDropReason(categories, reason))
 			if e.logger != nil {
 				e.logger.ProgressFor(
 					e.progressInfo("categorize", categorizeProgressName(reviewerName, i), truncateFindingTitle(finding.Title)),
@@ -866,9 +867,6 @@ type verificationTelemetry struct {
 	// never disagree.
 	CategorizeRun *model.AgentRun
 	VerifyRun     *model.AgentRun
-	// Refuted maps group id → finding id → the verifier's remarks for every
-	// finding the verifier refuted and the policy dropped.
-	Refuted map[string]map[string]string
 }
 
 // verifyGroup is what verification needs to know about one finding group,
@@ -981,19 +979,11 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
 			}
 			droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			findingLogFrom(ctx).remove(finding.ID, verifyDropReason(reason, v.Remarks))
 			counts := dropsByVector[ref.vectorIdx]
 			switch reason {
 			case "refuted":
 				counts.refuted++
-				if id := groupAt(groups, ref.vectorIdx).id; id != "" {
-					if telemetry.Refuted == nil {
-						telemetry.Refuted = map[string]map[string]string{}
-					}
-					if telemetry.Refuted[id] == nil {
-						telemetry.Refuted[id] = map[string]string{}
-					}
-					telemetry.Refuted[id][finding.ID] = v.Remarks
-				}
 			case "unverified":
 				counts.unverified++
 			}
@@ -1242,8 +1232,8 @@ func mechanicallyDedupeFindings(ctx context.Context, findings []model.Finding) (
 			out = append(out, members...)
 			continue
 		}
-		folded := dedupe.FoldCluster(members)
-		absorptionsFromContext(ctx).record(folded.ID, members)
+		folded := foldCluster(findingLogFrom(ctx), members)
+		findingLogFrom(ctx).record(folded.ID, members)
 		out = append(out, folded)
 	}
 	absorbed := len(findings) - len(out)
@@ -1338,7 +1328,14 @@ func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextN
 	}
 	resp := cloneReviewResponse(result.resp)
 	// The dedupe agent shares the merge output schema, so a model may emit
-	// merged_from provenance here as well; it must not leak downstream.
+	// merged_from provenance. Keep what reconcile needs (a preferred finding
+	// survives, absorptions are logged), then strip it: it must not leak
+	// downstream.
+	log := findingLogFrom(ctx)
+	keepPreferredSurvivors(log, resp.Findings, input.resp.Findings)
+	for _, f := range resp.Findings {
+		log.recordIDs(f.ID, f.MergedFrom)
+	}
 	stripMergedFrom(resp.Findings)
 	return resp, run
 }
@@ -1542,6 +1539,72 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 	return findings, reviewerByID
 }
 
+// foldCluster folds a duplicate cluster into one finding. A member the run
+// prefers (an imported finding) is the base, so it survives with its
+// id and text and the others only extend it; with several, the most confident
+// of them. Without one, the strongest finding is the base (dedupe.FoldCluster).
+func foldCluster(log *findingLog, members []model.Finding) model.Finding {
+	base := -1
+	for i, m := range members {
+		if log.isPreferred(m.ID) && (base < 0 || m.ConfidenceScore > members[base].ConfidenceScore) {
+			base = i
+		}
+	}
+	if base < 0 {
+		return dedupe.FoldCluster(members)
+	}
+	others := make([]model.Finding, 0, len(members)-1)
+	others = append(others, members[:base]...)
+	others = append(others, members[base+1:]...)
+	return dedupe.FoldClusterOnto(members[base], others)
+}
+
+// keepPreferredSurvivors makes a merged finding that absorbed a preferred
+// finding (an imported one) carry that finding's id: the imported finding
+// comes out of the merge, in the merge agent's words. With several
+// preferred members the most confident one's id wins; the others stay
+// absorbed. A merged finding that already carries a preferred id, or a
+// preferred id another output already carries, is left alone.
+func keepPreferredSurvivors(log *findingLog, merged, cluster []model.Finding) {
+	confidence := make(map[string]float64, len(cluster))
+	for _, f := range cluster {
+		confidence[f.ID] = f.ConfidenceScore
+	}
+	taken := make(map[string]bool, len(merged))
+	for _, f := range merged {
+		taken[f.ID] = true
+	}
+	for i := range merged {
+		f := &merged[i]
+		if log.isPreferred(f.ID) {
+			continue
+		}
+		pick := ""
+		for _, src := range f.MergedFrom {
+			if src = strings.TrimSpace(src); log.isPreferred(src) && !taken[src] && (pick == "" || confidence[src] > confidence[pick]) {
+				pick = src
+			}
+		}
+		if pick == "" {
+			continue
+		}
+		absorbed := make([]string, 0, len(f.MergedFrom))
+		for _, src := range f.MergedFrom {
+			if strings.TrimSpace(src) != pick {
+				absorbed = append(absorbed, src)
+			}
+		}
+		f.MergedFrom = append(absorbed, f.ID)
+		taken[f.ID], taken[pick] = false, true
+		f.ID = pick
+		if f.Verification != nil {
+			verification := *f.Verification
+			verification.ID = pick
+			f.Verification = &verification
+		}
+	}
+}
+
 // runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
 // the cluster unmerged so reviewer findings are never lost.
 func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext, shardLabel string) ([]model.Finding, model.AgentRun) {
@@ -1560,8 +1623,10 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 		return cluster, e.failMergeRun(run, model.AgentRunStatusPartial, invalid)
 	}
 	findings := cloneReviewResponse(result.resp).Findings
+	log := findingLogFrom(ctx)
+	keepPreferredSurvivors(log, findings, cluster)
 	for _, f := range findings {
-		absorptionsFromContext(ctx).recordIDs(f.ID, f.MergedFrom)
+		log.recordIDs(f.ID, f.MergedFrom)
 	}
 	stripMergedFrom(findings)
 	return findings, markMergeRun(run, model.AgentRunStatusOK, nil)
