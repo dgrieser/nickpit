@@ -19,7 +19,7 @@ func TestRegistryLookupAndDetect(t *testing.T) {
 	if _, ok := All.Lookup(model.ModeLocal); ok {
 		t.Fatal("local is not a platform")
 	}
-	profile := config.Profile{GitLabBaseURL: "https://gitlab.example.com/api/v4"}
+	profile := config.Profile{GitLabBaseURL: "https://gitlab.example.com/api/v4", ForgejoBaseURL: "https://codeberg.org/api/v1"}
 	baseURL := func(f forge.Forge) string { _, u := Credentials(f, profile); return u }
 	cases := []struct {
 		remote string
@@ -27,6 +27,7 @@ func TestRegistryLookupAndDetect(t *testing.T) {
 	}{
 		{"git@github.com:owner/repo.git", model.ModeGitHub},
 		{"https://gitlab.example.com/grp/proj.git", model.ModeGitLab},
+		{"git@codeberg.org:grp/proj.git", model.ModeForgejo},
 		// An unreadable remote is no evidence, so the configured GitLab host
 		// claims it, as it always did.
 		{"", model.ModeGitLab},
@@ -43,10 +44,11 @@ func TestRegistryLookupAndDetect(t *testing.T) {
 }
 
 func TestHistoryAuthBindsEachTokenToItsHost(t *testing.T) {
-	auth := HistoryAuth(config.Profile{GitHubToken: "ghp", GitLabToken: "glpat", GitLabBaseURL: "https://gitlab.example.com/api/v4"})
+	auth := HistoryAuth(config.Profile{GitHubToken: "ghp", GitLabToken: "glpat", GitLabBaseURL: "https://gitlab.example.com/api/v4", ForgejoToken: "fj", ForgejoBaseURL: "https://codeberg.org/api/v1"})
 	want := []git.HostCredential{
 		{Host: "github.com", Credentials: "x-access-token:ghp"},
 		{Host: "gitlab.example.com", Credentials: "oauth2:glpat"},
+		{Host: "codeberg.org", Credentials: "oauth2:fj"},
 	}
 	if len(auth.Hosts) != len(want) {
 		t.Fatalf("hosts = %#v", auth.Hosts)
@@ -62,6 +64,7 @@ func TestHistoryAuthBindsEachTokenToItsHost(t *testing.T) {
 	want = []git.HostCredential{
 		{Host: "github.com"},
 		{Host: "gitlab.com", Credentials: "oauth2:glpat"},
+		{},
 	}
 	if len(auth.Hosts) != len(want) {
 		t.Fatalf("hosts = %#v", auth.Hosts)
@@ -70,5 +73,11 @@ func TestHistoryAuthBindsEachTokenToItsHost(t *testing.T) {
 		if auth.Hosts[i] != want[i] {
 			t.Fatalf("hosts[%d] = %#v, want %#v", i, auth.Hosts[i], want[i])
 		}
+	}
+	// A Forgejo token without an instance has no host to travel to, and the
+	// history provider never matches an entry without one.
+	auth = HistoryAuth(config.Profile{ForgejoToken: "fj"})
+	if got := auth.Hosts[2]; got.Host != "" || got.Credentials != "oauth2:fj" {
+		t.Fatalf("forgejo entry = %#v", got)
 	}
 }

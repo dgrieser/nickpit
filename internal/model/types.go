@@ -18,6 +18,8 @@ const (
 	ModeLocal  ReviewMode = "local"
 	ModeGitHub ReviewMode = "github"
 	ModeGitLab ReviewMode = "gitlab"
+	// ModeForgejo covers Forgejo and, through the same API, Gitea instances.
+	ModeForgejo ReviewMode = "forgejo"
 )
 
 type FileStatus string

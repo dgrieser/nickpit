@@ -1118,6 +1118,9 @@ func (a *app) chatSource(profile config.Profile, src session.Source, trustedHost
 	}
 	token, profileBaseURL := forges.Credentials(f, profile)
 	apiBaseURL := profileBaseURL
+	if err := requireBaseURL(f, firstNonEmpty(src.BaseURL, profileBaseURL)); err != nil {
+		return nil, nil, fmt.Errorf("chat: %w", err)
+	}
 	if f.ConfigurableBaseURL() {
 		// The token always comes from the active profile and belongs to the
 		// profile's host. Sending it to a DIFFERENT host restored from a stored
@@ -1129,6 +1132,10 @@ func (a *app) chatSource(profile config.Profile, src session.Source, trustedHost
 		override := a.forgeBaseURL(f.Mode())
 		if !trustedHost && override == "" && src.BaseURL != "" &&
 			f.NormalizeBaseURL(src.BaseURL) != f.NormalizeBaseURL(profileBaseURL) {
+			if f.NormalizeBaseURL(profileBaseURL) == "" {
+				return nil, nil, fmt.Errorf("chat: session was created against %s host %s, but the active profile configures no %s host; select the session's profile, set %s_base_url, or pass --%s-base-url (with a matching token) to choose the host explicitly",
+					f.Name(), f.NormalizeBaseURL(src.BaseURL), f.Name(), f.Mode(), f.Mode())
+			}
 			return nil, nil, fmt.Errorf("chat: session was created against %s host %s, but the active profile targets %s and its token belongs there; select the session's profile, or pass --%s-base-url (with a matching token) to choose the host explicitly",
 				f.Name(), f.NormalizeBaseURL(src.BaseURL), f.NormalizeBaseURL(profileBaseURL), f.Mode())
 		}

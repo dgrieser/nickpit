@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -78,6 +79,18 @@ func (a *app) forgeOverrides() (tokens, baseURLs map[model.ReviewMode]string) {
 	return tokens, baseURLs
 }
 
+// requireBaseURL fails a self-hosted platform that has no instance configured:
+// GitLab defaults to gitlab.com, but Forgejo has no public default, so its
+// commands need the host from the profile, the environment, a flag, or --url.
+func requireBaseURL(f forge.Forge, baseURL string) error {
+	if !f.ConfigurableBaseURL() || baseURL != "" {
+		return nil
+	}
+	mode := string(f.Mode())
+	return fmt.Errorf("%s: no API base URL configured; set %s_base_url in the profile, NICKPIT_%s_BASE_URL, --%s-base-url, or pass --url",
+		f.Name(), mode, strings.ToUpper(mode), mode)
+}
+
 // checkoutCredentials renders the profile's token for the platform serving
 // mode as the basic-auth pair a remote checkout clones with, empty when the
 // mode has no platform or no token.
@@ -140,6 +153,9 @@ func (a *app) newForgeCmd(f forge.Forge) *cobra.Command {
 				return err
 			}
 			token, baseURL := forges.Credentials(f, profile)
+			if err := requireBaseURL(f, baseURL); err != nil {
+				return err
+			}
 			source := f.NewSource(baseURL, token, profile.AssetBaseURL)
 			if target.ID == 0 {
 				if target.ID, err = a.pickOpenRequest(cmd.Context(), target.Repo, openRequestList{

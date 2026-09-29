@@ -725,8 +725,9 @@ var sessionKindStyles = map[sessionKind]string{
 
 // forgeKindStyles colour a request row per platform, each in a hue of its own.
 var forgeKindStyles = map[model.ReviewMode]string{
-	model.ModeGitLab: "38;5;216", // apricot
-	model.ModeGitHub: "38;5;105", // purple-blue
+	model.ModeGitLab:  "38;5;216", // apricot
+	model.ModeGitHub:  "38;5;105", // purple-blue
+	model.ModeForgejo: "38;5;79",  // aquamarine
 }
 
 // sessionKindOf classifies a session. The submode says what a review was of

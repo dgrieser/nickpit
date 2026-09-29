@@ -1,0 +1,11 @@
+diff --git a/main.go b/main.go
+index 3b18e51..a4f3b1c 100644
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+diff --git a/docs/moved.md b/docs/renamed.md
+similarity index 100%
+rename from docs/moved.md
+rename to docs/renamed.md

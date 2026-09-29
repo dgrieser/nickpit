@@ -9,6 +9,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/scm/forge"
+	"github.com/dgrieser/nickpit/internal/scm/forgejo"
 	"github.com/dgrieser/nickpit/internal/scm/github"
 	"github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
@@ -16,7 +17,7 @@ import (
 // All lists the platforms in detection order: GitHub first, because it owns a
 // fixed host, then the self-hostable platforms, which claim whatever host they
 // are configured with.
-var All = forge.Registry{github.Forge, gitlab.Forge}
+var All = forge.Registry{github.Forge, gitlab.Forge, forgejo.Forge}
 
 // Credentials reads the token and API base URL the profile holds for f. The
 // base URL is the profile's canonical one (config normalizes it on load) and

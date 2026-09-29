@@ -37,7 +37,7 @@ const DefaultMaxStoredSessions = 0
 // Source describes where a session's review came from, with enough detail to
 // recreate the diff at resume time (from a local ref range or a remote MR/PR).
 type Source struct {
-	Mode       string `json:"mode"` // "local" | "gitlab" | "github"
+	Mode       string `json:"mode"` // "local" | "gitlab" | "github" | "forgejo"
 	Submode    string `json:"submode,omitempty"`
 	Repo       string `json:"repo,omitempty"`
 	Identifier int    `json:"identifier,omitempty"` // MR / PR number

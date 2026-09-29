@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	fjscm "github.com/dgrieser/nickpit/internal/scm/forgejo"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/mappings"
@@ -36,6 +37,8 @@ const (
 	DefaultGitHubTokenRef           = "${NICKPIT_GITHUB_TOKEN}"
 	DefaultGitLabTokenRef           = "${NICKPIT_GITLAB_TOKEN}"
 	DefaultGitLabBaseURLRef         = "${NICKPIT_GITLAB_BASE_URL}"
+	DefaultForgejoTokenRef          = "${NICKPIT_FORGEJO_TOKEN}"
+	DefaultForgejoBaseURLRef        = "${NICKPIT_FORGEJO_BASE_URL}"
 	// DefaultAssetBaseURL is where the published-review badge SVGs are served.
 	// The Pages workflow deploys the repo's assets/ directory here.
 	DefaultAssetBaseURL = "https://dgrieser.github.io/nickpit/"
@@ -97,6 +100,8 @@ type Profile struct {
 	GitHubToken                        string  `yaml:"github_token"`
 	GitLabToken                        string  `yaml:"gitlab_token"`
 	GitLabBaseURL                      string  `yaml:"gitlab_base_url"`
+	ForgejoToken                       string  `yaml:"forgejo_token"`
+	ForgejoBaseURL                     string  `yaml:"forgejo_base_url"`
 	AssetBaseURL                       string  `yaml:"asset_base_url"`
 	MaxContextTokensConfigured         bool    `yaml:"-"`
 	MaxRequestBytesConfigured          bool    `yaml:"-"`
@@ -861,6 +866,18 @@ func applyEnv(cfg *Config, profileName string) error {
 	if value := os.Getenv("NICKPIT_GITLAB_BASE_URL"); value != "" {
 		profile.GitLabBaseURL = value
 	}
+	if value := os.Getenv("FORGEJO_TOKEN"); value != "" {
+		profile.ForgejoToken = value
+	}
+	if value := os.Getenv("NICKPIT_FORGEJO_TOKEN"); value != "" {
+		profile.ForgejoToken = value
+	}
+	if value := os.Getenv("FORGEJO_BASE_URL"); value != "" {
+		profile.ForgejoBaseURL = value
+	}
+	if value := os.Getenv("NICKPIT_FORGEJO_BASE_URL"); value != "" {
+		profile.ForgejoBaseURL = value
+	}
 	// NICKPIT_API_KEY is the last-resort API key: it applies only when the
 	// active profile's api_key (after resolving an $ENV reference such as
 	// $OPENROUTER_API_KEY) would be empty. Configured keys, profile-specific
@@ -1107,6 +1124,8 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile.GitHubToken = expandEnvReference(profile.GitHubToken)
 	profile.GitLabToken = expandEnvReference(profile.GitLabToken)
 	profile.GitLabBaseURL = expandEnvReference(profile.GitLabBaseURL)
+	profile.ForgejoToken = expandEnvReference(profile.ForgejoToken)
+	profile.ForgejoBaseURL = expandEnvReference(profile.ForgejoBaseURL)
 	profile = applyProfileDefaults(profile)
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
@@ -1146,6 +1165,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	// client, the session host check, the credential host the history provider
 	// deepens with — must see the same URL rather than each normalizing it again.
 	profile.GitLabBaseURL = glscm.NormalizeBaseURL(profile.GitLabBaseURL)
+	// Forgejo has no default host; an empty value stays empty and the
+	// commands that need one say so.
+	profile.ForgejoBaseURL = fjscm.NormalizeBaseURL(profile.ForgejoBaseURL)
 	if err := validateRegexList("include_paths", profile.IncludePaths); err != nil {
 		return Profile{}, err
 	}
