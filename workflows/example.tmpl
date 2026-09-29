@@ -298,8 +298,8 @@
 #            already published on the merge request (GitLab, publishing runs
 #            only; the group stays empty otherwise). The imported findings go
 #            through the run like new findings, with three differences: the
-#            verifier skips the diff-scope filter for them (leaving the diff
-#            proves nothing), merge keeps an imported finding as the survivor
+#            verifier and the final safeguard skip the diff-scope filter for
+#            them (leaving the diff proves nothing), merge keeps an imported finding as the survivor
 #            of any cluster it is in (its id and text, extended by the
 #            duplicates), and dedupe steps skip them unless forced
 #            (`force_dedupe_imported: true` on the dedupe step, or

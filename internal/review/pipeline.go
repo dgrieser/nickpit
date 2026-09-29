@@ -80,6 +80,9 @@ type PipelineState struct {
 	// assemble.
 	findings   *findingLog
 	reconciled *reconcilePlan
+	// publishBlocked is set by the reconcile step when this run must not be
+	// published (see model.ReviewResult.PublishBlocked).
+	publishBlocked string
 	// Verification runs: one categorize and one verify run per executed verify
 	// step, each aggregating every finding that step handled. The per-reviewer
 	// steps are keyed by vector so aggregateTelemetry can emit them in
@@ -693,11 +696,12 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	}
 	plan := st.reconciled
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
-		// Findings of the published review skip it: they were in scope when
-		// published, and leaving the diff proves nothing.
+		// Findings imported from a source exempt from diff scope skip it, and
+		// so do findings merge folded one of them into: they were in scope
+		// when first reported, and leaving the diff proves nothing.
 		var published, fresh []model.Finding
 		for _, f := range res.Findings {
-			if plan != nil && plan.isPublished(f.ID) {
+			if st.findings.isExemptFromDiffScope(f.ID) || (plan != nil && plan.isPublished(f.ID)) {
 				published = append(published, f)
 			} else {
 				fresh = append(fresh, f)
@@ -725,6 +729,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 			}
 		}
 	}
+	res.PublishBlocked = st.publishBlocked
 	if plan != nil {
 		// The reconcile step decided everything; this only lays out the
 		// published review's findings around the final ones.

@@ -70,12 +70,15 @@ func (e *Engine) importFindingsStepFunc(entry workflow.StepEntry) stepFunc {
 			run.Status = model.AgentRunStatusSkipped
 		}
 		st.setImportedGroup(cfg.group, agentResult{resp: &llm.ReviewResponse{Findings: findings}, run: run}, provenance)
+		ids := make([]string, 0, len(findings))
+		for _, f := range findings {
+			ids = append(ids, f.ID)
+		}
 		if provenance.PreferInMerge {
-			ids := make([]string, 0, len(findings))
-			for _, f := range findings {
-				ids = append(ids, f.ID)
-			}
 			findingLogFrom(ctx).prefer(ids)
+		}
+		if provenance.ExemptDiffScope {
+			findingLogFrom(ctx).exemptFromDiffScope(ids)
 		}
 		sc.Engine.logProgress(logging.StageReview, logging.StateDone, fmt.Sprintf("imported group=%s source=%s findings=%d", cfg.group, cfg.source, len(findings)))
 		return nil

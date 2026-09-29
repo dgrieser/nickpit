@@ -2505,3 +2505,38 @@ func TestConcreteNestedModelInSmallStepValidatesSmallEndpoint(t *testing.T) {
 		t.Fatalf("primary requirements = %+v, want nothing from an @small step", primary)
 	}
 }
+
+type countingReviewPublisher struct {
+	failingReviewPublisher
+	calls *int
+}
+
+func (c countingReviewPublisher) PublishReview(context.Context, model.ReviewRequest, *model.ReviewResult) error {
+	*c.calls++
+	return nil
+}
+
+// A run that says it must not be published (every reviewer failed on a
+// re-review) is never posted; a serve child reports it as a delivery failure.
+func TestEmitResultSkipsBlockedPublish(t *testing.T) {
+	for _, requirePublish := range []bool{false, true} {
+		calls := 0
+		a := &app{requirePublish: requirePublish, noSession: true, jsonOutput: true, logger: logging.New(io.Discard, false, false)}
+		req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "platform/api", Identifier: 7, PostReview: true}
+		result := &model.ReviewResult{OverallExplanation: "fallback", Findings: []model.Finding{{ID: "f", Title: "t"}},
+			PublishBlocked: "every reviewer failed, so the published review stays as it is"}
+		var err error
+		captureStdout(t, func() {
+			err = a.emitResult(context.Background(), countingReviewPublisher{calls: &calls}, config.Profile{}, req, result, nil, "")
+		})
+		if calls != 0 {
+			t.Fatalf("requirePublish=%v: published %d times, want never", requirePublish, calls)
+		}
+		if (err != nil) != requirePublish {
+			t.Fatalf("requirePublish=%v: err = %v", requirePublish, err)
+		}
+		if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[len(result.Warnings)-1], "Publish skipped") {
+			t.Fatalf("warnings = %v", result.Warnings)
+		}
+	}
+}

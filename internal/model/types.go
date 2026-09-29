@@ -142,10 +142,15 @@ type ReviewResult struct {
 	// review already published on the change request: the result then carries
 	// that review's id and findings, and publishers update it in place instead
 	// of posting a second review. It is run-local and never serialized.
-	Reconciliation     *Reconciliation `json:"-"`
-	Findings           []Finding       `json:"findings"`
-	OverallCorrectness string          `json:"overall_correctness"`
-	OverallExplanation string          `json:"overall_explanation"`
+	Reconciliation *Reconciliation `json:"-"`
+	// PublishBlocked, when set, is why this run must not be published at all:
+	// a run whose reviewers all failed says nothing about the code, and
+	// posting it would put a fresh review next to the one already on the
+	// change request. It is run-local and never serialized.
+	PublishBlocked     string    `json:"-"`
+	Findings           []Finding `json:"findings"`
+	OverallCorrectness string    `json:"overall_correctness"`
+	OverallExplanation string    `json:"overall_explanation"`
 	// Replies are the answers the published summary's thread collected, the
 	// same display-only shape Finding.Replies has.
 	Replies                []Reply    `json:"replies,omitempty"`

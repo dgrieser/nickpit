@@ -1797,7 +1797,16 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// hidden require-publish flag so their exit code is an explicit delivery
 	// signal for the daemon's outcome reaction.
 	var deliveryErr error
-	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
+	if req.PostReview && result.PublishBlocked != "" {
+		// The run itself says it must not be published (e.g. every reviewer
+		// failed on a re-review): posting it would add a fresh review next to
+		// the published one.
+		a.logProgress(ctx, logging.StagePublish, logging.StateSkip, result.PublishBlocked)
+		result.Warnings = append(result.Warnings, "Publish skipped: "+result.PublishBlocked)
+		if a.requirePublish {
+			deliveryErr = fmt.Errorf("publishing review: %s", result.PublishBlocked)
+		}
+	} else if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
 		if publisher, ok := source.(model.ReviewPublisher); ok {
 			a.logProgress(ctx, logging.StagePublish, logging.StateStart, fmt.Sprintf("posting to %s %s%d", req.Repo, requestSigil(req.Mode), req.Identifier))
 			if err := publisher.PublishReview(ctx, req, result); err != nil {

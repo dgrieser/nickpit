@@ -297,7 +297,40 @@ func TestReconcileSkipsWithoutBaselineOrWhenReviewersCollapsed(t *testing.T) {
 			if st.reconciled != nil {
 				t.Fatal("reconcile planned without a usable baseline")
 			}
+			// A collapsed re-review must not be published at all: posting it
+			// would add a fresh review next to the published one.
+			res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+			if blocked := res.PublishBlocked != ""; blocked != (name == "collapsed") {
+				t.Fatalf("PublishBlocked = %q", res.PublishBlocked)
+			}
 		})
+	}
+}
+
+// The final diff-scope safeguard honours an imported group's exemption even
+// without a reconcile step, for the imported finding itself and for a finding
+// merge folded one into.
+func TestFinalDiffScopeHonorsImportExemptionWithoutReconcile(t *testing.T) {
+	e := NewEngine(stubSource{}, &updateTestLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	reviewCtx := &model.ReviewContext{
+		DiffScopeHunks: []model.DiffHunk{{FilePath: "main.go", NewStart: 1, NewLines: 1, Content: "+x"}},
+		ChangedFiles:   []model.ChangedFile{{Path: "main.go", Status: model.FileModified}},
+	}
+	st, _ := loggedState(reviewCtx, nil)
+	st.findings.exemptFromDiffScope([]string{"imported", "absorbed"})
+	st.findings.recordIDs("absorber", []string{"absorbed"})
+	st.result = &model.ReviewResult{Findings: []model.Finding{
+		reconcileTestFinding("imported", "far.go", "Imported finding outside the diff"),
+		reconcileTestFinding("absorber", "far.go", "Fresh finding that absorbed an imported one"),
+		reconcileTestFinding("fresh", "far.go", "Fresh finding outside the diff"),
+	}}
+	res := (&Pipeline{engine: e}).assemble(st, model.ReviewRequest{})
+	var ids []string
+	for _, f := range res.Findings {
+		ids = append(ids, f.ID)
+	}
+	if strings.Join(ids, ",") != "imported,absorber" {
+		t.Fatalf("kept = %v, want the imported finding and its absorber", ids)
 	}
 }
 
@@ -336,6 +369,9 @@ func TestImportFindingsSources(t *testing.T) {
 			prov := st.groupProvenance(tc.cfg.group)
 			if prov == nil || (prov.Baseline != nil) != tc.baseline {
 				t.Fatalf("provenance = %+v", prov)
+			}
+			if tc.cfg.source == workflow.ImportSourcePublishedReview && tc.want > 0 && !st.findings.isExemptFromDiffScope("open") {
+				t.Fatal("imported findings of an exempt source must be exempt from the final diff-scope safeguard")
 			}
 			if tc.cfg.source == workflow.ImportSourcePublishedReview {
 				if !prov.ExemptDiffScope || !prov.PreferInMerge || !prov.SkipDedupe || !strings.Contains(prov.Note, "might be outdated") {

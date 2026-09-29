@@ -120,7 +120,10 @@ func (e *Engine) reconcileStepFunc(group string) stepFunc {
 			return nil
 		}
 		if st.allReviewersFailedLocked() {
-			st.warnings.addf("Reconcile skipped: every reviewer failed, so the published review stays as it is")
+			// Publishing this run at all would post a fresh review next to the
+			// published one, so the run is not published.
+			st.publishBlocked = "every reviewer failed, so the published review stays as it is"
+			st.warnings.addf("Reconcile skipped: %s", st.publishBlocked)
 			return nil
 		}
 		if st.result == nil {
@@ -238,6 +241,7 @@ type findingLog struct {
 	into      map[string]string
 	removed   map[string]string
 	preferred map[string]bool
+	exempt    map[string]bool
 }
 
 type findingLogContextKey struct{}
@@ -265,6 +269,46 @@ func (l *findingLog) prefer(ids []string) {
 	for _, id := range ids {
 		l.preferred[id] = true
 	}
+}
+
+// exemptFromDiffScope marks ids the final diff-scope safeguard must keep: the
+// findings of an imported group whose source is exempt from diff scope.
+func (l *findingLog) exemptFromDiffScope(ids []string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.exempt == nil {
+		l.exempt = map[string]bool{}
+	}
+	for _, id := range ids {
+		l.exempt[id] = true
+	}
+}
+
+// isExemptFromDiffScope reports whether finding id skips the final diff-scope
+// safeguard: it is exempt itself, or merge folded an exempt finding into it.
+func (l *findingLog) isExemptFromDiffScope(id string) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	direct := l.exempt[id]
+	exempt := make([]string, 0, len(l.exempt))
+	for e := range l.exempt {
+		exempt = append(exempt, e)
+	}
+	l.mu.Unlock()
+	if direct {
+		return true
+	}
+	for _, e := range exempt {
+		if l.survivor(e) == id {
+			return true
+		}
+	}
+	return false
 }
 
 // isPreferred reports whether merge should keep id as a cluster's survivor.
