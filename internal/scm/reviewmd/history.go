@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const historyStart = MarkerOpen + "history:start -->"
@@ -41,8 +42,29 @@ func StripHistory(body string) string {
 		if end < 0 {
 			return strings.TrimSpace(body[:start])
 		}
-		body = body[:start] + body[start+end+len(historyEnd):]
+		body = joinParagraphs(body[:start], body[start+end+len(historyEnd):])
 	}
+}
+
+// joinParagraphs rejoins the text around a removed or inserted block with one
+// blank line, so the block leaves no gap of its own behind.
+func joinParagraphs(before, after string) string {
+	before = strings.TrimRightFunc(before, unicode.IsSpace)
+	after = strings.TrimLeftFunc(after, unicode.IsSpace)
+	if before == "" || after == "" {
+		return before + after
+	}
+	return before + "\n\n" + after
+}
+
+// insertHistory places the history block below the comment's content but
+// above its response footer, so the footer line stays last.
+func insertHistory(body, block string) string {
+	footer := strings.Index(body, responseFooterStart)
+	if footer < 0 {
+		return joinParagraphs(body, block)
+	}
+	return joinParagraphs(joinParagraphs(body[:footer], block), body[footer:])
 }
 
 func ReadHistory(body string) CommentHistory {
@@ -74,7 +96,8 @@ func ReadHistory(body string) CommentHistory {
 // only sanitized visible markdown is rendered in the collapsible section.
 // Entries are stamped with the time their body was written: the archive's
 // Since, or created (when the note was posted; zero if unknown) for a body
-// that never replaced another. at is when current replaces previous.
+// that never replaced another. at is when current replaces previous. The
+// section sits below the current content, just above any response footer.
 func WithHistory(previous, current, label string, created, at time.Time, archive bool) (string, error) {
 	history := restampLegacyHistory(ReadHistory(previous), created)
 	if archive && strings.TrimSpace(previous) != "" {
@@ -97,11 +120,10 @@ func WithHistory(previous, current, label string, created, at time.Time, archive
 		if block == "" && len(history.Entries) == 0 && !history.Omitted {
 			return current, nil
 		}
-		if (block != "" || (len(history.Entries) == 0 && !history.Omitted)) && len(block)+len(current)+2 <= NoteMaxBytes {
-			if block == "" {
-				return current, nil
+		if block != "" {
+			if body := insertHistory(current, block); len(body) <= NoteMaxBytes {
+				return body, nil
 			}
-			return block + "\n\n" + current, nil
 		}
 		if len(history.Entries) == 0 {
 			return "", fmt.Errorf("comment leaves no room for history omission notice")

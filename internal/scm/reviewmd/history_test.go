@@ -120,6 +120,40 @@ func TestHistoryRestampsLegacyArchive(t *testing.T) {
 	}
 }
 
+// The history section follows the current content and precedes the response
+// footer, which stays the last line; stripping it leaves no extra gap.
+func TestHistorySitsAboveResponseFooter(t *testing.T) {
+	status := ResponseStatus{Enabled: true, CommandKeyword: "nickpit"}
+	previous := UpsertResponseFooter("original", status)
+	current := UpsertResponseFooter("edited", status)
+	body, err := WithHistory(previous, current, "Review", time.Time{}, time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Index(body, "edited")
+	history := strings.Index(body, historyStart)
+	footer := strings.Index(body, responseFooterStart)
+	if content != 0 || history < content || footer < strings.Index(body, historyEnd) || !strings.HasSuffix(body, responseFooterEnd) {
+		t.Fatalf("history not between content and footer: %s", body)
+	}
+	if got := StripHistory(body); got != current {
+		t.Fatalf("StripHistory = %q, want %q", got, current)
+	}
+	// Re-stamping the footer keeps history above it.
+	restamped := UpsertResponseFooter(body, status)
+	if strings.Index(restamped, historyEnd) > strings.Index(restamped, responseFooterStart) {
+		t.Fatalf("footer re-stamp moved above history: %s", restamped)
+	}
+	// Without a footer the section closes the comment.
+	plain, err := WithHistory("original", "edited", "Review", time.Time{}, time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(plain, "edited\n\n"+historyStart) || !strings.HasSuffix(plain, historyEnd) {
+		t.Fatalf("history not appended: %s", plain)
+	}
+}
+
 func TestHistoryDropsOldestAndKeepsNotice(t *testing.T) {
 	previous := strings.Repeat("old evidence ", 5000)
 	current := "current evidence"
