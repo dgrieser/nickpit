@@ -109,13 +109,14 @@ func (a *app) newForgeCmd(f forge.Forge) *cobra.Command {
 	var rawURL string
 	var publish bool
 	var pick bool
+	help := f.RequestHelp()
 	cmd := &cobra.Command{
 		Use:   f.Command(),
 		Short: fmt.Sprintf("Review %s %ss", f.Name(), f.RequestNoun()),
 	}
 	requestCmd := &cobra.Command{
 		Use:   f.RequestCommand(),
-		Short: fmt.Sprintf("Review a %s %s", f.Name(), f.RequestAbbrev()),
+		Short: help.Short,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target, err := a.resolveRequestTarget(requestSelectors{
 				repo:    repo,
@@ -182,11 +183,11 @@ func (a *app) newForgeCmd(f forge.Forge) *cobra.Command {
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
-	requestCmd.Flags().StringVar(&repo, "repo", "", fmt.Sprintf("%s repository path (inferred from git remote if omitted)", f.Name()))
-	requestCmd.Flags().IntVar(&id, "id", 0, fmt.Sprintf("%s number (omit in a terminal to pick an open %s from a list)", f.RequestAbbrev(), f.RequestAbbrev()))
+	requestCmd.Flags().StringVar(&repo, "repo", "", help.Repo)
+	requestCmd.Flags().IntVar(&id, "id", 0, help.ID)
 	requestCmd.Flags().StringVar(&rawURL, "url", "", fmt.Sprintf("%s %s URL", f.Name(), f.RequestNoun()))
 	addSelectFlag(requestCmd, &pick, "an open "+f.RequestNoun(), requestSelectNote)
-	requestCmd.Flags().BoolVar(&publish, "publish", false, fmt.Sprintf("Post the review back to the %s %s (summary + one comment per finding)", f.Name(), f.RequestAbbrev()))
+	requestCmd.Flags().BoolVar(&publish, "publish", false, help.Publish)
 	cmd.AddCommand(requestCmd)
 	return cmd
 }

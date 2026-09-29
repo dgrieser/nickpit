@@ -923,6 +923,46 @@ func TestPRAndMRCommandsHaveURLFlag(t *testing.T) {
 	}
 }
 
+// The request subcommands keep their per-platform help wording: a GitLab MR
+// is addressed by its IID and a GitLab project by its group path.
+func TestRequestCommandHelpIsPlatformSpecific(t *testing.T) {
+	tests := []struct {
+		args                     []string
+		short, repo, id, publish string
+	}{
+		{
+			args:    []string{"github", "pr"},
+			short:   "Review a GitHub PR",
+			repo:    "GitHub repo owner/name (inferred from git remote if omitted)",
+			id:      "Pull request number (omit in a terminal to pick an open PR from a list)",
+			publish: "Post the review back to the GitHub PR as a review (summary + one comment per finding)",
+		},
+		{
+			args:    []string{"gitlab", "mr"},
+			short:   "Review a GitLab merge request",
+			repo:    "GitLab project group/name (inferred from git remote if omitted)",
+			id:      "Merge request IID (omit in a terminal to pick an open MR from a list)",
+			publish: "Post the review back to the GitLab MR as comments (summary + one per finding)",
+		},
+	}
+	cmd := newRootCmd()
+	for _, tt := range tests {
+		found, _, err := cmd.Find(tt.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := strings.Join(tt.args, " ")
+		if found.Short != tt.short {
+			t.Errorf("%s Short = %q, want %q", name, found.Short, tt.short)
+		}
+		for flag, want := range map[string]string{"repo": tt.repo, "id": tt.id, "publish": tt.publish} {
+			if got := found.Flags().Lookup(flag).Usage; got != want {
+				t.Errorf("%s --%s usage = %q, want %q", name, flag, got, want)
+			}
+		}
+	}
+}
+
 func TestRemoteURLFlagValidation(t *testing.T) {
 	tests := []struct {
 		name string

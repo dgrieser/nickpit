@@ -803,6 +803,13 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 			auth:   HistoryAuth{Hosts: []HostCredential{{Host: "gitlab.example.com"}}},
 		},
 		{
+			// The first platform owning a host decides for it: a later platform
+			// configured with the same host does not lend it its token.
+			name:   "earlier token-less owner of a shared host",
+			origin: "https://github.com/acme/repo.git",
+			auth:   HistoryAuth{Hosts: []HostCredential{{Host: "github.com"}, gitlab("github.com")}},
+		},
+		{
 			// An entry without a host (a platform that has no trusted host at
 			// all) never matches anything.
 			name:   "credentials without a host",
