@@ -17,7 +17,7 @@ import (
 func TestLinkedFindingMessagesTrustScopeAndHistory(t *testing.T) {
 	render := reviewmd.NewRenderer("").ForReview("original")
 	root, _ := render.FindingBodyCarried(model.Finding{ID: "finding", Title: "Current", Body: "Current evidence"}, "")
-	root, err := reviewmd.WithHistory("Obsolete archived evidence", root, "Finding", time.Now(), true)
+	root, err := reviewmd.WithHistory("Obsolete archived evidence", root, "Finding", time.Time{}, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}

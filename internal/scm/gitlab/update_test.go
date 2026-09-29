@@ -27,10 +27,11 @@ type updateServer struct {
 	visibleWrites          int
 	loseActivationResponse bool
 	internalBodies         []string
-	// resolvable marks every discussion resolvable; resolvedDiscussions
-	// records the discussions resolved through the API.
-	resolvable          bool
-	resolvedDiscussions []string
+	// resolvable marks every discussion resolvable; resolvedDiscussions and
+	// unresolvedDiscussions record the discussions (un)resolved through the API.
+	resolvable            bool
+	resolvedDiscussions   []string
+	unresolvedDiscussions []string
 }
 
 func newUpdateServer(t *testing.T) (*updateServer, *Adapter, *model.ReviewResult) {
@@ -66,7 +67,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteJSON := func(n DiscussionNote) map[string]any {
-		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "resolvable": s.resolvable, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
+		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "resolvable": s.resolvable, "resolved": n.Resolved, "created_at": n.CreatedAt, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
 	}
 	discussionJSON := func(d MRDiscussion) map[string]any {
 		notes := []any{}
@@ -123,6 +124,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		Body     string    `json:"body"`
 		Position *position `json:"position"`
 		Internal bool      `json:"internal"`
+		Resolved *bool     `json:"resolved"`
 	}
 	if r.Method == http.MethodPost || r.Method == http.MethodPut {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -131,10 +133,17 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == http.MethodPut {
-		for _, d := range s.discussions {
-			if tail == "/discussions/"+d.ID {
-				s.resolvedDiscussions = append(s.resolvedDiscussions, d.ID)
-				write(discussionJSON(d))
+		for i, d := range s.discussions {
+			if tail == "/discussions/"+d.ID && payload.Resolved != nil {
+				if *payload.Resolved {
+					s.resolvedDiscussions = append(s.resolvedDiscussions, d.ID)
+				} else {
+					s.unresolvedDiscussions = append(s.unresolvedDiscussions, d.ID)
+				}
+				for j := range d.Notes {
+					s.discussions[i].Notes[j].Resolved = *payload.Resolved
+				}
+				write(discussionJSON(s.discussions[i]))
 				return
 			}
 		}

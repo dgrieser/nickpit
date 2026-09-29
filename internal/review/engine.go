@@ -3876,6 +3876,8 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		turnCtx := logging.WithProgressInfo(ctx, turnInfo)
 		if resp != nil && resp.Reasoned {
 			e.logger.Progress(turnCtx, logging.StageReasoning, logging.StateDone, elapsed.String())
+			sec.CallReasoningDone()
+			callSec.CallReasoningDone()
 		}
 		// A call that errored must not report "done": the caller may retry and
 		// succeed, in which case the failure is progress-only and never becomes

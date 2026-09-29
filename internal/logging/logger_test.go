@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrintErrorPlain(t *testing.T) {
@@ -474,5 +475,35 @@ func TestReasoningSectionAppendAfterEndIsNoop(t *testing.T) {
 	first.End()
 	if got := buf.String(); got != out {
 		t.Fatalf("duplicate End changed output: %q -> %q", out, got)
+	}
+}
+
+// A section spanning several calls closes with the latest call's time, under
+// that call's number, not with the section's total; a call whose reasoning end
+// the caller already reported is not reported twice.
+func TestReasoningSectionEndReportsLatestCall(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(&buf, false, false)
+	logger.SetShowProgress(true)
+	info := ProgressInfo{AgentRole: "context", AgentName: "Collect Context"}
+
+	sec := logger.NewReasoningTracker(info)
+	sec.IncrCallNum()
+	sec.CallReasoningDone()
+	sec.IncrCallNum()
+	sec.startTime = time.Now().Add(-6 * time.Minute)
+	sec.callStart = time.Now().Add(-66 * time.Second)
+	sec.End()
+	if out := buf.String(); !strings.Contains(out, "#2 done 1m6s") || strings.Contains(out, "6m") {
+		t.Fatalf("end line = %q, want the latest call's 1m6s", out)
+	}
+
+	buf.Reset()
+	reported := logger.NewReasoningTracker(info)
+	reported.IncrCallNum()
+	reported.CallReasoningDone()
+	reported.End()
+	if out := buf.String(); strings.Contains(out, "done") {
+		t.Fatalf("reported call ended twice: %q", out)
 	}
 }

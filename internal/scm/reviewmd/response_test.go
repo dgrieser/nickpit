@@ -55,9 +55,9 @@ func TestResponseFooterOptInAndBlockers(t *testing.T) {
 }
 
 // A footer stamped under earlier settings advertises controls the daemon no
-// longer honors. The stamped fingerprint tracks exactly the configuration
-// inputs that shape the text, so callers can tell a current footer from a
-// stale one without diffing rendered prose — and it never reaches an LLM.
+// longer honors. The stamped fingerprint hashes the text the configuration
+// renders, so callers can tell a current footer from a stale one without
+// diffing rendered prose — and it never reaches an LLM.
 func TestResponseFooterTracksPolicyChanges(t *testing.T) {
 	policy := ResponseStatus{Enabled: true, OptIn: true, MuteEmoji: "mute", RequestEmoji: "nickpit", CommandKeyword: "nickpit"}
 	body := UpsertResponseFooter("Finding body", policy)
@@ -86,6 +86,23 @@ func TestResponseFooterTracksPolicyChanges(t *testing.T) {
 	}
 	if got := StripResponseFooter(body); got != "Finding body" {
 		t.Fatalf("policy marker survived stripping: %q", got)
+	}
+}
+
+// A footer reworded in code is stale even though no setting changed: this is
+// the pre-rewording summary footer of a production merge request, which the
+// settings-only fingerprint kept matching forever.
+func TestResponseFooterTracksWordingChanges(t *testing.T) {
+	policy := ResponseStatus{Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit"}
+	stale := "Summary\n\n" + responseFooterStart + "\n" + responsePolicyMarker("8fec7e962c8342e8") + "\n---\n\n" +
+		"*NickPit responds to comments. To mute, react with :mute: on this post to mute this thread or on MR to mute all NickPit threads, or add `/nickpit mute` on its own line to your comment.*\n" +
+		responseFooterEnd
+	if FooterMatchesPolicy(stale, policy) {
+		t.Fatal("footer with outdated wording matches the current policy")
+	}
+	fresh := UpsertResponseFooter(stale, policy)
+	if !FooterMatchesPolicy(fresh, policy) || strings.Contains(fresh, "on this post") {
+		t.Fatalf("re-stamped footer = %q", fresh)
 	}
 }
 

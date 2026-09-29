@@ -36,7 +36,9 @@ type ReasoningSection struct {
 	startTime time.Time
 	mu        sync.Mutex // guards ended against Append racing End
 	ended     bool
-	callNum   int // incremented by IncrCallNum on each LLM request
+	callNum   int       // incremented by IncrCallNum on each LLM request
+	callStart time.Time // when the latest call started
+	callDone  bool      // the latest call's reasoning end was already reported
 }
 
 func (s *ReasoningSection) Append(delta string) {
@@ -71,7 +73,18 @@ func (s *ReasoningSection) IncrCallNum() int {
 		return 0
 	}
 	s.callNum++
+	s.callStart = time.Now()
+	s.callDone = false
 	return s.callNum
+}
+
+// CallReasoningDone records that the caller reported the latest call's
+// reasoning end itself, so End does not report it again.
+func (s *ReasoningSection) CallReasoningDone() {
+	if s == nil {
+		return
+	}
+	s.callDone = true
 }
 
 func (s *ReasoningSection) End() {
@@ -88,12 +101,14 @@ func (s *ReasoningSection) End() {
 		s.r.End(s.id)
 	}
 	s.mu.Unlock()
-	if !s.info.IsZero() {
-		info := s.info
+	// End closes the reasoning line of the latest call, which it is labeled
+	// with, so the time is that call's, not the whole section's.
+	if !s.info.IsZero() && !s.callDone {
+		info, start := s.info, s.startTime
 		if s.callNum > 0 {
-			info = info.WithTurn(s.callNum)
+			info, start = info.WithTurn(s.callNum), s.callStart
 		}
-		elapsed := time.Since(s.startTime).Truncate(time.Second)
+		elapsed := time.Since(start).Truncate(time.Second)
 		s.logger.ProgressFor(info, StageReasoning, StateDone, elapsed.String())
 	}
 }

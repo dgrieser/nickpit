@@ -58,10 +58,10 @@ func (c *Client) UpdateMRDiscussionNote(ctx context.Context, project string, iid
 	return c.Put(ctx, path, map[string]string{"body": body}, nil)
 }
 
-// ResolveMRDiscussion marks a merge-request discussion resolved.
-func (c *Client) ResolveMRDiscussion(ctx context.Context, project string, iid int, discussionID string) error {
+// SetMRDiscussionResolved resolves or unresolves a merge-request discussion.
+func (c *Client) SetMRDiscussionResolved(ctx context.Context, project string, iid int, discussionID string, resolved bool) error {
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escapeProject(project), iid, url.PathEscape(discussionID))
-	return c.Put(ctx, path, map[string]any{"resolved": true}, nil)
+	return c.Put(ctx, path, map[string]any{"resolved": resolved}, nil)
 }
 
 // MRDiscussion is one merge-request discussion with notes ordered oldest first.
