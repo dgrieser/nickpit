@@ -61,6 +61,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if priorityDropped > 0 {
 		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("priority filter dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold)))
 		e.logf(ctx, "Verdict priority filter: dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold))
+		findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(opts.PriorityThreshold))
 	}
 	in = filtered
 	filtered, drops, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
@@ -73,6 +74,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		e.logf(ctx, "Verdict confidence filter: dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold)
 		for _, drop := range drops {
 			e.logf(ctx, "Verdict confidence filter dropped finding: id=%s confidence=%.2f source=%s threshold=%.2f title=%q", drop.ID, drop.Confidence, drop.Source, opts.ConfidenceThreshold, drop.Title)
+			findingLogFrom(ctx).remove(drop.ID, confidenceDropReason(opts.ConfidenceThreshold))
 		}
 	}
 	in = filtered

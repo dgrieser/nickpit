@@ -153,6 +153,9 @@ type Decision struct {
 	DiscussionID string
 	// UnknownArg is the raw subcommand for CommandUnknown replies.
 	UnknownArg string
+	// IgnoredText marks a command note that carried text besides the command;
+	// the reply tells the author it was not used.
+	IgnoredText bool
 	// Requested marks an explicit opt-in request (positive command or trigger
 	// emoji on the question note).
 	Requested bool
@@ -368,7 +371,12 @@ func decideNote(event *WebhookEvent, commandKeyword string, skipPhrases []string
 				PromptBody:   attrs.Note,
 			}
 		}
-		return Decision{Kind: TriggerNone, Reason: "no command"}
+		// A top-level comment is not a command. The note fields let the handler
+		// answer one that @-mentions the bot with help.
+		return Decision{
+			Kind: TriggerNone, Reason: "no command", IID: event.MergeRequest.IID,
+			NoteID: attrs.ID, DiscussionID: attrs.DiscussionID, PromptBody: attrs.Note,
+		}
 	}
 	decision := Decision{
 		Command:      command,
@@ -377,6 +385,7 @@ func decideNote(event *WebhookEvent, commandKeyword string, skipPhrases []string
 		NoteID:       attrs.ID,
 		DiscussionID: attrs.DiscussionID,
 		UnknownArg:   arg,
+		IgnoredText:  command != CommandUnknown && commandHasExtraText(attrs.Note),
 	}
 	if command == CommandReview {
 		// A comment command is an explicit human request, exactly like the

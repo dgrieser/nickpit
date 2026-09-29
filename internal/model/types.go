@@ -69,10 +69,14 @@ type ReviewRequest struct {
 	ForceAllNudges bool
 	// MaxFindings caps the findings each review agent may report across its
 	// initial pass and nudges; 0 = unlimited.
-	MaxFindings               int
-	DisableDiffScope          bool
-	DisableParallelToolCalls  bool
-	DisableReasoningExtract   bool
+	MaxFindings              int
+	DisableDiffScope         bool
+	DisableParallelToolCalls bool
+	DisableReasoningExtract  bool
+	// ForceDedupeImported runs dedupe steps on imported groups that skip it
+	// by default (findings imported from the published review were already
+	// deduplicated when they were first published).
+	ForceDedupeImported       bool
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
 	DisableWorkflowTimeBudget bool
@@ -133,10 +137,20 @@ type ReviewResult struct {
 	// restores it, so a chat rebuilt from MR/PR markers recreates the SAME
 	// filtered context the review saw — never files the review deliberately
 	// withheld. Pipeline results emitted to stdout leave it nil.
-	ContextOptions     *ContextOptions `json:"context_options,omitempty"`
-	Findings           []Finding       `json:"findings"`
-	OverallCorrectness string          `json:"overall_correctness"`
-	OverallExplanation string          `json:"overall_explanation"`
+	ContextOptions *ContextOptions `json:"context_options,omitempty"`
+	// Reconciliation is set when the reconcile step folded this run into the
+	// review already published on the change request: the result then carries
+	// that review's id and findings, and publishers update it in place instead
+	// of posting a second review. It is run-local and never serialized.
+	Reconciliation *Reconciliation `json:"-"`
+	// PublishBlocked, when set, is why this run must not be published at all:
+	// a run whose reviewers all failed says nothing about the code, and
+	// posting it would put a fresh review next to the one already on the
+	// change request. It is run-local and never serialized.
+	PublishBlocked     string    `json:"-"`
+	Findings           []Finding `json:"findings"`
+	OverallCorrectness string    `json:"overall_correctness"`
+	OverallExplanation string    `json:"overall_explanation"`
 	// Replies are the answers the published summary's thread collected, the
 	// same display-only shape Finding.Replies has.
 	Replies                []Reply    `json:"replies,omitempty"`
@@ -1000,6 +1014,36 @@ type BaseFileSource interface {
 // PostReview is set, so non-publishing sources (local) are unaffected.
 type ReviewPublisher interface {
 	PublishReview(ctx context.Context, req ReviewRequest, result *ReviewResult) error
+}
+
+// PublishedReview is the review a change request already carries, as the
+// reconcile step needs it. Review is the one whose summary thread is current;
+// Foreign holds open findings that earlier runs published under other review
+// ids (before re-reviews updated one review in place), so a new run does not
+// repost them.
+type PublishedReview struct {
+	Review  *ReviewResult
+	Foreign []Finding
+}
+
+// PublishedReviewSource is implemented by sources that can read the review
+// already published on the change request. The reconcile step uses it to fold
+// a re-review into that review. It returns nil (and no error) when the change
+// request carries no complete review of this token's own.
+type PublishedReviewSource interface {
+	PublishedReview(ctx context.Context, req ReviewRequest) (*PublishedReview, error)
+}
+
+// Reconciliation records how a run was folded into a published review. Before
+// is that review as it was read, so the publisher can detect and merge
+// corrections made to it while the run was in flight. The ID lists name the
+// findings the run added, resolved, and updated.
+type Reconciliation struct {
+	Before   *ReviewResult
+	HeadSHA  string
+	Added    []string
+	Resolved []string
+	Updated  []string
 }
 
 // OpenRequest is one open merge request or pull request as the interactive

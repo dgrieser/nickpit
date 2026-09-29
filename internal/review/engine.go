@@ -784,6 +784,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		counts := dropsByVector[ref.vectorIdx]
 		dropCategorized, reason := shouldDropCategories(categories, opts.DropPolicy)
 		if dropCategorized {
+			findingLogFrom(ctx).remove(finding.ID, categorizeDropReason(categories, reason))
 			if e.logger != nil {
 				e.logger.ProgressFor(
 					e.progressInfo("categorize", categorizeProgressName(reviewerName, i), truncateFindingTitle(finding.Title)),
@@ -868,19 +869,36 @@ type verificationTelemetry struct {
 	VerifyRun     *model.AgentRun
 }
 
+// verifyGroup is what verification needs to know about one finding group,
+// aligned with the agentResults it verifies: its id, the provenance note the
+// verifier is told, and whether the group skips the diff-scope filter. A
+// reviewer group has only an id.
+type verifyGroup struct {
+	id              string
+	note            string
+	exemptDiffScope bool
+}
+
+func groupAt(groups []verifyGroup, i int) verifyGroup {
+	if i < len(groups) {
+		return groups[i]
+	}
+	return verifyGroup{}
+}
+
 // verifyAndFilterVectorFindings is the atomic workflow operation: deterministic
 // scope handling, blind classification and routing, then blind truth
 // verification for the survivors.
 // categorize carries the classifier's own engine clone and request, which
 // differ from the verifier's when the verify step configures a categorize
 // override (e.g. model: "@small"); the zero value means "same as the verifier".
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, groups []verifyGroup, req model.ReviewRequest, limiter *Limiter, reviewerName string, categorize internalAgentContext, budgets verifyPhaseBudgets) (verificationTelemetry, []string, error) {
 	telemetry := verificationTelemetry{}
 	categorizeEngine, categorizeReq := e, req
 	if categorize.Engine != nil {
 		categorizeEngine, categorizeReq = categorize.Engine, categorize.Req
 	}
-	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, req)
+	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, groups, req)
 	// The classifier runs inside its own share of the step budget when the spec
 	// gives it one, so its failure mode is a bounded phase rather than the whole
 	// verify step. The verifier's share is started separately below and is not
@@ -907,6 +925,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts := verifyOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
+	for _, ref := range refs {
+		opts.FindingNotes = append(opts.FindingNotes, groupAt(groups, ref.vectorIdx).note)
+	}
 	verifyCtx, verifyCancel := budgets.verify.startOrCanceled()
 	defer verifyCancel()
 	verifyResults, verifyRun, verifyWarnings, err := e.verifyAll(verifyCtx, reviewCtx, findings, opts)
@@ -958,6 +979,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
 			}
 			droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			findingLogFrom(ctx).remove(finding.ID, verifyDropReason(reason, v.Remarks))
 			counts := dropsByVector[ref.vectorIdx]
 			switch reason {
 			case "refuted":
@@ -1001,7 +1023,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	return telemetry, warnings, nil
 }
 
-func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) []string {
+// prepareFindingsForVerification applies the diff-scope filter to every group
+// that is not exempt from it (see verifyGroup).
+func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, groups []verifyGroup, req model.ReviewRequest) []string {
 	if req.DisableDiffScope || reviewCtx == nil || reviewCtx.DiffScopeHunks == nil {
 		return nil
 	}
@@ -1010,7 +1034,7 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 	var warnings []string
 	for i := range vectorResults {
 		resp := vectorResults[i].resp
-		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 {
+		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 || groupAt(groups, i).exemptDiffScope {
 			continue
 		}
 		kept := make([]model.Finding, 0, len(resp.Findings))
@@ -1189,7 +1213,7 @@ func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints 
 // multiple suggestion candidates stay unfolded so the agent can select the
 // single best suggestion. Returns the reduced list and how many findings were
 // absorbed; zero absorbed returns the input slice untouched.
-func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int) {
+func mechanicallyDedupeFindings(ctx context.Context, findings []model.Finding) ([]model.Finding, int) {
 	clusters := dedupe.Clusters(findings, dedupe.Duplicate)
 	if len(clusters) == len(findings) {
 		return findings, 0
@@ -1208,7 +1232,9 @@ func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int)
 			out = append(out, members...)
 			continue
 		}
-		out = append(out, dedupe.FoldCluster(members))
+		folded := foldCluster(findingLogFrom(ctx), members)
+		findingLogFrom(ctx).record(folded.ID, members)
+		out = append(out, folded)
 	}
 	absorbed := len(findings) - len(out)
 	if absorbed == 0 {
@@ -1243,7 +1269,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 			continue
 		}
 		originalCount := len(result.resp.Findings)
-		if reduced, absorbed := mechanicallyDedupeFindings(result.resp.Findings); absorbed > 0 {
+		if reduced, absorbed := mechanicallyDedupeFindings(ctx, result.resp.Findings); absorbed > 0 {
 			resp := cloneReviewResponse(result.resp)
 			resp.Findings = reduced
 			vectorResults[i].resp = resp
@@ -1302,7 +1328,14 @@ func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextN
 	}
 	resp := cloneReviewResponse(result.resp)
 	// The dedupe agent shares the merge output schema, so a model may emit
-	// merged_from provenance here as well; it must not leak downstream.
+	// merged_from provenance. Keep what reconcile needs (a preferred finding
+	// survives, absorptions are logged), then strip it: it must not leak
+	// downstream.
+	log := findingLogFrom(ctx)
+	keepPreferredSurvivors(log, resp.Findings, input.resp.Findings)
+	for _, f := range resp.Findings {
+		log.recordIDs(f.ID, f.MergedFrom)
+	}
 	stripMergedFrom(resp.Findings)
 	return resp, run
 }
@@ -1430,7 +1463,7 @@ func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, c
 		for _, idx := range cluster {
 			clusterFindings = append(clusterFindings, findings[idx])
 		}
-		reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+		reduced, folded := mechanicallyDedupeFindings(ctx, clusterFindings)
 		absorbed += folded
 		if len(reduced) == 1 {
 			outcomes[ci] = reduced
@@ -1506,6 +1539,72 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 	return findings, reviewerByID
 }
 
+// foldCluster folds a duplicate cluster into one finding. A member the run
+// prefers (an imported finding) is the base, so it survives with its
+// id and text and the others only extend it; with several, the most confident
+// of them. Without one, the strongest finding is the base (dedupe.FoldCluster).
+func foldCluster(log *findingLog, members []model.Finding) model.Finding {
+	base := -1
+	for i, m := range members {
+		if log.isPreferred(m.ID) && (base < 0 || m.ConfidenceScore > members[base].ConfidenceScore) {
+			base = i
+		}
+	}
+	if base < 0 {
+		return dedupe.FoldCluster(members)
+	}
+	others := make([]model.Finding, 0, len(members)-1)
+	others = append(others, members[:base]...)
+	others = append(others, members[base+1:]...)
+	return dedupe.FoldClusterOnto(members[base], others)
+}
+
+// keepPreferredSurvivors makes a merged finding that absorbed a preferred
+// finding (an imported one) carry that finding's id: the imported finding
+// comes out of the merge, in the merge agent's words. With several
+// preferred members the most confident one's id wins; the others stay
+// absorbed. A merged finding that already carries a preferred id, or a
+// preferred id another output already carries, is left alone.
+func keepPreferredSurvivors(log *findingLog, merged, cluster []model.Finding) {
+	confidence := make(map[string]float64, len(cluster))
+	for _, f := range cluster {
+		confidence[f.ID] = f.ConfidenceScore
+	}
+	taken := make(map[string]bool, len(merged))
+	for _, f := range merged {
+		taken[f.ID] = true
+	}
+	for i := range merged {
+		f := &merged[i]
+		if log.isPreferred(f.ID) {
+			continue
+		}
+		pick := ""
+		for _, src := range f.MergedFrom {
+			if src = strings.TrimSpace(src); log.isPreferred(src) && !taken[src] && (pick == "" || confidence[src] > confidence[pick]) {
+				pick = src
+			}
+		}
+		if pick == "" {
+			continue
+		}
+		absorbed := make([]string, 0, len(f.MergedFrom))
+		for _, src := range f.MergedFrom {
+			if strings.TrimSpace(src) != pick {
+				absorbed = append(absorbed, src)
+			}
+		}
+		f.MergedFrom = append(absorbed, f.ID)
+		taken[f.ID], taken[pick] = false, true
+		f.ID = pick
+		if f.Verification != nil {
+			verification := *f.Verification
+			verification.ID = pick
+			f.Verification = &verification
+		}
+	}
+}
+
 // runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
 // the cluster unmerged so reviewer findings are never lost.
 func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext, shardLabel string) ([]model.Finding, model.AgentRun) {
@@ -1524,6 +1623,11 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 		return cluster, e.failMergeRun(run, model.AgentRunStatusPartial, invalid)
 	}
 	findings := cloneReviewResponse(result.resp).Findings
+	log := findingLogFrom(ctx)
+	keepPreferredSurvivors(log, findings, cluster)
+	for _, f := range findings {
+		log.recordIDs(f.ID, f.MergedFrom)
+	}
 	stripMergedFrom(findings)
 	return findings, markMergeRun(run, model.AgentRunStatusOK, nil)
 }
@@ -2716,6 +2820,7 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 type noToolsPromptOptions struct {
 	DiffScopeEnabled      bool
 	UnusedIdentifierKinds string
+	FindingNote           string
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool, options ...noToolsPromptOptions) ([]llm.Message, error) {
@@ -2738,6 +2843,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		StyleGuideToolchainSnippet string
 		DiffScopeEnabled           bool
 		UnusedIdentifierKinds      string
+		FindingNote                string
 	}{
 		OutputSchemaSnippet:        snippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -2747,6 +2853,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 		DiffScopeEnabled:           promptOptions.DiffScopeEnabled,
 		UnusedIdentifierKinds:      promptOptions.UnusedIdentifierKinds,
+		FindingNote:                promptOptions.FindingNote,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)

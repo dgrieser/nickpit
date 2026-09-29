@@ -42,12 +42,29 @@ const (
 	StepFinalize       = "finalize"
 	StepVerdict        = "verdict"
 	StepSummarize      = "summarize"
+	// StepImportFindings imports existing findings (a findings file, the
+	// review already published on the change request, ...) into a named group
+	// that verify:<group> / dedupe:<group> and merge treat like a reviewer's.
+	StepImportFindings = "import-findings"
+	// StepReconcile maps the run's final findings onto the review an
+	// import-findings step imported with source published-review, as the last
+	// step, so a re-review updates that review instead of posting another one.
+	StepReconcile = "reconcile"
 
 	StepReviewPrefix  = "review:"
 	StepExtractPrefix = "reasoning-extract:"
 	StepNudgePrefix   = "nudge:"
 	StepVerifyPrefix  = "verify:"
 	StepDedupePrefix  = "dedupe:"
+)
+
+// Import sources for import-findings.
+const (
+	// ImportSourceFile reads the step's findings_from files.
+	ImportSourceFile = "file"
+	// ImportSourcePublishedReview reads the open findings of the review this
+	// token already published on the change request (publishing runs only).
+	ImportSourcePublishedReview = "published-review"
 )
 
 // Scope identifiers name the work unit a step's agents operate on. Scope
@@ -74,7 +91,7 @@ func legalScopes(stepType string) ([]string, bool) {
 		return []string{ScopeCluster}, true
 	case stepType == StepFinalize, stepType == StepSummarize:
 		return []string{ScopeAll, ScopeCluster}, true
-	case stepType == StepVerdict:
+	case stepType == StepVerdict, stepType == StepReconcile:
 		return []string{ScopeAll}, true
 	case stepType == StepVerify || strings.HasPrefix(stepType, StepVerifyPrefix):
 		return []string{ScopeFinding}, true
@@ -213,9 +230,13 @@ type StepOverride struct {
 	MaxReasoningSeconds   *int `yaml:"max_reasoning_seconds"`
 
 	// Stage-specific tunables.
-	NudgeCount                *int     `yaml:"nudge_count"`
-	MaxFindings               *int     `yaml:"max_findings"`
-	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
+	NudgeCount              *int  `yaml:"nudge_count"`
+	MaxFindings             *int  `yaml:"max_findings"`
+	DisableReasoningExtract *bool `yaml:"disable_reasoning_extract"`
+	// ForceDedupeImported (dedupe steps only) deduplicates imported groups
+	// that skip dedupe by default, such as findings imported from the
+	// published review.
+	ForceDedupeImported       *bool    `yaml:"force_dedupe_imported"`
 	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
 	DisableSuggestions        *bool    `yaml:"disable_suggestions"`
@@ -252,6 +273,15 @@ type StepOverride struct {
 	// dedupe / dedupe:<vector> / merge steps — the two stages that judge
 	// findings against each other and carry the review context to do it.
 	Context *ContextInclude `yaml:"context"`
+
+	// Group names the finding group an import-findings step fills, or the
+	// imported group a reconcile step folds the run into.
+	Group *string `yaml:"group"`
+	// Source and Note are import-findings only: where the findings come from
+	// (ImportSourceFile, the default, or ImportSourcePublishedReview) and the
+	// provenance the verifier is told about each one.
+	Source *string `yaml:"source"`
+	Note   *string `yaml:"note"`
 }
 
 // ContextIncludeKey is the dedupe/merge step's context-include subconfig key.
@@ -469,6 +499,9 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		// probed as unable to honor it.
 		p.DisableJSONResponseFormat = true
 		req.DisableJSONResponseFormat = true
+	}
+	if o.ForceDedupeImported != nil {
+		req.ForceDedupeImported = *o.ForceDedupeImported
 	}
 	if o.DisableReasoningExtract != nil {
 		req.DisableReasoningExtract = *o.DisableReasoningExtract
@@ -910,6 +943,15 @@ func allowedStepOverrideKeys(stepType string) []string {
 	if stepAcceptsContextInclude(stepType) {
 		allowed = append(allowed, ContextIncludeKey)
 	}
+	if stepType == StepDedupe || strings.HasPrefix(stepType, StepDedupePrefix) {
+		allowed = append(allowed, "force_dedupe_imported")
+	}
+	switch stepType {
+	case StepImportFindings:
+		allowed = append(allowed, "group", "source", "note")
+	case StepReconcile:
+		allowed = append(allowed, "group")
+	}
 	return allowed
 }
 
@@ -1009,7 +1051,13 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("workflow: steps is empty")
 	}
 	reviewed := map[string]bool{}
+	// imported records every import-findings group and its source; a
+	// reconcile step must name a published-review import.
+	imported := map[string]string{}
 	merged := false
+	// flat reports whether an earlier step produced the flat result reconcile
+	// maps onto the published review.
+	flat := false
 	idx := 0
 	// validate checks one plain step's type and dependencies, returning the
 	// vector it reviews (if any). Per-vector follow-up steps (verify, dedupe,
@@ -1054,13 +1102,34 @@ func (s Spec) Validate() error {
 		// verify, dedupe, merge, finalize, verdict, summarize) mutates shared
 		// pipeline state (the enriched context, the flat result, or all groups)
 		// and must run sequentially.
-		if inParallel && !isPerVectorStep(entry.Type) {
-			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only per-vector steps (review:/verify:/dedupe:/nudge:/reasoning-extract:) may run concurrently", idx, entry.Type)
+		if _, ok := entryGroup(entry); inParallel && !ok {
+			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only steps that touch a single finding group (review:/verify:/dedupe:/nudge:/reasoning-extract:/import-findings) may run concurrently", idx, entry.Type)
 		}
 		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix} {
 			if v, ok := vectorOf(entry.Type, prefix); ok && !reviewed[v] && !laneReviewed[v] {
-				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step or earlier in the same lane)", idx, entry.Type, StepReviewPrefix, v)
+				producer := StepReviewPrefix + v
+				if !validVector(v) {
+					producer = fmt.Sprintf("%s (group: %s)", StepImportFindings, v)
+				}
+				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s step (in an earlier step or earlier in the same lane)", idx, entry.Type, producer)
 			}
+		}
+		switch entry.Type {
+		case StepImportFindings:
+			group, err := validateImport(entry, imported)
+			if err != nil {
+				return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+			}
+			if reviewed[group] || laneReviewed[group] {
+				return "", fmt.Errorf("workflow: step %d: group %q is already produced by an earlier step", idx, group)
+			}
+			return group, nil
+		case StepReconcile:
+			if err := validateReconcile(entry, imported, flat); err != nil {
+				return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+			}
+		case StepMerge, StepFinalize, StepVerdict, StepSummarize:
+			flat = true
 		}
 		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
 			return v, nil
@@ -1081,6 +1150,7 @@ func (s Spec) Validate() error {
 			if err := validatePipelineGroup(entry, &idx); err != nil {
 				return err
 			}
+			flat = true
 			// The pipeline group contains the merge; anything mutating groups
 			// afterwards is discarded.
 			merged = true
@@ -1112,7 +1182,7 @@ func (s Spec) Validate() error {
 						laneReviewed[v] = true
 						produced = append(produced, v)
 					}
-					if vec, ok := stepVectorAny(ls.Type); ok {
+					if vec, ok := entryGroup(ls); ok {
 						if owner, claimed := vectorOwner[vec]; claimed && owner != laneIdx {
 							return fmt.Errorf("workflow: vector %q is used by more than one lane in the same parallel group", vec)
 						}
@@ -1136,6 +1206,13 @@ func (s Spec) Validate() error {
 			merged = true
 		}
 	}
+	// reconcile maps the run's final findings onto the published review, so
+	// it runs last: any later step would change what it mapped.
+	for i, entry := range s.Steps {
+		if entry.Type == StepReconcile && i != len(s.Steps)-1 {
+			return fmt.Errorf("workflow: %q must be the last step", StepReconcile)
+		}
+	}
 	return nil
 }
 
@@ -1144,7 +1221,7 @@ func (s Spec) Validate() error {
 // per-vector) mutate the grouped findings, but
 // finalize/verdict/output consume the flat result the merge already set.
 func stepDiscardedAfterMerge(stepType string) bool {
-	if stepType == StepVerify || stepType == StepDedupe {
+	if stepType == StepVerify || stepType == StepDedupe || stepType == StepImportFindings {
 		return true
 	}
 	for _, prefix := range []string{StepVerifyPrefix, StepDedupePrefix} {
@@ -1384,21 +1461,20 @@ func stepVectorAny(t string) (string, bool) {
 	return "", false
 }
 
-// isPerVectorStep reports whether t addresses a single reviewer vector.
-func isPerVectorStep(t string) bool {
-	_, ok := stepVectorAny(t)
-	return ok
-}
-
 func validateStepType(t string) error {
 	switch t {
-	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
+	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize, StepImportFindings, StepReconcile:
 		return nil
 	case "":
 		return fmt.Errorf("missing step type")
 	}
 	for _, prefix := range perVectorPrefixes {
 		if v, ok := vectorOf(t, prefix); ok {
+			// verify: and dedupe: address any finding group; Validate checks
+			// that a review: or import-findings step produced it.
+			if (prefix == StepVerifyPrefix || prefix == StepDedupePrefix) && validGroupID(v) {
+				return nil
+			}
 			if !validVector(v) {
 				return fmt.Errorf("unknown reviewer vector %q (valid: %s)", v, strings.Join(ReviewVectorIDs, ", "))
 			}
@@ -1474,11 +1550,93 @@ func (s *Spec) FlatSteps() []*StepEntry {
 // and review/nudge/reasoning-extract steps ignore them.
 func StepConsumesFindings(stepType string) bool {
 	switch stepType {
-	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
+	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize, StepImportFindings:
 		return true
 	default:
 		return false
 	}
+}
+
+// entryGroup returns the finding group a step touches when it touches exactly
+// one: the vector of a review:/verify:/dedupe:/nudge:/reasoning-extract:
+// step, or the group an import-findings step fills. Such steps may run in a
+// lane of a parallel group; each group may be touched by at most one lane.
+func entryGroup(entry StepEntry) (string, bool) {
+	if entry.Type == StepImportFindings {
+		if entry.Config == nil || entry.Config.Group == nil {
+			return "", true
+		}
+		return *entry.Config.Group, true
+	}
+	return stepVectorAny(entry.Type)
+}
+
+// validGroupID reports whether id can name a finding group: lower-case
+// letters, digits, and dashes.
+func validGroupID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateImport checks an import-findings step and records its group in
+// imported, returning the group it produces.
+func validateImport(entry StepEntry, imported map[string]string) (string, error) {
+	cfg := entry.Config
+	if cfg == nil || cfg.Group == nil || !validGroupID(*cfg.Group) {
+		return "", fmt.Errorf("%q needs config.group: lower-case letters, digits, and dashes", StepImportFindings)
+	}
+	group := *cfg.Group
+	if validVector(group) {
+		return "", fmt.Errorf("group %q is a reviewer vector; imported findings need a group of their own", group)
+	}
+	if _, dup := imported[group]; dup {
+		return "", fmt.Errorf("group %q is imported more than once", group)
+	}
+	source := ImportSourceFile
+	if cfg.Source != nil {
+		source = *cfg.Source
+	}
+	switch source {
+	case ImportSourceFile:
+		if len(entry.FindingsFrom) == 0 {
+			return "", fmt.Errorf("%q with source %q needs findings_from", StepImportFindings, ImportSourceFile)
+		}
+	case ImportSourcePublishedReview:
+		if len(entry.FindingsFrom) > 0 {
+			return "", fmt.Errorf("%q with source %q takes no findings_from", StepImportFindings, ImportSourcePublishedReview)
+		}
+		for other, otherSource := range imported {
+			if otherSource == ImportSourcePublishedReview {
+				return "", fmt.Errorf("group %q already imports the published review; a run can reconcile with only one", other)
+			}
+		}
+	default:
+		return "", fmt.Errorf("unknown import source %q (valid: %s, %s)", source, ImportSourceFile, ImportSourcePublishedReview)
+	}
+	imported[group] = source
+	return group, nil
+}
+
+// validateReconcile checks a reconcile step: it runs after finalize and folds
+// the run into a group imported from the published review.
+func validateReconcile(entry StepEntry, imported map[string]string, flat bool) error {
+	if !flat {
+		return fmt.Errorf("%q needs a preceding merge, finalize, verdict, summarize, or pipeline step that produces the findings it maps", StepReconcile)
+	}
+	if entry.Config == nil || entry.Config.Group == nil {
+		return fmt.Errorf("%q needs config.group naming a %s import", StepReconcile, ImportSourcePublishedReview)
+	}
+	if source, ok := imported[*entry.Config.Group]; !ok || source != ImportSourcePublishedReview {
+		return fmt.Errorf("%q group %q is not imported with source %s", StepReconcile, *entry.Config.Group, ImportSourcePublishedReview)
+	}
+	return nil
 }
 
 // vectorOf returns the vector id when t has the given prefix.

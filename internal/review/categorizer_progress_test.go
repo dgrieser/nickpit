@@ -77,6 +77,7 @@ func TestVerifyProgressPrintsVerdictDrop(t *testing.T) {
 		context.Background(),
 		sampleReviewCtx(),
 		vectorResults,
+		nil,
 		model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly},
 		NewLimiter(1),
 		"Security",
@@ -112,7 +113,7 @@ func TestDiffScopeProgressPrintsEachDroppedFinding(t *testing.T) {
 	logger.SetShowProgress(true)
 	engine.SetLogger(logger)
 
-	warnings := engine.prepareFindingsForVerification(context.Background(), reviewCtx, vectorResults, model.ReviewRequest{})
+	warnings := engine.prepareFindingsForVerification(context.Background(), reviewCtx, vectorResults, nil, model.ReviewRequest{})
 	if len(warnings) != 1 {
 		t.Fatalf("warnings=%v", warnings)
 	}

@@ -474,9 +474,19 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
-		vr := st.vectorResults()
+		// The same group-aware verification as verify:<group>, over every
+		// group: each imported group's provenance applies to its findings.
+		st.mu.Lock()
+		vr := st.vectorResultsLocked()
+		var groups []verifyGroup
+		for _, id := range st.groupOrder {
+			if g := st.groupByID[id]; g.filled {
+				groups = append(groups, st.verifyGroupLocked(id))
+			}
+		}
+		st.mu.Unlock()
 		budgets := verifyPhaseBudgetStarters(ctx, "verify", sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", sc.categorizeAgentContext(), budgets)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, groups, sc.Req, st.limiter, "", sc.categorizeAgentContext(), budgets)
 		st.writeBackVectorResults(vr)
 		st.addVerificationTelemetry("", telemetry, warnings)
 		if err != nil {
@@ -487,29 +497,35 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 	}
 }
 
-// verifyVectorStepFunc verifies and filters one reviewer group's findings in
-// place, admitted through the run-shared verify limiter. Per-finding verifier
-// failures are kept as unverified findings with warnings; a soft-failed or
-// empty reviewer is a graceful no-op.
-func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
+// verifyVectorStepFunc verifies and filters one finding group in place — a
+// reviewer's or an imported one — admitted through the run-shared verify
+// limiter. An imported group's provenance applies: its note is told to the
+// verifier, and a group exempt from diff scope skips that filter. Refutations
+// are recorded on the group. Per-finding verifier failures are kept as
+// unverified findings with warnings; a soft-failed or empty group is a
+// graceful no-op.
+func (e *Engine) verifyVectorStepFunc(groupID string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		vr, ok := st.vectorResult(vectorID)
+		vr, ok := st.vectorResult(groupID)
 		if !ok {
-			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s step", vectorID, vectorID)
+			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s or import-findings (group: %s) step", groupID, groupID, groupID)
 		}
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) == 0 {
 			return nil
 		}
-		vector, ok := reviewVectorByID(vectorID)
-		if !ok {
-			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
+		name := groupID
+		if vector, ok := reviewVectorByID(groupID); ok {
+			name = vector.name
 		}
+		st.mu.Lock()
+		groups := []verifyGroup{st.verifyGroupLocked(groupID)}
+		st.mu.Unlock()
 		results := []agentResult{vr}
-		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+vectorID, sc.Override, sc.Req, sc.Engine.logf)
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, sc.categorizeAgentContext(), budgets)
-		st.addVerificationTelemetry(vectorID, telemetry, warnings)
+		budgets := verifyPhaseBudgetStarters(ctx, "verify:"+groupID, sc.Override, sc.Req, sc.Engine.logf)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, groups, sc.Req, st.limiter, name, sc.categorizeAgentContext(), budgets)
+		st.addVerificationTelemetry(groupID, telemetry, warnings)
 		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed for group: group=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
 		}
 		return nil
@@ -523,6 +539,10 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 		vr, ok := st.vectorResult(vectorID)
 		if !ok {
 			return fmt.Errorf("workflow: dedupe:%s requires a preceding review:%s step", vectorID, vectorID)
+		}
+		if skipsDedupe(st.groupProvenance(vectorID), sc.Req) {
+			sc.Engine.logf(ctx, "Dedupe skipped for imported group %s: its findings were already deduplicated when first reported (force with --force-dedupe-imported or force_dedupe_imported)", vectorID)
+			return nil
 		}
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
 			return nil
@@ -567,8 +587,29 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 		if err != nil {
 			return err
 		}
-		vr := st.vectorResults()
-		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
+		// Groups that skip dedupe (see groupProvenance.SkipDedupe) sit this
+		// one out unless it is forced.
+		st.mu.Lock()
+		vr := st.vectorResultsLocked()
+		var subset []agentResult
+		var positions []int
+		i := 0
+		for _, id := range st.groupOrder {
+			g := st.groupByID[id]
+			if !g.filled {
+				continue
+			}
+			if !skipsDedupe(g.provenance, sc.Req) {
+				subset = append(subset, vr[i])
+				positions = append(positions, i)
+			}
+			i++
+		}
+		st.mu.Unlock()
+		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, subset, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain, promptCtx.projectContext)
+		for j, pos := range positions {
+			vr[pos] = subset[j]
+		}
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.dedupeRuns = append(st.dedupeRuns, runs...)
@@ -621,6 +662,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		}
 
 		filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
+		findingLogFrom(ctx).removeDropped(mergeResult.resp.Findings, filtered, priorityDropReason(req.PriorityThreshold))
 		if sc.Engine.logger != nil {
 			sc.Engine.logger.LiveFindings(logging.FindingUpdate{
 				Duplicate: max(len(verifiedMergeInputs)-len(mergeResult.resp.Findings), 0),
@@ -762,7 +804,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			for _, idx := range cluster {
 				clusterFindings = append(clusterFindings, findings[idx])
 			}
-			reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+			reduced, folded := mechanicallyDedupeFindings(ctx, clusterFindings)
 			absorbed += folded
 			if len(reduced) == 1 {
 				outcomes <- clusterMergeOutcome{index: ci, findings: reduced}
@@ -804,6 +846,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			mergeInputVerification(merged, verifiedMergeInputs)
 			rawMergedByCluster[outcome.index] = merged
 			filtered := filterByPriority(merged, mergeSC.Req.PriorityThreshold)
+			findingLogFrom(ctx).removeDropped(merged, filtered, priorityDropReason(mergeSC.Req.PriorityThreshold))
 			if outcome.hasRun {
 				run := outcome.run
 				mergeRunsByCluster[outcome.index] = &run
@@ -880,6 +923,13 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalizeWG.Wait()
 		finalizedFindings := appendClusterFindings(finalizedByCluster)
+		// The summaries were cut from the finalized findings before the ids
+		// below change (normalization, reconcile renames); their original ids
+		// let the join map each summary back to its finalized finding.
+		originalIDs := make([]string, len(finalizedFindings))
+		for i := range finalizedFindings {
+			originalIDs[i] = finalizedFindings[i].ID
+		}
 		if overwrote := normalizeFindingIDsWithSeen(finalizedFindings, nil); overwrote > 0 {
 			mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
@@ -918,22 +968,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalFindings := verdict.Findings
 		if fused.hasSummarize {
-			finalFindings = appendClusterFindings(summarizedByCluster)
-			// Summarize ran on a pre-normalization clone, so adopt the IDs already
-			// assigned to finalizedFindings (same findings, same per-cluster order)
-			// rather than re-normalizing — re-normalizing would generate fresh random
-			// IDs and drift from the verdict's view. Fall back to normalization only
-			// if the counts somehow disagree.
-			if len(finalFindings) == len(finalizedFindings) {
-				for i := range finalFindings {
-					finalFindings[i].ID = finalizedFindings[i].ID
-					if finalFindings[i].Verification != nil {
-						finalFindings[i].Verification.ID = finalizedFindings[i].ID
-					}
-				}
-			} else {
-				normalizeFindingIDsWithSeen(finalFindings, nil)
-			}
+			finalFindings = adoptFinalizedIdentity(appendClusterFindings(summarizedByCluster), finalizedFindings, originalIDs)
 			finalFindings = keepFindingsByID(finalFindings, findingIDSet(verdict.Findings))
 		}
 		verdict.Findings = finalFindings
@@ -1174,6 +1209,7 @@ func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *
 	}
 	if dropped > 0 {
 		sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+		findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 	}
 	return filtered, nil
 }
@@ -1191,6 +1227,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 			// failure path (the flat pipeline pre-filters, the fused one not).
 			if dropped > 0 {
 				sc.Engine.logf(ctx, "Verdict fallback dropped findings below display priority threshold: count=%d", dropped)
+				findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			}
 			in = filtered
 		}
@@ -1441,6 +1478,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		} else if dropped > 0 {
 			sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			findingLogFrom(ctx).removeDropped(finalized.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			finalized = filtered
 		}
 		st.setResultLocked(finalized)
@@ -1556,6 +1594,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		} else if dropped > 0 {
 			sc.Engine.logf(ctx, "Summarize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			findingLogFrom(ctx).removeDropped(in.Findings, filtered.Findings, priorityDropReason(sc.Req.PriorityThreshold))
 			in = filtered
 			st.mu.Lock()
 			// A stricter per-step priority_threshold than verdict's can empty the
@@ -1654,4 +1693,41 @@ func stripInjectedGroupSuggestions(groups []injectedGroup) {
 	for gi := range groups {
 		model.StripSuggestions(groups[gi].findings)
 	}
+}
+
+// adoptFinalizedIdentity maps each summarized finding back to the finalized
+// finding it was cut from and gives it that finding's current id. Summarize
+// ran on a clone taken before normalization repaired invalid or colliding ids,
+// and its own priority filter may have left some findings out, so the mapping
+// goes by the original id rather than by position; findings sharing an
+// original id are matched in order, which summarize preserves. Summaries that
+// map to nothing are dropped; they could only resurface with an id the verdict
+// never saw.
+func adoptFinalizedIdentity(summarized, finalized []model.Finding, originalIDs []string) []model.Finding {
+	positions := make(map[string][]int, len(originalIDs))
+	for i, id := range originalIDs {
+		positions[id] = append(positions[id], i)
+	}
+	out := summarized[:0]
+	for _, f := range summarized {
+		queue := positions[f.ID]
+		if len(queue) == 0 {
+			continue
+		}
+		i := queue[0]
+		positions[f.ID] = queue[1:]
+		f.ID = finalized[i].ID
+		if f.Verification != nil {
+			f.Verification.ID = f.ID
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// skipsDedupe reports whether a group with this provenance sits out dedupe:
+// imported groups can be marked as already deduplicated, which a forced run
+// (ReviewRequest.ForceDedupeImported) overrides.
+func skipsDedupe(provenance *groupProvenance, req model.ReviewRequest) bool {
+	return provenance != nil && provenance.SkipDedupe && !req.ForceDedupeImported
 }

@@ -56,7 +56,7 @@ func TestUpdateSchedulerAdmitsOrphanRecoveryButNotTransientFailures(t *testing.T
 					t.Fatal(err)
 				}
 			}
-			groups, groupErrors := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "token"}}, server.URL, func(context.Context, *glscm.Client) (int, error) { return 7, nil })
+			groups, groupErrors := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "token"}}, server.URL, func(context.Context, *glscm.Client) (*glscm.User, error) { return &glscm.User{ID: 7}, nil })
 			if len(groupErrors) != 0 {
 				t.Fatal(groupErrors)
 			}
@@ -273,7 +273,7 @@ func TestUpdateSchedulerPolicyBlockedHeadPreventsOvertaking(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	groups, groupErrors := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "token"}}, server.URL, func(context.Context, *glscm.Client) (int, error) { return 7, nil })
+	groups, groupErrors := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "token"}}, server.URL, func(context.Context, *glscm.Client) (*glscm.User, error) { return &glscm.User{ID: 7}, nil })
 	if len(groupErrors) != 0 {
 		t.Fatal(groupErrors)
 	}

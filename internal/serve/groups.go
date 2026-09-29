@@ -24,13 +24,15 @@ const signatureTolerance = 5 * time.Minute
 // API client built from its token. BotUserID is the token's user and feeds the
 // emoji-loop guard and safe reaction replacement. Production startup requires
 // it to be resolved; 0 is only useful for tests that omit identity lookup.
+// BotUsername is that user's handle, used to notice @-mentions of the bot.
 type Group struct {
-	Path      string
-	Token     string
-	secret    []byte
-	signKey   []byte
-	Client    *gitlab.Client
-	BotUserID int
+	Path        string
+	Token       string
+	secret      []byte
+	signKey     []byte
+	Client      *gitlab.Client
+	BotUserID   int
+	BotUsername string
 }
 
 // UsesSigning reports whether this group verifies webhooks via a GitLab signing
@@ -101,9 +103,9 @@ type GroupSet struct {
 }
 
 // NewGroupSet builds one Group per configured entry, ordered longest path
-// first, and resolves each token's bot user ID via lookup (nil lookup skips
+// first, and resolves each token's bot user via lookup (nil lookup skips
 // resolution, e.g. in tests).
-func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, lookup func(ctx context.Context, client *gitlab.Client) (int, error)) (*GroupSet, []error) {
+func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, lookup func(ctx context.Context, client *gitlab.Client) (*gitlab.User, error)) (*GroupSet, []error) {
 	set := &GroupSet{botIDs: make(map[int]bool)}
 	var warnings []error
 	for _, cfg := range cfgs {
@@ -125,14 +127,18 @@ func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, 
 			}
 		}
 		if lookup != nil {
-			id, err := lookup(ctx, group.Client)
+			user, err := lookup(ctx, group.Client)
 			if err != nil {
 				warnings = append(warnings, fmt.Errorf("group %q: bot user lookup: %w", group.Path, err))
-			} else if id <= 0 {
+			} else if user == nil || user.ID <= 0 {
+				id := 0
+				if user != nil {
+					id = user.ID
+				}
 				warnings = append(warnings, fmt.Errorf("group %q: bot user lookup returned invalid id %d", group.Path, id))
 			} else {
-				group.BotUserID = id
-				set.botIDs[id] = true
+				group.BotUserID, group.BotUsername = user.ID, user.Username
+				set.botIDs[user.ID] = true
 			}
 		}
 		set.groups = append(set.groups, group)

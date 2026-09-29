@@ -24,6 +24,16 @@ func (c *Client) CreateMRNotePath(ctx context.Context, project string, iid int, 
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// CreateMRInternalNote posts a top-level internal note. nickpit uses it for
+// notes that only hold hidden data (fallback carrier chunks and staged
+// review-update records): internal keeps them out of the public timeline, and
+// only project members with at least the Reporter role see them. Callers label
+// such bodies with reviewmd.CarrierNotice so they never render empty.
+func (c *Client) CreateMRInternalNote(ctx context.Context, project string, iid int, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escapeProject(project), iid)
+	return c.Post(ctx, path, map[string]any{"body": body, "internal": true}, nil)
+}
+
 // ReplyToMRDiscussion adds a note to an existing merge request discussion so
 // command replies land threaded under the comment that issued them.
 func (c *Client) ReplyToMRDiscussion(ctx context.Context, projectID, iid int, discussionID, body string) error {
@@ -48,6 +58,12 @@ func (c *Client) UpdateMRDiscussionNote(ctx context.Context, project string, iid
 	return c.Put(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// ResolveMRDiscussion marks a merge-request discussion resolved.
+func (c *Client) ResolveMRDiscussion(ctx context.Context, project string, iid int, discussionID string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escapeProject(project), iid, url.PathEscape(discussionID))
+	return c.Put(ctx, path, map[string]any{"resolved": true}, nil)
+}
+
 // MRDiscussion is one merge-request discussion with notes ordered oldest first.
 type MRDiscussion struct {
 	ID    string
@@ -58,11 +74,13 @@ type MRDiscussion struct {
 // and authors. It is used to find bot-authored visible review roots.
 func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]MRDiscussion, error) {
 	type noteJSON struct {
-		ID        int       `json:"id"`
-		Body      string    `json:"body"`
-		System    bool      `json:"system"`
-		CreatedAt time.Time `json:"created_at"`
-		Author    struct {
+		ID         int       `json:"id"`
+		Body       string    `json:"body"`
+		System     bool      `json:"system"`
+		Resolvable bool      `json:"resolvable"`
+		Resolved   bool      `json:"resolved"`
+		CreatedAt  time.Time `json:"created_at"`
+		Author     struct {
 			Username string `json:"username"`
 			Name     string `json:"name"`
 			ID       int    `json:"id"`
@@ -82,6 +100,7 @@ func (c *Client) MRDiscussions(ctx context.Context, project string, iid int) ([]
 		for _, note := range discussion.Notes {
 			item.Notes = append(item.Notes, DiscussionNote{
 				ID: note.ID, Body: note.Body, System: note.System, CreatedAt: note.CreatedAt,
+				Resolvable: note.Resolvable, Resolved: note.Resolved,
 				AuthorName: note.Author.Username, AuthorDisplay: note.Author.Name, AuthorID: note.Author.ID,
 			})
 		}
@@ -188,4 +207,8 @@ type DiscussionNote struct {
 	AuthorDisplay string
 	AuthorID      int
 	CreatedAt     time.Time
+	// Resolvable and Resolved describe the note's discussion: only threaded
+	// merge-request discussions can be resolved.
+	Resolvable bool
+	Resolved   bool
 }

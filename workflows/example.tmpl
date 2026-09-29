@@ -22,6 +22,13 @@
 #   finalize                  finalize priorities/confidence/wording
 #   verdict                   decide top-level correctness/explanation
 #   summarize                 shorten each finalized body for readability
+#   import-findings           import existing findings into a named group
+#                             (see "Importing findings" below)
+#   verify:<group>            verify an imported group like a reviewer's
+#   dedupe:<group>            de-duplicate an imported group
+#   reconcile                 last step: map the final findings onto the
+#                             review imported with source published-review
+#                             (see below)
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
 # child can be a `lane:` — a list of steps that run sequentially within the
@@ -52,6 +59,7 @@
 #   finalize   all (flat) | cluster (inside a pipeline:)
 #   summarize  all (flat) | cluster (inside a pipeline:)
 #   verdict    all
+#   reconcile  all
 #   verify     finding
 #   dedupe     reviewer
 # scope is optional; an omitted scope uses the value shown for that step in its
@@ -280,7 +288,58 @@
 #         config: { scope: cluster }
 #
 # ---------------------------------------------------------------------------
-# Findings injection: feed previously-emitted findings JSON back into a step.
+# Importing findings: `import-findings` brings existing findings into a named
+# group that verify:<group>, dedupe:<group>, and merge treat like a reviewer's.
+# It may run in a lane of a parallel group; each group is imported once.
+#   group    required; lower-case letters, digits, dashes; not a reviewer id
+#   source   file (default): the step's findings_from files, in the --output
+#            json format;
+#            published-review: the open findings of the review this token
+#            already published on the merge request (GitLab, publishing runs
+#            only; the group stays empty otherwise). The imported findings go
+#            through the run like new findings, with three differences: the
+#            verifier and the final safeguard skip the diff-scope filter for
+#            them (leaving the diff proves nothing), merge keeps an imported finding as the survivor
+#            of any cluster it is in (its id and text, extended by the
+#            duplicates), and dedupe steps skip them unless forced
+#            (`force_dedupe_imported: true` on the dedupe step, or
+#            --force-dedupe-imported): they were deduplicated when published.
+#   note     provenance the verifier is told for each finding, replacing the
+#            source's default note
+# Each source's defaults (note, diff-scope exemption, merge preference, dedupe
+# skip) are defined in the embedded workflows/import_sources.yaml.
+# `reconcile` (config: group: <a published-review import>) is the last step.
+# It maps the final findings onto that published review: an imported finding
+# still present updates its thread; one the run removed is resolved (and its
+# GitLab discussion with it), with the reason the removing step recorded:
+# refuted, classified out, merged into another finding, or below a priority
+# or confidence threshold; one lost without a recorded reason stays open
+# unchanged. New findings open new threads. It makes no model calls.
+#
+# steps:
+#   - parallel:
+#       - lane:
+#           - type: import-findings
+#             config: { group: imported, source: published-review }
+#           - type: verify:imported
+#           - type: dedupe:imported
+#             config: { force_dedupe_imported: true }
+#       - lane:
+#           - type: import-findings
+#             findings_from: scanner.json
+#             config: { group: scanner, note: "Reported by the static scanner." }
+#           - type: verify:scanner
+#   - pipeline:
+#       - type: merge
+#       - type: finalize
+#       - type: verdict
+#   - type: reconcile
+#     config: { group: imported }
+#
+# ---------------------------------------------------------------------------
+# Findings injection: `findings_from` on a verify, dedupe, or merge step is the
+# shorthand for importing files straight into that step (one group per file).
+# Feed previously-emitted findings JSON back into a step.
 # The format is unchanged — it is exactly what NickPit emits with --output json.
 # One file = one merge group; pass several to merge across them. A single file
 # into merge is a passthrough (nothing to merge against). Injected steps run

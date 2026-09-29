@@ -188,6 +188,83 @@ NickPit review-thread response controls (command must be on its own line):
 - `+"`/%s respond`"+` — re-enable and request a response to text in the same comment (`+"`comment`"+`, `+"`unmute`"+`, `+"`resume`"+` are aliases)`, keyword, keyword, keyword, keyword, keyword, keyword)
 }
 
+// commandHasExtraText reports whether a command note carries anything beyond
+// the "/<keyword> <command>" line itself: more words on that line, or further
+// non-blank lines. Commands take no arguments, so that text is ignored and the
+// author is told so.
+func commandHasExtraText(body string) bool {
+	seen := false
+	for line := range strings.SplitSeq(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if seen || len(fields) > 2 {
+			return true
+		}
+		seen = true
+	}
+	return false
+}
+
+// ignoredTextNotice tells the author that the text around their command was
+// not used.
+func ignoredTextNotice(keyword string, command CommandKind) string {
+	notice := fmt.Sprintf("Text after `/%s %s` is ignored: commands take no instructions.", keyword, command)
+	if command == CommandReview {
+		notice += " The review runs the standard workflow; to discuss its result, reply in one of its threads."
+	}
+	return notice
+}
+
+// withIgnoredTextNotice prefixes a command reply with ignoredTextNotice when
+// the command note carried extra text.
+func withIgnoredTextNotice(decision Decision, keyword, reply string) string {
+	if !decision.IgnoredText {
+		return reply
+	}
+	return ignoredTextNotice(keyword, decision.Command) + "\n\n" + reply
+}
+
+// mentionHelpText answers an @-mention of the bot outside its own threads.
+func mentionHelpText(keyword string) string {
+	return fmt.Sprintf("NickPit answers only in its own review threads: reply in one of them to discuss a finding or the review. "+
+		"Commands: `/%s review`, `/%s status`, `/%s abort`, `/%s help`.", keyword, keyword, keyword, keyword)
+}
+
+// mentionsUser reports whether body @-mentions username (case-insensitive,
+// as GitLab matches handles). The handle must stand alone: "@nickpit-bot"
+// does not mention "nickpit".
+func mentionsUser(body, username string) bool {
+	if username == "" {
+		return false
+	}
+	lower, handle := strings.ToLower(body), "@"+strings.ToLower(username)
+	for offset := 0; ; {
+		i := strings.Index(lower[offset:], handle)
+		if i < 0 {
+			return false
+		}
+		start, end := offset+i, offset+i+len(handle)
+		offset = end
+		if start > 0 && isHandleRune(rune(lower[start-1])) {
+			continue
+		}
+		if next := lower[end:]; next != "" && isHandleRune(rune(next[0])) {
+			// Periods that end a sentence do not extend the handle; periods
+			// followed by more handle characters do ("@nickpit.bot").
+			if rest := strings.TrimLeft(next, "."); next[0] != '.' || (rest != "" && isHandleRune(rune(rest[0]))) {
+				continue
+			}
+		}
+		return true
+	}
+}
+
+func isHandleRune(r rune) bool {
+	return r == '_' || r == '-' || r == '.' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
 func unknownText(keyword, arg string) string {
 	return fmt.Sprintf("Unknown command %q.\n\n%s", arg, helpText(keyword))
 }

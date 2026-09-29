@@ -2325,3 +2325,63 @@ func TestWorkflowFlatStricterSummarizePriorityKeepsVerdictProvenance(t *testing.
 		t.Fatalf("overall explanation = %q, want summarized verdict text", result.OverallExplanation)
 	}
 }
+
+// A re-review end to end: imported findings go through the whole run. One
+// merged with a more confident duplicate survives with its own id; one the
+// finalizer demotes below the threshold is resolved with that reason; the
+// run's own new finding is added; reconcile, as the last step, maps it all.
+func TestWorkflowReconcileMapsPublishedFindingsThroughTheRun(t *testing.T) {
+	published := verifiedPipelineFinding("44444444-4444-4444-8444-444444444444", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	published.ConfidenceScore = 0.3
+	demoted := verifiedPipelineFinding("55555555-5555-4555-8555-555555555555", "Reject malformed config input", "other.go", 90, 1)
+	client := &multiAgentLLM{finalizeDemote: map[string]int{demoted.ID: 3}}
+	engine := pipelineTestEngine(client)
+	engine.source = &publishedSource{published: &model.PublishedReview{Review: &model.ReviewResult{
+		ReviewID: "published-review", Revision: 1, Findings: []model.Finding{published, demoted},
+	}}}
+	duplicate := verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	duplicate.ConfidenceScore = 0.9
+	fresh := verifiedPipelineFinding("77777777-7777-4777-8777-777777777777", "Division by zero on empty input", "calc.go", 40, 1)
+	runFile := writeFindingsFile(t, "run.json", model.ReviewResult{Findings: []model.Finding{duplicate, fresh}})
+	group, source := "imported", workflow.ImportSourcePublishedReview
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepImportFindings, Config: &workflow.StepOverride{Group: &group, Source: &source}},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{runFile}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+		{Type: workflow.StepReconcile, Config: &workflow.StepOverride{Group: &group}},
+	}}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PostReview: true, PriorityThreshold: "p2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReviewID != "published-review" || result.Reconciliation == nil {
+		t.Fatalf("result not reconciled: id=%s rec=%+v", result.ReviewID, result.Reconciliation)
+	}
+	byID := map[string]model.Finding{}
+	for _, f := range result.Findings {
+		byID[f.ID] = f
+	}
+	if _, ok := byID[duplicate.ID]; ok {
+		t.Fatal("the duplicate survived the merge instead of the published finding")
+	}
+	if got, ok := byID[published.ID]; !ok || got.Resolution != nil || got.Summarization == nil {
+		t.Fatalf("published finding = %+v (present=%v), want it open and summarized", got, ok)
+	}
+	if got := byID[demoted.ID]; got.Resolution == nil || got.Resolution.Reason != "Re-review rated it below the P2 priority threshold." {
+		t.Fatalf("demoted finding resolution = %+v", got.Resolution)
+	}
+	if _, ok := byID[fresh.ID]; !ok {
+		t.Fatal("new finding missing")
+	}
+}

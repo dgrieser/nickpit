@@ -75,6 +75,14 @@ type PipelineState struct {
 	// and failure paths emit static text not worth an LLM call.
 	verdictOverall string
 	summarizeRuns  []model.AgentRun
+	// findings records what happened to findings that left the run (see
+	// findingLog); reconciled is the reconcile step's plan, laid out by
+	// assemble.
+	findings   *findingLog
+	reconciled *reconcilePlan
+	// publishBlocked is set by the reconcile step when this run must not be
+	// published (see model.ReviewResult.PublishBlocked).
+	publishBlocked string
 	// Verification runs: one categorize and one verify run per executed verify
 	// step, each aggregating every finding that step handled. The per-reviewer
 	// steps are keyed by vector so aggregateTelemetry can emit them in
@@ -214,6 +222,9 @@ type groupEntry struct {
 	// re-set the group on every turn, so the same soft failure must not be
 	// reported again and again.
 	warned string
+	// provenance is set for groups an import-findings step filled; nil for
+	// reviewer groups.
+	provenance *groupProvenance
 }
 
 func newPipelineState(reviewCtx *model.ReviewContext, reviewOrder []string) *PipelineState {
@@ -228,6 +239,34 @@ func newPipelineState(reviewCtx *model.ReviewContext, reviewOrder []string) *Pip
 		st.groupOrder = append(st.groupOrder, id)
 	}
 	return st
+}
+
+// setImportedGroup fills group id with imported findings and their provenance.
+func (st *PipelineState) setImportedGroup(id string, result agentResult, provenance groupProvenance) {
+	st.setGroup(id, result, nil)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.groupByID[id].provenance = &provenance
+}
+
+// groupProvenance returns the provenance of an imported group, or nil.
+func (st *PipelineState) groupProvenance(id string) *groupProvenance {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if g := st.groupByID[id]; g != nil {
+		return g.provenance
+	}
+	return nil
+}
+
+// verifyGroupLocked describes group id for verification; the caller must
+// hold st.mu.
+func (st *PipelineState) verifyGroupLocked(id string) verifyGroup {
+	group := verifyGroup{id: id}
+	if g := st.groupByID[id]; g != nil && g.provenance != nil {
+		group.note, group.exemptDiffScope = g.provenance.Note, g.provenance.ExemptDiffScope
+	}
+	return group
 }
 
 func (st *PipelineState) setGroup(id string, result agentResult, session *reviewerSession) {
@@ -507,6 +546,10 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	// Engine internals with no access to the pipeline state report warnings
 	// through the context-carried log.
 	ctx = withWarnings(ctx, st.warnings)
+	// Steps record what happened to findings that leave the run, and which
+	// findings merge must prefer (see findingLog).
+	st.findings = &findingLog{}
+	ctx = withFindingLog(ctx, st.findings)
 	var segments []model.SegmentRuntime
 	for unitIdx, unit := range p.units {
 		unitStart := time.Now()
@@ -651,9 +694,22 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	if res == nil {
 		res = st.materializeFromGroups(req)
 	}
+	plan := st.reconciled
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
+		// Findings imported from a source exempt from diff scope skip it, and
+		// so do findings merge folded one of them into: they were in scope
+		// when first reported, and leaving the diff proves nothing.
+		var published, fresh []model.Finding
+		for _, f := range res.Findings {
+			if st.findings.isExemptFromDiffScope(f.ID) || (plan != nil && plan.isPublished(f.ID)) {
+				published = append(published, f)
+			} else {
+				fresh = append(fresh, f)
+			}
+		}
 		var dropped []model.Finding
-		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
+		res.Findings, dropped = filterFindingsByDiffScope(fresh, st.Enriched.DiffScopeHunks, st.Enriched.ChangedFiles)
+		res.Findings = append(published, res.Findings...)
 		for i, finding := range dropped {
 			if p.engine.logger != nil {
 				p.engine.logger.ProgressFor(
@@ -666,12 +722,20 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 		}
 		if len(dropped) > 0 {
 			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", len(dropped), len(res.Findings))
-			if len(res.Findings) == 0 {
+			if len(res.Findings) == 0 && plan == nil {
 				res.OverallCorrectness = "patch is correct"
 				res.OverallExplanation = "No in-scope findings remained after diff-scope filtering."
 				res.OverallConfidenceScore = 1
 			}
 		}
+	}
+	res.PublishBlocked = st.publishBlocked
+	if plan != nil {
+		// The reconcile step decided everything; this only lays out the
+		// published review's findings around the final ones.
+		res.Findings = plan.layout(res.Findings)
+		res.ReviewID, res.Revision, res.CreatedAt = plan.baseline.Review.ReviewID, plan.baseline.Review.Revision, plan.baseline.Review.CreatedAt
+		res.Reconciliation = &model.Reconciliation{Before: plan.baseline.Review, HeadSHA: plan.headSHA}
 	}
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
@@ -892,6 +956,12 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 		return bs, nil
 	case workflow.StepSummarize:
 		bs.run = e.summarizeStepFunc(entry.FindingsFrom)
+		return bs, nil
+	case workflow.StepImportFindings:
+		bs.run = e.importFindingsStepFunc(entry)
+		return bs, nil
+	case workflow.StepReconcile:
+		bs.run = e.reconcileStepFunc(reconcileGroup(entry))
 		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {

@@ -240,6 +240,7 @@ type app struct {
 	disableDiffScope              bool
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
+	forceDedupeImported           bool
 	disablePatchSummary           bool
 	disableSuggestions            bool
 	requirePublish                bool
@@ -446,6 +447,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
+	root.PersistentFlags().BoolVar(&cli.forceDedupeImported, "force-dedupe-imported", false, "Also run dedupe steps on imported findings that skip them by default (findings imported from the published review were deduplicated when first published)")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().BoolVar(&cli.requirePublish, "require-publish", false, "Fail unless the requested review is published successfully")
@@ -1012,12 +1014,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				log.Warn(notice)
 			}
 
-			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (int, error) {
-				user, err := client.CurrentUser(ctx)
-				if err != nil {
-					return 0, err
-				}
-				return user.ID, nil
+			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (*glscm.User, error) {
+				return client.CurrentUser(ctx)
 			})
 			if len(warnings) > 0 {
 				// Reaction replacement cannot safely revoke an award until the
@@ -1634,6 +1632,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	req.DisableDiffScope = a.disableDiffScope
 	req.DisableReasoningExtract = a.disableReasoningExtract
+	req.ForceDedupeImported = a.forceDedupeImported
 	if profile.ForceAllNudges {
 		req.ForceAllNudges = true
 	}
@@ -1798,7 +1797,16 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// hidden require-publish flag so their exit code is an explicit delivery
 	// signal for the daemon's outcome reaction.
 	var deliveryErr error
-	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
+	if req.PostReview && result.PublishBlocked != "" {
+		// The run itself says it must not be published (e.g. every reviewer
+		// failed on a re-review): posting it would add a fresh review next to
+		// the published one.
+		a.logProgress(ctx, logging.StagePublish, logging.StateSkip, result.PublishBlocked)
+		result.Warnings = append(result.Warnings, "Publish skipped: "+result.PublishBlocked)
+		if a.requirePublish {
+			deliveryErr = fmt.Errorf("publishing review: %s", result.PublishBlocked)
+		}
+	} else if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
 		if publisher, ok := source.(model.ReviewPublisher); ok {
 			a.logProgress(ctx, logging.StagePublish, logging.StateStart, fmt.Sprintf("posting to %s %s%d", req.Repo, requestSigil(req.Mode), req.Identifier))
 			if err := publisher.PublishReview(ctx, req, result); err != nil {
@@ -2058,7 +2066,9 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 		return nil
 	}
 	for _, entry := range spec.FlatSteps() {
-		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) {
+		// An import-findings step names its own source; --findings never
+		// retargets it.
+		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) && entry.Type != workflow.StepImportFindings {
 			entry.FindingsFrom = findings
 			return nil
 		}
@@ -2415,6 +2425,9 @@ func stepModelRequirements(stepType string, disableJSONResponseFormat bool) mode
 		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
 		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
 		return reviewerModelRequirements(disableJSONResponseFormat)
+	case stepType == workflow.StepImportFindings, stepType == workflow.StepReconcile:
+		// Import reads files or the merge request; reconcile is bookkeeping.
+		return modelCapabilityRequirements{}
 	case stepType == workflow.StepDedupe,
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
 		stepType == workflow.StepMerge,

@@ -26,6 +26,11 @@ type updateServer struct {
 	positionAttempts       int
 	visibleWrites          int
 	loseActivationResponse bool
+	internalBodies         []string
+	// resolvable marks every discussion resolvable; resolvedDiscussions
+	// records the discussions resolved through the API.
+	resolvable          bool
+	resolvedDiscussions []string
 }
 
 func newUpdateServer(t *testing.T) (*updateServer, *Adapter, *model.ReviewResult) {
@@ -61,7 +66,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteJSON := func(n DiscussionNote) map[string]any {
-		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
+		return map[string]any{"id": n.ID, "body": n.Body, "system": n.System, "resolvable": s.resolvable, "author": map[string]any{"id": n.AuthorID, "username": n.AuthorName}}
 	}
 	discussionJSON := func(d MRDiscussion) map[string]any {
 		notes := []any{}
@@ -117,6 +122,7 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Body     string    `json:"body"`
 		Position *position `json:"position"`
+		Internal bool      `json:"internal"`
 	}
 	if r.Method == http.MethodPost || r.Method == http.MethodPut {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -125,6 +131,13 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == http.MethodPut {
+		for _, d := range s.discussions {
+			if tail == "/discussions/"+d.ID {
+				s.resolvedDiscussions = append(s.resolvedDiscussions, d.ID)
+				write(discussionJSON(d))
+				return
+			}
+		}
 		for i, d := range s.discussions {
 			for j, n := range d.Notes {
 				if tail != fmt.Sprintf("/discussions/%s/notes/%d", d.ID, n.ID) {
@@ -142,7 +155,22 @@ func (s *updateServer) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.Method == http.MethodPost {
+		for i, d := range s.discussions {
+			if tail != "/discussions/"+d.ID+"/notes" {
+				continue
+			}
+			s.next++
+			n := DiscussionNote{ID: s.next, Body: payload.Body, AuthorID: 7, AuthorName: "nickpit"}
+			s.discussions[i].Notes = append(s.discussions[i].Notes, n)
+			write(noteJSON(n))
+			return
+		}
+	}
 	if r.Method == http.MethodPost && (tail == "/notes" || tail == "/discussions") {
+		if payload.Internal {
+			s.internalBodies = append(s.internalBodies, payload.Body)
+		}
 		if payload.Position != nil {
 			s.positionAttempts++
 			if s.rejectPositions {
