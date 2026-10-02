@@ -36,6 +36,10 @@ func TestCLIUpdatePublishesGitLabReviewWithoutMirroringChat(t *testing.T) {
 			}
 			before.Findings[0].CodeLocation = model.CodeLocation{FilePath: "sample.go", LineRange: model.LineRange{Start: 1, End: 1}, Content: "safe()"}
 			before.Findings[0].Priority = new(int)
+			if overall {
+				// A P0 would pin the verdict and skip the overall correction.
+				*before.Findings[0].Priority = 1
+			}
 			before.Findings[0].ConfidenceScore = 0.9
 			render := reviewmd.NewRenderer("").ForReview(before.ReviewID)
 			root, _ := render.SummaryBodyCarried(before)
@@ -59,7 +63,7 @@ func TestCLIUpdatePublishesGitLabReviewWithoutMirroringChat(t *testing.T) {
 					if (!strings.Contains(r.URL.Path, "/small/") && !strings.Contains(string(raw), "PRIVATE CLI QUESTION")) || strings.Contains(string(raw), "UNRELATED REMOTE THREAD") {
 						t.Error("incorrect correction evidence")
 					}
-					response := `{"updates":[{"id":"finding","action":"resolved","reason":"Current guard prevents the failure."}]}`
+					response := `{"updates":[{"id":"finding","action":"resolved","basis":"fixed","reason":"Current guard prevents the failure."}]}`
 					if overall {
 						switch models {
 						case 1:

@@ -60,6 +60,20 @@ func (e *Engine) RunUpdateWorkflow(ctx context.Context, req UpdateWorkflowReques
 	if !publish {
 		return updateWorkflowResult(after, report, changed, usage, false), nil
 	}
+	if len(changed) == 0 {
+		// A review-only correction re-runs the verdict on the same findings. While
+		// one of them pins the verdict to "patch is incorrect", that run could only
+		// republish the old verdict with an explanation contradicting the evidence.
+		blocking, err := blockingFindingIDs(after, req.PriorityThreshold, req.ConfidenceThreshold)
+		if err != nil {
+			return nil, err
+		}
+		if len(blocking) > 0 {
+			result := updateWorkflowResult(after, report, changed, usage, false)
+			result.Outcome.BlockedBy = blocking
+			return result, nil
+		}
+	}
 
 	verdictInput, err := after.Clone()
 	if err != nil {
@@ -115,6 +129,34 @@ func updateWorkflowResult(after *model.ReviewResult, report FindingUpdateReport,
 		TokensUsed: usage, Checks: report.Checks, ReviewCheck: report.ReviewCheck, Changed: changed,
 		OverallCorrectness: after.OverallCorrectness, OverallExplanation: after.OverallExplanation,
 	}}
+}
+
+// blockingFindingIDs returns the active findings that survive the verdict's
+// priority and confidence filters and force verdictConstraintsFor to
+// "patch is incorrect".
+func blockingFindingIDs(result *model.ReviewResult, priorityThreshold string, confidenceThreshold float64) ([]string, error) {
+	active := &model.ReviewResult{}
+	for _, f := range result.Findings {
+		if f.Resolution == nil {
+			active.Findings = append(active.Findings, f)
+		}
+	}
+	active, _, err := filterResultByDisplayPriority(active, priorityThreshold)
+	if err != nil {
+		return nil, err
+	}
+	active, _, err = filterByConfidenceThreshold(active, confidenceThreshold)
+	if err != nil {
+		return nil, err
+	}
+	thresholdRank := model.PriorityThresholdRank(priorityThreshold)
+	var ids []string
+	for _, f := range active.Findings {
+		if priorityFloor(f, thresholdRank) == 0 {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids, nil
 }
 
 func changedUpdateFindings(before, after *model.ReviewResult) []model.Finding {

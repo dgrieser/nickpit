@@ -63,18 +63,24 @@ func (s ReviewUpdateSignal) Validate(result *model.ReviewResult) error {
 }
 
 type ReviewUpdateOutcome struct {
-	TokensUsed         model.TokenUsage     `json:"-"`
-	Checks             []FindingUpdateCheck `json:"checks"`
-	ReviewCheck        *ReviewUpdateCheck   `json:"review_check,omitempty"`
-	Changed            []model.Finding      `json:"changed_findings"`
-	OverallCorrectness string               `json:"overall_correctness"`
-	OverallExplanation string               `json:"overall_explanation"`
+	TokensUsed  model.TokenUsage     `json:"-"`
+	Checks      []FindingUpdateCheck `json:"checks"`
+	ReviewCheck *ReviewUpdateCheck   `json:"review_check,omitempty"`
+	// BlockedBy lists active findings whose priority floor pins the verdict to
+	// "patch is incorrect"; an overall correction cannot change it while they
+	// remain active, so it is reported instead of published.
+	BlockedBy          []string        `json:"blocked_by,omitempty"`
+	Changed            []model.Finding `json:"changed_findings"`
+	OverallCorrectness string          `json:"overall_correctness"`
+	OverallExplanation string          `json:"overall_explanation"`
 }
 
 type FindingUpdateCheck struct {
-	ID     string `json:"id"`
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	ID         string `json:"id"`
+	Action     string `json:"action"`
+	Basis      string `json:"basis,omitempty"`
+	Reason     string `json:"reason"`
+	Resolution string `json:"resolution,omitempty"`
 }
 
 type FindingUpdateReport struct {
@@ -98,11 +104,25 @@ type UpdateFindingsRequest struct {
 	Signal ReviewUpdateSignal
 }
 
+// Resolution bases for a resolved decision. Author acceptance cannot waive a
+// blocking finding: only P2/P3 findings may be resolved as accepted.
+const (
+	resolutionBasisFixed    = "fixed"
+	resolutionBasisInvalid  = "invalid"
+	resolutionBasisAccepted = "accepted"
+	minAcceptedPriority     = 2
+)
+
+// findingUpdateDecision keeps the free-form evidence (reason) separate from the
+// published one-sentence resolution so the length limit on the latter never
+// shapes which action the model picks.
 type findingUpdateDecision struct {
-	ID      string         `json:"id"`
-	Action  string         `json:"action"`
-	Reason  string         `json:"reason"`
-	Finding *model.Finding `json:"finding,omitempty"`
+	ID         string         `json:"id"`
+	Action     string         `json:"action"`
+	Reason     string         `json:"reason"`
+	Basis      string         `json:"basis,omitempty"`
+	Resolution string         `json:"resolution,omitempty"`
+	Finding    *model.Finding `json:"finding,omitempty"`
 }
 
 // UpdateFindings checks the selected batch. No SCM writes or revision/history
@@ -235,6 +255,15 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 			run.ReviewCheck = payload.Review
 		}
 		for _, d := range parsed {
+			if d.Action == "resolved" && d.Basis == resolutionBasisAccepted {
+				// The floor keeps a verifier-confirmed P0 blocking even when its
+				// displayed priority was lowered.
+				for _, f := range out.Findings {
+					if f.ID == d.ID && priorityFloor(f, model.PriorityThresholdRank("")) < minAcceptedPriority {
+						return &llm.InvalidResponseError{RawContent: raw, Reason: fmt.Sprintf("finding %s is blocking (P0/P1): author acceptance can only resolve P2 or P3 findings; return unchanged unless the current code fixes it", d.ID)}
+					}
+				}
+			}
 			if d.Action != "updated" {
 				continue
 			}
@@ -282,7 +311,8 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 		return nil, run, invalid
 	}
 	for _, decision := range decisions {
-		run.Checks = append(run.Checks, FindingUpdateCheck{ID: decision.ID, Action: decision.Action, Reason: decision.Reason})
+		run.Checks = append(run.Checks, FindingUpdateCheck{ID: decision.ID, Action: decision.Action, Basis: decision.Basis, Reason: decision.Reason, Resolution: decision.Resolution})
+		e.logProgress(logging.StageChat, logging.StateDone, updateDecisionLogLine(decision))
 		for i := range out.Findings {
 			f := &out.Findings[i]
 			if f.ID != decision.ID {
@@ -292,7 +322,7 @@ func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) 
 			case "resolved":
 				resolved := currentFinding(*f)
 				resolved.Revision = f.Revision
-				resolved.Resolution = &model.FindingResolution{Reason: strings.TrimSpace(decision.Reason)}
+				resolved.Resolution = &model.FindingResolution{Reason: decision.Resolution}
 				resolved.Body, resolved.Suggestions = resolved.Resolution.Reason, nil
 				*f = resolved
 			case "updated":
@@ -348,12 +378,28 @@ func parseFindingUpdates(raw string, selected *model.ReviewResult, disableSugges
 		if strings.TrimSpace(d.Reason) == "" {
 			return nil, fmt.Errorf("update %s needs evidence in reason", d.ID)
 		}
+		if d.Action != "resolved" {
+			// basis and resolution describe a resolution only.
+			payload.Updates[i].Basis, payload.Updates[i].Resolution = "", ""
+		}
 		switch d.Action {
 		case "unchanged":
 		case "resolved":
-			if !validResolutionSentence(d.Reason) {
-				return nil, fmt.Errorf("resolution must be one short factual sentence (at most 240 characters), without lists or paragraphs")
+			switch d.Basis {
+			case resolutionBasisFixed, resolutionBasisInvalid, resolutionBasisAccepted:
+			default:
+				return nil, fmt.Errorf("resolved finding %s needs basis fixed, invalid, or accepted", d.ID)
 			}
+			// Older outputs put the one-sentence resolution in reason; accept that
+			// when it already satisfies the published-sentence rules.
+			resolution := strings.TrimSpace(d.Resolution)
+			if resolution == "" && validResolutionSentence(d.Reason) {
+				resolution = strings.TrimSpace(d.Reason)
+			}
+			if !validResolutionSentence(resolution) {
+				return nil, fmt.Errorf("resolved finding %s needs resolution: one short factual sentence (at most 240 characters), without lists or paragraphs; keep longer evidence in reason", d.ID)
+			}
+			payload.Updates[i].Resolution = resolution
 		case "updated":
 			for _, field := range []string{"id", "title", "body", "priority", "confidence_score", "code_location"} {
 				value := rawPayload.Updates[i].Finding[field]
@@ -435,6 +481,20 @@ func validUpdateLocation(loc model.CodeLocation) error {
 		return fmt.Errorf("updated code locations must contain a repo-relative path, valid range, and exact code")
 	}
 	return nil
+}
+
+// updateDecisionLogLine records the decision in the run log; without it a
+// reply's "Review check complete." is the only trace of what the model chose.
+func updateDecisionLogLine(d findingUpdateDecision) string {
+	action := d.Action
+	if d.Basis != "" {
+		action += "/" + d.Basis
+	}
+	reason := strings.Join(strings.Fields(d.Reason), " ")
+	if runes := []rune(reason); len(runes) > 300 {
+		reason = string(runes[:300]) + "…"
+	}
+	return fmt.Sprintf("Update decision %s %s: %s", d.ID, action, reason)
 }
 
 func validResolutionSentence(s string) bool {

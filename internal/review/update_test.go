@@ -48,7 +48,7 @@ func TestUpdateFindingsBatchPreservesIdentityAndRemovesStaleEvidence(t *testing.
 	replacement.ConfidenceScore = 0.8
 	raw, _ := json.Marshal(map[string]any{"updates": []findingUpdateDecision{
 		{ID: f.ID, Action: "updated", Reason: "Only the low-impact path is affected.", Finding: &replacement},
-		{ID: other.ID, Action: "resolved", Reason: "The new guard prevents the failure."},
+		{ID: other.ID, Action: "resolved", Basis: "fixed", Reason: "The new guard prevents the failure."},
 	}})
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: string(raw)}}}
 	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
@@ -92,7 +92,10 @@ func TestUpdateValidation(t *testing.T) {
 	cases := []string{
 		`{"updates":[]}`,
 		`{"updates":[{"id":"other","action":"unchanged","reason":"Evidence."}]}`,
-		`{"updates":[{"id":"finding","action":"resolved","reason":"First sentence. Second sentence."}]}`,
+		`{"updates":[{"id":"finding","action":"resolved","basis":"fixed","reason":"First sentence. Second sentence."}]}`,
+		`{"updates":[{"id":"finding","action":"resolved","basis":"fixed","reason":"Evidence.","resolution":"First sentence. Second sentence."}]}`,
+		`{"updates":[{"id":"finding","action":"resolved","reason":"The guard prevents the failure."}]}`,
+		`{"updates":[{"id":"finding","action":"resolved","basis":"waived","reason":"The guard prevents the failure."}]}`,
 		strings.Replace(string(valid), `"confidence_score":0.9,`, "", 1),
 		strings.Replace(string(valid), `"file_path":"main.go"`, `"file_path":"../secret"`, 1),
 	}
@@ -258,5 +261,115 @@ func TestVerdictExcludesResolvedFindingAndOldPromptContent(t *testing.T) {
 	raw, _ := json.Marshal(prompt)
 	if strings.Contains(string(raw), "Old evidence") || !strings.Contains(string(raw), f.Resolution.Reason) {
 		t.Fatal("resolved prompt includes obsolete evidence")
+	}
+}
+
+func TestUpdateResolvedKeepsEvidenceSeparateFromResolution(t *testing.T) {
+	f := updateTestFinding()
+	evidence := "Checking current file: the rule moved to the core group. The fix matches commit abc123. Therefore the finding is resolved."
+	raw, _ := json.Marshal(map[string]any{"updates": []findingUpdateDecision{{ID: f.ID, Action: "resolved", Basis: "fixed", Reason: evidence, Resolution: "Commit abc123 moves the grant to the core API group."}}})
+	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: string(raw)}}}
+	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+	out, run, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
+	}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed with abc123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Findings[0].Resolution; got == nil || got.Reason != "Commit abc123 moves the grant to the core API group." {
+		t.Fatalf("wrong resolution: %+v", got)
+	}
+	if len(run.Checks) != 1 || run.Checks[0].Reason != evidence || run.Checks[0].Basis != "fixed" {
+		t.Fatalf("evidence not reported: %+v", run.Checks)
+	}
+}
+
+func TestUpdateLegacyResolvedReasonBecomesResolution(t *testing.T) {
+	f := currentFinding(updateTestFinding())
+	parsed, err := parseFindingUpdates(`{"updates":[{"id":"finding","action":"resolved","basis":"fixed","reason":"The guard prevents the failure."}]}`, &model.ReviewResult{Findings: []model.Finding{f}}, false)
+	if err != nil || parsed[0].Resolution != "The guard prevents the failure." {
+		t.Fatalf("legacy reason not used as resolution: %+v %v", parsed, err)
+	}
+}
+
+func TestUpdateUnchangedDropsResolutionFields(t *testing.T) {
+	f := currentFinding(updateTestFinding())
+	parsed, err := parseFindingUpdates(`{"updates":[{"id":"finding","action":"unchanged","basis":"fixed","resolution":"Fixed.","reason":"Still present."}]}`, &model.ReviewResult{Findings: []model.Finding{f}}, false)
+	if err != nil || parsed[0].Basis != "" || parsed[0].Resolution != "" {
+		t.Fatalf("unchanged kept resolution fields: %+v %v", parsed, err)
+	}
+}
+
+func TestUpdateAcceptedOnlyResolvesNonBlockingFindings(t *testing.T) {
+	accepted := `{"updates":[{"id":"finding","action":"resolved","basis":"accepted","reason":"The author accepts the wider verbs.","resolution":"The author accepts the wider verbs for maintainers."}]}`
+	for _, tc := range []struct {
+		name         string
+		verification int
+		wantResolved bool
+	}{
+		{"p2 accepted", 2, true},
+		// The displayed priority is P2, but the verifier-confirmed floor stays P0.
+		{"lowered p0 rejected", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := updateTestFinding()
+			display := 2
+			f.Priority, f.Finalization.Priority = &display, display
+			f.Verification.Priority = tc.verification
+			client := &updateTestLLM{responses: []*llm.ReviewResponse{
+				{RawResponse: accepted},
+				{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"The blocking defect is still present."}]}`},
+			}}
+			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+			out, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
+				Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, MaxOutputRetries: 1,
+			}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Accepted as appropriate"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (out.Findings[0].Resolution != nil) != tc.wantResolved {
+				t.Fatalf("resolution=%+v want resolved=%v", out.Findings[0].Resolution, tc.wantResolved)
+			}
+			if !tc.wantResolved {
+				if len(client.requests) != 2 {
+					t.Fatalf("calls=%d, want a retry", len(client.requests))
+				}
+				last := client.requests[1].Messages[len(client.requests[1].Messages)-1].Content
+				if !strings.Contains(last, "author acceptance can only resolve P2 or P3") {
+					t.Fatalf("retry did not explain the rejection: %s", last)
+				}
+			}
+		})
+	}
+}
+
+func TestUpdatePromptTreatsVerifiedFixAsResolved(t *testing.T) {
+	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"Still present."}]}`}}}
+	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+	f := updateTestFinding()
+	if _, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
+	}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed"}}); err != nil {
+		t.Fatal(err)
+	}
+	system := client.requests[0].Messages[0].Content
+	for _, want := range []string{"is fixed now is `resolved`, NOT `unchanged`", "NEVER return `unchanged` with a reason that says the finding is fixed", "`accepted`", "`resolution`", `"basis"`} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("update prompt missing %q", want)
+		}
+	}
+	if strings.Contains(system, "disputed review") {
+		t.Fatal("update prompt still frames every request as a dispute")
+	}
+}
+
+func TestRequestReviewUpdateToolCallLogsFindingIDs(t *testing.T) {
+	for _, tc := range []struct {
+		ids  []string
+		want string
+	}{{[]string{"a", "b"}, "finding_ids=[a, b]"}, {nil, "finding_ids=[]"}} {
+		if got := syntheticToolArguments(toolcatalog.RequestReviewUpdate, toolCallArgs{FindingIDs: tc.ids}); got != tc.want {
+			t.Fatalf("got %q want %q", got, tc.want)
+		}
 	}
 }

@@ -103,8 +103,16 @@ func (h *Handler) StartUpdateWorker() {
 						MuteEmoji: responseMuteEmoji(h.responses), CommandKeyword: h.cfg.CommandKeyword,
 						SkipPhrases: responseSkipPhrases(h.responses), UpdateStateDir: h.chatCfg.UpdateStateDir, UpdateJobID: job.ID,
 					})
-					if err != nil || (code != 0 && code != UpdateDeferredExitCode) {
+					switch {
+					case err != nil || (code != 0 && code != UpdateDeferredExitCode):
 						h.log.Warn("update job attempt failed", "job", job.ID, "exit_code", code, "log", path, "error", err)
+					case code == UpdateDeferredExitCode:
+						h.log.Debug("update job deferred", "project", job.ProjectPath, "iid", job.IID, "job", job.ID)
+					default:
+						// The run log holds each decision; finding_ids distinguishes a
+						// findings check from a review-only check.
+						h.log.Info("update job attempt finished", "project", job.ProjectPath, "iid", job.IID, "job", job.ID,
+							"discussion", job.DiscussionID, "finding_ids", job.FindingIDs, "log", path)
 					}
 				})
 				h.chatAdmitMu.Unlock()
