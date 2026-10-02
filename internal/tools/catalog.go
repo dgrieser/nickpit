@@ -136,9 +136,9 @@ var catalogDefinition = []catalogEntry{
 	{
 		Name:               RequestReviewUpdate,
 		ExplicitOnly:       true,
-		APIDescription:     "Schedule an update of findings using their IDs and a concrete reason written in English; use an empty list for an overall review update",
-		ListingDescription: "with affected `finding_ids` and a concrete `reason` when evidence warrants a correction; use an empty finding list for a disputed overall assessment and explain the evidence",
-		Note:               "ALWAYS write the reason in English. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
+		APIDescription:     "Schedule an update of findings using their IDs and a concrete reason written in English; use an empty list only for an overall review update that no specific finding explains",
+		ListingDescription: "with affected `finding_ids` and a concrete `reason` when evidence warrants a correction, a fix landed, or the author accepts a P2/P3 trade-off; when the overall verdict is disputed because specific findings are fixed or wrong, pass those findings; use an empty finding list only for a disputed overall assessment that no specific finding explains, and explain the evidence",
+		Note:               "ALWAYS write the reason in English. Returns status scheduled, queue_failed, or error. On scheduled, briefly explain your assessment and say the update is scheduled, not completed; the update re-checks the evidence independently, so DO NOT promise its outcome. An active P0 finding keeps the verdict \"patch is incorrect\" until that finding is resolved, and author acceptance cannot resolve P0/P1 findings. Otherwise, do not claim it was scheduled. Resolved findings cannot be reopened.",
 		Parameters: []CatalogParameter{
 			{Name: "finding_ids", Type: "array", ItemsType: "string", Description: "Affected finding IDs; pass an empty list for an overall review update", Example: `["<finding ID>"]`, Required: true},
 			{Name: "reason", Type: "string", Description: "Concrete evidence supporting the correction, written in English", Example: `"<evidence in English>"`, Required: true},

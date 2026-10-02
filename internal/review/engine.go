@@ -3703,26 +3703,27 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 // verbatim at several call sites. ContextLines is a pointer so an omitted
 // search value renders as its query-dependent default.
 type toolCallArgs struct {
-	Path          string `json:"path"`
-	LineStart     int    `json:"line_start"`
-	LineEnd       int    `json:"line_end"`
-	Depth         int    `json:"depth"`
-	Line          int    `json:"line"`
-	Symbol        string `json:"symbol"`
-	Query         string `json:"query"`
-	ContextLines  *int   `json:"context_lines"`
-	MaxResults    int    `json:"max_results"`
-	CaseSensitive bool   `json:"case_sensitive"`
-	Commit        string `json:"commit"`
-	To            string `json:"to"`
-	Since         string `json:"since"`
-	Until         string `json:"until"`
-	Author        string `json:"author"`
-	Paths         string `json:"paths"`
-	Message       string `json:"message"`
-	MessageRegex  bool   `json:"message_regex"`
-	Limit         int    `json:"limit"`
-	MaxCommits    int    `json:"max_commits"`
+	Path          string   `json:"path"`
+	LineStart     int      `json:"line_start"`
+	LineEnd       int      `json:"line_end"`
+	Depth         int      `json:"depth"`
+	Line          int      `json:"line"`
+	Symbol        string   `json:"symbol"`
+	Query         string   `json:"query"`
+	ContextLines  *int     `json:"context_lines"`
+	MaxResults    int      `json:"max_results"`
+	CaseSensitive bool     `json:"case_sensitive"`
+	Commit        string   `json:"commit"`
+	To            string   `json:"to"`
+	Since         string   `json:"since"`
+	Until         string   `json:"until"`
+	Author        string   `json:"author"`
+	Paths         string   `json:"paths"`
+	Message       string   `json:"message"`
+	MessageRegex  bool     `json:"message_regex"`
+	Limit         int      `json:"limit"`
+	MaxCommits    int      `json:"max_commits"`
+	FindingIDs    []string `json:"finding_ids"`
 }
 
 func syntheticToolArguments(toolName string, args toolCallArgs) string {
@@ -3795,6 +3796,9 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		if args.MaxCommits > 0 {
 			parts = append(parts, fmt.Sprintf("max_commits=%d", args.MaxCommits))
 		}
+	case toolcatalog.RequestReviewUpdate:
+		// An empty list schedules a review-only check, which cannot resolve findings.
+		parts = append(parts, fmt.Sprintf("finding_ids=[%s]", strings.Join(args.FindingIDs, ", ")))
 	default:
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
 	}

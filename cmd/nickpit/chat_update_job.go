@@ -465,10 +465,19 @@ func updateFollowup(outcome *review.ReviewUpdateOutcome) string {
 		b.WriteString("Review check complete.")
 	}
 	for _, check := range outcome.Checks {
-		fmt.Fprintf(&b, "\n\n%s: %s", check.ID, check.Reason)
+		action := check.Action
+		if check.Basis != "" {
+			action += ", " + check.Basis
+		}
+		fmt.Fprintf(&b, "\n\n%s (%s): %s", check.ID, action, check.Reason)
 	}
 	if outcome.ReviewCheck != nil {
 		fmt.Fprintf(&b, "\n\n%s", outcome.ReviewCheck.Reason)
+	}
+	if len(outcome.BlockedBy) == 1 {
+		fmt.Fprintf(&b, "\n\nThe overall verdict was not republished: blocking finding %s keeps it at \"patch is incorrect\" until it is resolved. Once it is fixed, reply in its thread so it can be re-checked.", outcome.BlockedBy[0])
+	} else if len(outcome.BlockedBy) > 1 {
+		fmt.Fprintf(&b, "\n\nThe overall verdict was not republished: blocking findings %s keep it at \"patch is incorrect\" until they are resolved. Once they are fixed, reply in their threads so they can be re-checked.", strings.Join(outcome.BlockedBy, ", "))
 	}
 	if outcome.OverallCorrectness != "" {
 		fmt.Fprintf(&b, "\n\nOverall verdict: %s.", outcome.OverallCorrectness)

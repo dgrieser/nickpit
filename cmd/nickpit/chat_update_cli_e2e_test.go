@@ -76,7 +76,7 @@ func TestCLIChatCorrectsAndResumesReview(t *testing.T) {
 					case <-r.Context().Done():
 						return
 					}
-					delta["content"] = `{"updates":[{"id":"` + findingID + `","action":"resolved","reason":"Current guard prevents the failure."}]}`
+					delta["content"] = `{"updates":[{"id":"` + findingID + `","action":"resolved","basis":"fixed","reason":"Current guard prevents the failure."}]}`
 				default:
 					if !strings.Contains(string(body), "Current guard prevents the failure.") {
 						t.Error("resumed discussion did not see corrected review")

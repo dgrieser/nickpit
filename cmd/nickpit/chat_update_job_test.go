@@ -426,3 +426,20 @@ func TestRecoverUpdateJobPlanChecksCommitBeforeDiscardingLegacyPlan(t *testing.T
 		})
 	}
 }
+
+func TestUpdateFollowupNamesActionsAndBlockedVerdict(t *testing.T) {
+	text := updateFollowup(&review.ReviewUpdateOutcome{
+		Checks:             []review.FindingUpdateCheck{{ID: "f1", Action: "resolved", Basis: "fixed", Reason: "The fix is present."}, {ID: "f2", Action: "unchanged", Reason: "Still present."}},
+		ReviewCheck:        &review.ReviewUpdateCheck{Action: "correction_warranted", Reason: "Finding f3 is fixed."},
+		BlockedBy:          []string{"f3"},
+		OverallCorrectness: "patch is incorrect",
+	})
+	for _, want := range []string{"f1 (resolved, fixed): The fix is present.", "f2 (unchanged): Still present.", "blocking finding f3 keeps it at \"patch is incorrect\"", "reply in its thread"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("follow-up missing %q:\n%s", want, text)
+		}
+	}
+	if plural := updateFollowup(&review.ReviewUpdateOutcome{BlockedBy: []string{"a", "b"}}); !strings.Contains(plural, "blocking findings a, b keep it") {
+		t.Fatalf("wrong plural follow-up: %s", plural)
+	}
+}

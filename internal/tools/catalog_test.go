@@ -78,7 +78,8 @@ func TestReviewUpdateCatalogSchemaAndGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"evidence warrants a correction", "empty finding list", "ALWAYS write the reason in English", "scheduled, queue_failed, or error", "scheduled, not completed", "Otherwise, do not claim", "Resolved findings cannot be reopened"} {
+	for _, text := range []string{"evidence warrants a correction", "empty finding list", "ALWAYS write the reason in English", "scheduled, queue_failed, or error", "scheduled, not completed", "Otherwise, do not claim", "Resolved findings cannot be reopened",
+		"pass those findings", "DO NOT promise its outcome", "active P0 finding keeps the verdict", "author acceptance cannot resolve P0/P1"} {
 		if !strings.Contains(listing, text) {
 			t.Errorf("listing missing %q", text)
 		}

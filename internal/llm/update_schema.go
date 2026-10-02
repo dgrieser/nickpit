@@ -27,10 +27,14 @@ func updateFindingsSchemaDefinition(disableSuggestions, reviewOnly bool) map[str
 			"type": "array", "items": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{
-					"id":      map[string]any{"type": "string", "examples": []any{"<uuid-v4>"}},
-					"action":  map[string]any{"type": "string", "enum": []string{"unchanged", "updated", "resolved"}, "examples": []any{"updated"}},
-					"reason":  map[string]any{"type": "string", "examples": []any{"Example evidence that justifies this decision."}},
-					"finding": finding,
+					"id":     map[string]any{"type": "string", "examples": []any{"<uuid-v4>"}},
+					"action": map[string]any{"type": "string", "enum": []string{"unchanged", "updated", "resolved"}, "examples": []any{"updated"}},
+					"reason": map[string]any{"type": "string", "examples": []any{"Example evidence that justifies this decision."}},
+					// basis and resolution apply only to resolved decisions; reason
+					// stays free-form so its length never steers the action.
+					"basis":      map[string]any{"type": "string", "enum": []string{"fixed", "invalid", "accepted"}, "examples": []any{"fixed"}},
+					"resolution": map[string]any{"type": "string", "examples": []any{"Example one-sentence resolution."}},
+					"finding":    finding,
 				},
 				"required": []string{"id", "action", "reason"},
 			},

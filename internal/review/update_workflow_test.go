@@ -65,3 +65,44 @@ func TestUpdateWorkflowNoopSkipsVerdictSummaryAndPublication(t *testing.T) {
 		t.Fatal("unchanged finding triggered downstream stages")
 	}
 }
+
+func TestUpdateWorkflowReviewOnlyCorrectionDoesNotRepublishPinnedVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		floor       int
+		wantBlocked bool
+	}{
+		// The finding displays as P1, but its verifier-confirmed P0 floor pins the verdict.
+		{"p0 floor blocks", 0, true},
+		{"p1 floor reruns verdict", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := updateTestFinding()
+			display := 1
+			f.Priority, f.Finalization.Priority = &display, display
+			f.Verification.Priority = tc.floor
+			client := &updateTestLLM{responses: []*llm.ReviewResponse{
+				{RawResponse: `{"updates":[],"review":{"action":"correction_warranted","reason":"Finding finding is fixed by abc123."}}`},
+				{OverallCorrectness: "patch is incorrect", OverallExplanation: "Still blocked.", OverallConfidenceScore: 0.9},
+				{Findings: []model.Finding{{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Short verdict."}}}},
+			}}
+			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
+			result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{DisablePatchSummary: true, UpdateFindingsRequest: UpdateFindingsRequest{
+				DiscussRequest: DiscussRequest{Result: &model.ReviewResult{OverallCorrectness: "patch is incorrect", Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}},
+				Signal:         ReviewUpdateSignal{Reason: "Why is the patch still incorrect?"},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantBlocked {
+				if result.Publish || len(client.requests) != 1 || len(result.Outcome.BlockedBy) != 1 || result.Outcome.BlockedBy[0] != f.ID {
+					t.Fatalf("pinned verdict republished: publish=%v calls=%d blocked=%v", result.Publish, len(client.requests), result.Outcome.BlockedBy)
+				}
+				return
+			}
+			if !result.Publish || len(client.requests) < 2 || client.requests[1].SchemaKind != llm.SchemaKindVerdict || len(result.Outcome.BlockedBy) != 0 {
+				t.Fatalf("open verdict not re-run: publish=%v calls=%d blocked=%v", result.Publish, len(client.requests), result.Outcome.BlockedBy)
+			}
+		})
+	}
+}
