@@ -80,7 +80,7 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 	if group == nil || group.BotUserID == 0 || discussionID == "" {
 		return state, nil
 	}
-	notes, err := group.Client.DiscussionNotes(ctx, project, iid, discussionID)
+	notes, err := gitlabClient(group).DiscussionNotes(ctx, project, iid, discussionID)
 	if err != nil {
 		return state, err
 	}
@@ -103,7 +103,7 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 		return state, nil
 	}
 	if mrMuted == nil {
-		awards, err := group.Client.MREmojis(ctx, project, iid)
+		awards, err := gitlabClient(group).MREmojis(ctx, project, iid)
 		if err != nil {
 			return ThreadResponseState{}, err
 		}
@@ -111,7 +111,7 @@ func (c *ResponseController) stateLocked(ctx context.Context, group *Group, proj
 		mrMuted = &muted
 	}
 	state.Status.MRMuted = *mrMuted
-	awards, err := group.Client.NoteEmojis(ctx, project, iid, notes[0].ID)
+	awards, err := gitlabClient(group).NoteEmojis(ctx, project, iid, notes[0].ID)
 	if err != nil {
 		return ThreadResponseState{}, err
 	}
@@ -145,7 +145,7 @@ func (c *ResponseController) SetCommandMuted(ctx context.Context, group *Group, 
 	state.Status.CommandMuted = muted
 	updated := reviewmd.UpsertResponseFooter(state.Root.Body, state.Status)
 	if updated != state.Root.Body {
-		if err := group.Client.UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated); err != nil {
+		if err := gitlabClient(group).UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated); err != nil {
 			return ThreadResponseState{}, err
 		}
 		state.Root.Body = updated
@@ -171,7 +171,7 @@ func (c *ResponseController) SyncThread(ctx context.Context, group *Group, proje
 	if updated == state.Root.Body {
 		return nil
 	}
-	return group.Client.UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated)
+	return gitlabClient(group).UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated)
 }
 
 // SyncReactedRoot refreshes a thread only when the reacted note is its
@@ -192,7 +192,7 @@ func (c *ResponseController) SyncReactedRoot(ctx context.Context, group *Group, 
 	if updated == state.Root.Body {
 		return true, nil
 	}
-	return true, group.Client.UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated)
+	return true, gitlabClient(group).UpdateMRDiscussionNote(ctx, project, iid, discussionID, state.Root.ID, updated)
 }
 
 // SyncMR refreshes every visible bot-authored nickpit review root on an MR.
@@ -225,7 +225,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		return err
 	}
 	defer release()
-	discussions, err := group.Client.MRDiscussions(ctx, project, iid)
+	discussions, err := gitlabClient(group).MRDiscussions(ctx, project, iid)
 	if err != nil {
 		return err
 	}
@@ -256,7 +256,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 	}
 	mrMuted := false
 	if c.cfg.MuteEmoji != "" {
-		awards, err := group.Client.MREmojis(ctx, project, iid)
+		awards, err := gitlabClient(group).MREmojis(ctx, project, iid)
 		if err != nil {
 			return err
 		}
@@ -268,7 +268,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		status.CommandMuted = reviewmd.ThreadCommandMuted(root.note.Body)
 		status.MRMuted = mrMuted
 		if c.cfg.MuteEmoji != "" {
-			awards, emojiErr := group.Client.NoteEmojis(ctx, project, iid, root.note.ID)
+			awards, emojiErr := gitlabClient(group).NoteEmojis(ctx, project, iid, root.note.ID)
 			if emojiErr != nil {
 				errs = append(errs, emojiErr)
 				continue
@@ -279,7 +279,7 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 		if updated == root.note.Body {
 			continue
 		}
-		if err := group.Client.UpdateMRDiscussionNote(ctx, project, iid, root.discussionID, root.note.ID, updated); err != nil {
+		if err := gitlabClient(group).UpdateMRDiscussionNote(ctx, project, iid, root.discussionID, root.note.ID, updated); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -287,10 +287,11 @@ func (c *ResponseController) syncMR(ctx context.Context, group *Group, project s
 }
 
 func lockResponseMR(ctx context.Context, group *Group, project string, iid int) (context.Context, func(), error) {
-	if group == nil || group.Client == nil {
+	client := gitlabClient(group)
+	if client == nil {
 		return ctx, func() {}, nil
 	}
-	return group.Client.LockMR(ctx, project, iid)
+	return client.LockMR(ctx, project, iid)
 }
 
 func joinResponseErrors(errs []error) error {

@@ -158,19 +158,21 @@ This document maps the production Go code. Test files live beside the code they 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 
 - `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
+- `internal/serve/platform.go`: The forge seam of the review path: `Platform` (webhook route, decode, authentication, review child's forge), `Delivery` (project + trigger policy), and `Remote` (request status, reactions, command replies, reaction-error classification). Chat, emoji triggers, and comment templates stay GitLab-only and bypass it.
+- `internal/serve/platform_gitlab.go`: The GitLab `Platform` and `Remote`, which owns the group's GitLab client (`gitlabClient` hands it to the GitLab-only features), including the `APIError` classification of failed reaction updates.
 - `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue, and command routing (ack emoji and replies posted async). Chat events additionally wear the ack emoji on the question note from the moment the thread gate admits them until the event ends.
 - `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs chat vs ignore); a plain reply in a discussion thread becomes a `CommandChat` candidate.
 - `internal/serve/command.go`: `/keyword` note-command parsing, full-line response/skip directives, help/status/abort reply texts, ignored-text notices, and @-mention detection.
 - `internal/serve/response.go`: Live GitLab response policy from config, MR/root reactions, and persistent command state; reconciles status footers on review roots.
 - `internal/serve/templates.go`: The note commands expressed as GitLab comment templates (names, bodies, prune prefix) so the comment box's template picker can offer them.
-- `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
+- `internal/serve/groups.go`: Per-group tokens/secrets and the forge account (`Remote`) with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/update_jobs.go`: Strict atomic, fsynced correction-job checkpoints in the private serve state directory; no credentials or temporary checkout paths.
 - `internal/serve/update_worker.go`: Bounded correction scheduler with strict per-MR ordering, separate chat capacity, and current credentials and response policy.
 - `cmd/nickpit/chat_update_job.go`: Durable enqueue returning scheduling status to chat, idempotent follow-up, fresh-evidence evaluation, and checkpointed GitLab publication recovery.
 - `internal/scm/reviewmd/update_reply.go`: Bot-owned asynchronous reply metadata binding late follow-ups to their original question.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
-- `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit gitlab mr --publish` (review) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.
+- `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit <forge> <request> --publish` (review; `gitlab mr` by default) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.
 - `internal/serve/topics.go`: TTL + singleflight cache for project topics.
 - `internal/config/serve.go`: `server.yaml` schema, loading (env expansion), defaults, and validation for the daemon.
 

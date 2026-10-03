@@ -27,7 +27,7 @@ func newSigningHandler(t *testing.T) *Handler {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), nil, WorkerConfig{Topic: "nickpit"}, discardLogger())
-	return NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
+	return NewHandler(GitLab, set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
 }
 
 func postSignedWebhook(t *testing.T, handler *Handler, body, key []byte) *httptest.ResponseRecorder {
@@ -73,7 +73,7 @@ func TestHandlerUnparseableSigningTokenFailsClosed(t *testing.T) {
 		t.Fatalf("warnings = %v, want the unparseable-token warning", warnings)
 	}
 	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), nil, WorkerConfig{Topic: "nickpit"}, discardLogger())
-	handler := NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
+	handler := NewHandler(GitLab, set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
 
 	body := testutil.LoadFixture(t, filepath.Join("testdata", "mr_open.json"))
 	for name, header := range map[string]string{"no token": "", "empty-ish token": "anything"} {

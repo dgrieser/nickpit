@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/dgrieser/nickpit/internal/scm/forge"
 )
 
 // logDrainGrace bounds how long Run waits for the output-copy goroutine to
@@ -87,6 +89,9 @@ type ChatRunner interface {
 // can never take the daemon down.
 type ExecRunner struct {
 	Executable string
+	// Forge picks the review child's command (`<forge> <request> ...`) and the
+	// NICKPIT_<FORGE>_* variables its credentials travel in. Required.
+	Forge forge.Forge
 	// scrubValues are secret values (all group tokens and webhook secrets)
 	// removed from the child environment. The daemon's environment typically
 	// holds every group's credentials via the ${VAR} references in
@@ -101,10 +106,11 @@ type ExecRunner struct {
 	now func() time.Time
 }
 
-// NewExecRunner resolves the current binary once. scrubValues lists secret
+// NewExecRunner resolves the current binary once. f is the forge whose request
+// command reviews run. scrubValues lists secret
 // values that must never reach a review child's environment. sink receives a
 // mirror of each review's output; pass NoopSink{} (or nil) to disable shipping.
-func NewExecRunner(scrubValues []string, sink LogSink) (*ExecRunner, error) {
+func NewExecRunner(f forge.Forge, scrubValues []string, sink LogSink) (*ExecRunner, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("serve: resolving own executable: %w", err)
@@ -112,7 +118,7 @@ func NewExecRunner(scrubValues []string, sink LogSink) (*ExecRunner, error) {
 	if sink == nil {
 		sink = NoopSink{}
 	}
-	runner := &ExecRunner{Executable: executable, scrubValues: make(map[string]bool, len(scrubValues)), sink: sink, now: time.Now}
+	runner := &ExecRunner{Executable: executable, Forge: f, scrubValues: make(map[string]bool, len(scrubValues)), sink: sink, now: time.Now}
 	for _, value := range scrubValues {
 		if value != "" {
 			runner.scrubValues[value] = true
@@ -133,9 +139,10 @@ func (r *ExecRunner) childEnv(token, baseURL string) []string {
 	}
 	// Later entries win in the child's environment, so these override any
 	// daemon-level token while the LLM key etc. pass through untouched.
+	prefix := "NICKPIT_" + strings.ToUpper(string(r.Forge.Mode()))
 	return append(env,
-		"NICKPIT_GITLAB_TOKEN="+token,
-		"NICKPIT_GITLAB_BASE_URL="+baseURL,
+		prefix+"_TOKEN="+token,
+		prefix+"_BASE_URL="+baseURL,
 	)
 }
 
@@ -168,7 +175,7 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	})
 	defer func() { _ = stream.Close() }()
 
-	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID)}
+	args := []string{r.Forge.Command(), r.Forge.RequestCommand(), "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID)}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
 	}

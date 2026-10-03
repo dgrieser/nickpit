@@ -132,7 +132,7 @@ func TestUpdateWorkerRestoresJobsAndUsesCurrentCredentials(t *testing.T) {
 	_ = store.Close()
 	groups, _ := NewGroupSet(context.Background(), []config.ServeGroup{{Path: "group", Token: "current-token"}}, job.BaseURL, nil)
 	runner := &updateWorkerRunner{started: make(chan ChatSpec, 1)}
-	h := NewHandler(groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: job.BaseURL, UpdateStateDir: dir}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(GitLab, groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: job.BaseURL, UpdateStateDir: dir}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.StartUpdateWorker()
 	select {
 	case spec := <-runner.started:

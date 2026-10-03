@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
 // settleTimeout bounds EACH reaction flip that ends a review (the flips run
@@ -108,11 +105,12 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		}
 	}
 
-	status, err := event.Group.Client.FetchMRStatus(ctx, event.ProjectID, event.IID)
+	req := Request{ProjectID: event.ProjectID, ProjectPath: event.ProjectPath, IID: event.IID}
+	status, err := event.Group.Remote.RequestStatus(ctx, req)
 	if err != nil {
 		return d.preRunFailure(ctx, log, "mr status check", err)
 	}
-	if status.State != "opened" {
+	if !status.Open {
 		log.Info("skipping review", "reason", "state "+status.State)
 		return outcomeFailed
 	}
@@ -137,8 +135,7 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		// trigger reaction: if the bot itself requested this review, revoking it
 		// would emit an abort event. An empty start emoji makes this revoke-only;
 		// settle repeats cleanup and never adds an MR outcome in that mode.
-		err := event.Group.Client.ReplaceOwnMREmoji(ctx, event.ProjectID, event.IID, event.Group.BotUserID,
-			d.cfg.StartEmoji, d.cfg.TriggerEmoji)
+		err := event.Group.Remote.SetRequestReaction(ctx, req, d.cfg.StartEmoji, d.cfg.TriggerEmoji)
 		if err != nil && d.cfg.StartEmoji != "" && uncertainReactionRequest(err) {
 			window := d.startReactionUncertaintyWindow
 			if window <= 0 {
@@ -288,7 +285,8 @@ func (d *Dispatcher) settleAttemptWithLimit(
 	// settles up to maxAckNotes of them). process passes a cancellation-free
 	// context so an aborted review still settles; cleanup workers pass their
 	// cancellable context so shutdown can bound queue draining.
-	client := event.Group.Client
+	remote := event.Group.Remote
+	req := Request{ProjectID: event.ProjectID, ProjectPath: event.ProjectPath, IID: event.IID}
 	var wg sync.WaitGroup
 	mrFailed := false
 	mrRetryable := false
@@ -302,23 +300,24 @@ func (d *Dispatcher) settleAttemptWithLimit(
 			completed := withReactionSlot(ctx, reactionSlots, func() {
 				requestCtx, cancel := context.WithTimeout(ctx, settleTimeout)
 				defer cancel()
-				err := client.ReplaceOwnMREmoji(requestCtx, event.ProjectID, event.IID, event.Group.BotUserID, mrAdd, d.cfg.TriggerEmoji)
-				if err != nil && mrAdd != "" && reactionOutcomeRejected(err) {
+				err := remote.SetRequestReaction(requestCtx, req, mrAdd, d.cfg.TriggerEmoji)
+				if err != nil && mrAdd != "" && remote.ReactionFailure(err).Rejected {
 					// A bad configured outcome cannot improve on retry. Revoke the
 					// in-progress marker so a terminal POST validation response does
 					// not leave the MR looking active forever.
 					log.Warn("outcome emoji rejected; revoking merge request marker", "emoji", mrAdd, "error", err)
-					err = client.ReplaceOwnMREmoji(requestCtx, event.ProjectID, event.IID, event.Group.BotUserID, "", d.cfg.TriggerEmoji)
+					err = remote.SetRequestReaction(requestCtx, req, "", d.cfg.TriggerEmoji)
 				}
 				if err != nil {
-					if terminalReactionTargetError(err) {
+					failure := remote.ReactionFailure(err)
+					if failure.TargetGone {
 						mrTerminal = true
 						log.Warn("stopping merge request emoji retries after terminal error", "emoji", mrAdd, "error", err)
 						return
 					}
 					mrFailed = true
 					mrRetryable = true
-					mrRetryAfter = reactionRetryAfter(err)
+					mrRetryAfter = failure.RetryAfter
 					log.Warn("updating merge request emoji failed", "emoji", mrAdd, "error", err)
 				}
 			})
@@ -340,22 +339,23 @@ func (d *Dispatcher) settleAttemptWithLimit(
 			completed := withReactionSlot(ctx, reactionSlots, func() {
 				requestCtx, cancel := context.WithTimeout(ctx, settleTimeout)
 				defer cancel()
-				err := client.ReplaceOwnNoteEmoji(requestCtx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, add)
-				if err != nil && add != "" && reactionOutcomeRejected(err) {
+				err := remote.SetCommentReaction(requestCtx, req, noteID, add)
+				if err != nil && add != "" && remote.ReactionFailure(err).Rejected {
 					// As above, an invalid outcome must degrade to revoke-only cleanup
 					// rather than strand the command acknowledgement.
 					log.Warn("outcome emoji rejected; revoking command note marker", "note", noteID, "emoji", add, "error", err)
-					err = client.ReplaceOwnNoteEmoji(requestCtx, event.ProjectID, event.IID, noteID, event.Group.BotUserID, "")
+					err = remote.SetCommentReaction(requestCtx, req, noteID, "")
 				}
 				if err != nil {
-					if terminalReactionTargetError(err) {
+					failure := remote.ReactionFailure(err)
+					if failure.TargetGone {
 						terminal = true
 						log.Warn("stopping command note emoji retries after terminal error", "note", noteID, "emoji", add, "error", err)
 						return
 					}
 					noteFailed[index] = true
 					noteRetryable[index] = true
-					noteRetryAfter[index] = reactionRetryAfter(err)
+					noteRetryAfter[index] = failure.RetryAfter
 					log.Warn("updating command note emoji failed", "note", noteID, "emoji", add, "error", err)
 				}
 			})
@@ -406,78 +406,6 @@ func withReactionSlot(ctx context.Context, slots chan struct{}, fn func()) bool 
 	case <-ctx.Done():
 		return false
 	}
-}
-
-// reactionOutcomeRejected identifies GitLab's permanent validation responses
-// for an award POST. Callers can then fall back to revoke-only cleanup instead
-// of either preserving the in-progress marker or retrying an invalid outcome.
-func reactionOutcomeRejected(err error) bool {
-	return matchingAPIError(err, func(apiErr *gitlab.APIError) bool {
-		return apiErr.Method == http.MethodPost &&
-			(apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusUnprocessableEntity)
-	})
-}
-
-// matchingAPIError walks both ordinary wrapped errors and errors.Join trees.
-// Replacement can report a list failure and an award failure together, so
-// errors.As alone may stop at an unrelated first API response.
-func matchingAPIError(err error, match func(*gitlab.APIError) bool) bool {
-	if err == nil {
-		return false
-	}
-	if apiErr, ok := err.(*gitlab.APIError); ok {
-		return match(apiErr)
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, child := range joined.Unwrap() {
-			if matchingAPIError(child, match) {
-				return true
-			}
-		}
-		return false
-	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return matchingAPIError(wrapped.Unwrap(), match)
-	}
-	return false
-}
-
-// reactionRetryAfter returns the latest server-requested retry time from an
-// ordinary wrapped error or errors.Join tree.
-func reactionRetryAfter(err error) time.Time {
-	if err == nil {
-		return time.Time{}
-	}
-	var retryAfter time.Time
-	if apiErr, ok := err.(*gitlab.APIError); ok && apiErr.RetryAfter.After(retryAfter) {
-		retryAfter = apiErr.RetryAfter
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, child := range joined.Unwrap() {
-			if childRetryAfter := reactionRetryAfter(child); childRetryAfter.After(retryAfter) {
-				retryAfter = childRetryAfter
-			}
-		}
-		return retryAfter
-	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		if childRetryAfter := reactionRetryAfter(wrapped.Unwrap()); childRetryAfter.After(retryAfter) {
-			retryAfter = childRetryAfter
-		}
-	}
-	return retryAfter
-}
-
-// terminalReactionTargetError identifies a target that no longer exists. Other
-// responses remain retryable: notably 400/422 can mean an invalid outcome POST,
-// while the old marker still exists and needs revoke-only cleanup.
-func terminalReactionTargetError(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	var apiErr *gitlab.APIError
-	return errors.As(err, &apiErr) &&
-		(apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusGone)
 }
 
 func uncertainReactionRequest(err error) bool {

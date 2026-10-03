@@ -86,7 +86,7 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	// the same name its workers revoke at settle time.
 	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), nil, WorkerConfig{Topic: "nickpit", AckEmoji: "white_check_mark"}, discardLogger())
 	chat := newFakeChatRunner()
-	handler := NewHandler(set, dispatcher, HandlerConfig{
+	handler := NewHandler(GitLab, set, dispatcher, HandlerConfig{
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
 		AbortEmoji:     "stop_button",
@@ -883,7 +883,7 @@ func TestHandlerChatReleasesQuestionMarkBeforeAdmittingRedelivery(t *testing.T) 
 	if names := env.gitlab.awardedOn(11, 306); len(names) != 0 {
 		t.Fatalf("old acknowledgement still live when redelivery admitted: %v", names)
 	}
-	if err := env.group.Client.AwardNoteEmoji(context.Background(), 43, 11, 306, "white_check_mark"); err != nil {
+	if err := gitlabClient(env.group).AwardNoteEmoji(context.Background(), 43, 11, 306, "white_check_mark"); err != nil {
 		t.Fatalf("award redelivery acknowledgement: %v", err)
 	}
 	releaseFailurePost()

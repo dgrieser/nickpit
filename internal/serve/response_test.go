@@ -15,6 +15,14 @@ import (
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
+// gitlabGroup is a GitLab group as NewGroupSet builds it, without the config
+// and identity lookup around it.
+func gitlabGroup(path, baseURL string) *Group {
+	group := &Group{Path: path, BotUserID: 77}
+	group.Remote = gitlabRemote{group: group, client: gitlab.NewClient(baseURL, "token")}
+	return group
+}
+
 func TestResponseControllerCombinesReactionsCommandsAndFooter(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
@@ -46,7 +54,7 @@ func TestResponseControllerCombinesReactionsCommandsAndFooter(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	group := &Group{Path: "42", Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	group := gitlabGroup("42", server.URL)
 	controller := NewResponseController(ResponseConfig{
 		Enabled: true, MuteEmoji: "mute", RequestEmoji: "nickpit", CommandKeyword: "nickpit",
 	}, slog.Default())
@@ -111,7 +119,7 @@ func TestResponseControllerIgnoresMuteReactionOnReply(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	group := gitlabGroup("", server.URL)
 	controller := NewResponseController(ResponseConfig{Enabled: true, MuteEmoji: "mute"}, slog.Default())
 
 	ours, err := controller.SyncReactedRoot(context.Background(), group, "42", 9, "disc-1", 101)
@@ -174,7 +182,7 @@ func TestSyncNewRootsSkipsAlreadyStampedRoots(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	group := gitlabGroup("", server.URL)
 	controller := NewResponseController(ResponseConfig{
 		Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit",
 	}, slog.Default())
@@ -216,7 +224,7 @@ func TestSyncNewRootsSkipsMREmojisWhenNothingMissing(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	group := gitlabGroup("", server.URL)
 	controller := NewResponseController(ResponseConfig{
 		Enabled: true, MuteEmoji: "mute", CommandKeyword: "nickpit",
 	}, slog.Default())
@@ -257,7 +265,7 @@ func TestSyncNewRootsRestampsAfterPolicyChange(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	group := &Group{Client: gitlab.NewClient(server.URL, "token"), BotUserID: 77}
+	group := gitlabGroup("", server.URL)
 	renamed := ResponseConfig{Enabled: true, MuteEmoji: "no_bell", CommandKeyword: "nickpit"}
 	if err := NewResponseController(renamed, slog.Default()).SyncNewRoots(context.Background(), group, "42", 9); err != nil {
 		t.Fatal(err)

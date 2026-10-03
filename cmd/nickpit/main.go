@@ -1057,7 +1057,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				}, log))
 				log.Info("loki log streaming enabled", "url", cfg.Loki.URL, "tenant", cfg.Loki.TenantID)
 			}
-			runner, err := serve.NewExecRunner(scrub, sink)
+			runner, err := serve.NewExecRunner(serve.GitLab.Forge(), scrub, sink)
 			if err != nil {
 				return err
 			}
@@ -1140,7 +1140,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			} else {
 				log.Info("chat replies disabled by config (chat.enabled: false)")
 			}
-			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
+			handler := serve.NewHandler(serve.GitLab, groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AbortEmoji:     cfg.AbortEmojiName(),

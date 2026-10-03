@@ -58,7 +58,7 @@ func TestExecRunnerStreamsToRealLokiClient(t *testing.T) {
 		BatchWait:    20 * time.Millisecond,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	runner := &ExecRunner{Executable: writeFakeReview(t), sink: NewLokiSink(client), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), sink: NewLokiSink(client), now: time.Now}
 	spec := testSpec(t)
 	spec.HeadSHA = "cafebabe"
 	spec.Trigger = "manual"

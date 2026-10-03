@@ -15,7 +15,7 @@ type TopicLookup func(ctx context.Context, group *Group, projectID int) ([]strin
 
 // GitLabTopicLookup queries the project via the group's API client.
 func GitLabTopicLookup(ctx context.Context, group *Group, projectID int) ([]string, error) {
-	project, err := group.Client.GetProject(ctx, projectID)
+	project, err := gitlabClient(group).GetProject(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}

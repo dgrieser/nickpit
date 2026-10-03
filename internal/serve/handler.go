@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	gitlab "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
@@ -121,6 +120,8 @@ type ChatConfig struct {
 // the daemon shuts down mid-flight); chat work is tracked and drained by
 // ShutdownChats.
 type Handler struct {
+	// platform is the forge whose webhooks this endpoint receives.
+	platform   Platform
 	groups     *GroupSet
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
@@ -172,13 +173,14 @@ type Handler struct {
 	chatRetryDelay time.Duration
 }
 
-func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
+func NewHandler(platform Platform, groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
 	limit := chatCfg.MaxConcurrent
 	if limit <= 0 {
 		limit = defaultMaxConcurrentChats
 	}
 	chatCtx, chatCancel := context.WithCancel(context.Background())
 	return &Handler{
+		platform:             platform,
 		groups:               groups,
 		dispatcher:           dispatcher,
 		cfg:                  cfg,
@@ -196,6 +198,11 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		ackRequestTimeout:    ackTimeout,
 		log:                  log,
 	}
+}
+
+// WebhookPath is the route the server mounts this handler on.
+func (h *Handler) WebhookPath() string {
+	return h.platform.WebhookPath()
 }
 
 // ShutdownChats drains in-flight chat work during daemon shutdown: it waits up
@@ -332,19 +339,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading body", http.StatusBadRequest)
 		return
 	}
-	event, err := ParseEvent(body)
+	delivery, err := h.platform.Decode(r.Header, body)
 	if err != nil {
 		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 		return
 	}
-	group := h.groups.Match(event.Project.PathWithNamespace)
+	projectID, projectPath := delivery.ProjectID(), delivery.ProjectPath()
+	group := h.groups.Match(projectPath)
 	if group == nil {
-		h.log.Warn("webhook for unconfigured project", "project", event.Project.PathWithNamespace)
+		h.log.Warn("webhook for unconfigured project", "project", projectPath)
 		http.Error(w, "unknown group", http.StatusUnauthorized)
 		return
 	}
-	if !h.authenticate(group, r, body) {
-		h.log.Warn("webhook authentication failed", "project", event.Project.PathWithNamespace, "group", group.Path, "method", authMethod(group))
+	if !h.platform.Authenticate(group, r.Header, body, time.Now()) {
+		h.log.Warn("webhook authentication failed", "project", projectPath, "group", group.Path, "method", h.platform.AuthMethod(group))
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -356,9 +364,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		muteEmoji = responseCfg.MuteEmoji
 		skipPhrases = responseCfg.SkipPhrases
 	}
-	decision := Decide(event, h.cfg.TriggerEmoji, muteEmoji, h.cfg.CommandKeyword, skipPhrases, h.groups.BotIDs())
+	decision := delivery.Decide(Policy{
+		TriggerEmoji:   h.cfg.TriggerEmoji,
+		MuteEmoji:      muteEmoji,
+		CommandKeyword: h.cfg.CommandKeyword,
+		SkipPhrases:    skipPhrases,
+		BotIDs:         h.groups.BotIDs(),
+	})
+	req := Request{ProjectID: projectID, ProjectPath: projectPath, IID: decision.IID}
 	if decision.Response != ResponseNone {
-		if !h.handleResponseAction(event, group, &decision) {
+		if !h.handleResponseAction(projectPath, group, &decision) {
 			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "response state unavailable"})
 			return
 		}
@@ -370,52 +385,51 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case decision.Command == CommandChat:
 		if h.chatRunner == nil {
-			h.log.Debug("ignoring chat reply (chat disabled)", "project", event.Project.PathWithNamespace, "iid", decision.IID)
+			h.log.Debug("ignoring chat reply (chat disabled)", "project", projectPath, "iid", decision.IID)
 			// Chat being off is the one policy change no other event reconciles:
 			// the gate that lazily refreshes a root's footer lives behind the
 			// child spawn. Without this, a root keeps advertising controls the
 			// daemon no longer honors until its MR is reviewed again.
-			project := event.Project.PathWithNamespace
-			go h.syncResponseThread(group, project, decision.IID, decision.DiscussionID)
+			go h.syncResponseThread(group, projectPath, decision.IID, decision.DiscussionID)
 			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
 			return
 		}
 		if !h.admitChat() {
 			// Dropped before the dedup mark, so a manual redelivery (or the user
 			// re-asking) can retry once the backlog clears.
-			h.log.Warn("chat backlog full, dropping chat event", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+			h.log.Warn("chat backlog full, dropping chat event", "project", projectPath, "iid", decision.IID, "discussion", decision.DiscussionID)
 			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat backlog full"})
 			return
 		}
 		go func() {
 			defer h.chatWG.Done()
 			defer func() { <-h.chatAdmit }()
-			h.handleChat(group, event.Project.PathWithNamespace, event.Project.ID, decision)
+			h.handleChat(group, projectPath, projectID, decision)
 		}()
-		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+		h.log.Debug("chat reply candidate", "project", projectPath, "iid", decision.IID, "discussion", decision.DiscussionID)
 		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
-		if !h.handleCommand(event, group, decision) {
+		if !h.handleCommand(req, group, decision) {
 			// The review the command asked for was NOT queued (queue full or
 			// shutting down). Say so with a 503 — GitLab redelivers non-2xx
 			// webhooks, so the request is retried instead of silently lost.
-			h.log.Error("rejecting command: review queue unavailable", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String())
+			h.log.Error("rejecting command: review queue unavailable", "project", projectPath, "iid", decision.IID, "command", decision.Command.String())
 			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "review queue unavailable"})
 			return
 		}
-		h.log.Info("command received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
+		h.log.Info("command received", "project", projectPath, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "command", "command": decision.Command.String()})
 	case decision.Kind == TriggerNone:
 		if decision.Reason == "no command" && decision.NoteID != 0 {
-			go h.replyMentionHelp(group, event.Project.ID, decision)
+			go h.replyMentionHelp(group, req, decision)
 		}
-		h.log.Debug("ignoring event", "project", event.Project.PathWithNamespace, "reason", decision.Reason)
+		h.log.Debug("ignoring event", "project", projectPath, "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "ignored", "reason": decision.Reason})
 	default:
 		accepted := h.dispatcher.Enqueue(Event{
 			Kind:        decision.Kind,
-			ProjectID:   event.Project.ID,
-			ProjectPath: event.Project.PathWithNamespace,
+			ProjectID:   projectID,
+			ProjectPath: projectPath,
 			IID:         decision.IID,
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
@@ -424,20 +438,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Queue full or shutting down: answering "queued" would make
 			// GitLab mark the delivery successful and never redeliver, losing
 			// the review. A 503 makes GitLab retry.
-			h.log.Error("rejecting event: review queue unavailable", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String())
+			h.log.Error("rejecting event: review queue unavailable", "project", projectPath, "iid", decision.IID, "trigger", decision.Kind.String())
 			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "review queue unavailable"})
 			return
 		}
-		h.log.Info("event received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
+		h.log.Info("event received", "project", projectPath, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "queued"})
 	}
 }
 
-func (h *Handler) handleResponseAction(event *WebhookEvent, group *Group, decision *Decision) bool {
+func (h *Handler) handleResponseAction(project string, group *Group, decision *Decision) bool {
 	if h.responses == nil {
 		return true
 	}
-	project := event.Project.PathWithNamespace
 	switch decision.Response {
 	case ResponseMuteThread, ResponseResumeThread:
 		ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
@@ -492,30 +505,6 @@ func (h *Handler) syncResponseThread(group *Group, project string, iid int, disc
 	}
 }
 
-// authenticate verifies the webhook against the group's configured credential:
-// a GitLab signing token (HMAC over the raw body) when present, otherwise the
-// legacy plaintext secret token.
-func (h *Handler) authenticate(group *Group, r *http.Request, body []byte) bool {
-	if group.UsesSigning() {
-		return group.CheckSignature(
-			r.Header.Get("Webhook-Id"),
-			r.Header.Get("Webhook-Timestamp"),
-			r.Header.Get("Webhook-Signature"),
-			body,
-			time.Now(),
-		)
-	}
-	return group.CheckSecret(r.Header.Get("X-Gitlab-Token"))
-}
-
-// authMethod labels the group's verification method for logs.
-func authMethod(group *Group) string {
-	if group.UsesSigning() {
-		return "signing_token"
-	}
-	return "secret_token"
-}
-
 // handleCommand executes one note command (or trigger-emoji revoke). Review
 // requests re-enter the normal enqueue path with their manual-trigger
 // bypasses intact; the reply policy is deliberately quiet — a reaction emoji
@@ -524,8 +513,7 @@ func authMethod(group *Group) string {
 // a review command's enqueue was rejected (queue full or shutting down) — the
 // ack emoji awarded just before is revoked again, and the caller answers the
 // webhook with a non-2xx status so GitLab redelivers it.
-func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Decision) bool {
-	projectID := event.Project.ID
+func (h *Handler) handleCommand(req Request, group *Group, decision Decision) bool {
 	switch decision.Command {
 	case CommandReview:
 		// The note is handed to the dispatcher as an acknowledged one so the
@@ -548,7 +536,7 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		ackCtx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		var ackErr error
 		if group.BotUserID != 0 {
-			ackErr = h.ackNote(ackCtx, group, projectID, decision, ackEmoji)
+			ackErr = h.ackNote(ackCtx, group, req, decision, ackEmoji)
 		}
 		ackTimedOut := errors.Is(ackErr, context.DeadlineExceeded) || errors.Is(ackCtx.Err(), context.DeadlineExceeded)
 		cancel()
@@ -564,8 +552,8 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		}
 		reviewEvent := Event{
 			Kind:                decision.Kind,
-			ProjectID:           projectID,
-			ProjectPath:         event.Project.PathWithNamespace,
+			ProjectID:           req.ProjectID,
+			ProjectPath:         req.ProjectPath,
 			IID:                 decision.IID,
 			HeadSHA:             decision.HeadSHA,
 			Group:               group,
@@ -584,29 +572,29 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			return false
 		}
 		if decision.IgnoredText {
-			go h.reply(group, projectID, decision, ignoredTextNotice(h.cfg.CommandKeyword, decision.Command))
+			go h.reply(group, req, decision, ignoredTextNotice(h.cfg.CommandKeyword, decision.Command))
 		}
 	case CommandAbort:
-		outcome := h.dispatcher.Abort(projectID, decision.IID)
+		outcome := h.dispatcher.Abort(req.ProjectID, decision.IID)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
 			defer cancel()
-			_ = h.ackNote(ctx, group, projectID, decision, h.cfg.AbortEmoji)
+			_ = h.ackNote(ctx, group, req, decision, h.cfg.AbortEmoji)
 			// The emoji revoke has no note to answer; it only gets a
 			// confirmation when something was actually aborted — revoking a
 			// stale award is routine cleanup, not a question.
 			if decision.NoteID == 0 && !outcome.Found {
 				return
 			}
-			h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, abortText(outcome)))
+			h.reply(group, req, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, abortText(outcome)))
 		}()
 	case CommandStatus:
-		info := h.dispatcher.JobInfo(projectID, decision.IID)
-		go h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, statusText(info)))
+		info := h.dispatcher.JobInfo(req.ProjectID, decision.IID)
+		go h.reply(group, req, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, statusText(info)))
 	case CommandHelp:
-		go h.reply(group, projectID, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, helpText(h.cfg.CommandKeyword)))
+		go h.reply(group, req, decision, withIgnoredTextNotice(decision, h.cfg.CommandKeyword, helpText(h.cfg.CommandKeyword)))
 	case CommandUnknown:
-		go h.reply(group, projectID, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
+		go h.reply(group, req, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
 	}
 	return true
 }
@@ -770,7 +758,7 @@ func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, pr
 			h.log.Debug("chat failure reply suppressed under response policy", "iid", decision.IID, "discussion", decision.DiscussionID)
 			return
 		}
-		notes, err := group.Client.DiscussionNotes(ctx, projectPath, decision.IID, decision.DiscussionID)
+		notes, err := gitlabClient(group).DiscussionNotes(ctx, projectPath, decision.IID, decision.DiscussionID)
 		if err != nil {
 			h.log.Warn("chat failure reply suppressed: reading target note failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
 			return
@@ -794,7 +782,7 @@ func (h *Handler) replyChatFailureIfAllowed(group *Group, projectPath string, pr
 			return
 		}
 	}
-	h.reply(group, projectID, decision, chatFailureText)
+	h.reply(group, Request{ProjectID: projectID, ProjectPath: projectPath, IID: decision.IID}, decision, chatFailureText)
 }
 
 // chatAttempt runs one chat attempt end to end and reports whether it is worth
@@ -836,7 +824,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 		ours = state.Ours
 		if !ours {
 			h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
-			h.replyMentionHelp(group, projectID, decision)
+			h.replyMentionHelp(group, Request{ProjectID: projectID, ProjectPath: projectPath, IID: decision.IID}, decision)
 			return false, false
 		}
 		// Reconcile lazily once ownership is confirmed, even when current policy
@@ -860,7 +848,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	}
 	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
-		h.replyMentionHelp(group, projectID, decision)
+		h.replyMentionHelp(group, Request{ProjectID: projectID, ProjectPath: projectPath, IID: decision.IID}, decision)
 		return false, false
 	}
 	// Do not consume a denied opt-in/muted event. A later explicit request on
@@ -948,7 +936,7 @@ func responseSkipPhrases(controller *ResponseController) []string {
 // daemon. A read failure is returned as an error so the caller can distinguish
 // "not ours" from "could not check".
 func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) (bool, error) {
-	notes, err := group.Client.DiscussionNotes(ctx, projectPath, iid, discussionID)
+	notes, err := gitlabClient(group).DiscussionNotes(ctx, projectPath, iid, discussionID)
 	if err != nil {
 		return false, err
 	}
@@ -965,11 +953,11 @@ func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath
 // ackNote awards the given acknowledgement emoji on the command note ("" skips).
 // Failures are logged and returned so a timeout can be tracked as an uncertain
 // server-side award; the command itself is still executed regardless.
-func (h *Handler) ackNote(ctx context.Context, group *Group, projectID int, decision Decision, emoji string) error {
+func (h *Handler) ackNote(ctx context.Context, group *Group, req Request, decision Decision, emoji string) error {
 	if emoji == "" || decision.NoteID == 0 {
 		return nil
 	}
-	if err := group.Client.AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, emoji); err != nil {
+	if err := group.Remote.AckComment(ctx, req, decision.NoteID, emoji); err != nil {
 		h.log.Warn("acknowledging command note failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
 		return err
 	}
@@ -997,7 +985,7 @@ func (h *Handler) awardChatAck(ctx context.Context, group *Group, projectID int,
 	if emoji == "" || decision.NoteID == 0 || group.BotUserID == 0 {
 		return false
 	}
-	if err := group.Client.AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, emoji); err != nil {
+	if err := gitlabClient(group).AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, emoji); err != nil {
 		h.log.Warn("marking chat question as picked up failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
 	}
 	return true
@@ -1019,7 +1007,7 @@ func (h *Handler) releaseChatAck(group *Group, projectID int, decision Decision)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), chatAckReleaseTimeout)
 	defer cancel()
-	if err := group.Client.ReplaceNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, group.BotUserID, "", emoji); err != nil {
+	if err := gitlabClient(group).ReplaceNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, group.BotUserID, "", emoji); err != nil {
 		h.log.Warn("clearing chat question reaction failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
 	}
 }
@@ -1029,7 +1017,7 @@ func (h *Handler) releaseChatAck(group *Group, projectID int, decision Decision)
 // replyMentionHelp answers a comment outside NickPit's own threads that
 // @-mentions the bot with short help, once per note: webhook redeliveries of
 // the same note are dropped.
-func (h *Handler) replyMentionHelp(group *Group, projectID int, decision Decision) {
+func (h *Handler) replyMentionHelp(group *Group, req Request, decision Decision) {
 	if group == nil || !mentionsUser(decision.PromptBody, group.BotUsername) {
 		return
 	}
@@ -1037,27 +1025,13 @@ func (h *Handler) replyMentionHelp(group *Group, projectID int, decision Decisio
 		return
 	}
 	h.log.Info("answering mention outside nickpit threads", "iid", decision.IID, "note", decision.NoteID)
-	h.reply(group, projectID, decision, mentionHelpText(h.cfg.CommandKeyword))
+	h.reply(group, req, decision, mentionHelpText(h.cfg.CommandKeyword))
 }
 
-func (h *Handler) reply(group *Group, projectID int, decision Decision, body string) {
+func (h *Handler) reply(group *Group, req Request, decision Decision, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
 	defer cancel()
-	if decision.DiscussionID != "" {
-		err := group.Client.ReplyToMRDiscussion(ctx, projectID, decision.IID, decision.DiscussionID, body)
-		if err == nil {
-			return
-		}
-		// Some GitLab versions reject replies to individual-note discussions
-		// with a 4xx; fall back to a plain note. 5xx and transport errors are
-		// not retried against another endpoint.
-		var apiErr *gitlab.APIError
-		if !errors.As(err, &apiErr) || apiErr.Status >= 500 {
-			h.log.Warn("posting command reply failed", "iid", decision.IID, "error", err)
-			return
-		}
-	}
-	if err := group.Client.CreateMRNote(ctx, projectID, decision.IID, body); err != nil {
+	if err := group.Remote.Reply(ctx, req, decision.DiscussionID, body); err != nil {
 		h.log.Warn("posting command reply failed", "iid", decision.IID, "error", err)
 	}
 }

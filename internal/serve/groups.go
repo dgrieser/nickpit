@@ -20,17 +20,19 @@ import (
 // webhook-timestamp and now; deliveries outside it are rejected as replays.
 const signatureTolerance = 5 * time.Minute
 
-// Group is one configured GitLab group: its path prefix, credentials, and the
-// API client built from its token. BotUserID is the token's user and feeds the
+// Group is one configured group: its path prefix, credentials, and the forge
+// account behind its token. BotUserID is the token's user and feeds the
 // emoji-loop guard and safe reaction replacement. Production startup requires
 // it to be resolved; 0 is only useful for tests that omit identity lookup.
 // BotUsername is that user's handle, used to notice @-mentions of the bot.
+// Remote is the review path's view of that account; the GitLab-only features
+// (chat, response policy, topics) reach its API client through gitlabClient.
 type Group struct {
 	Path        string
 	Token       string
 	secret      []byte
 	signKey     []byte
-	Client      *gitlab.Client
+	Remote      Remote
 	BotUserID   int
 	BotUsername string
 }
@@ -113,8 +115,9 @@ func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, 
 			Path:   strings.Trim(cfg.Path, "/"),
 			Token:  cfg.Token,
 			secret: []byte(cfg.WebhookSecret),
-			Client: gitlab.NewClient(baseURL, cfg.Token),
 		}
+		client := gitlab.NewClient(baseURL, cfg.Token)
+		group.Remote = gitlabRemote{group: group, client: client}
 		if cfg.SigningToken != "" {
 			// LoadServe already validated the format; decode defensively and
 			// warn rather than crash if a caller bypassed validation. A group
@@ -127,7 +130,7 @@ func NewGroupSet(ctx context.Context, cfgs []config.ServeGroup, baseURL string, 
 			}
 		}
 		if lookup != nil {
-			user, err := lookup(ctx, group.Client)
+			user, err := lookup(ctx, client)
 			if err != nil {
 				warnings = append(warnings, fmt.Errorf("group %q: bot user lookup: %w", group.Path, err))
 			} else if user == nil || user.ID <= 0 {
