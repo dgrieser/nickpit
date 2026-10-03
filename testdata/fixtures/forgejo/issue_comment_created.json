@@ -1,0 +1,10 @@
+{
+  "id": 77,
+  "html_url": "https://codeberg.org/owner/repo/pulls/123#issuecomment-77",
+  "pull_request_url": "https://codeberg.org/owner/repo/pulls/123",
+  "issue_url": "",
+  "user": {"id": 9, "login": "nickpit-bot"},
+  "body": "On it.",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}

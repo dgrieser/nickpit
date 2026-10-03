@@ -1,0 +1,5 @@
+{
+  "default_theme": "forgejo-auto",
+  "allowed_reactions": ["+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes"],
+  "custom_emojis": ["git", "forgejo"]
+}

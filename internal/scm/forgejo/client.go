@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -91,6 +92,10 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 // into it. Forgejo returns the created review/comment JSON; callers that do not
 // need it pass out=nil.
 func (c *Client) Post(ctx context.Context, path string, body any, out any) error {
+	return c.writeJSON(ctx, http.MethodPost, path, body, out)
+}
+
+func (c *Client) writeJSON(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -99,7 +104,7 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 		}
 		reader = bytes.NewReader(data)
 	}
-	respBody, _, err := c.doRequest(ctx, http.MethodPost, path, reader, "application/json")
+	respBody, _, err := c.doRequest(ctx, method, path, reader, "application/json")
 	if err != nil {
 		return err
 	}
@@ -113,6 +118,12 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 func (c *Client) Delete(ctx context.Context, path string) error {
 	_, _, err := c.doRequest(ctx, http.MethodDelete, path, nil, "")
 	return err
+}
+
+// DeleteJSON is Delete with a JSON body, for the endpoints that name what to
+// remove in the body rather than the path (reactions).
+func (c *Client) DeleteJSON(ctx context.Context, path string, body any) error {
+	return c.writeJSON(ctx, http.MethodDelete, path, body, nil)
 }
 
 // withLimit maximizes the page size of the first paginated request. The
@@ -204,7 +215,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody)
+		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody, resp.Header, time.Now())
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err == nil && len(respBody) > maxResponseBytes {
@@ -217,13 +228,15 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 }
 
 // APIError is returned when the API responds with a >= 300 status. It carries
-// the HTTP status so callers (e.g. the review publisher) can branch on it via
-// errors.As.
+// the HTTP status and any rate-limit retry time so callers (e.g. the review
+// publisher) can branch on specific codes via errors.As and coordinate delayed
+// work.
 type APIError struct {
-	Method string
-	URL    string
-	Status int
-	Body   string
+	Method     string
+	URL        string
+	Status     int
+	Body       string
+	RetryAfter time.Time
 }
 
 func (e *APIError) Error() string {
@@ -237,8 +250,32 @@ func (e *APIError) Error() string {
 	return message
 }
 
-func newAPIError(method, requestURL string, status int, body []byte) *APIError {
-	return &APIError{Method: method, URL: requestURL, Status: status, Body: string(body)}
+func newAPIError(method, requestURL string, status int, body []byte, header http.Header, now time.Time) *APIError {
+	return &APIError{
+		Method:     method,
+		URL:        requestURL,
+		Status:     status,
+		Body:       string(body),
+		RetryAfter: retryAfterTime(header, now),
+	}
+}
+
+// retryAfterTime preserves a rate-limit instruction on API errors so
+// asynchronous callers can coordinate retries after the response is closed.
+// Retry-After is a number of seconds or an HTTP date; the result is zero when
+// the header is absent or malformed.
+func retryAfterTime(header http.Header, now time.Time) time.Time {
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return time.Time{}
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if retryAt, err := http.ParseTime(raw); err == nil {
+		return retryAt
+	}
+	return time.Time{}
 }
 
 // IsNotFound reports whether err is a 404 from the API.
