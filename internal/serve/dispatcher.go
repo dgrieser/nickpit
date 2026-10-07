@@ -314,10 +314,9 @@ func eventFromJournal(entry journalEntry, group *Group) Event {
 
 // Enqueue accepts an event from the webhook handler. Never blocks, keeping the
 // handler's fast-ack guarantee. It reports whether the event was accepted:
-// queued, coalesced onto an existing job, or deliberately dropped as an
-// already-reviewed duplicate all count as accepted. False means the event was
-// LOST — the dispatcher is closed (shutdown) or the queue is full — and the
-// webhook must be answered with a non-2xx status so GitLab redelivers it.
+// queued or coalesced onto an existing job. False means the event was LOST —
+// the dispatcher is closed (shutdown) or the queue is full — and the webhook
+// must be answered with a non-2xx status so GitLab redelivers it.
 func (d *Dispatcher) Enqueue(event Event) bool {
 	d.trackAcknowledgement(&event)
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
@@ -326,17 +325,9 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 	if d.closed {
 		return false
 	}
-	// Cheap drop for webhook redeliveries of an already-reviewed head, before
-	// it occupies a queue slot. Head-only because the GitLab payload carries
-	// no merge base; the worker's authoritative head+base check decides.
-	// Manual triggers always pass — the user asked. The drop is intentional,
-	// so it counts as accepted: a redelivery would only be dropped again.
-	if event.Kind == TriggerAuto && event.HeadSHA != "" {
-		if _, ok := d.recent.Get(shaKey(event.ProjectID, event.IID, event.HeadSHA)); ok {
-			d.log.Debug("dropping already-reviewed head", "project", event.ProjectPath, "iid", event.IID, "sha", event.HeadSHA)
-			return true
-		}
-	}
+	// The webhook payload does not carry the merge base, so the dispatcher
+	// cannot safely deduplicate auto events here. The worker rechecks the
+	// authoritative head+base pair before running.
 	if state, ok := d.states[key]; ok {
 		var overflows []ackOverflow
 		switch {

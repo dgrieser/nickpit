@@ -1361,7 +1361,7 @@ func TestTakeRefusesJobsAfterShutdown(t *testing.T) {
 	}
 }
 
-// Enqueue reports acceptance: queued, coalesced, and deliberate dedup drops
+// Enqueue reports acceptance: queued, coalesced, and already-reviewed heads
 // are accepted; a full queue and a closed dispatcher are rejections the
 // handler turns into a 503 so GitLab redelivers.
 func TestEnqueueReportsAcceptance(t *testing.T) {
@@ -1374,32 +1374,30 @@ func TestEnqueueReportsAcceptance(t *testing.T) {
 	if !dispatcher.Enqueue(autoEvent(1, "sha-2", group)) {
 		t.Fatal("coalescing onto a queued job must be accepted")
 	}
-	// An already-reviewed head is dropped on purpose; a redelivery would only
-	// be dropped again, so it counts as accepted (no 503, no GitLab retry).
+	// An already-reviewed head is still accepted here because the webhook has
+	// no merge base; the worker performs the authoritative head+base dedup.
 	dispatcher.markReviewed(42, 2, "sha-x", "base-1")
 	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
-		t.Fatal("dedup drop must be accepted")
+		t.Fatal("same-head enqueue must be accepted")
 	}
 }
 
-// The webhook payload carries no merge base, so the enqueue pre-filter drops on
-// the head alone; only the worker's recheck sees that the base moved.
-func TestEnqueuePrefilterIsHeadOnly(t *testing.T) {
+// A previously reviewed head must still be enqueued: the webhook payload has
+// no merge base, so only the worker can tell whether this is the same diff or
+// a retargeted request with a new base.
+func TestEnqueueDoesNotDedupWithoutBase(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-x", baseSHA: "base-2"}
 	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
 
 	dispatcher.markReviewed(42, 2, "sha-x", "base-1")
-	if dispatcher.alreadyReviewed(42, 2, "sha-x", "base-2") {
-		t.Fatal("a changed base must not count as already reviewed")
-	}
 	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
-		t.Fatal("head-only drop must be accepted")
+		t.Fatal("same head must be admitted when the webhook carries no base")
 	}
 	dispatcher.mu.Lock()
 	_, queued := dispatcher.states[jobKey{ProjectID: 42, IID: 2}]
 	dispatcher.mu.Unlock()
-	if queued {
-		t.Fatal("pre-filter must drop the event before creating job state")
+	if !queued {
+		t.Fatal("event must reach the worker for authoritative head+base dedup")
 	}
 }
 
