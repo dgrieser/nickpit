@@ -120,8 +120,8 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 		log.Info("skipping review", "reason", "draft")
 		return outcomeFailed
 	}
-	if event.Kind == TriggerAuto && d.alreadyReviewed(event.ProjectID, event.IID, status.HeadSHA) {
-		log.Info("skipping review", "reason", "head already reviewed", "sha", status.HeadSHA)
+	if event.Kind == TriggerAuto && d.alreadyReviewed(event.ProjectID, event.IID, status.HeadSHA, status.BaseSHA) {
+		log.Info("skipping review", "reason", "diff already reviewed", "sha", status.HeadSHA, "base", status.BaseSHA)
 		return outcomeFailed
 	}
 
@@ -180,7 +180,7 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 	// lands while its output is still draining must not make the work runnable
 	// again after restart.
 	case err == nil && exitCode == 0:
-		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
+		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA, status.BaseSHA)
 		if d.responses != nil {
 			syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandReplyTimeout)
 			// Only roots this publish added lack a footer, so post-publish work

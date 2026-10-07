@@ -64,6 +64,9 @@ type RequestStatus struct {
 	State   string
 	Draft   bool
 	HeadSHA string
+	// BaseSHA is the diff base (merge base); with HeadSHA it identifies the
+	// request's current diff.
+	BaseSHA string
 }
 
 // Remote is what the review path asks of a group's forge account.

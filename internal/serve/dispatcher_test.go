@@ -35,6 +35,7 @@ type fakeGitLab struct {
 	state    string
 	draft    bool
 	headSHA  string
+	baseSHA  string
 	awards   []recordedAward
 	revoked  []recordedAward
 	nextID   int
@@ -282,7 +283,12 @@ func (f *fakeGitLab) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"notes": notes})
 		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{"state": f.state, "draft": f.draft, "sha": f.headSHA})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state":     f.state,
+				"draft":     f.draft,
+				"sha":       f.headSHA,
+				"diff_refs": map[string]any{"base_sha": f.baseSHA},
+			})
 		}
 	})
 }
@@ -424,7 +430,7 @@ type dispatcherEnv struct {
 
 func newDispatcherEnv(t *testing.T, workers int, gate bool) *dispatcherEnv {
 	t.Helper()
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", baseSHA: "base-1"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 
@@ -1000,7 +1006,7 @@ func TestDispatcherAbortRunning(t *testing.T) {
 	})
 	// An aborted run must not mark the head reviewed: the same SHA stays
 	// re-reviewable by a later auto event.
-	if env.dispatcher.alreadyReviewed(42, 7, "sha-1") {
+	if env.dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
 		t.Fatal("aborted run must not mark the SHA reviewed")
 	}
 	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
@@ -1370,9 +1376,30 @@ func TestEnqueueReportsAcceptance(t *testing.T) {
 	}
 	// An already-reviewed head is dropped on purpose; a redelivery would only
 	// be dropped again, so it counts as accepted (no 503, no GitLab retry).
-	dispatcher.markReviewed(42, 2, "sha-x")
+	dispatcher.markReviewed(42, 2, "sha-x", "base-1")
 	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
 		t.Fatal("dedup drop must be accepted")
+	}
+}
+
+// The webhook payload carries no merge base, so the enqueue pre-filter drops on
+// the head alone; only the worker's recheck sees that the base moved.
+func TestEnqueuePrefilterIsHeadOnly(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-x", baseSHA: "base-2"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	dispatcher.markReviewed(42, 2, "sha-x", "base-1")
+	if dispatcher.alreadyReviewed(42, 2, "sha-x", "base-2") {
+		t.Fatal("a changed base must not count as already reviewed")
+	}
+	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
+		t.Fatal("head-only drop must be accepted")
+	}
+	dispatcher.mu.Lock()
+	_, queued := dispatcher.states[jobKey{ProjectID: 42, IID: 2}]
+	dispatcher.mu.Unlock()
+	if queued {
+		t.Fatal("pre-filter must drop the event before creating job state")
 	}
 }
 
@@ -1477,13 +1504,26 @@ func TestDispatcherPendingRerunSurvivesFullQueue(t *testing.T) {
 
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
-	lru.Add("a")
-	lru.Add("b")
-	lru.Add("c")
-	if lru.Contains("a") {
+	lru.Add("a", "1")
+	lru.Add("b", "2")
+	lru.Add("c", "3")
+	if _, ok := lru.Get("a"); ok {
 		t.Fatal("oldest entry must be evicted")
 	}
-	if !lru.Contains("b") || !lru.Contains("c") {
-		t.Fatal("recent entries must remain")
+	if b, ok := lru.Get("b"); !ok || b != "2" {
+		t.Fatalf("b = %q, %v; want 2", b, ok)
+	}
+	if c, ok := lru.Get("c"); !ok || c != "3" {
+		t.Fatalf("c = %q, %v; want 3", c, ok)
+	}
+
+	// Re-adding replaces the value and protects the key from the next eviction.
+	lru.Add("b", "2b")
+	lru.Add("d", "4")
+	if _, ok := lru.Get("c"); ok {
+		t.Fatal("c must be evicted after b was re-added")
+	}
+	if b, ok := lru.Get("b"); !ok || b != "2b" {
+		t.Fatalf("b = %q, %v; want 2b", b, ok)
 	}
 }

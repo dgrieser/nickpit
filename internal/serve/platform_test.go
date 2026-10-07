@@ -194,7 +194,7 @@ func (e *stubEnv) specs() []ReviewSpec {
 }
 
 func TestPlatformReviewCommandRunsThroughRemote(t *testing.T) {
-	env := newStubEnv(t, RequestStatus{Open: true, State: "open", HeadSHA: "sha-9"})
+	env := newStubEnv(t, RequestStatus{Open: true, State: "open", HeadSHA: "sha-9", BaseSHA: "base-9"})
 
 	if recorder := env.post(t, "wrong", "/nickpit review"); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("bad credential: status = %d, want 401", recorder.Code)
