@@ -23,18 +23,51 @@ func TestCreateIssueComment(t *testing.T) {
 	}))
 	defer server.Close()
 
-	id, err := NewClient(server.URL, "token").CreateIssueComment(context.Background(), "owner/repo", 123, "On it.")
-	if err != nil {
+	var comment IssueComment
+	if err := NewClient(server.URL, "token").CreateIssueComment(context.Background(), "owner/repo", 123, "On it.", &comment); err != nil {
 		t.Fatal(err)
 	}
-	if id != 77 {
-		t.Fatalf("comment id = %d, want 77", id)
+	if comment.ID != 77 {
+		t.Fatalf("comment id = %d, want 77", comment.ID)
 	}
 	if gotMethod != http.MethodPost || gotPath != "/api/v1/repos/owner/repo/issues/123/comments" {
 		t.Fatalf("request = %s %s", gotMethod, gotPath)
 	}
 	if len(gotBody) != 1 || gotBody["body"] != "On it." {
 		t.Fatalf("body = %#v", gotBody)
+	}
+}
+
+// Only a caller that asked for the created comment fails on a 2xx body it
+// cannot decode; the comment itself was committed either way.
+func TestCreateIssueCommentResponseBody(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		decode  bool
+		wantErr bool
+	}{
+		{name: "empty body, not decoded", body: "", decode: false},
+		{name: "non-JSON body, not decoded", body: "<html>ok</html>", decode: false},
+		{name: "non-JSON body, decoded", body: "<html>ok</html>", decode: true, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			var created *IssueComment
+			if tc.decode {
+				created = &IssueComment{}
+			}
+			err := NewClient(server.URL, "token").CreateIssueComment(context.Background(), "owner/repo", 123, "On it.", created)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -45,9 +78,10 @@ func TestCreateIssueCommentSurfacesAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	id, err := NewClient(server.URL, "token").CreateIssueComment(context.Background(), "owner/repo", 123, "On it.")
+	var comment IssueComment
+	err := NewClient(server.URL, "token").CreateIssueComment(context.Background(), "owner/repo", 123, "On it.", &comment)
 	var apiErr *APIError
-	if id != 0 || !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
-		t.Fatalf("id = %d, err = %v, want a 403 API error", id, err)
+	if comment.ID != 0 || !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("id = %d, err = %v, want a 403 API error", comment.ID, err)
 	}
 }

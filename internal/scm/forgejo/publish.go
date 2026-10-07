@@ -116,7 +116,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			}
 		}
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
-			if _, err := a.client.CreateIssueComment(ctx, req.Repo, req.Identifier, body); err != nil {
+			if err := a.client.CreateIssueComment(ctx, req.Repo, req.Identifier, body, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 				carrierFailed = true
 			}
@@ -234,7 +234,7 @@ func (a *Adapter) postReview(ctx context.Context, path, commitID, body string, c
 func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, repo string, number int, finding model.Finding) (carried bool, err error) {
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
 	body, bodyCarried := render.FindingBodyCarried(finding, prefix)
-	if _, err := a.client.CreateIssueComment(ctx, repo, number, body); err != nil {
+	if err := a.client.CreateIssueComment(ctx, repo, number, body, nil); err != nil {
 		return false, err
 	}
 	return bodyCarried, nil

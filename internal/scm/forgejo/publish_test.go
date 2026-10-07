@@ -31,17 +31,18 @@ type reviewPost struct {
 }
 
 type publishServer struct {
-	t            *testing.T
-	server       *httptest.Server
-	mu           sync.Mutex
-	reviewsBody  []byte // GET /pulls/:n/reviews (dedupe)
-	commentsB    []byte // GET /pulls/:n/reviews/1/comments (dedupe)
-	issuesBody   []byte // GET /issues/:n/comments (dedupe)
-	reviewPosts  []reviewPost
-	issuePosts   []string
-	deleted      []string
-	rejectInline bool // POST /reviews with comments is rejected
-	reviewStatus int  // unconditional status for POST /reviews (0 -> 200)
+	t               *testing.T
+	server          *httptest.Server
+	mu              sync.Mutex
+	reviewsBody     []byte // GET /pulls/:n/reviews (dedupe)
+	commentsB       []byte // GET /pulls/:n/reviews/1/comments (dedupe)
+	issuesBody      []byte // GET /issues/:n/comments (dedupe)
+	reviewPosts     []reviewPost
+	issuePosts      []string
+	deleted         []string
+	rejectInline    bool // POST /reviews with comments is rejected
+	reviewStatus    int  // unconditional status for POST /reviews (0 -> 200)
+	emptyIssueReply bool // POST /issues/:n/comments answers 201 with no body
 }
 
 func newPublishServer(t *testing.T) *publishServer {
@@ -89,7 +90,12 @@ func (ps *publishServer) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(raw, &parsed)
 		ps.mu.Lock()
 		ps.issuePosts = append(ps.issuePosts, parsed.Body)
+		empty := ps.emptyIssueReply
 		ps.mu.Unlock()
+		if empty {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
 		_, _ = w.Write([]byte(createdJSON))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/repos/owner/repo/issues/comments/"):
 		ps.mu.Lock()
@@ -269,6 +275,24 @@ func TestPublishReviewNewInlineAfterSummaryUsesFallbackBody(t *testing.T) {
 	}
 	if strings.Contains(review.body, reviewmd.SummaryMarker) {
 		t.Fatalf("must not repost the summary marker: %q", review.body)
+	}
+}
+
+// A 201 the server committed but answered without a body is a posted comment:
+// the publisher must neither report it nor fall back to carrier notes, which a
+// retry would then duplicate.
+func TestPublishReviewIssueCommentEmptyResponseIsPosted(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.emptyIssueReply = true
+	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	visible, carriers := splitCarrierPosts(ps.issuePosts)
+	if len(carriers) != 0 {
+		t.Fatalf("carrier notes = %d, want none (finding-b was posted)", len(carriers))
+	}
+	if len(visible) != 1 || !strings.Contains(visible[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("issue comments = %v, want only finding-b", visible)
 	}
 }
 

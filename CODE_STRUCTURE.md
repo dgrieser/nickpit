@@ -129,7 +129,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/forgejo/prlist.go`: Open pull requests of a repo as `model.OpenRequest` rows for the interactive picker.
 - `internal/scm/forgejo/position.go`: Forgejo inline-comment position mapping (`new_position`, single line).
 - `internal/scm/forgejo/publish.go`: Forgejo review/comment publishing.
-- `internal/scm/forgejo/comments.go`: Plain pull request (issue) comments (`CreateIssueComment`, returning the comment id), shared with the publisher.
+- `internal/scm/forgejo/comments.go`: Plain pull request (issue) comments (`CreateIssueComment`, decoding the created comment's id only when asked), shared with the publisher.
 - `internal/scm/forgejo/reactions.go`: Emoji reactions on pull requests and comments: listing, add/remove, replacement of the token user's own reactions as status feedback, and the instance's allowed set.
 - `internal/scm/forgejo/user.go`: Authenticated token owner lookup, used to verify carrier-marker authorship.
 - `internal/scm/github/forge.go`: GitHub as a `forge.Forge`: fixed api.github.com host, PR URL parsing, github.com remote detection, `x-access-token` git credentials.
