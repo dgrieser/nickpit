@@ -314,10 +314,9 @@ func eventFromJournal(entry journalEntry, group *Group) Event {
 
 // Enqueue accepts an event from the webhook handler. Never blocks, keeping the
 // handler's fast-ack guarantee. It reports whether the event was accepted:
-// queued, coalesced onto an existing job, or deliberately dropped as an
-// already-reviewed duplicate all count as accepted. False means the event was
-// LOST — the dispatcher is closed (shutdown) or the queue is full — and the
-// webhook must be answered with a non-2xx status so GitLab redelivers it.
+// queued or coalesced onto an existing job. False means the event was LOST —
+// the dispatcher is closed (shutdown) or the queue is full — and the webhook
+// must be answered with a non-2xx status so GitLab redelivers it.
 func (d *Dispatcher) Enqueue(event Event) bool {
 	d.trackAcknowledgement(&event)
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
@@ -326,14 +325,9 @@ func (d *Dispatcher) Enqueue(event Event) bool {
 	if d.closed {
 		return false
 	}
-	// Duplicate auto-trigger for an already-reviewed head (GitLab webhook
-	// retries): drop before it occupies a queue slot. Manual triggers always
-	// pass — the user asked. The drop is intentional, so it counts as
-	// accepted: a redelivery would only be dropped again.
-	if event.Kind == TriggerAuto && event.HeadSHA != "" && d.recent.Contains(shaKey(event.ProjectID, event.IID, event.HeadSHA)) {
-		d.log.Debug("dropping already-reviewed head", "project", event.ProjectPath, "iid", event.IID, "sha", event.HeadSHA)
-		return true
-	}
+	// The webhook payload does not carry the merge base, so the dispatcher
+	// cannot safely deduplicate auto events here. The worker rechecks the
+	// authoritative head+base pair before running.
 	if state, ok := d.states[key]; ok {
 		var overflows []ackOverflow
 		switch {
@@ -1670,36 +1664,43 @@ func (d *Dispatcher) JobInfo(projectID, iid int) JobInfo {
 	return JobInfo{Queued: true}
 }
 
-// markReviewed records an authoritative head SHA so duplicate auto-triggers
-// are dropped at enqueue time.
-func (d *Dispatcher) markReviewed(projectID, iid int, sha string) {
-	if sha == "" {
+// markReviewed records the authoritative head and base a review ran against so
+// duplicate auto-triggers are dropped.
+func (d *Dispatcher) markReviewed(projectID, iid int, head, base string) {
+	if head == "" {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.recent.Add(shaKey(projectID, iid, sha))
+	d.recent.Add(shaKey(projectID, iid, head), base)
 }
 
-func (d *Dispatcher) alreadyReviewed(projectID, iid int, sha string) bool {
-	if sha == "" {
+// alreadyReviewed reports whether this exact diff was reviewed: a retargeted
+// request keeps its head but changes base, and must be reviewed again.
+func (d *Dispatcher) alreadyReviewed(projectID, iid int, head, base string) bool {
+	if head == "" {
 		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.recent.Contains(shaKey(projectID, iid, sha))
+	reviewedBase, ok := d.recent.Get(shaKey(projectID, iid, head))
+	return ok && reviewedBase == base
 }
 
 func shaKey(projectID, iid int, sha string) string {
 	return fmt.Sprintf("%d:%d:%s", projectID, iid, sha)
 }
 
-// shaLRU is a fixed-size set with least-recently-added eviction. Not
+// shaLRU is a fixed-size map with least-recently-added eviction. Not
 // self-locking: the dispatcher mutex guards it.
 type shaLRU struct {
 	capacity int
 	order    *list.List
 	entries  map[string]*list.Element
+}
+
+type shaLRUEntry struct {
+	key, value string
 }
 
 func newSHALRU(capacity int) *shaLRU {
@@ -1710,20 +1711,26 @@ func newSHALRU(capacity int) *shaLRU {
 	}
 }
 
-func (l *shaLRU) Contains(key string) bool {
-	_, ok := l.entries[key]
-	return ok
+func (l *shaLRU) Get(key string) (string, bool) {
+	element, ok := l.entries[key]
+	if !ok {
+		return "", false
+	}
+	return element.Value.(*shaLRUEntry).value, true
 }
 
-func (l *shaLRU) Add(key string) {
+// Add stores value under key, replacing any previous value and counting as a
+// fresh addition for eviction.
+func (l *shaLRU) Add(key, value string) {
 	if element, ok := l.entries[key]; ok {
+		element.Value.(*shaLRUEntry).value = value
 		l.order.MoveToFront(element)
 		return
 	}
-	l.entries[key] = l.order.PushFront(key)
+	l.entries[key] = l.order.PushFront(&shaLRUEntry{key: key, value: value})
 	for l.order.Len() > l.capacity {
 		oldest := l.order.Back()
 		l.order.Remove(oldest)
-		delete(l.entries, oldest.Value.(string))
+		delete(l.entries, oldest.Value.(*shaLRUEntry).key)
 	}
 }

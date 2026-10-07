@@ -49,7 +49,7 @@ func testSpec(t *testing.T) ReviewSpec {
 }
 
 func TestExecRunnerInvocation(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := testSpec(t)
 
 	exitCode, logPath, err := runner.Run(context.Background(), spec)
@@ -76,7 +76,7 @@ func TestExecRunnerInvocation(t *testing.T) {
 }
 
 func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := ChatSpec{
 		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
 		Token: "group-token", BaseURL: "https://gitlab.example.com", LogDir: t.TempDir(),
@@ -107,7 +107,7 @@ func TestExecRunnerChatResponseControlInvocation(t *testing.T) {
 }
 
 func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := ChatSpec{
 		ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
 		Requested: true, Token: "group-token", LogDir: t.TempDir(),
@@ -128,7 +128,7 @@ func TestExecRunnerExplicitChatRequestStaysBoundToTargetNote(t *testing.T) {
 }
 
 func TestExecRunnerUpdateJobFlagsAreAuthoritative(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := ChatSpec{ProjectPath: "platform/api", IID: 7, DiscussionID: "thread", LogDir: t.TempDir(),
 		ExtraArgs: []string{"--run-update-job=wrong", "--update-state-dir=wrong"}, UpdateJobID: "job", UpdateStateDir: "/private/state"}
 	_, path, err := runner.RunChat(context.Background(), spec)
@@ -147,7 +147,7 @@ func TestExecRunnerUpdateJobFlagsAreAuthoritative(t *testing.T) {
 func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {
-			runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+			runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 			spec := testSpec(t)
 			spec.ExtraArgs = []string{"--profile", "default", arg}
 
@@ -165,7 +165,7 @@ func TestExecRunnerRejectsDeliveryBypassArgs(t *testing.T) {
 func TestExecRunnerRejectsChatControlBypassArgs(t *testing.T) {
 	for _, arg := range []string{"--", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {
-			runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+			runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 			spec := ChatSpec{
 				ProjectPath: "platform/api", IID: 7, DiscussionID: "disc-1", NoteID: 42,
 				ExtraArgs: []string{"--profile", "default", arg}, LogDir: t.TempDir(),
@@ -198,6 +198,7 @@ func TestExecRunnerScrubsSecretsFromChildEnv(t *testing.T) {
 
 	runner := &ExecRunner{
 		Executable:  path,
+		Forge:       GitLab.Forge(),
 		scrubValues: map[string]bool{"other-secret-token": true, "hook-secret-value": true},
 		now:         time.Now,
 	}
@@ -225,7 +226,7 @@ func TestExecRunnerPrivateLogPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix permissions")
 	}
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := testSpec(t)
 	spec.LogDir = filepath.Join(t.TempDir(), "logs")
 
@@ -288,7 +289,7 @@ func (w *recordingStream) Close() error {
 
 func TestExecRunnerTeesOutputToSink(t *testing.T) {
 	sink := &recordingSink{}
-	runner := &ExecRunner{Executable: writeFakeReview(t), sink: sink, now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), sink: sink, now: time.Now}
 	spec := testSpec(t)
 	spec.HeadSHA = "deadbeef"
 	spec.Trigger = "auto"
@@ -330,7 +331,7 @@ func TestExecRunnerTeesOutputToSink(t *testing.T) {
 // on-disk log — the durable mirror is strictly best-effort.
 func TestExecRunnerFailingSinkDoesNotAffectReview(t *testing.T) {
 	sink := &recordingSink{failing: true}
-	runner := &ExecRunner{Executable: writeFakeReview(t), sink: sink, now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), sink: sink, now: time.Now}
 
 	exitCode, logPath, err := runner.Run(context.Background(), testSpec(t))
 	if err != nil {
@@ -350,7 +351,7 @@ func TestExecRunnerFailingSinkDoesNotAffectReview(t *testing.T) {
 
 // A runner with no sink configured behaves exactly as before (NoopSink).
 func TestExecRunnerNilSinkIsNoop(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	exitCode, logPath, err := runner.Run(context.Background(), testSpec(t))
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +365,7 @@ func TestExecRunnerNilSinkIsNoop(t *testing.T) {
 }
 
 func TestExecRunnerChildFailureExitCode(t *testing.T) {
-	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	runner := &ExecRunner{Executable: writeFakeReview(t), Forge: GitLab.Forge(), now: time.Now}
 	spec := testSpec(t)
 	t.Setenv("FAKE_REVIEW_EXIT", "1")
 
@@ -386,7 +387,7 @@ func TestExecRunnerCancelTerminatesChild(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runner := &ExecRunner{Executable: path, now: time.Now}
+	runner := &ExecRunner{Executable: path, Forge: GitLab.Forge(), now: time.Now}
 	spec := testSpec(t)
 
 	ctx, cancel := context.WithCancel(context.Background())

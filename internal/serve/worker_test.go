@@ -565,7 +565,7 @@ func TestWorkerOutcomeEmojiDisabled(t *testing.T) {
 // A failed run must not mark the head as reviewed: the next auto event for
 // the same SHA has to retry instead of being dropped.
 func TestWorkerFailedRunDoesNotMarkReviewed(t *testing.T) {
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", baseSHA: "base-1"}
 	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
 	runner.exit = 1
 
@@ -573,7 +573,7 @@ func TestWorkerFailedRunDoesNotMarkReviewed(t *testing.T) {
 	if len(runner.ran()) != 1 {
 		t.Fatal("review must have been attempted")
 	}
-	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
+	if dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
 		t.Fatal("failed run must not mark the SHA reviewed")
 	}
 
@@ -582,8 +582,31 @@ func TestWorkerFailedRunDoesNotMarkReviewed(t *testing.T) {
 	if len(runner.ran()) != 2 {
 		t.Fatal("retry after failure must run")
 	}
-	if !dispatcher.alreadyReviewed(42, 7, "sha-1") {
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
 		t.Fatal("successful run must mark the SHA reviewed")
+	}
+}
+
+// A retargeted MR keeps its head but gets a new merge base: that is a new diff
+// and must be reviewed again.
+func TestWorkerChangedBaseIsReviewedAgain(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", baseSHA: "base-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 1 || !dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
+		t.Fatal("first review must run and be recorded")
+	}
+
+	fake.mu.Lock()
+	fake.baseSHA = "base-2"
+	fake.mu.Unlock()
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 2 {
+		t.Fatal("same head on a new base must be reviewed again")
+	}
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1", "base-2") {
+		t.Fatal("the new base must be recorded")
 	}
 }
 
@@ -591,13 +614,13 @@ func TestWorkerAuthoritativeSHABeatsPayload(t *testing.T) {
 	// Payload carried sha-1 but the MR moved on to sha-2 before the worker
 	// ran: the LRU must record sha-2 so the follow-up webhook for sha-2 is
 	// deduplicated.
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-2"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-2", baseSHA: "base-1"}
 	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
 	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
 	if len(runner.ran()) != 1 {
 		t.Fatal("review must run")
 	}
-	if !dispatcher.alreadyReviewed(42, 7, "sha-2") {
+	if !dispatcher.alreadyReviewed(42, 7, "sha-2", "base-1") {
 		t.Fatal("authoritative head SHA must be recorded")
 	}
 }
@@ -605,7 +628,7 @@ func TestWorkerAuthoritativeSHABeatsPayload(t *testing.T) {
 // An aborted run (per-job cancel while the pool is alive) must not mark the
 // head reviewed, even though the fake runner exits 0.
 func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", baseSHA: "base-1"}
 	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
 	runner.gate = make(chan struct{}) // never released; only ctx cancel frees it
 
@@ -618,7 +641,7 @@ func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
 	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
 	cancel()
 	<-done
-	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
+	if dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
 		t.Fatal("aborted run must not mark the SHA reviewed")
 	}
 }
@@ -627,7 +650,7 @@ func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
 // while Run is still draining output. The completed review must win over the
 // late cancellation so its durable job is retired instead of replayed.
 func TestWorkerSuccessfulRunWinsOverShutdownDuringLogDrain(t *testing.T) {
-	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1", baseSHA: "base-1"}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	group := newTestGroupSetWithURL(t, server.URL).Match("platform/api")
@@ -648,7 +671,7 @@ func TestWorkerSuccessfulRunWinsOverShutdownDuringLogDrain(t *testing.T) {
 	if result.outcome != outcomeDone || result.resume {
 		t.Fatalf("result = %+v, want completed non-resumable review", result)
 	}
-	if !dispatcher.alreadyReviewed(42, 7, "sha-1") {
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1", "base-1") {
 		t.Fatal("successful review must mark the SHA reviewed")
 	}
 }

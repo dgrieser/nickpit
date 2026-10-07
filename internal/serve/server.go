@@ -20,7 +20,7 @@ type Server struct {
 
 func NewServer(listen string, handler *Handler, dispatcher *Dispatcher, grace time.Duration, log *slog.Logger) *Server {
 	mux := http.NewServeMux()
-	mux.Handle("/webhooks/gitlab", handler)
+	mux.Handle(handler.WebhookPath(), handler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		queued, running := dispatcher.Stats()
 		writeJSON(w, map[string]any{"status": "ok", "queued": queued, "running": running})

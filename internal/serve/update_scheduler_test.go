@@ -62,7 +62,7 @@ func TestUpdateSchedulerAdmitsOrphanRecoveryButNotTransientFailures(t *testing.T
 			}
 			log := slog.New(slog.NewTextHandler(io.Discard, nil))
 			runner := &scheduledUpdateRunner{started: make(chan ChatSpec, 2), release: make(chan string), store: store}
-			h := NewHandler(groups, nil, HandlerConfig{Responses: NewResponseController(ResponseConfig{Enabled: true}, log)}, runner, ChatConfig{BaseURL: server.URL, UpdateStateDir: dir}, log)
+			h := NewHandler(GitLab, groups, nil, HandlerConfig{Responses: NewResponseController(ResponseConfig{Enabled: true}, log)}, runner, ChatConfig{BaseURL: server.URL, UpdateStateDir: dir}, log)
 			h.updatePollInterval = 10 * time.Millisecond
 			h.StartUpdateWorker()
 			defer h.ShutdownChats(0)
@@ -150,7 +150,7 @@ func TestUpdateSchedulerStrictFIFOAndIndependentMRs(t *testing.T) {
 		t.Fatal(groupErrors)
 	}
 	runner := &scheduledUpdateRunner{started: make(chan ChatSpec, 4), release: make(chan string), store: store}
-	h := NewHandler(groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: first.BaseURL, UpdateStateDir: dir, UpdateMaxConcurrent: 2}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(GitLab, groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: first.BaseURL, UpdateStateDir: dir, UpdateMaxConcurrent: 2}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.updatePollInterval = 10 * time.Millisecond
 	h.StartUpdateWorker()
 	defer h.ShutdownChats(0)
@@ -223,7 +223,7 @@ func TestUpdateSchedulerStartsSuccessorAfterCompletion(t *testing.T) {
 		t.Fatal(groupErrors)
 	}
 	runner := &scheduledUpdateRunner{started: make(chan ChatSpec, 2), release: make(chan string), store: store}
-	h := NewHandler(groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: first.BaseURL, UpdateStateDir: dir}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(GitLab, groups, nil, HandlerConfig{}, runner, ChatConfig{BaseURL: first.BaseURL, UpdateStateDir: dir}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.StartUpdateWorker()
 	defer h.ShutdownChats(0)
 	select {
@@ -279,7 +279,7 @@ func TestUpdateSchedulerPolicyBlockedHeadPreventsOvertaking(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner := &scheduledUpdateRunner{started: make(chan ChatSpec, 3), release: make(chan string), store: store}
-	h := NewHandler(groups, nil, HandlerConfig{Responses: NewResponseController(ResponseConfig{Enabled: true, OptIn: true}, log)}, runner, ChatConfig{BaseURL: server.URL, UpdateStateDir: dir}, log)
+	h := NewHandler(GitLab, groups, nil, HandlerConfig{Responses: NewResponseController(ResponseConfig{Enabled: true, OptIn: true}, log)}, runner, ChatConfig{BaseURL: server.URL, UpdateStateDir: dir}, log)
 	h.updatePollInterval = 10 * time.Millisecond
 	h.StartUpdateWorker()
 	defer h.ShutdownChats(0)
