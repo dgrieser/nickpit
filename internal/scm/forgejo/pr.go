@@ -34,6 +34,9 @@ type prResponse struct {
 	HTMLURL string `json:"html_url"`
 	// MergeBase is the commit the pull request diff is computed against.
 	MergeBase string `json:"merge_base"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"`
+	Draft     bool   `json:"draft"`
 }
 
 type commitResponse struct {

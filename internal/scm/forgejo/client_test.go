@@ -2,12 +2,14 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/testutil"
@@ -323,5 +325,93 @@ func TestAPIErrorCarriesStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "base URL") {
 		t.Fatalf("a 404 should hint at the configuration: %v", err)
+	}
+}
+
+func TestRetryAfterTime(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header string // "" leaves the header out
+		want   time.Time
+	}{
+		{name: "seconds", header: "120", want: now.Add(2 * time.Minute)},
+		{name: "zero seconds", header: "0", want: now},
+		{name: "padded seconds", header: " 5 ", want: now.Add(5 * time.Second)},
+		{name: "HTTP date", header: "Fri, 02 Jan 2026 03:10:00 GMT", want: time.Date(2026, 1, 2, 3, 10, 0, 0, time.UTC)},
+		{name: "absent"},
+		{name: "negative seconds", header: "-5"},
+		{name: "malformed", header: "soon"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			if tt.header != "" {
+				header.Set("Retry-After", tt.header)
+			}
+			if got := retryAfterTime(header, now); !got.Equal(tt.want) {
+				t.Fatalf("retryAfterTime(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAPIErrorPreservesRetryAfter(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		check  func(t *testing.T, before, after, got time.Time)
+	}{
+		{
+			name:   "seconds",
+			header: "2",
+			check: func(t *testing.T, before, after, got time.Time) {
+				if got.Before(before.Add(2*time.Second)) || got.After(after.Add(2*time.Second)) {
+					t.Fatalf("retry after = %v, want two seconds after the response", got)
+				}
+			},
+		},
+		{
+			name:   "HTTP date",
+			header: "Fri, 02 Jan 2026 03:10:00 GMT",
+			check: func(t *testing.T, _, _, got time.Time) {
+				if !got.Equal(time.Date(2026, 1, 2, 3, 10, 0, 0, time.UTC)) {
+					t.Fatalf("retry after = %v", got)
+				}
+			},
+		},
+		{
+			name: "absent",
+			check: func(t *testing.T, _, _, got time.Time) {
+				if !got.IsZero() {
+					t.Fatalf("retry after = %v, want none", got)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.header != "" {
+					w.Header().Set("Retry-After", tt.header)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte("slow down"))
+			}))
+			defer server.Close()
+
+			before := time.Now()
+			err := NewClient(server.URL, "token").Post(context.Background(), "/repos/o/r/issues/1/reactions", map[string]string{"content": "eyes"}, nil)
+			after := time.Now()
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+				t.Fatalf("err = %v, want a 429 API error", err)
+			}
+			tt.check(t, before, after, apiErr.RetryAfter)
+			// The retry time travels in the field only; the message is unchanged.
+			if want := "forgejo: POST " + server.URL + "/api/v1/repos/o/r/issues/1/reactions: status 429: slow down"; err.Error() != want {
+				t.Fatalf("message = %q, want %q", err.Error(), want)
+			}
+		})
 	}
 }

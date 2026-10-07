@@ -36,9 +36,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		return fmt.Errorf("forgejo publish: fetch position info: %w", err)
 	}
 
-	escaped := escapeRepo(req.Repo)
-	reviewsPath := fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, req.Identifier)
-	issueCommentsPath := fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, req.Identifier)
+	reviewsPath := fmt.Sprintf("/repos/%s/pulls/%d/reviews", escapeRepo(req.Repo), req.Identifier)
 
 	prior := a.existingComments(ctx, req.Repo, req.Identifier)
 
@@ -82,7 +80,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 	var errs []error
 	reviewPostFailed := false
-	if err := a.publishReview(ctx, render, reviewsPath, issueCommentsPath, info.HeadSHA, summaryBody, inline); err != nil {
+	if err := a.publishReview(ctx, render, reviewsPath, req.Repo, req.Identifier, info.HeadSHA, summaryBody, inline); err != nil {
 		errs = append(errs, err)
 		reviewPostFailed = true
 		// The create-review call is atomic and its per-finding fallback outcome is
@@ -96,7 +94,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		// carried is prefix-independent, so the partition loop already recorded
 		// size-omitted carriers for overflow findings; appending here again would
 		// serialize the same envelope twice. Only post failures add.
-		if _, err := a.postIssueComment(ctx, render, issueCommentsPath, finding); err != nil {
+		if _, err := a.postIssueComment(ctx, render, req.Repo, req.Identifier, finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
 			missing = append(missing, finding)
 		}
@@ -118,7 +116,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			}
 		}
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
-			if err := a.client.Post(ctx, issueCommentsPath, map[string]string{"body": body}, nil); err != nil {
+			if err := a.client.CreateIssueComment(ctx, req.Repo, req.Identifier, body, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 				carrierFailed = true
 			}
@@ -179,7 +177,7 @@ func (a *Adapter) pruneStaleCarriers(ctx context.Context, repo string, number in
 // drop them. Any answer from the API counts as a rejection here: Forgejo does
 // not commit to one status for a bad anchor. A transport failure is returned
 // as is, since retrying against an unreachable server gains nothing.
-func (a *Adapter) publishReview(ctx context.Context, render reviewmd.Renderer, reviewsPath, issueCommentsPath, headSHA, summaryBody string, inline []inlineItem) error {
+func (a *Adapter) publishReview(ctx context.Context, render reviewmd.Renderer, reviewsPath, repo string, number int, headSHA, summaryBody string, inline []inlineItem) error {
 	body := summaryBody
 	if body == "" && len(inline) > 0 {
 		body = reviewFallbackBody
@@ -209,7 +207,7 @@ func (a *Adapter) publishReview(ctx context.Context, render reviewmd.Renderer, r
 	for _, item := range inline {
 		// carried is prefix-independent (see FindingBodyCarried), so the caller's
 		// partition-time record already covers a size-omitted carrier here.
-		if _, err := a.postIssueComment(ctx, render, issueCommentsPath, item.finding); err != nil {
+		if _, err := a.postIssueComment(ctx, render, repo, number, item.finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", item.finding.ID, err))
 		}
 	}
@@ -233,10 +231,10 @@ func (a *Adapter) postReview(ctx context.Context, path, commitID, body string, c
 // postIssueComment posts a finding as a general PR comment. carried reports
 // whether the body embedded the full-finding carrier (false when omitted for
 // size), so callers can route the finding into the fallback carrier notes.
-func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, path string, finding model.Finding) (carried bool, err error) {
+func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, repo string, number int, finding model.Finding) (carried bool, err error) {
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
 	body, bodyCarried := render.FindingBodyCarried(finding, prefix)
-	if err := a.client.Post(ctx, path, map[string]string{"body": body}, nil); err != nil {
+	if err := a.client.CreateIssueComment(ctx, repo, number, body, nil); err != nil {
 		return false, err
 	}
 	return bodyCarried, nil
