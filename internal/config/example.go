@@ -53,6 +53,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("small", smallModelNode(profile.Small)),
 		yamlEntry("base_url", yamlScalar(profile.BaseURL)),
 		yamlEntry("api_key", yamlScalar(profile.APIKey)),
+		yamlEntry("auth", yamlScalar(profile.Auth)),
 		yamlEntry("supported_models", supportedModelsNode(profile.SupportedModels)),
 		yamlEntry("max_tokens", optionalIntNode(profile.MaxTokens)),
 		yamlEntry("temperature", optionalFloatNode(profile.Temperature)),
