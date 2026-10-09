@@ -147,6 +147,10 @@ type app struct {
 	apiKey                    string
 	smallBaseURL              string
 	smallAPIKey               string
+	llmAPI                    string
+	llmAuth                   string
+	smallAPI                  string
+	smallAuth                 string
 	workDir                   string
 	profile                   string
 	profileSet                bool
@@ -384,6 +388,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
 	root.PersistentFlags().StringVar(&cli.smallBaseURL, "small-base-url", "", "LLM API base URL for workflow steps using model: \"@small\"; requires --small-api-key when it differs from --base-url")
 	root.PersistentFlags().StringVar(&cli.smallAPIKey, "small-api-key", "", "LLM API key for workflow steps using model: \"@small\"")
+	root.PersistentFlags().StringVar(&cli.llmAPI, "api", "", "LLM wire protocol: chat_completions or responses")
+	root.PersistentFlags().StringVar(&cli.llmAuth, "auth", "", "LLM authentication: api_key or chatgpt (Sign in with ChatGPT)")
+	root.PersistentFlags().StringVar(&cli.smallAPI, "small-api", "", "LLM wire protocol for workflow steps using model: \"@small\": chat_completions or responses")
+	root.PersistentFlags().StringVar(&cli.smallAuth, "small-auth", "", "LLM authentication for workflow steps using model: \"@small\": api_key or chatgpt")
 	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.temperature, &cli.temperatureSet), "temperature", "Sampling temperature")
@@ -698,6 +706,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 			Model:             a.smallModel,
 			BaseURL:           a.smallBaseURL,
 			APIKey:            a.smallAPIKey,
+			API:               a.smallAPI,
+			Auth:              a.smallAuth,
 			MaxTokens:         smallMaxTokens,
 			Temperature:       smallTemperature,
 			TopP:              smallTopP,
@@ -710,6 +720,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		},
 		BaseURL:                   a.baseURL,
 		APIKey:                    a.apiKey,
+		API:                       a.llmAPI,
+		Auth:                      a.llmAuth,
 		ReasoningEffort:           a.reasoningEffort,
 		Temperature:               temperature,
 		TopP:                      topP,
@@ -2203,6 +2215,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 // an identical signature, yet a different serving stack must still be probed.
 func smallModelConfigured(profile config.Profile) bool {
 	small := config.EffectiveSmallProfile(profile)
+	// Protocol and authentication are part of the signature below.
 	if !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
 		return true
 	}
@@ -2210,19 +2223,22 @@ func smallModelConfigured(profile config.Profile) bool {
 }
 
 // smallEndpointDistinct reports whether the small model talks to a different LLM
-// endpoint than the primary one — a different base URL, or the same base URL with
-// a different credential (another tenant or quota). Both need their own client;
-// only a differing base URL needs its own capability probe, which is why the
-// callers differ in which predicate they use.
+// endpoint than the primary one — a different base URL, credential (another
+// tenant or quota), protocol, or kind of authentication. Each needs its own
+// client; only some need their own capability probe, which is why the callers
+// differ in which predicate they use.
 func smallEndpointDistinct(profile, small config.Profile) bool {
-	return !model.SameEndpoint(small.BaseURL, profile.BaseURL) || small.APIKey != profile.APIKey
+	return review.ProfileEndpoint(small) != review.ProfileEndpoint(profile)
 }
 
 // smallModelDistinctTarget reports whether @small resolves to something a user
 // would want to see as a second model in the progress output: another model name
 // or another endpoint. Sampling-only differences stay hidden, as before.
 func smallModelDistinctTarget(profile, small config.Profile) bool {
-	return small.Model != profile.Model || !model.SameEndpoint(small.BaseURL, profile.BaseURL)
+	if small.Model != profile.Model || !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
+		return true
+	}
+	return review.ProfileEndpoint(small).Protocol != review.ProfileEndpoint(profile).Protocol || small.Auth != profile.Auth
 }
 
 // newLLMClient builds the client for one profile's endpoint. Called once with the
@@ -2274,8 +2290,11 @@ type modelCheckProfile struct {
 	MinP              *float64 `json:",omitempty"`
 	RepetitionPenalty *float64 `json:",omitempty"`
 	// API is the wire protocol; probes through another protocol exercise
-	// other request shapes, so their results must not be shared.
-	API string `json:",omitempty"`
+	// other request shapes, so their results must not be shared. Auth is the
+	// kind of authentication: a ChatGPT plan can serve other models than an
+	// API key on the same host.
+	API  string `json:",omitempty"`
+	Auth string `json:",omitempty"`
 }
 
 func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
@@ -2291,6 +2310,7 @@ func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
 		MinP:              profile.MinP,
 		RepetitionPenalty: profile.RepetitionPenalty,
 		API:               profileAPI(profile),
+		Auth:              profile.Auth,
 	}
 }
 
@@ -3198,6 +3218,13 @@ func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, re
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	flags := []string{model.HumanTokens(req.MaxContextTokens) + " context"}
+	// The default protocol and key authentication stay implicit.
+	if api := profileAPI(profile); api != "" {
+		flags = append(flags, "api="+api)
+	}
+	if profile.Auth != "" {
+		flags = append(flags, "auth="+profile.Auth)
+	}
 	if profile.MaxTokens != nil {
 		flags = append(flags, model.HumanTokens(*profile.MaxTokens)+" output")
 	}

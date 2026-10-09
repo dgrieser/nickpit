@@ -274,7 +274,7 @@ The sign-in callback listens on `127.0.0.1:1455` (`--port 0` picks a free port).
 | `chat_completions` (default) | `POST /chat/completions`, every OpenAI-compatible server | raw reasoning tokens, where the server streams them | all (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`) |
 | `responses` | `POST /responses`, OpenAI's Responses API (`store: false`, streamed) | provider-written reasoning summaries | `temperature`, `top_p` |
 
-Each protocol declares what it can express — reasoning kind, reasoning effort, tool calling, schema-constrained output, sampling knobs — and NickPit leaves out what a protocol cannot take instead of sending it and failing. The verbose log says which settings were left out. `nickpit check model` only probes what the protocol can express and shows whether reasoning traces are raw or summaries. Loop detection only runs on raw reasoning, because a summary is a paraphrase and not the model's own tokens. A `small` model on another endpoint always uses the default protocol.
+Each protocol declares what it can express — reasoning kind, reasoning effort, tool calling, schema-constrained output, sampling knobs — and NickPit leaves out what a protocol cannot take instead of sending it and failing. The verbose log says which settings were left out. `nickpit check model` only probes what the protocol can express and shows whether reasoning traces are raw or summaries. Loop detection only runs on raw reasoning, because a summary is a paraphrase and not the model's own tokens. The primary and the `small` model each pick their own `api` and `auth` (see [A small model on its own endpoint](#a-small-model-on-its-own-endpoint)). `--api` / `--auth` and `NICKPIT_API` / `NICKPIT_AUTH` override a profile's; `auth: api_key` is the default and may be written out.
 
 ### Environment variables
 
@@ -359,7 +359,22 @@ profiles:
 
 Every `@small` step then runs against the second endpoint with its own client, its own rate-limit backoff and its own model check (capabilities are cached per endpoint, so both are probed separately). They can also be set with `NICKPIT_SMALL_BASE_URL` / `NICKPIT_SMALL_API_KEY` or `--small-base-url` / `--small-api-key`, which override a configured value like every other `NICKPIT_SMALL_*` variable.
 
-The one exception to "any unset small field falls back to the primary value": when `small.base_url` differs from the profile's `base_url`, `small.api_key` is **required**. Inheriting the primary key would send it to another provider, so NickPit fails the run with a config error instead. A `small.base_url` equal to the primary one (a trailing slash makes no difference) keeps inheriting the primary key, and `small.api_key` alone — same host, different credential — is allowed too.
+The small model is not tied to the primary's API or sign-in either: `small.api` (`chat_completions` or `responses`) and `small.auth` (`api_key` or `chatgpt`) choose its [wire protocol](#wire-protocols) and authentication, also as `--small-api` / `--small-auth` or `NICKPIT_SMALL_API` / `NICKPIT_SMALL_AUTH`. For example, run the big model on your own hardware and the cheap steps on your ChatGPT plan:
+
+```yaml
+profiles:
+  custom:
+    model: Qwen3.8-27B-NVFP4
+    base_url: http://localhost:10000/v1
+    api_key: ${NICKPIT_CUSTOM_API_KEY}
+    small:
+      model: gpt-6.1-sol
+      auth: chatgpt # implies base_url https://api.openai.com/v1 and api: responses
+```
+
+The other way round, `auth: chatgpt` on the profile with a `small` block carrying its own `base_url` and `api_key` puts the cheap steps on an OpenAI-compatible provider. `small.auth: api_key` with `small.api_key` and `small.api: responses` uses a platform key on the same OpenAI host.
+
+The one exception to "any unset small field falls back to the primary value": a small model with an endpoint of its own — another `base_url`, or another `auth` — inherits none of the primary's credentials, protocol, or sign-in, and unless it signs in with ChatGPT, `small.api_key` is **required**. Inheriting the primary key would send it to another provider, so NickPit fails the run with a config error instead. A `small.base_url` equal to the primary one (a trailing slash makes no difference) keeps inheriting the primary key, and `small.api_key` or `small.api` alone — same host, different credential or protocol — are allowed too.
 
 Three things to know when the two endpoints are different providers:
 

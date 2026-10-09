@@ -55,10 +55,18 @@ type failingTokenSource struct{ err error }
 
 func (f failingTokenSource) Token(context.Context) (string, error) { return "", f.err }
 
-// checkProfileAuth fails fast when a ChatGPT profile is about to run without
-// a usable sign-in, instead of failing on the first model request.
+// checkProfileAuth fails fast when a profile whose primary or @small model
+// signs in with ChatGPT is about to run without a usable sign-in, instead of
+// failing on the first model request.
 func checkProfileAuth(profileName string, profile config.Profile) error {
-	if profile.Auth != config.AuthChatGPT {
+	small := config.EffectiveSmallProfile(profile)
+	var who string
+	switch {
+	case profile.Auth == config.AuthChatGPT:
+		who = fmt.Sprintf("profile %q", profileName)
+	case small.Auth == config.AuthChatGPT:
+		who = fmt.Sprintf("the small model of profile %q", profileName)
+	default:
 		return nil
 	}
 	store, err := chatgpt.DefaultStore()
@@ -66,7 +74,7 @@ func checkProfileAuth(profileName string, profile config.Profile) error {
 		return err
 	}
 	if _, err := chatgpt.NewSession(store, chatgpt.NewProvider()); err != nil {
-		return fmt.Errorf("profile %q uses Sign in with ChatGPT: %w", profileName, err)
+		return fmt.Errorf("%s uses Sign in with ChatGPT: %w", who, err)
 	}
 	return nil
 }

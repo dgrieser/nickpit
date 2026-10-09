@@ -20,6 +20,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/config/config.go`: Loads and merges config files, environment variables, profiles, defaults, and CLI overrides.
 - `internal/config/example.go`: Provides the checked-in example config text.
 - `internal/config/generate.go`: Shared helpers for generator commands.
+- `internal/config/endpoint.go`: LLM endpoint resolution shared by the primary and the effective small profile: the defaults an `auth` implies (ChatGPT host, placeholder key, Responses protocol), `api`/`auth` validation, and when a small model owns an endpoint (another base URL or another kind of authentication, which inherits none of the primary's credentials).
 - `internal/config/profiles.go`: Profile resolution (`ResolveProfile`) and profile merging (`mergeProfiles`); the built-in provider profiles live in `config.go` (`defaultProfiles`).
 - `internal/config/configtest/configtest.go`: Test-only helper that clears every config-influencing environment variable, shared by the config and CLI test suites.
 
@@ -65,7 +66,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/llm/protocol.go`: The seam between the core and a wire API: the `Protocol` interface (encode request, decode event stream, parse errors, headers, declared `Capabilities`), the neutral request/stream/finish/error types, roles, `ParamDropper`, `CapabilityReporter`, and the `TokenSource`/`TokenRefresher` credential interfaces.
 - `internal/llm/protocol_chat.go`: OpenAI Chat Completions protocol (go-openai used as a schema library only): request JSON with sampling knobs as extra fields, the SSE reader with in-stream error reports, and error-body parsing.
 - `internal/llm/protocol_responses.go`: OpenAI Responses protocol (Sign in with ChatGPT, or an API key): instructions/input items/function-call items, `text.format`, reasoning effort plus summaries, the event-stream decoder (summaries as `ReasoningSummary`, terminal events, failures as status-mapped `ProviderError`s), plan-quota error mapping (usage limit as a non-retried 403), optional fields dropped once rejected, and `ProtocolByName`.
-- `internal/llm/clientset.go`: Endpoint→client resolution, so a run's primary model and a `@small` model on another endpoint use their own clients.
+- `internal/llm/clientset.go`: Endpoint→client resolution, so a run's primary model and a `@small` model on another endpoint — another base URL, key, protocol, or kind of authentication — use their own clients.
 - `internal/llm/schema.go`: Schema-kind dispatch and shared schema helpers.
 - `internal/llm/categorize_schema.go`: Descriptive categorization response schema.
 - `internal/llm/verify_schema.go`: Verification response schema.

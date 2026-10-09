@@ -107,6 +107,8 @@ func smallModelNode(small SmallModelConfig) *yaml.Node {
 		yamlEntry("model", yamlScalar(small.Model)),
 		yamlEntry("base_url", yamlScalar(small.BaseURL)),
 		yamlEntry("api_key", yamlScalar(small.APIKey)),
+		yamlEntry("api", yamlScalar(small.API)),
+		yamlEntry("auth", yamlScalar(small.Auth)),
 		yamlEntry("max_tokens", optionalIntNode(small.MaxTokens)),
 		yamlEntry("temperature", optionalFloatNode(small.Temperature)),
 		yamlEntry("top_p", optionalFloatNode(small.TopP)),
