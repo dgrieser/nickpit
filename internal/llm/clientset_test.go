@@ -110,3 +110,29 @@ func TestAllowedReasoningEffortsEmptySetBlocksEverything(t *testing.T) {
 		t.Fatal("SetAllowedReasoningEfforts(nil) installs an empty allowlist that blocks every effort")
 	}
 }
+
+// One host and key can serve two protocols or two kinds of authentication,
+// and each needs its own client; a defaulted protocol is still the same one.
+func TestClientSetTellsProtocolsAndAuthApart(t *testing.T) {
+	primary := NewOpenAIClient("http://host/v1", "k", "big")
+	responses := NewOpenAIClient("http://host/v1", "k", "small")
+	plan := NewOpenAIClient("http://host/v1", "k", "plan")
+	set := NewClientSet(primary, NewEndpoint("http://host/v1", "k", "", "")).
+		With(NewEndpoint("http://host/v1", "k", ResponsesProtocolName, ""), responses).
+		With(NewEndpoint("http://host/v1", "k", ResponsesProtocolName, "chatgpt"), plan)
+
+	for _, tc := range []struct {
+		name     string
+		endpoint Endpoint
+		want     Client
+	}{
+		{"defaulted protocol", NewEndpoint("http://host/v1", "k", ChatCompletionsProtocolName, "api_key"), primary},
+		{"responses", NewEndpoint("http://host/v1/", "k", ResponsesProtocolName, ""), responses},
+		{"chatgpt", NewEndpoint("http://host/v1", "k", ResponsesProtocolName, "chatgpt"), plan},
+		{"literal without canonical fields", Endpoint{BaseURL: "http://host/v1", APIKey: "k"}, primary},
+	} {
+		if got := set.For(tc.endpoint); got != tc.want {
+			t.Fatalf("%s: resolved to the wrong client", tc.name)
+		}
+	}
+}

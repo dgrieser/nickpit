@@ -4,19 +4,33 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-// Endpoint identifies an LLM endpoint a client talks to. Both fields matter: two
-// endpoints can share a base URL and differ only by credential (another tenant
-// or quota), which still needs its own client because the key is baked into the
-// client at construction.
+// Endpoint identifies an LLM endpoint a client talks to. Every field matters:
+// two endpoints can share a base URL and differ only by credential (another
+// tenant or quota), by protocol (Chat Completions and Responses on one host),
+// or by kind of authentication, and each needs its own client because all of
+// them are baked into the client at construction.
 type Endpoint struct {
-	BaseURL string
-	APIKey  string
+	BaseURL  string
+	APIKey   string
+	Protocol string
+	Auth     string
 }
 
-// NewEndpoint canonicalizes the base URL so a trailing slash or stray
-// whitespace cannot split one endpoint into two clients.
-func NewEndpoint(baseURL, apiKey string) Endpoint {
-	return Endpoint{BaseURL: model.NormalizeBaseURL(baseURL), APIKey: apiKey}
+// NewEndpoint canonicalizes the endpoint so a trailing slash, stray
+// whitespace, or a defaulted protocol cannot split one endpoint into two
+// clients.
+func NewEndpoint(baseURL, apiKey, protocol, auth string) Endpoint {
+	if protocol == "" {
+		protocol = ChatCompletionsProtocolName
+	}
+	if auth == "api_key" {
+		auth = ""
+	}
+	return Endpoint{BaseURL: model.NormalizeBaseURL(baseURL), APIKey: apiKey, Protocol: protocol, Auth: auth}
+}
+
+func (e Endpoint) canonical() Endpoint {
+	return NewEndpoint(e.BaseURL, e.APIKey, e.Protocol, e.Auth)
 }
 
 type clientSetEntry struct {
@@ -42,7 +56,7 @@ type ClientSet struct {
 // client at all.
 func NewClientSet(primary Client, primaryEndpoint Endpoint) *ClientSet {
 	return &ClientSet{
-		primaryEndpoint: NewEndpoint(primaryEndpoint.BaseURL, primaryEndpoint.APIKey),
+		primaryEndpoint: primaryEndpoint.canonical(),
 		primary:         primary,
 	}
 }
@@ -63,7 +77,7 @@ func (s *ClientSet) With(endpoint Endpoint, client Client) *ClientSet {
 	if client == nil {
 		return clone
 	}
-	endpoint = NewEndpoint(endpoint.BaseURL, endpoint.APIKey)
+	endpoint = endpoint.canonical()
 	if endpoint == clone.primaryEndpoint {
 		return clone
 	}
@@ -85,7 +99,7 @@ func (s *ClientSet) For(endpoint Endpoint) Client {
 	if s == nil {
 		return nil
 	}
-	endpoint = NewEndpoint(endpoint.BaseURL, endpoint.APIKey)
+	endpoint = endpoint.canonical()
 	if endpoint == s.primaryEndpoint {
 		return s.primary
 	}
