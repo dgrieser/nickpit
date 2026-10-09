@@ -478,6 +478,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.AddCommand(cli.newInspectCmd())
 	root.AddCommand(cli.newChatCmd())
+	root.AddCommand(cli.newChatGPTCmd())
 	root.AddCommand(cli.newSessionCmd())
 	root.AddCommand(newCompletionCmd(root))
 	return root
@@ -1448,6 +1449,9 @@ func (a *app) newCheckCmd() *cobra.Command {
 				}
 				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 			}
+			if err := checkProfileAuth(profileName, profile); err != nil {
+				return err
+			}
 			logger := a.newLogger()
 			a.logger = logger
 			logger.LogVersion(cmd.Context())
@@ -1627,6 +1631,11 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
 		return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
+	}
+	if needsSource {
+		if err := checkProfileAuth(profileName, profile); err != nil {
+			return err
+		}
 	}
 
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
@@ -2211,6 +2220,7 @@ func smallModelDistinctTarget(profile, small config.Profile) bool {
 // them.
 func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.OpenAIClient {
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+	useProfileAuth(client, profile)
 	client.SetLogger(logger)
 	client.SetMaxRequestBytes(profile.MaxRequestBytes)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)

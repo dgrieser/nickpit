@@ -39,6 +39,14 @@ const (
 	DefaultGitLabBaseURLRef         = "${NICKPIT_GITLAB_BASE_URL}"
 	DefaultForgejoTokenRef          = "${NICKPIT_FORGEJO_TOKEN}"
 	DefaultForgejoBaseURLRef        = "${NICKPIT_FORGEJO_BASE_URL}"
+	// AuthChatGPT authenticates the profile with Sign in with ChatGPT.
+	AuthChatGPT = "chatgpt"
+	// ChatGPTBaseURL is the only endpoint ChatGPT plan tokens are sent to.
+	ChatGPTBaseURL = "https://api.openai.com/v1"
+	// ChatGPTAPIKeyPlaceholder stands in for the api_key of a ChatGPT profile:
+	// the transport replaces it with the stored access token on every request,
+	// so it only keeps the key checks and endpoint identity uniform.
+	ChatGPTAPIKeyPlaceholder = "chatgpt-oauth"
 	// DefaultAssetBaseURL is where the published-review badge SVGs are served.
 	// The Pages workflow deploys the repo's assets/ directory here.
 	DefaultAssetBaseURL = "https://dgrieser.github.io/nickpit/"
@@ -52,10 +60,14 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                     string                 `yaml:"model"`
-	Small                     SmallModelConfig       `yaml:"small"`
-	BaseURL                   string                 `yaml:"base_url"`
-	APIKey                    string                 `yaml:"api_key"`
+	Model   string           `yaml:"model"`
+	Small   SmallModelConfig `yaml:"small"`
+	BaseURL string           `yaml:"base_url"`
+	APIKey  string           `yaml:"api_key"`
+	// Auth selects how the LLM endpoint is authenticated: empty for the static
+	// api_key, AuthChatGPT for Sign in with ChatGPT (the stored OAuth tokens of
+	// `nickpit chatgpt login`, drawing on the ChatGPT plan).
+	Auth                      string                 `yaml:"auth"`
 	SupportedModels           []ModelCapabilities    `yaml:"supported_models"`
 	MaxTokens                 *int                   `yaml:"max_tokens"`
 	Temperature               *float64               `yaml:"temperature"`
@@ -283,6 +295,14 @@ var defaultProfiles = []defaultProfile{
 		},
 	},
 	{
+		name: "chatgpt",
+		profile: Profile{
+			BaseURL: ChatGPTBaseURL,
+			Auth:    AuthChatGPT,
+			Model:   "gpt-6.1-sol",
+		},
+	},
+	{
 		name: "mistral",
 		profile: Profile{
 			BaseURL: "https://api.mistral.ai/v1",
@@ -462,6 +482,9 @@ func EffectiveSmallProfile(profile Profile) Profile {
 	}
 	if small.BaseURL != "" && !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
 		profile.SupportedModels = nil
+		// The ChatGPT tokens belong to the primary endpoint only; a small model
+		// elsewhere authenticates with its own small.api_key.
+		profile.Auth = ""
 	}
 	if small.BaseURL != "" {
 		profile.BaseURL = small.BaseURL
@@ -1127,6 +1150,23 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile.ForgejoToken = expandEnvReference(profile.ForgejoToken)
 	profile.ForgejoBaseURL = expandEnvReference(profile.ForgejoBaseURL)
 	profile = applyProfileDefaults(profile)
+	switch profile.Auth {
+	case "":
+	case AuthChatGPT:
+		if profile.BaseURL == "" {
+			profile.BaseURL = ChatGPTBaseURL
+		}
+		// The plan tokens must never reach another host, whatever base_url
+		// or --base-url says.
+		if !model.SameEndpoint(profile.BaseURL, ChatGPTBaseURL) {
+			return Profile{}, fmt.Errorf("config: auth %q only works with base_url %q, not %q", AuthChatGPT, ChatGPTBaseURL, profile.BaseURL)
+		}
+		if profile.APIKey == "" {
+			profile.APIKey = ChatGPTAPIKeyPlaceholder
+		}
+	default:
+		return Profile{}, fmt.Errorf("config: auth must be empty or %q, got %q", AuthChatGPT, profile.Auth)
+	}
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
 	}

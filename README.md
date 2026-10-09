@@ -251,6 +251,20 @@ Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`. When the active profile ends up with no API key at all, `NICKPIT_API_KEY` is used as a last-resort fallback.
 
+### Sign in with ChatGPT
+
+With a ChatGPT Plus or Pro plan you can review on your plan's models instead of paying for an API key ([Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)):
+
+```bash
+nickpit chatgpt login            # opens the browser; --no-browser only prints the URL
+nickpit chatgpt models           # the models your plan can use
+nickpit --profile chatgpt git branch
+```
+
+The built-in `chatgpt` profile talks to `https://api.openai.com/v1` with `auth: chatgpt`; set `auth: chatgpt` on any other profile to do the same (its `base_url` must stay on that endpoint, so the plan tokens never reach another host). Pick a model with `--model` or `model:` from `nickpit chatgpt models`. ChatGPT plan usage only admits the Responses API, so NickPit translates its requests (tools, JSON schemas, reasoning effort and summaries) to it on the fly; open-weight sampling knobs such as `top_k`, `min_p` and the penalties are not sent.
+
+The sign-in callback listens on `127.0.0.1:1455` (`--port 0` picks a free port). Credentials are stored with `0600` permissions in your config directory (`~/.config/nickpit/chatgpt-auth.json` on Linux) and refreshed automatically; `NICKPIT_CHATGPT_AUTH_FILE` points NickPit at another file, for example one signed in on your laptop and copied to a headless machine. `nickpit chatgpt status` shows the account, `nickpit chatgpt logout` signs out (add `--forget` to switch accounts), and if you declined plan usage on the consent screen, `nickpit chatgpt login --reconsent` asks again. When the plan's usage limit is reached, the run stops with a pointer to <https://chatgpt.com/settings/usage> instead of waiting for a reset.
+
 ### Environment variables
 
 Useful when the config file is baked into an image or CI runner and only a few knobs should differ per environment. An explicitly passed flag always wins over the variable; an unset or empty variable changes nothing.
