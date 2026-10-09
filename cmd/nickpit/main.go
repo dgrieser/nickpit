@@ -2135,11 +2135,22 @@ func (a *app) specProfile() (string, error) {
 	return spec.Profile, nil
 }
 
+// clientReasoningKind is the kind of reasoning text client's wire API returns,
+// or empty when the client does not say.
+func clientReasoningKind(client llm.Client) llm.ReasoningKind {
+	caps, ok := llm.ClientCapabilities(client)
+	if !ok {
+		return ""
+	}
+	return caps.Reasoning
+}
+
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort, alias string, refresh bool) (modelcheck.Result, error) {
 	settings := requestSettingsFingerprint(profile)
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.DisableJSONResponseFormat)
+			result.ReasoningKind = clientReasoningKind(client)
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
 		}
@@ -2150,6 +2161,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model, settings)
 			if err == nil && ok && !modelcheck.CapabilityNeedsReprobe(capability) {
 				result := modelcheck.ResultFromCapability(capability, profile.DisableJSONResponseFormat)
+				result.ReasoningKind = clientReasoningKind(client)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
 				return result, nil
 			}
@@ -2218,9 +2230,19 @@ func smallModelDistinctTarget(profile, small config.Profile) bool {
 // EffectiveSmallProfile produced — which inherits the primary's request-size and
 // rate-limit settings, since those are profile-level and small does not overlay
 // them.
-func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.OpenAIClient {
-	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-	useProfileAuth(client, profile)
+func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.APIClient {
+	protocol, err := llm.ProtocolByName(profile.API)
+	if err != nil {
+		// Config validation rejects unknown protocols; this only guards a
+		// profile built without it.
+		protocol = llm.ChatCompletionsProtocol()
+	}
+	client := llm.NewAPIClient(llm.ClientOptions{
+		BaseURL:  profile.BaseURL,
+		Model:    profile.Model,
+		Protocol: protocol,
+		Tokens:   profileTokens(profile),
+	})
 	client.SetLogger(logger)
 	client.SetMaxRequestBytes(profile.MaxRequestBytes)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
@@ -2229,7 +2251,7 @@ func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.OpenAICli
 
 // newSmallLLMClient returns the client for @small, or nil when the small model
 // shares the primary endpoint and the primary client already serves it.
-func newSmallLLMClient(profile config.Profile, logger *logging.Logger) (*llm.OpenAIClient, config.Profile, bool) {
+func newSmallLLMClient(profile config.Profile, logger *logging.Logger) (*llm.APIClient, config.Profile, bool) {
 	small := config.EffectiveSmallProfile(profile)
 	if !smallEndpointDistinct(profile, small) {
 		return nil, small, false
@@ -2251,6 +2273,9 @@ type modelCheckProfile struct {
 	// invalidating every stored capability entry.
 	MinP              *float64 `json:",omitempty"`
 	RepetitionPenalty *float64 `json:",omitempty"`
+	// API is the wire protocol; probes through another protocol exercise
+	// other request shapes, so their results must not be shared.
+	API string `json:",omitempty"`
 }
 
 func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
@@ -2265,6 +2290,7 @@ func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
 		ReasoningEffort:   profile.ReasoningEffort,
 		MinP:              profile.MinP,
 		RepetitionPenalty: profile.RepetitionPenalty,
+		API:               profileAPI(profile),
 	}
 }
 
@@ -2671,7 +2697,11 @@ func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) 
 	if result.DisableJSONResponseFormat {
 		fmt.Fprintf(&sb, "%s Fallback to prompt-embedded schema\n", mark(true))
 	}
-	fmt.Fprintf(&sb, "%s Reasoning Traces\n", mark(s.Reasoning.Traces))
+	traces := "Reasoning Traces"
+	if s.Reasoning.Kind == llm.ReasoningSummary {
+		traces += " (provider summaries)"
+	}
+	fmt.Fprintf(&sb, "%s %s\n", mark(s.Reasoning.Traces), traces)
 	fmt.Fprintf(&sb, "\n")
 	fmt.Fprintf(&sb, "%s\n", label("Supported Efforts"))
 	if len(s.Reasoning.Efforts) == 0 {

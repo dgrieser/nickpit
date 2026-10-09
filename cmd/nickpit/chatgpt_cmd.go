@@ -28,23 +28,32 @@ var chatGPTTokens = sync.OnceValues(func() (*chatgpt.LazySession, error) {
 	return &chatgpt.LazySession{Store: store, Provider: chatgpt.NewProvider()}, nil
 })
 
-// useProfileAuth switches client to the profile's non-key authentication.
-func useProfileAuth(client *llm.OpenAIClient, profile config.Profile) {
+// profileTokens is the credential source of profile's LLM endpoint: the
+// stored ChatGPT sign-in for auth: chatgpt, the api_key otherwise.
+func profileTokens(profile config.Profile) llm.TokenSource {
 	if profile.Auth != config.AuthChatGPT {
-		return
+		return llm.StaticToken(profile.APIKey)
 	}
 	tokens, err := chatGPTTokens()
 	if err != nil {
-		client.UseResponsesAPI(failingTokenSource{err: err})
-		return
+		return failingTokenSource{err: err}
 	}
-	client.UseResponsesAPI(tokens)
+	return tokens
+}
+
+// profileAPI is the protocol name profile resolves to, for fingerprints that
+// must tell protocols apart; the default protocol stays empty so existing
+// fingerprints keep hashing as before.
+func profileAPI(profile config.Profile) string {
+	if profile.API == config.APIChatCompletions {
+		return ""
+	}
+	return profile.API
 }
 
 type failingTokenSource struct{ err error }
 
-func (f failingTokenSource) Token(context.Context) (string, error)        { return "", f.err }
-func (f failingTokenSource) ForceRefresh(context.Context) (string, error) { return "", f.err }
+func (f failingTokenSource) Token(context.Context) (string, error) { return "", f.err }
 
 // checkProfileAuth fails fast when a ChatGPT profile is about to run without
 // a usable sign-in, instead of failing on the first model request.

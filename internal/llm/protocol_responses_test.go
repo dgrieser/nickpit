@@ -63,7 +63,7 @@ func completedEvent() map[string]any {
 	}
 }
 
-func TestResponsesTransportTranslatesToolCallRound(t *testing.T) {
+func TestResponsesProtocolTranslatesToolCallRound(t *testing.T) {
 	var (
 		path    string
 		auth    string
@@ -85,8 +85,7 @@ func TestResponsesTransportTranslatesToolCallRound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL+"/v1", "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "access-1"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL + "/v1", Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "access-1"}})
 	resp, err := client.Review(context.Background(), &ReviewRequest{
 		Messages: []Message{
 			{Role: "system", Content: "system prompt"},
@@ -154,7 +153,7 @@ func TestResponsesTransportTranslatesToolCallRound(t *testing.T) {
 	}
 }
 
-func TestResponsesTransportTranslatesJSONSchemaText(t *testing.T) {
+func TestResponsesProtocolTranslatesJSONSchemaText(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -167,8 +166,7 @@ func TestResponsesTransportTranslatesJSONSchemaText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "t"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "t"}})
 	maxTokens := 100
 	resp, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
@@ -193,7 +191,7 @@ func TestResponsesTransportTranslatesJSONSchemaText(t *testing.T) {
 	}
 }
 
-func TestResponsesTransportReportsUsageLimitWithoutRetrying(t *testing.T) {
+func TestResponsesProtocolReportsUsageLimitWithoutRetrying(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -205,8 +203,7 @@ func TestResponsesTransportReportsUsageLimitWithoutRetrying(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "t"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "t"}})
 	_, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt:       "system",
 		UserContent:        "user",
@@ -223,7 +220,7 @@ func TestResponsesTransportReportsUsageLimitWithoutRetrying(t *testing.T) {
 	}
 }
 
-func TestResponsesTransportDropsRejectedOptionalParam(t *testing.T) {
+func TestResponsesProtocolDropsRejectedOptionalParam(t *testing.T) {
 	var summaries []any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -243,8 +240,7 @@ func TestResponsesTransportDropsRejectedOptionalParam(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "t"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "t"}})
 	for range 2 {
 		resp, err := client.Review(context.Background(), &ReviewRequest{
 			SystemPrompt:    "system",
@@ -265,7 +261,7 @@ func TestResponsesTransportDropsRejectedOptionalParam(t *testing.T) {
 	}
 }
 
-func TestResponsesTransportRefreshesTokenOnUnauthorized(t *testing.T) {
+func TestResponsesProtocolRefreshesTokenOnUnauthorized(t *testing.T) {
 	var auths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
@@ -280,8 +276,7 @@ func TestResponsesTransportRefreshesTokenOnUnauthorized(t *testing.T) {
 	defer server.Close()
 
 	tokens := &staticTokens{token: "stale"}
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(tokens)
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: tokens})
 	if _, err := client.Review(context.Background(), &ReviewRequest{SystemPrompt: "s", UserContent: "u", SchemaKind: SchemaKindText}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +285,7 @@ func TestResponsesTransportRefreshesTokenOnUnauthorized(t *testing.T) {
 	}
 }
 
-func TestResponsesTransportIncompleteMapsToLengthFinish(t *testing.T) {
+func TestResponsesProtocolIncompleteMapsToLengthFinish(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeResponsesEvent(t, w, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "thinking"})
 		writeResponsesEvent(t, w, map[string]any{"type": "response.incomplete", "response": map[string]any{
@@ -299,8 +294,7 @@ func TestResponsesTransportIncompleteMapsToLengthFinish(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "t"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "t"}})
 	_, _, err := client.reviewOnce(context.Background(), &ReviewRequest{SystemPrompt: "s", UserContent: "u", ReasoningEffort: "high"}, &retryProgress{})
 	var budgetErr *ReasoningBudgetExhaustedError
 	if err == nil || !errors.As(err, &budgetErr) {
@@ -308,18 +302,24 @@ func TestResponsesTransportIncompleteMapsToLengthFinish(t *testing.T) {
 	}
 }
 
-func TestChatToResponsesRequestKeepsLaterSystemMessagesAsDeveloper(t *testing.T) {
-	out := chatToResponsesRequest(map[string]any{
-		"model": "m",
-		"messages": []any{
-			map[string]any{"role": "system", "content": "a"},
-			map[string]any{"role": "system", "content": "b"},
-			map[string]any{"role": "user", "content": "u"},
-			map[string]any{"role": "system", "content": "nudge"},
+func TestResponsesEncodeKeepsLaterSystemMessagesAsDeveloper(t *testing.T) {
+	data, err := NewResponsesProtocol().EncodeRequest(&CompletionRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: RoleSystem, Content: "a"},
+			{Role: RoleSystem, Content: "b"},
+			{Role: RoleUser, Content: "u"},
+			{Role: RoleSystem, Content: "nudge"},
 		},
-		"reasoning_effort": "off",
-		"presence_penalty": 1.0,
-	}, nil)
+		ReasoningEffort: "off",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
 	if out["instructions"] != "a\n\nb" {
 		t.Fatalf("instructions = %#v", out["instructions"])
 	}
@@ -332,12 +332,12 @@ func TestChatToResponsesRequestKeepsLaterSystemMessagesAsDeveloper(t *testing.T)
 	if reasoning["effort"] != "none" || reasoning["summary"] != nil {
 		t.Fatalf("reasoning = %#v", reasoning)
 	}
-	if _, ok := out["presence_penalty"]; ok {
-		t.Fatalf("presence_penalty leaked: %#v", out)
+	if out["store"] != false || out["stream"] != true {
+		t.Fatalf("store/stream = %#v/%#v", out["store"], out["stream"])
 	}
 }
 
-func TestResponsesTransportEffortRejectionStaysRecognizable(t *testing.T) {
+func TestResponsesProtocolEffortRejectionStaysRecognizable(t *testing.T) {
 	var efforts []any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -357,8 +357,7 @@ func TestResponsesTransportEffortRejectionStaysRecognizable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(server.URL, "placeholder", "gpt-test")
-	client.UseResponsesAPI(&staticTokens{token: "t"})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-test", Protocol: NewResponsesProtocol(), Tokens: &staticTokens{token: "t"}})
 	resp, err := client.Review(context.Background(), &ReviewRequest{SystemPrompt: "s", UserContent: "u", SchemaKind: SchemaKindText, ReasoningEffort: "max"})
 	if err != nil {
 		t.Fatal(err)
