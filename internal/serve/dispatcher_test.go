@@ -721,6 +721,10 @@ func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
 		emojiGate: make(chan struct{}),
 	}
 	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	// Registered after newWorkerEnv so it runs first: a failed assertion must
+	// not leave the gated handlers blocking the fake server's Close forever.
+	openGate := sync.OnceFunc(func() { close(fake.emojiGate) })
+	t.Cleanup(openGate)
 
 	first := commandEvent(7, "sha-1", group, 0)
 	first.AckNoteIDs = make([]int, maxAckNotes)
@@ -728,15 +732,27 @@ func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
 		first.AckNoteIDs[i] = i + 1
 	}
 	dispatcher.Enqueue(first)
-	for i := range ackCleanupQueueCapacity + maxAckCleanupWorkers + 32 {
-		noteID := 10_000 + i
-		fake.preAward(7, noteID, "eyes")
-		dispatcher.Enqueue(commandEvent(7, "sha-2", group, noteID))
+	// The first job already holds the per-job note cap, so every further
+	// event's note overflows into one cleanup item.
+	nextNote := 10_000
+	overflow := func(count int) {
+		for range count {
+			fake.preAward(7, nextNote, "eyes")
+			dispatcher.Enqueue(commandEvent(7, "sha-2", group, nextNote))
+			nextNote++
+		}
 	}
-
+	// Workers start lazily, one whenever the queue outgrows them, and each
+	// takes an item at once. Park all of them on the gate before saturating
+	// the queue: otherwise a worker scheduled only after the queue filled
+	// takes one of its items, and the bounded count below would depend on
+	// goroutine scheduling. Twice the pool is enough to start every worker
+	// however eagerly the earlier ones drain.
+	overflow(2 * maxAckCleanupWorkers)
 	waitFor(t, 3*time.Second, func() bool {
 		return fake.emojiArrived.Load() == maxAckCleanupWorkers
 	})
+	overflow(ackCleanupQueueCapacity + 32)
 	dispatcher.cleanupMu.Lock()
 	workers := dispatcher.cleanupWorkers
 	queued := len(dispatcher.cleanupQueue)
@@ -751,7 +767,7 @@ func TestEnqueueCapOverflowCleanupIsBounded(t *testing.T) {
 		t.Fatalf("live cleanup requests = %d, want at most %d", requests, maxAckCleanupWorkers)
 	}
 
-	close(fake.emojiGate)
+	openGate()
 	dispatcher.Shutdown(0)
 }
 
