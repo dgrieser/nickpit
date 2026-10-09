@@ -39,6 +39,9 @@ const (
 	DefaultGitLabBaseURLRef         = "${NICKPIT_GITLAB_BASE_URL}"
 	DefaultForgejoTokenRef          = "${NICKPIT_FORGEJO_TOKEN}"
 	DefaultForgejoBaseURLRef        = "${NICKPIT_FORGEJO_BASE_URL}"
+	// APIChatCompletions and APIResponses name the LLM wire protocols.
+	APIChatCompletions = "chat_completions"
+	APIResponses       = "responses"
 	// AuthChatGPT authenticates the profile with Sign in with ChatGPT.
 	AuthChatGPT = "chatgpt"
 	// ChatGPTBaseURL is the only endpoint ChatGPT plan tokens are sent to.
@@ -67,7 +70,11 @@ type Profile struct {
 	// Auth selects how the LLM endpoint is authenticated: empty for the static
 	// api_key, AuthChatGPT for Sign in with ChatGPT (the stored OAuth tokens of
 	// `nickpit chatgpt login`, drawing on the ChatGPT plan).
-	Auth                      string                 `yaml:"auth"`
+	Auth string `yaml:"auth"`
+	// API selects the wire protocol of the LLM endpoint: APIChatCompletions
+	// (the default, every OpenAI-compatible server) or APIResponses (OpenAI's
+	// Responses API, implied by auth: chatgpt).
+	API                       string                 `yaml:"api"`
 	SupportedModels           []ModelCapabilities    `yaml:"supported_models"`
 	MaxTokens                 *int                   `yaml:"max_tokens"`
 	Temperature               *float64               `yaml:"temperature"`
@@ -299,6 +306,7 @@ var defaultProfiles = []defaultProfile{
 		profile: Profile{
 			BaseURL: ChatGPTBaseURL,
 			Auth:    AuthChatGPT,
+			API:     APIResponses,
 			Model:   "gpt-6.1-sol",
 		},
 	},
@@ -482,9 +490,11 @@ func EffectiveSmallProfile(profile Profile) Profile {
 	}
 	if small.BaseURL != "" && !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
 		profile.SupportedModels = nil
-		// The ChatGPT tokens belong to the primary endpoint only; a small model
-		// elsewhere authenticates with its own small.api_key.
+		// The ChatGPT tokens and the wire protocol belong to the primary
+		// endpoint only; a small model elsewhere authenticates with its own
+		// small.api_key over the default protocol.
 		profile.Auth = ""
+		profile.API = ""
 	}
 	if small.BaseURL != "" {
 		profile.BaseURL = small.BaseURL
@@ -1164,8 +1174,21 @@ func normalizeProfile(profile Profile) (Profile, error) {
 		if profile.APIKey == "" {
 			profile.APIKey = ChatGPTAPIKeyPlaceholder
 		}
+		// ChatGPT plan tokens are admitted on the Responses API only.
+		switch profile.API {
+		case "":
+			profile.API = APIResponses
+		case APIResponses:
+		default:
+			return Profile{}, fmt.Errorf("config: auth %q requires api %q, not %q", AuthChatGPT, APIResponses, profile.API)
+		}
 	default:
 		return Profile{}, fmt.Errorf("config: auth must be empty or %q, got %q", AuthChatGPT, profile.Auth)
+	}
+	switch profile.API {
+	case "", APIChatCompletions, APIResponses:
+	default:
+		return Profile{}, fmt.Errorf("config: api must be %q or %q, got %q", APIChatCompletions, APIResponses, profile.API)
 	}
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")

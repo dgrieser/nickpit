@@ -22,25 +22,15 @@ import (
 )
 
 func TestRequestPayloadForLogPreservesRequestFieldOrder(t *testing.T) {
-	payload := openai.ChatCompletionRequest{
-		Model: "model",
-		Messages: []openai.ChatCompletionMessage{
-			{Role: "system", Content: "system"},
-		},
-		Tools: []openai.Tool{
-			{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name: "inspect_file",
-				},
-			},
-		},
-		StreamOptions:     &openai.StreamOptions{IncludeUsage: true},
+	topK := 20
+	logPayload, err := requestPayloadForLog(ChatCompletionsProtocol(), &CompletionRequest{
+		Model:             "model",
+		Messages:          []Message{{Role: RoleSystem, Content: "system"}},
+		Tools:             []ToolDefinition{{Name: "inspect_file"}},
 		ParallelToolCalls: true,
 		ReasoningEffort:   "high",
-	}
-
-	logPayload, err := requestPayloadForLog(payload, map[string]any{"top_k": 20})
+		TopK:              &topK,
+	})
 	if err != nil {
 		t.Fatalf("requestPayloadForLog returned error: %v", err)
 	}
@@ -1569,8 +1559,8 @@ func TestClientReviewDeduplicatesXMLToolCalls(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesSanitizesToolCallHistory(t *testing.T) {
-	messages := buildMessages(&ReviewRequest{
+func TestChatMessagesSanitizeToolCallHistory(t *testing.T) {
+	messages := chatMessages(requestMessages(&ReviewRequest{
 		Messages: []Message{
 			{Role: "system", Content: "system"},
 			{Role: "user", Content: "user"},
@@ -1586,7 +1576,7 @@ func TestBuildMessagesSanitizesToolCallHistory(t *testing.T) {
 			{Role: "tool", ToolCallID: "call_valid", Content: `{"content":"valid"}`},
 			{Role: "user", Content: "continue"},
 		},
-	})
+	}))
 
 	if len(messages) != 5 {
 		t.Fatalf("messages = %d, want 5: %#v", len(messages), messages)
@@ -5505,7 +5495,7 @@ func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
 			"plain-string",
 		},
 	}
-	logPayload, err := requestPayloadForLog(openai.ChatCompletionRequest{Model: "model"}, extraBody)
+	logPayload, err := requestPayloadForLog(ChatCompletionsProtocol(), &CompletionRequest{Model: "model", ExtraBody: extraBody})
 	if err != nil {
 		t.Fatalf("requestPayloadForLog returned error: %v", err)
 	}
@@ -5539,21 +5529,17 @@ func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
 
 func TestMergeToolCallDeltas(t *testing.T) {
 	idx := func(i int) *int { return &i }
-	delta := func(index *int, id, name, arguments string) openai.ToolCall {
-		return openai.ToolCall{
-			Index:    index,
-			ID:       id,
-			Function: openai.FunctionCall{Name: name, Arguments: arguments},
-		}
+	delta := func(index *int, id, name, arguments string) ToolCallDelta {
+		return ToolCallDelta{Index: index, ID: id, Name: name, Arguments: arguments}
 	}
 	tests := []struct {
 		name   string
-		deltas []openai.ToolCall
+		deltas []ToolCallDelta
 		want   []ToolCall
 	}{
 		{
 			name: "indexed deltas keep positional merge",
-			deltas: []openai.ToolCall{
+			deltas: []ToolCallDelta{
 				delta(idx(0), "call_1", "inspect_file", `{"path":"a`),
 				delta(idx(1), "call_2", "list_dir", `{"dir":"x"}`),
 				delta(idx(0), "", "", `.go"}`),
@@ -5565,7 +5551,7 @@ func TestMergeToolCallDeltas(t *testing.T) {
 		},
 		{
 			name: "no-index complete parallel calls stay separate",
-			deltas: []openai.ToolCall{
+			deltas: []ToolCallDelta{
 				delta(nil, "call_1", "inspect_file", `{"path":"a.go"}`),
 				delta(nil, "call_2", "inspect_file", `{"path":"b.go"}`),
 				delta(nil, "call_3", "list_dir", `{"dir":"x"}`),
@@ -5578,7 +5564,7 @@ func TestMergeToolCallDeltas(t *testing.T) {
 		},
 		{
 			name: "no-index continuation chunks extend the latest call",
-			deltas: []openai.ToolCall{
+			deltas: []ToolCallDelta{
 				delta(nil, "call_1", "inspect_file", `{"path":"ex`),
 				delta(nil, "", "", `tra.go"}`),
 				delta(nil, "call_2", "list_dir", `{"dir":"s`),
@@ -5591,7 +5577,7 @@ func TestMergeToolCallDeltas(t *testing.T) {
 		},
 		{
 			name: "no-index repeated same id continues the same call",
-			deltas: []openai.ToolCall{
+			deltas: []ToolCallDelta{
 				delta(nil, "call_1", "inspect_file", `{"path":"a`),
 				delta(nil, "call_1", "", `.go"}`),
 			},
@@ -5604,7 +5590,7 @@ func TestMergeToolCallDeltas(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var builders []*toolCallBuilder
 			for _, d := range tc.deltas {
-				mergeToolCallDeltas(&builders, []openai.ToolCall{d})
+				mergeToolCallDeltas(&builders, []ToolCallDelta{d})
 			}
 			got := finalizeToolCalls(builders)
 			if len(got) != len(tc.want) {
