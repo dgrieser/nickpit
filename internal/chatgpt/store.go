@@ -79,6 +79,7 @@ func DefaultStore() (*Store, error) {
 }
 
 func (s *Store) hostFile() string { return filepath.Join(s.Dir, "chatgpt-host.json") }
+
 // lockFile is the credential lock, kept beside the credential file. A store
 // that names only its directory locks the default file's lock there, never a
 // path relative to the working directory.
