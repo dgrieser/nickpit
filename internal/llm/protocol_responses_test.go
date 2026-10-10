@@ -311,7 +311,7 @@ func TestResponsesEncodeKeepsLaterSystemMessagesAsDeveloper(t *testing.T) {
 			{Role: RoleUser, Content: "u"},
 			{Role: RoleSystem, Content: "nudge"},
 		},
-		ReasoningEffort: "off",
+		ReasoningEffort: "none",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +334,29 @@ func TestResponsesEncodeKeepsLaterSystemMessagesAsDeveloper(t *testing.T) {
 	}
 	if out["store"] != false || out["stream"] != true {
 		t.Fatalf("store/stream = %#v/%#v", out["store"], out["stream"])
+	}
+}
+
+func TestResponsesEncodeEffortOffSendsNoReasoningSettings(t *testing.T) {
+	for _, plan := range []bool{false, true} {
+		data, err := NewResponsesProtocolWith(ResponsesOptions{ChatGPTPlan: plan}).EncodeRequest(&CompletionRequest{
+			Model:           "chat-latest",
+			Messages:        []Message{{Role: RoleUser, Content: "u"}},
+			ReasoningEffort: "off",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := out["reasoning"]; ok {
+			t.Fatalf("plan=%t: reasoning = %#v, want omitted", plan, out["reasoning"])
+		}
+		if _, ok := out["include"]; ok {
+			t.Fatalf("plan=%t: include = %#v, want omitted", plan, out["include"])
+		}
 	}
 }
 

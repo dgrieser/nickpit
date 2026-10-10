@@ -228,11 +228,13 @@ func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessa
 			out.TopP = req.TopP
 		}
 	}
+	// "off" sends no reasoning settings at all, the one form a model without
+	// reasoning control (an Instant model) accepts; "none" still asks a
+	// reasoning model not to reason.
 	reasoning := &responsesReasoning{Effort: req.ReasoningEffort}
 	if reasoning.Effort == "off" {
-		reasoning.Effort = "none"
-	}
-	if reasoning.Effort != "none" {
+		reasoning.Effort = ""
+	} else if reasoning.Effort != "none" {
 		if !p.isDropped("reasoning.summary") {
 			// Without a summary the API streams no reasoning text at all,
 			// which would leave the reasoning display and budget nothing to
