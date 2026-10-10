@@ -205,7 +205,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		// The profile names the endpoint this client talks to, so the resolver can
 		// be built here; SetSmallClient adds a second endpoint when the profile's
 		// small model lives on another host.
-		clients:   llm.NewClientSet(llmClient, llm.NewEndpoint(profile.BaseURL, profile.APIKey)),
+		clients:   llm.NewClientSet(llmClient, ProfileEndpoint(profile)),
 		retrieval: retrievalEngine,
 		// The history tools read the same checkout the retrieval engine reads,
 		// but through git; the profile tokens let a shallow remote checkout be
@@ -221,6 +221,11 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 	}
 }
 
+// ProfileEndpoint is the endpoint profile's client talks to.
+func ProfileEndpoint(profile config.Profile) llm.Endpoint {
+	return llm.NewEndpoint(profile.BaseURL, profile.APIKey, profile.API, profile.Auth)
+}
+
 // SetSmallClient registers the client for the profile's small model endpoint, so
 // steps resolved to model: "@small" run against it instead of the primary one.
 // Pass the small profile that EffectiveSmallProfile produced: its base URL and
@@ -230,7 +235,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 // Must be called before the pipeline runs: the resolver is read-only once
 // concurrent steps start.
 func (e *Engine) SetSmallClient(client llm.Client, smallProfile config.Profile) {
-	e.clients = e.clients.With(llm.NewEndpoint(smallProfile.BaseURL, smallProfile.APIKey), client)
+	e.clients = e.clients.With(ProfileEndpoint(smallProfile), client)
 }
 
 // SetHistory overrides the commit-history provider. Intended for tests;
@@ -710,7 +715,7 @@ func intPtr(v int) *int { return &v }
 func (e *Engine) withConfig(profile config.Profile) *Engine {
 	clone := *e
 	clone.config = profile
-	clone.llm = e.clients.For(llm.NewEndpoint(profile.BaseURL, profile.APIKey))
+	clone.llm = e.clients.For(ProfileEndpoint(profile))
 	return &clone
 }
 

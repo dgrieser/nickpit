@@ -103,11 +103,17 @@ type Result struct {
 	DisableJSONResponseFormat bool          `json:"disable_json_response_format"`
 	Probes                    []ProbeResult `json:"probes"`
 	PassedEfforts             []string      `json:"passed_efforts"`
+	// ReasoningKind is the kind of reasoning text the client's wire API
+	// returns (raw tokens or provider summaries); empty when unknown.
+	ReasoningKind llm.ReasoningKind `json:"reasoning_kind,omitempty"`
 }
 
 type ReasoningSummary struct {
-	Traces  bool     `json:"traces"`
-	Efforts []string `json:"efforts"`
+	Traces bool `json:"traces"`
+	// Kind says whether the traces are the model's raw reasoning or a
+	// provider's summary of it; empty when there are none or it is unknown.
+	Kind    llm.ReasoningKind `json:"kind,omitempty"`
+	Efforts []string          `json:"efforts"`
 }
 
 type CheckSummary struct {
@@ -148,6 +154,9 @@ func (r Result) Summary() CheckSummary {
 		ok := p.Status == StatusOK
 		s.ToolsJSONSchema = &ok
 	}
+	if traces {
+		s.Reasoning.Kind = r.ReasoningKind
+	}
 	s.Compatible = s.Response && s.Tools && s.JSONResponse != nil && *s.JSONResponse
 	return s
 }
@@ -160,6 +169,12 @@ type Checker struct {
 	reasoningEffort string
 	logger          *logging.Logger
 	parallel        bool
+	// caps is what the client's wire API can express, when it reports it;
+	// probes for anything outside it are reported unsupported without a
+	// request, since the client would strip the feature and the probe would
+	// measure something else.
+	caps      llm.Capabilities
+	capsKnown bool
 }
 
 // New builds a Checker that probes the profile's primary model.
@@ -172,13 +187,24 @@ func New(client llm.Client, profile config.Profile) *Checker {
 // profile (request limits, schema mode, endpoint). Used to check the effective
 // small profile alongside the primary one.
 func NewForModel(client llm.Client, profile config.Profile, model, reasoningEffort string) *Checker {
+	caps, capsKnown := llm.ClientCapabilities(client)
 	return &Checker{
 		client:          client,
 		profile:         profile,
 		model:           model,
 		reasoningEffort: reasoningEffort,
 		parallel:        true,
+		caps:            caps,
+		capsKnown:       capsKnown,
 	}
+}
+
+// unsupportedProbe reports a probe for a feature the wire API cannot express.
+func (c *Checker) unsupportedProbe(name, effort string, tools bool, feature string) ProbeResult {
+	probe := ProbeResult{Name: name, ReasoningEffort: effort, Tools: tools, Status: StatusUnsupported, Error: "the API cannot express " + feature}
+	c.logProbeStart(probe)
+	c.logProbeResult(probe)
+	return probe
 }
 
 func (c *Checker) SetLogger(logger *logging.Logger) {
@@ -396,12 +422,19 @@ func (c *Checker) Run(ctx context.Context) Result {
 		ConfiguredEffort:          configured,
 		DisableJSONResponseFormat: c.profile.DisableJSONResponseFormat,
 	}
+	if c.capsKnown {
+		result.ReasoningKind = c.caps.Reasoning
+	}
 
 	effortProbes := []func() ProbeResult{
 		func() ProbeResult { return c.noToolsProbe(ctx, "configured_no_tools", configured) },
 	}
-	for _, effort := range llm.LowerReasoningEfforts(configured) {
-		effortProbes = append(effortProbes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
+	// Lower efforts are only worth probing where an effort can be requested
+	// at all; otherwise every probe would send the same request.
+	if !c.capsKnown || c.caps.ReasoningEffort {
+		for _, effort := range llm.LowerReasoningEfforts(configured) {
+			effortProbes = append(effortProbes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
+		}
 	}
 	result.Probes = c.runProbes(effortProbes)
 	result.PassedEfforts = passedEfforts(result.Probes)
@@ -531,6 +564,9 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 }
 
 func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
+	if c.capsKnown && !c.caps.Tools {
+		return c.unsupportedProbe("configured_tools", effort, true, "tool calling")
+	}
 	probe := ProbeResult{Name: "configured_tools", ReasoningEffort: effort, Tools: true}
 	c.logProbeStart(probe)
 	defer func() { c.logProbeResult(probe) }()
@@ -576,7 +612,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 			probe.Error = "model stopped before required tool sequence completed"
 			return probe
 		}
-		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
+		messages = append(messages, resp.AssistantMessage())
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
@@ -653,7 +689,7 @@ func (c *Checker) toolsJSONSchemaProbe(ctx context.Context, effort string) Probe
 			probe.Status = StatusOK
 			return probe
 		}
-		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
+		messages = append(messages, resp.AssistantMessage())
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
@@ -707,6 +743,9 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 }
 
 func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResult {
+	if c.capsKnown && !c.caps.StructuredOutput {
+		return c.unsupportedProbe("configured_json_schema", effort, false, "schema-constrained output")
+	}
 	probe := ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort}
 	c.logProbeStart(probe)
 	defer func() { c.logProbeResult(probe) }()

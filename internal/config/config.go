@@ -39,6 +39,20 @@ const (
 	DefaultGitLabBaseURLRef         = "${NICKPIT_GITLAB_BASE_URL}"
 	DefaultForgejoTokenRef          = "${NICKPIT_FORGEJO_TOKEN}"
 	DefaultForgejoBaseURLRef        = "${NICKPIT_FORGEJO_BASE_URL}"
+	// APIChatCompletions and APIResponses name the LLM wire protocols.
+	APIChatCompletions = "chat_completions"
+	APIResponses       = "responses"
+	// AuthAPIKey authenticates with the profile's api_key, the default. An
+	// empty auth means the same on a profile; on small it means "inherit".
+	AuthAPIKey = "api_key"
+	// AuthChatGPT authenticates the profile with Sign in with ChatGPT.
+	AuthChatGPT = "chatgpt"
+	// ChatGPTBaseURL is the only endpoint ChatGPT plan tokens are sent to.
+	ChatGPTBaseURL = "https://api.openai.com/v1"
+	// ChatGPTAPIKeyPlaceholder stands in for the api_key of a ChatGPT profile:
+	// the transport replaces it with the stored access token on every request,
+	// so it only keeps the key checks and endpoint identity uniform.
+	ChatGPTAPIKeyPlaceholder = "chatgpt-oauth"
 	// DefaultAssetBaseURL is where the published-review badge SVGs are served.
 	// The Pages workflow deploys the repo's assets/ directory here.
 	DefaultAssetBaseURL = "https://dgrieser.github.io/nickpit/"
@@ -52,10 +66,18 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                     string                 `yaml:"model"`
-	Small                     SmallModelConfig       `yaml:"small"`
-	BaseURL                   string                 `yaml:"base_url"`
-	APIKey                    string                 `yaml:"api_key"`
+	Model   string           `yaml:"model"`
+	Small   SmallModelConfig `yaml:"small"`
+	BaseURL string           `yaml:"base_url"`
+	APIKey  string           `yaml:"api_key"`
+	// Auth selects how the LLM endpoint is authenticated: empty for the static
+	// api_key, AuthChatGPT for Sign in with ChatGPT (the stored OAuth tokens of
+	// `nickpit chatgpt login`, drawing on the ChatGPT plan).
+	Auth string `yaml:"auth"`
+	// API selects the wire protocol of the LLM endpoint: APIChatCompletions
+	// (the default, every OpenAI-compatible server) or APIResponses (OpenAI's
+	// Responses API, implied by auth: chatgpt).
+	API                       string                 `yaml:"api"`
 	SupportedModels           []ModelCapabilities    `yaml:"supported_models"`
 	MaxTokens                 *int                   `yaml:"max_tokens"`
 	Temperature               *float64               `yaml:"temperature"`
@@ -128,6 +150,8 @@ type SmallModelConfig struct {
 	Model             string         `yaml:"model"`
 	BaseURL           string         `yaml:"base_url"`
 	APIKey            string         `yaml:"api_key"`
+	API               string         `yaml:"api"`
+	Auth              string         `yaml:"auth"`
 	MaxTokens         *int           `yaml:"max_tokens"`
 	Temperature       *float64       `yaml:"temperature"`
 	TopP              *float64       `yaml:"top_p"`
@@ -163,6 +187,8 @@ type Overrides struct {
 	Small                     SmallModelConfig
 	BaseURL                   string
 	APIKey                    string
+	API                       string
+	Auth                      string
 	MaxTokens                 *int
 	Temperature               *float64
 	TopP                      *float64
@@ -280,6 +306,22 @@ var defaultProfiles = []defaultProfile{
 				},
 			},
 			APIKey: "$MITTWALD_LLM_API_KEY",
+		},
+	},
+	{
+		name: "chatgpt",
+		profile: Profile{
+			BaseURL:         ChatGPTBaseURL,
+			Auth:            AuthChatGPT,
+			API:             APIResponses,
+			Model:           "gpt-6.1-sol",
+			ReasoningEffort: "xhigh",
+			// The cheap steps go to the Instant model ChatGPT answers with,
+			// which replies directly; "off" sends it no reasoning settings.
+			Small: SmallModelConfig{
+				Model:           "chat-latest",
+				ReasoningEffort: "off",
+			},
 		},
 	},
 	{
@@ -413,6 +455,12 @@ func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
 	if override.APIKey != "" {
 		base.APIKey = override.APIKey
 	}
+	if override.API != "" {
+		base.API = override.API
+	}
+	if override.Auth != "" {
+		base.Auth = override.Auth
+	}
 	if override.MaxTokens != nil {
 		base.MaxTokens = override.MaxTokens
 	}
@@ -455,20 +503,46 @@ func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
 // Declare a second profile if a foreign small endpoint needs pre-declared
 // capabilities.
 func EffectiveSmallProfile(profile Profile) Profile {
+	small, _, _ := effectiveSmallProfile(profile)
+	return small
+}
+
+// effectiveSmallProfile resolves the small profile and reports whether it
+// talks to an endpoint of its own — another base URL or another kind of
+// authentication — along with any endpoint configuration error.
+func effectiveSmallProfile(profile Profile) (Profile, bool, error) {
 	profile = cloneProfile(profile)
 	small := profile.Small
 	if small.Model != "" {
 		profile.Model = small.Model
 	}
-	if small.BaseURL != "" && !model.SameEndpoint(small.BaseURL, profile.BaseURL) {
+	ownEndpoint := smallOwnsEndpoint(profile)
+	if ownEndpoint {
+		// Nothing of the primary endpoint carries over: not its key, which
+		// must never reach another provider, nor its protocol or credentials.
+		// Only the base URL is kept when small changes the authentication
+		// alone, so an api_key small model can share the primary's host.
 		profile.SupportedModels = nil
-	}
-	if small.BaseURL != "" {
-		profile.BaseURL = small.BaseURL
-	}
-	if small.APIKey != "" {
+		baseURL := small.BaseURL
+		if baseURL == "" && canonicalAuth(small.Auth) != AuthChatGPT {
+			baseURL = profile.BaseURL
+		}
+		profile.BaseURL = baseURL
 		profile.APIKey = small.APIKey
+		profile.API = small.API
+		profile.Auth = small.Auth
+	} else {
+		if small.BaseURL != "" {
+			profile.BaseURL = small.BaseURL
+		}
+		if small.APIKey != "" {
+			profile.APIKey = small.APIKey
+		}
+		if small.API != "" {
+			profile.API = small.API
+		}
 	}
+	err := resolveLLMEndpoint(&profile, "small.")
 	if small.MaxTokens != nil {
 		profile.MaxTokens = small.MaxTokens
 	}
@@ -496,7 +570,7 @@ func EffectiveSmallProfile(profile Profile) Profile {
 	if small.ReasoningEffort != "" {
 		profile.ReasoningEffort = small.ReasoningEffort
 	}
-	return profile
+	return profile, ownEndpoint, err
 }
 
 func cloneSupportedModels(models []ModelCapabilities) []ModelCapabilities {
@@ -686,6 +760,12 @@ func applyEnv(cfg *Config, profileName string) error {
 	if value := os.Getenv("NICKPIT_SMALL_API_KEY"); value != "" {
 		profile.Small.APIKey = value
 	}
+	if value := os.Getenv("NICKPIT_SMALL_API"); value != "" {
+		profile.Small.API = value
+	}
+	if value := os.Getenv("NICKPIT_SMALL_AUTH"); value != "" {
+		profile.Small.Auth = value
+	}
 	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
 		profile.Small.ReasoningEffort = value
 	}
@@ -807,6 +887,12 @@ func applyEnv(cfg *Config, profileName string) error {
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		overrideProfileBaseURL(&profile, value)
 	}
+	if value := os.Getenv("NICKPIT_API"); value != "" {
+		profile.API = value
+	}
+	if value := os.Getenv("NICKPIT_AUTH"); value != "" {
+		profile.Auth = value
+	}
 	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
 		profile.Workdir = value
 	}
@@ -899,6 +985,12 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.APIKey != "" {
 		profile.APIKey = overrides.APIKey
+	}
+	if overrides.API != "" {
+		profile.API = overrides.API
+	}
+	if overrides.Auth != "" {
+		profile.Auth = overrides.Auth
 	}
 	if overrides.MaxTokens != nil {
 		profile.MaxTokens = overrides.MaxTokens
@@ -1127,6 +1219,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile.ForgejoToken = expandEnvReference(profile.ForgejoToken)
 	profile.ForgejoBaseURL = expandEnvReference(profile.ForgejoBaseURL)
 	profile = applyProfileDefaults(profile)
+	if err := resolveLLMEndpoint(&profile, ""); err != nil {
+		return Profile{}, err
+	}
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
 	}
@@ -1195,16 +1290,22 @@ func normalizeProfile(profile Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.DisableStyleGuides = disabledStyleGuides
-	// A small endpoint that differs from the primary one must bring its own key.
-	// Falling back to the primary key would send it to a foreign provider — the
-	// exact disclosure the chat session guard refuses elsewhere — so this is a
-	// hard error rather than a tolerated missing-endpoint condition: it means the
-	// configuration is wrong, not that no LLM is configured. It can only trigger
-	// when a small base_url was written explicitly, so profiles without one (all
+	// A small model may live on any endpoint, protocol, and authentication.
+	// One of its own must bring its own credential: falling back to the
+	// primary key would send it to a foreign provider — the exact disclosure
+	// the chat session guard refuses elsewhere — so this is a hard error
+	// rather than a tolerated missing-endpoint condition. It can only trigger
+	// when small declares an endpoint, so profiles without one (all
 	// built-ins) are unaffected and non-LLM commands keep working.
-	if profile.Small.BaseURL != "" && !model.SameEndpoint(profile.Small.BaseURL, profile.BaseURL) && profile.Small.APIKey == "" {
-		return Profile{}, fmt.Errorf("config: small.base_url %q differs from the profile base_url %q but small.api_key is empty; set small.api_key (or --small-api-key / NICKPIT_SMALL_API_KEY) so the primary key is not sent to another provider",
-			profile.Small.BaseURL, profile.BaseURL)
+	if smallDeclaresEndpoint(profile.Small) {
+		small, ownEndpoint, err := effectiveSmallProfile(profile)
+		if err != nil {
+			return Profile{}, err
+		}
+		if ownEndpoint && small.Auth != AuthChatGPT && small.APIKey == "" {
+			return Profile{}, fmt.Errorf("config: small.base_url %q (auth %q) is not the profile endpoint %q but small.api_key is empty; set small.api_key (or --small-api-key / NICKPIT_SMALL_API_KEY) so the primary key is not sent to another provider",
+				small.BaseURL, canonicalAuth(small.Auth), profile.BaseURL)
+		}
 	}
 	// The LLM endpoint is validated last, and unlike every check above it
 	// returns the normalized profile alongside the error: a command that never

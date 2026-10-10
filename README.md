@@ -251,6 +251,31 @@ Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`. When the active profile ends up with no API key at all, `NICKPIT_API_KEY` is used as a last-resort fallback.
 
+### Sign in with ChatGPT
+
+With a ChatGPT Plus or Pro plan you can review on your plan's models instead of paying for an API key ([Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)):
+
+```bash
+nickpit chatgpt login            # opens the browser; --no-browser only prints the URL
+nickpit chatgpt models           # the models your plan can use
+nickpit --profile chatgpt git branch
+```
+
+The built-in `chatgpt` profile talks to `https://api.openai.com/v1` with `auth: chatgpt`. It reviews with `gpt-6.1-sol` at `reasoning_effort: xhigh` and runs the `@small` steps on `chat-latest`, the Instant model ChatGPT answers with, which replies without reasoning (`small.reasoning_effort: off`; on the Responses API `off` sends no reasoning settings at all, while `none` asks a reasoning model not to reason). Both run on the same plan and sign-in. Set `auth: chatgpt` on any other profile to do the same (its `base_url` must stay on that endpoint, so the plan tokens never reach another host). Pick other models with `--model` / `model:` and `--small-model` / `small.model:` from `nickpit chatgpt models`. ChatGPT plan usage only admits OpenAI's Responses API, so `auth: chatgpt` implies `api: responses` (see [Wire protocols](#wire-protocols)). Plan usage also admits a narrower request than an API key: NickPit sends tools the way it requires and leaves out what it rejects — an output-token limit (`max_tokens`), `temperature`, `top_p`, and fields such as `metadata` or `user` in `extra_body` — saying so in the verbose log.
+
+The sign-in callback listens on `127.0.0.1:1455` (`--port 0` picks a free port). Credentials are stored with `0600` permissions in your config directory (`~/.config/nickpit/chatgpt-auth.json` on Linux) and refreshed automatically; `NICKPIT_CHATGPT_AUTH_FILE` points NickPit at another file, for example one signed in on your laptop and copied to a headless machine. `nickpit chatgpt status` shows the account, `nickpit chatgpt logout` signs out (add `--forget` to switch accounts), and if you declined plan usage on the consent screen, `nickpit chatgpt login --reconsent` asks again. When the plan's usage limit is reached, the run stops with a pointer to <https://chatgpt.com/settings/usage> instead of waiting for a reset.
+
+### Wire protocols
+
+`api:` selects how a profile talks to its endpoint:
+
+| `api` | Endpoint | Reasoning text | Sampling knobs sent |
+| --- | --- | --- | --- |
+| `chat_completions` (default) | `POST /chat/completions`, every OpenAI-compatible server | raw reasoning tokens, where the server streams them | all (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`) |
+| `responses` | `POST /responses`, OpenAI's Responses API (`store: false`, streamed) | provider-written reasoning summaries | `temperature`, `top_p` |
+
+Each protocol declares what it can express — reasoning kind, reasoning effort, tool calling, schema-constrained output, sampling knobs — and NickPit leaves out what a protocol cannot take instead of sending it and failing. The verbose log says which settings were left out. `nickpit check model` only probes what the protocol can express and shows whether reasoning traces are raw or summaries. Loop detection only runs on raw reasoning, because a summary is a paraphrase and not the model's own tokens. The primary and the `small` model each pick their own `api` and `auth` (see [A small model on its own endpoint](#a-small-model-on-its-own-endpoint)). `--api` / `--auth` and `NICKPIT_API` / `NICKPIT_AUTH` override a profile's; `auth: api_key` is the default and may be written out.
+
 ### Environment variables
 
 Useful when the config file is baked into an image or CI runner and only a few knobs should differ per environment. An explicitly passed flag always wins over the variable; an unset or empty variable changes nothing.
@@ -334,7 +359,22 @@ profiles:
 
 Every `@small` step then runs against the second endpoint with its own client, its own rate-limit backoff and its own model check (capabilities are cached per endpoint, so both are probed separately). They can also be set with `NICKPIT_SMALL_BASE_URL` / `NICKPIT_SMALL_API_KEY` or `--small-base-url` / `--small-api-key`, which override a configured value like every other `NICKPIT_SMALL_*` variable.
 
-The one exception to "any unset small field falls back to the primary value": when `small.base_url` differs from the profile's `base_url`, `small.api_key` is **required**. Inheriting the primary key would send it to another provider, so NickPit fails the run with a config error instead. A `small.base_url` equal to the primary one (a trailing slash makes no difference) keeps inheriting the primary key, and `small.api_key` alone — same host, different credential — is allowed too.
+The small model is not tied to the primary's API or sign-in either: `small.api` (`chat_completions` or `responses`) and `small.auth` (`api_key` or `chatgpt`) choose its [wire protocol](#wire-protocols) and authentication, also as `--small-api` / `--small-auth` or `NICKPIT_SMALL_API` / `NICKPIT_SMALL_AUTH`. For example, run the big model on your own hardware and the cheap steps on your ChatGPT plan:
+
+```yaml
+profiles:
+  custom:
+    model: Qwen3.8-27B-NVFP4
+    base_url: http://localhost:10000/v1
+    api_key: ${NICKPIT_CUSTOM_API_KEY}
+    small:
+      model: gpt-6.1-sol
+      auth: chatgpt # implies base_url https://api.openai.com/v1 and api: responses
+```
+
+The other way round, `auth: chatgpt` on the profile with a `small` block carrying its own `base_url` and `api_key` puts the cheap steps on an OpenAI-compatible provider. `small.auth: api_key` with `small.api_key` and `small.api: responses` uses a platform key on the same OpenAI host.
+
+The one exception to "any unset small field falls back to the primary value": a small model with an endpoint of its own — another `base_url`, or another `auth` — inherits none of the primary's credentials, protocol, or sign-in, and unless it signs in with ChatGPT, `small.api_key` is **required**. Inheriting the primary key would send it to another provider, so NickPit fails the run with a config error instead. A `small.base_url` equal to the primary one (a trailing slash makes no difference) keeps inheriting the primary key, and `small.api_key` or `small.api` alone — same host, different credential or protocol — are allowed too.
 
 Three things to know when the two endpoints are different providers:
 

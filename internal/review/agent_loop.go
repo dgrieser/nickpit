@@ -383,7 +383,7 @@ func (e *Engine) runAgentLoopCore(ctx context.Context, req agentLoopRequest) (re
 		}
 
 		e.logf(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
-		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
+		messages = append(messages, resp.AssistantMessage())
 		// Provider tool-call IDs are only unique within one response, so each
 		// batch opens a fresh reservation scope before executing.
 		state.toolState.beginToolRound()
