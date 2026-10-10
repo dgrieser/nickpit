@@ -64,10 +64,12 @@ const (
 // reasoning-effort ladder, finalization, and request trimming have already
 // been applied, and every message is valid history.
 type CompletionRequest struct {
-	Model             string
-	Messages          []Message
-	Tools             []ToolDefinition
-	ParallelToolCalls bool
+	Model    string
+	Messages []Message
+	Tools    []ToolDefinition
+	// ParallelToolCalls allows or forbids several tool calls per turn; nil
+	// leaves it to the endpoint.
+	ParallelToolCalls *bool
 	// Schema constrains the response to a JSON schema named SchemaName when
 	// the protocol supports structured output.
 	Schema     json.RawMessage

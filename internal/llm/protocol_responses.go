@@ -210,8 +210,7 @@ func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessa
 		} else {
 			out.Tools = tools
 		}
-		parallel := req.ParallelToolCalls
-		out.ParallelToolCalls = &parallel
+		out.ParallelToolCalls = req.ParallelToolCalls
 	}
 	if len(req.Schema) > 0 {
 		out.Text = &responsesText{Format: responsesFormat{Type: "json_schema", Name: req.SchemaName, Schema: req.Schema}}
