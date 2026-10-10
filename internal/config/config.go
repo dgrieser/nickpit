@@ -311,10 +311,17 @@ var defaultProfiles = []defaultProfile{
 	{
 		name: "chatgpt",
 		profile: Profile{
-			BaseURL: ChatGPTBaseURL,
-			Auth:    AuthChatGPT,
-			API:     APIResponses,
-			Model:   "gpt-6.1-sol",
+			BaseURL:         ChatGPTBaseURL,
+			Auth:            AuthChatGPT,
+			API:             APIResponses,
+			Model:           "gpt-6.1-sol",
+			ReasoningEffort: "xhigh",
+			// The cheap steps go to the Instant model ChatGPT answers with,
+			// which replies directly; "off" sends it no reasoning settings.
+			Small: SmallModelConfig{
+				Model:           "chat-latest",
+				ReasoningEffort: "off",
+			},
 		},
 	},
 	{

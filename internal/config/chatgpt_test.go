@@ -22,6 +22,27 @@ func TestChatGPTProfileUsesPlaceholderKeyAndOpenAIEndpoint(t *testing.T) {
 	}
 }
 
+func TestChatGPTProfileReviewsAtXHighWithInstantSmallModel(t *testing.T) {
+	_, profile, err := Load("", Overrides{Profile: "chatgpt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Model != "gpt-6.1-sol" || profile.ReasoningEffort != "xhigh" {
+		t.Fatalf("primary model=%q effort=%q", profile.Model, profile.ReasoningEffort)
+	}
+	small, ownEndpoint, err := effectiveSmallProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if small.Model != "chat-latest" || small.ReasoningEffort != "off" {
+		t.Fatalf("small model=%q effort=%q", small.Model, small.ReasoningEffort)
+	}
+	// Same plan, same sign-in: the small model shares the primary's endpoint.
+	if ownEndpoint || small.Auth != AuthChatGPT || small.API != APIResponses || small.BaseURL != ChatGPTBaseURL {
+		t.Fatalf("small endpoint own=%t auth=%q api=%q base_url=%q", ownEndpoint, small.Auth, small.API, small.BaseURL)
+	}
+}
+
 func TestChatGPTAuthRefusesForeignBaseURL(t *testing.T) {
 	_, _, err := Load("", Overrides{Profile: "chatgpt", BaseURL: "https://llm.example.com/v1"})
 	if err == nil || !strings.Contains(err.Error(), "only works with base_url") {
