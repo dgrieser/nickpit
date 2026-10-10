@@ -537,6 +537,11 @@ func LowerReasoningEfforts(effort string) []string {
 func requestPayloadForLog(protocol Protocol, req *CompletionRequest) (json.RawMessage, error) {
 	redacted := *req
 	redacted.ExtraBody = redactExtraBodyForLog(req.ExtraBody)
+	if logged, ok := protocol.(interface {
+		encodeForLog(*CompletionRequest) (json.RawMessage, error)
+	}); ok {
+		return logged.encodeForLog(&redacted)
+	}
 	return protocol.EncodeRequest(&redacted)
 }
 
@@ -1658,13 +1663,12 @@ func responseFormatName(kind SchemaKind) string {
 func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, []string) {
 	caps := c.protocol.Capabilities()
 	out := &CompletionRequest{
-		Model:             req.Model,
-		Messages:          requestMessages(req),
-		Tools:             cloneToolDefinitions(req.Tools),
-		ParallelToolCalls: req.ParallelToolCalls,
-		MaxTokens:         req.MaxTokens,
-		ReasoningEffort:   req.ReasoningEffort,
-		ExtraBody:         cloneRequestExtraBody(req.ExtraBody),
+		Model:           req.Model,
+		Messages:        requestMessages(req),
+		Tools:           cloneToolDefinitions(req.Tools),
+		MaxTokens:       req.MaxTokens,
+		ReasoningEffort: req.ReasoningEffort,
+		ExtraBody:       cloneRequestExtraBody(req.ExtraBody),
 	}
 	if out.Model == "" {
 		out.Model = c.model
@@ -1686,8 +1690,14 @@ func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, [
 		delete(out.ExtraBody, "reasoning_effort")
 		out.Tools = nil
 	}
-	if len(out.Tools) == 0 {
-		out.ParallelToolCalls = false
+	switch {
+	case req.Finalize:
+		// Finalization asks for no parallel calls outright, tools or not.
+		off := false
+		out.ParallelToolCalls = &off
+	case len(out.Tools) > 0:
+		parallel := req.ParallelToolCalls
+		out.ParallelToolCalls = &parallel
 	}
 
 	var dropped []string

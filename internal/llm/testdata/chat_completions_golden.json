@@ -1,0 +1,177 @@
+{
+  "finalize_strips_tool_extras": {
+    "messages": [
+      {
+        "content": "finalize",
+        "role": "system"
+      },
+      {
+        "content": "polish",
+        "role": "user"
+      }
+    ],
+    "model": "default-model",
+    "parallel_tool_calls": false,
+    "reasoning_effort": "low",
+    "response_format": {
+      "json_schema": {
+        "name": "json_response",
+        "schema": {
+          "type": "object"
+        },
+        "strict": false
+      },
+      "type": "json_schema"
+    },
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "top_k": 5
+  },
+  "plain_text_no_effort": {
+    "model": "default-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "s"
+      },
+      {
+        "role": "user",
+        "content": "u"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "single_turn_review_schema_all_knobs": {
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    },
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": "system prompt",
+        "role": "system"
+      },
+      {
+        "content": "review this diff",
+        "role": "user"
+      }
+    ],
+    "min_p": 0,
+    "model": "default-model",
+    "presence_penalty": 1.5,
+    "reasoning_effort": "high",
+    "repetition_penalty": 1.05,
+    "response_format": {
+      "json_schema": {
+        "name": "review_response",
+        "schema": {
+          "properties": {
+            "findings": {
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "strict": false
+      },
+      "type": "json_schema"
+    },
+    "seed": 7,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "temperature": 0,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "tool_history_parallel": {
+    "messages": [
+      {
+        "content": "system",
+        "role": "system"
+      },
+      {
+        "content": "find callers",
+        "role": "user"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\":\"cmd\",\"symbol\":\"Run\"}",
+              "name": "find_callers"
+            },
+            "id": "call_ok",
+            "type": "function"
+          },
+          {
+            "function": {
+              "arguments": "{}",
+              "name": "list_files"
+            },
+            "id": "call_empty",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "{\"callers\":[]}",
+        "name": "find_callers",
+        "role": "tool",
+        "tool_call_id": "call_ok"
+      },
+      {
+        "content": "README.md",
+        "name": "list_files",
+        "role": "tool",
+        "tool_call_id": "call_empty"
+      },
+      {
+        "content": "continue",
+        "role": "user"
+      }
+    ],
+    "model": "default-model",
+    "parallel_tool_calls": true,
+    "reasoning_effort": "medium",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "temperature": 0.7,
+    "tools": [
+      {
+        "function": {
+          "description": "Find callers",
+          "name": "find_callers",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "List files",
+          "name": "list_files",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  }
+}

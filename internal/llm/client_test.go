@@ -23,11 +23,12 @@ import (
 
 func TestRequestPayloadForLogPreservesRequestFieldOrder(t *testing.T) {
 	topK := 20
+	parallel := true
 	logPayload, err := requestPayloadForLog(ChatCompletionsProtocol(), &CompletionRequest{
 		Model:             "model",
 		Messages:          []Message{{Role: RoleSystem, Content: "system"}},
 		Tools:             []ToolDefinition{{Name: "inspect_file"}},
-		ParallelToolCalls: true,
+		ParallelToolCalls: &parallel,
 		ReasoningEffort:   "high",
 		TopK:              &topK,
 	})

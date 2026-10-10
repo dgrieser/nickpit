@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -56,6 +57,26 @@ func (chatCompletionsProtocol) SetHeaders(header http.Header, token string) {
 func (chatCompletionsProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessage, error) {
 	payload, extraBody := chatCompletionPayload(req)
 	data, err := json.Marshal(payload)
+	if err != nil || len(extraBody) == 0 {
+		return data, err
+	}
+	// Extra fields are merged through a map, as the client always has: the
+	// servers have only ever seen such bodies with their keys sorted, and a
+	// refactor of the client must not change the bytes they receive.
+	body := map[string]any{}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	maps.Copy(body, extraBody)
+	return json.Marshal(body)
+}
+
+// encodeForLog renders req for the verbose log with the request's own field
+// order and the extra fields after it, which reads far better than the sorted
+// wire body; the content is identical.
+func (chatCompletionsProtocol) encodeForLog(req *CompletionRequest) (json.RawMessage, error) {
+	payload, extraBody := chatCompletionPayload(req)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +97,8 @@ func chatCompletionPayload(req *CompletionRequest) (openai.ChatCompletionRequest
 			IncludeUsage: true,
 		},
 	}
-	if len(req.Tools) > 0 {
-		payload.ParallelToolCalls = req.ParallelToolCalls
+	if req.ParallelToolCalls != nil {
+		payload.ParallelToolCalls = *req.ParallelToolCalls
 	}
 	if req.MaxTokens != nil {
 		payload.MaxTokens = *req.MaxTokens
