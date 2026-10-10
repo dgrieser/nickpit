@@ -126,6 +126,9 @@ type StreamChunk struct {
 	ToolCalls     []ToolCallDelta
 	Usage         *model.TokenUsage
 	FinishReason  FinishReason
+	// Refusal is text of a refusal the provider reports apart from the
+	// answer; a response that refuses is not a result.
+	Refusal string
 	// StateItem is one piece of provider state to replay with this turn
 	// (see ProviderState), in stream order.
 	StateItem json.RawMessage
@@ -239,6 +242,21 @@ type TokenRefresher interface {
 	ForceRefresh(ctx context.Context) (string, error)
 }
 
+// Credential is one consistent snapshot of what authenticates a request: the
+// token sent and the account it belongs to. Taking both together is what keeps
+// provider state from being sent under another account's token when the
+// credentials change between two requests.
+type Credential struct {
+	Token   string
+	Account string
+}
+
+// CredentialSource is implemented by token sources that can hand out a token
+// and its account as one snapshot.
+type CredentialSource interface {
+	Credential(ctx context.Context) (Credential, error)
+}
+
 // AccountIdentifier is implemented by token sources that can name the account
 // their credential belongs to. The identity must be stable for the account and
 // must not reveal the credential; provider state is scoped to it.
@@ -251,6 +269,11 @@ type StaticToken string
 
 // Token implements TokenSource.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+// Credential implements CredentialSource.
+func (t StaticToken) Credential(context.Context) (Credential, error) {
+	return Credential{Token: string(t), Account: t.AccountID()}, nil
+}
 
 // AccountID implements AccountIdentifier with a digest of the key, so two
 // keys never share provider state while the key itself stays out of it.

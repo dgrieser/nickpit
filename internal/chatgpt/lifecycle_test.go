@@ -317,7 +317,9 @@ func TestConcurrentFirstSignInsShareOneHostID(t *testing.T) {
 	outputs := make([]*bytes.Buffer, processes)
 	for i := range commands {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHostIDProcess$", "-test.count=1")
-		cmd.Env = append(os.Environ(), helperEnv+"=hostid", "HELPER_DIR="+dir, "HELPER_AUTH_FILE="+filepath.Join(dir, "auth.json"))
+		// Each process names its own credential file in the shared
+		// directory: the host ID is shared all the same.
+		cmd.Env = append(os.Environ(), helperEnv+"=hostid", "HELPER_DIR="+dir, "HELPER_AUTH_FILE="+filepath.Join(dir, fmt.Sprintf("account-%d.json", i)))
 		outputs[i] = &bytes.Buffer{}
 		cmd.Stdout, cmd.Stderr = outputs[i], outputs[i]
 		if err := cmd.Start(); err != nil {

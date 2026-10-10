@@ -548,8 +548,10 @@ func (r *responsesEventReader) decode(data []byte) (StreamChunk, error) {
 		return StreamChunk{}, fmt.Errorf("llm: decoding responses stream event: %w", err)
 	}
 	switch event.Type {
-	case "response.output_text.delta", "response.refusal.delta":
+	case "response.output_text.delta":
 		return StreamChunk{Text: event.Delta}, nil
+	case "response.refusal.delta":
+		return StreamChunk{Refusal: event.Delta}, nil
 	case "response.reasoning_summary_text.delta":
 		delta := event.Delta
 		if r.sawSummary && event.SummaryIndex != r.lastSummaryIndex && delta != "" {
