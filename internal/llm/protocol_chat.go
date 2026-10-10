@@ -40,6 +40,8 @@ func (chatCompletionsProtocol) Capabilities() Capabilities {
 		ParallelToolCalls: true,
 		StructuredOutput:  true,
 		OutputTokenLimit:  true,
+		// The client reads the response as a stream with a usage chunk.
+		ReservedFields: []string{"stream", "stream_options"},
 		// Open-weight servers accept every knob; they ride in the body as
 		// extra fields where the OpenAI schema has none.
 		SamplingParams: []string{"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"},

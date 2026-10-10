@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -343,5 +344,117 @@ func TestChatCompletionsLengthFinishIsNotAResult(t *testing.T) {
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) || !strings.Contains(invalid.Reason, "cut off") {
 		t.Fatalf("err = %v, want an incomplete-response error", err)
+	}
+}
+
+// A profile's extra_body cannot undo what the protocol owns: plan requests
+// stay streamed and stateless, keep their conversation, and declare tools
+// only through additional_tools.
+func TestExtraBodyCannotOverrideProtocolOwnedFields(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeResponsesEvent(t, w, map[string]any{"type": "response.output_text.delta", "delta": "ok"})
+		writeResponsesEvent(t, w, completedEvent())
+	}))
+	defer server.Close()
+
+	protocol := NewResponsesProtocolWith(ResponsesOptions{ChatGPTPlan: true})
+	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "gpt-plan", Protocol: protocol})
+	overrides := map[string]any{
+		"store":        true,
+		"stream":       false,
+		"tools":        []any{map[string]any{"type": "function", "name": "smuggled"}},
+		"input":        []any{map[string]any{"role": "user", "content": "replaced"}},
+		"instructions": "replaced",
+		"include":      []any{},
+		"service_hint": "kept",
+	}
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system", UserContent: "user", SchemaKind: SchemaKindText, ReasoningEffort: "high",
+		Tools:     []ToolDefinition{{Name: "list_files"}},
+		ExtraBody: overrides,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if payload["store"] != false || payload["stream"] != true || payload["instructions"] != "system" || payload["service_hint"] != "kept" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if _, ok := payload["tools"]; ok {
+		t.Fatalf("extra_body reintroduced top-level tools: %#v", payload["tools"])
+	}
+	input := payload["input"].([]any)
+	if first := input[0].(map[string]any); first["type"] != "additional_tools" {
+		t.Fatalf("input = %#v", input)
+	}
+	if last := input[len(input)-1].(map[string]any); last["content"] != "user" {
+		t.Fatalf("extra_body replaced the conversation: %#v", input)
+	}
+	if include, _ := payload["include"].([]any); len(include) != 1 {
+		t.Fatalf("include = %#v", payload["include"])
+	}
+
+	// The protocol enforces the same on its own, for a request that does not
+	// pass through the client's filtering.
+	direct, err := protocol.EncodeRequest(&CompletionRequest{
+		Model: "gpt-plan", Messages: []Message{{Role: RoleUser, Content: "user"}},
+		ExtraBody: map[string]any{"store": true, "stream": false, "tools": []any{"x"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(direct, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if encoded["store"] != false || encoded["stream"] != true || encoded["tools"] != nil {
+		t.Fatalf("encoded = %s", direct)
+	}
+}
+
+// Provider state is scoped to the account behind the credential: the same
+// endpoint and model under another account must not receive it.
+func TestProviderStateIsNotReplayedToAnotherAccount(t *testing.T) {
+	var payloads []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		payloads = append(payloads, string(body))
+		writeResponsesEvent(t, w, map[string]any{"type": "response.output_text.delta", "delta": "ok"})
+		writeResponsesEvent(t, w, completedEvent())
+	}))
+	defer server.Close()
+
+	accountA := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "m", Protocol: NewResponsesProtocol(), Tokens: StaticToken("key-a")})
+	accountB := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "m", Protocol: NewResponsesProtocol(), Tokens: StaticToken("key-b")})
+	state := &ProviderState{
+		Origin: accountA.stateOrigin("m"),
+		Items:  []json.RawMessage{json.RawMessage(`{"type":"reasoning","summary":[],"encrypted_content":"from-account-a"}`)},
+	}
+	if strings.Contains(state.Origin, "key-a") {
+		t.Fatalf("state origin exposes the credential: %q", state.Origin)
+	}
+	req := func() *ReviewRequest {
+		return &ReviewRequest{
+			Messages: []Message{
+				{Role: RoleUser, Content: "u"},
+				{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c", Name: "list_files", Arguments: "{}"}}, ProviderState: state},
+				{Role: RoleTool, ToolCallID: "c", Content: "x"},
+			},
+			Tools:      []ToolDefinition{{Name: "list_files"}},
+			SchemaKind: SchemaKindText,
+		}
+	}
+	for _, client := range []*APIClient{accountB, accountA} {
+		if _, err := client.Review(context.Background(), req()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(payloads[0], "from-account-a") {
+		t.Fatalf("account B was sent account A's reasoning state: %s", payloads[0])
+	}
+	if !strings.Contains(payloads[1], "from-account-a") {
+		t.Fatalf("account A's own state was not replayed: %s", payloads[1])
 	}
 }

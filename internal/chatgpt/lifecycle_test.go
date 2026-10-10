@@ -212,3 +212,147 @@ func TestLockFileExcludesConcurrentHolders(t *testing.T) {
 		t.Fatal("the lock was not handed over after release")
 	}
 }
+
+// TestHelperLogoutProcess is a child process of
+// TestSessionStopsAfterLogoutInAnotherProcess, not a test of its own.
+func TestHelperLogoutProcess(t *testing.T) {
+	if os.Getenv(helperEnv) != "logout" {
+		t.Skip("helper process")
+	}
+	store := &Store{Dir: os.Getenv("HELPER_DIR"), AuthFile: os.Getenv("HELPER_AUTH_FILE")}
+	provider := &Provider{Issuer: os.Getenv("HELPER_ISSUER"), HTTPClient: http.DefaultClient}
+	if _, err := Logout(context.Background(), store, provider, false); err != nil {
+		fmt.Println("ERROR", err)
+		os.Exit(1)
+	}
+}
+
+func validStore(t *testing.T, accessToken, subject string) *Store {
+	t.Helper()
+	store := &Store{Dir: t.TempDir()}
+	store.AuthFile = filepath.Join(store.Dir, "auth.json")
+	if err := store.Save(&Credentials{
+		ClientID: "oaiapp_123", Subject: subject, AccessToken: accessToken, RefreshToken: "refresh-" + accessToken,
+		TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: strings.Fields(Scopes),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+// A session whose cached token is still valid for an hour must stop as soon
+// as any process signs out: the token stays accepted remotely until it
+// expires, so only the client can honour the logout.
+func TestSessionStopsAfterLogoutInAnotherProcess(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	store := validStore(t, "cached-access", "user-123")
+	session, err := NewSession(store, issuer.provider())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := session.Token(context.Background()); err != nil || token != "cached-access" {
+		t.Fatalf("token before logout = %q, %v", token, err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperLogoutProcess$", "-test.count=1")
+	cmd.Env = append(os.Environ(), helperEnv+"=logout", "HELPER_DIR="+store.Dir, "HELPER_AUTH_FILE="+store.AuthFile, "HELPER_ISSUER="+issuer.issuer())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("logout process: %v\n%s", err, out)
+	}
+
+	if token, err := session.Token(context.Background()); !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("token after logout = %q, %v; want ErrNotSignedIn", token, err)
+	}
+	lazy := &LazySession{Store: store, Provider: issuer.provider()}
+	if _, err := lazy.Token(context.Background()); !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("lazy token after logout = %v; want ErrNotSignedIn", err)
+	}
+}
+
+// A new sign-in elsewhere replaces what the session sends, and its account
+// identity changes with it.
+func TestSessionFollowsAnotherSignIn(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	store := validStore(t, "access-a", "user-a")
+	session, err := NewSession(store, issuer.provider())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := session.AccountID()
+	if err := store.Replace(&Credentials{
+		ClientID: "oaiapp_123", Subject: "user-b", AccessToken: "access-b", RefreshToken: "refresh-b",
+		TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: strings.Fields(Scopes),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := session.Token(context.Background()); err != nil || token != "access-b" {
+		t.Fatalf("token = %q, %v; want the new sign-in's", token, err)
+	}
+	if after := session.AccountID(); after == before || !strings.Contains(after, "user-b") || strings.Contains(after, "access") {
+		t.Fatalf("account id %q -> %q", before, after)
+	}
+}
+
+// TestHelperHostIDProcess is a child process of
+// TestConcurrentFirstSignInsShareOneHostID, not a test of its own.
+func TestHelperHostIDProcess(t *testing.T) {
+	if os.Getenv(helperEnv) != "hostid" {
+		t.Skip("helper process")
+	}
+	store := &Store{Dir: os.Getenv("HELPER_DIR"), AuthFile: os.Getenv("HELPER_AUTH_FILE")}
+	id, err := store.HostID()
+	if err != nil {
+		fmt.Println("ERROR", err)
+		os.Exit(1)
+	}
+	fmt.Println("HOSTID", id)
+}
+
+// Simultaneous first-time sign-ins in separate processes all present, and
+// keep, the same host ID.
+func TestConcurrentFirstSignInsShareOneHostID(t *testing.T) {
+	dir := t.TempDir()
+	const processes = 6
+	commands := make([]*exec.Cmd, processes)
+	outputs := make([]*bytes.Buffer, processes)
+	for i := range commands {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHostIDProcess$", "-test.count=1")
+		cmd.Env = append(os.Environ(), helperEnv+"=hostid", "HELPER_DIR="+dir, "HELPER_AUTH_FILE="+filepath.Join(dir, "auth.json"))
+		outputs[i] = &bytes.Buffer{}
+		cmd.Stdout, cmd.Stderr = outputs[i], outputs[i]
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands[i] = cmd
+	}
+	ids := map[string]bool{}
+	for i, cmd := range commands {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("process %d failed: %v\n%s", i, err, outputs[i])
+		}
+		for line := range strings.SplitSeq(outputs[i].String(), "\n") {
+			if id, ok := strings.CutPrefix(line, "HOSTID "); ok {
+				ids[id] = true
+			}
+		}
+	}
+	stored, err := (&Store{Dir: dir}).HostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || !ids[stored] {
+		t.Fatalf("host ids = %v, stored %q; want one shared id", ids, stored)
+	}
+}
+
+// The lock always lives beside the credentials, also for a store that names
+// only its directory.
+func TestLockFileStaysInTheStoreDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if got := (&Store{Dir: dir}).lockFile(); filepath.Dir(got) != dir {
+		t.Fatalf("lock file = %q, want it in %q", got, dir)
+	}
+	if got := (&Store{Dir: dir, AuthFile: filepath.Join(dir, "x.json")}).lockFile(); got != filepath.Join(dir, "x.json.lock") {
+		t.Fatalf("lock file = %q", got)
+	}
+}

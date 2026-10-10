@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -186,6 +188,11 @@ type Capabilities struct {
 	// core strips them from a profile's extra_body, saying so in the log,
 	// rather than sending a request that cannot succeed.
 	UnsupportedFields []string
+	// ReservedFields lists request-body fields the protocol itself owns —
+	// streaming, storage, the conversation, the tool declaration form. A
+	// profile's extra_body cannot override them: the core strips them (and
+	// logs it), and the protocol enforces them in the body it encodes.
+	ReservedFields []string
 	// SamplingParams lists the sampling knobs the API accepts, by their
 	// config names (temperature, top_p, top_k, min_p, presence_penalty,
 	// repetition_penalty).
@@ -232,8 +239,25 @@ type TokenRefresher interface {
 	ForceRefresh(ctx context.Context) (string, error)
 }
 
+// AccountIdentifier is implemented by token sources that can name the account
+// their credential belongs to. The identity must be stable for the account and
+// must not reveal the credential; provider state is scoped to it.
+type AccountIdentifier interface {
+	AccountID() string
+}
+
 // StaticToken is a fixed API key.
 type StaticToken string
 
 // Token implements TokenSource.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+// AccountID implements AccountIdentifier with a digest of the key, so two
+// keys never share provider state while the key itself stays out of it.
+func (t StaticToken) AccountID() string {
+	if t == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(t))
+	return "key:" + hex.EncodeToString(sum[:8])
+}

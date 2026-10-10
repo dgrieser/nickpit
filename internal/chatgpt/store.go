@@ -79,7 +79,16 @@ func DefaultStore() (*Store, error) {
 }
 
 func (s *Store) hostFile() string { return filepath.Join(s.Dir, "chatgpt-host.json") }
-func (s *Store) lockFile() string { return s.AuthFile + ".lock" }
+// lockFile is the credential lock, kept beside the credential file. A store
+// that names only its directory locks the default file's lock there, never a
+// path relative to the working directory.
+func (s *Store) lockFile() string {
+	authFile := s.AuthFile
+	if authFile == "" {
+		authFile = filepath.Join(s.Dir, "chatgpt-auth.json")
+	}
+	return authFile + ".lock"
+}
 
 // Load reads the credential file. A missing file returns (nil, nil).
 func (s *Store) Load() (*Credentials, error) {
@@ -112,23 +121,44 @@ func (s *Store) Save(creds *Credentials) error {
 // first use. It survives sign-out so every sign-in from this machine presents
 // the same host.
 func (s *Store) HostID() (string, error) {
+	if id, err := s.readHostID(); err != nil || id != "" {
+		return id, err
+	}
+	// Create it under the credential lock and look again first: two
+	// first-time sign-ins must not each mint an ID and leave the later write
+	// as the one future sign-ins present.
+	var id string
+	err := s.WithLock(func() error {
+		var err error
+		if id, err = s.readHostID(); err != nil || id != "" {
+			return err
+		}
+		id = "urn:uuid:" + newUUID()
+		data, err := json.MarshalIndent(struct {
+			HostID string `json:"host_id"`
+		}{id}, "", "  ")
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(s.hostFile(), append(data, '\n'))
+	})
+	return id, err
+}
+
+// readHostID returns the stored host ID, or "" when there is none yet.
+func (s *Store) readHostID() (string, error) {
 	var record struct {
 		HostID string `json:"host_id"`
 	}
 	data, err := os.ReadFile(s.hostFile())
-	if err == nil && json.Unmarshal(data, &record) == nil && strings.HasPrefix(record.HostID, "urn:uuid:") {
-		return record.HostID, nil
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
 	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		return "", fmt.Errorf("chatgpt: reading host id: %w", err)
 	}
-	record.HostID = "urn:uuid:" + newUUID()
-	data, err = json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := writeFileAtomic(s.hostFile(), append(data, '\n')); err != nil {
-		return "", err
+	if json.Unmarshal(data, &record) != nil || !strings.HasPrefix(record.HostID, "urn:uuid:") {
+		return "", nil
 	}
 	return record.HostID, nil
 }
