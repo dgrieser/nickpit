@@ -2253,6 +2253,11 @@ func newLLMClient(profile config.Profile, logger *logging.Logger) *llm.APIClient
 		// profile built without it.
 		protocol = llm.ChatCompletionsProtocol()
 	}
+	if profile.Auth == config.AuthChatGPT {
+		// Config pins ChatGPT sign-in to the Responses API; plan usage
+		// admits a narrower request shape than a platform key.
+		protocol = llm.NewResponsesProtocolWith(llm.ResponsesOptions{ChatGPTPlan: true})
+	}
 	client := llm.NewAPIClient(llm.ClientOptions{
 		BaseURL:  profile.BaseURL,
 		Model:    profile.Model,

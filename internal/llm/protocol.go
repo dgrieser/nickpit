@@ -122,6 +122,9 @@ type StreamChunk struct {
 	ToolCalls     []ToolCallDelta
 	Usage         *model.TokenUsage
 	FinishReason  FinishReason
+	// StateItem is one piece of provider state to replay with this turn
+	// (see ProviderState), in stream order.
+	StateItem json.RawMessage
 }
 
 // ToolCallDelta is a fragment of a streamed tool call. Index identifies the
@@ -175,6 +178,12 @@ type Capabilities struct {
 	// StructuredOutput reports whether a JSON schema can constrain the
 	// response.
 	StructuredOutput bool
+	// OutputTokenLimit reports whether a request can cap the output tokens.
+	OutputTokenLimit bool
+	// UnsupportedFields lists request-body fields the endpoint rejects. The
+	// core strips them from a profile's extra_body, saying so in the log,
+	// rather than sending a request that cannot succeed.
+	UnsupportedFields []string
 	// SamplingParams lists the sampling knobs the API accepts, by their
 	// config names (temperature, top_p, top_k, min_p, presence_penalty,
 	// repetition_penalty).

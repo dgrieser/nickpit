@@ -3227,9 +3227,12 @@ func TestClientReviewReasoningOnlyContentFilterStaysTerminal(t *testing.T) {
 	if errors.As(err, &emptyErr) {
 		t.Fatalf("content_filter must not be treated as reasoning-only empty: %v", err)
 	}
-	var invalidResp *InvalidResponseError
-	if !errors.As(err, &invalidResp) {
-		t.Fatalf("err = %v, want *InvalidResponseError", err)
+	// A distinct terminal error, not an invalid response: callers' output
+	// retry loops re-prompt invalid responses, and no prompt satisfies a
+	// content policy.
+	var filtered *ContentFilteredError
+	if !errors.As(err, &filtered) {
+		t.Fatalf("err = %v, want *ContentFilteredError", err)
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1 (no reasoning-effort retry storm)", attempts)

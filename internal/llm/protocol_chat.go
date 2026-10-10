@@ -38,6 +38,7 @@ func (chatCompletionsProtocol) Capabilities() Capabilities {
 		Tools:             true,
 		ParallelToolCalls: true,
 		StructuredOutput:  true,
+		OutputTokenLimit:  true,
 		// Open-weight servers accept every knob; they ride in the body as
 		// extra fields where the OpenAI schema has none.
 		SamplingParams: []string{"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"},

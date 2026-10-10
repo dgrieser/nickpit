@@ -187,6 +187,18 @@ type Message struct {
 	Name       string
 	ToolCallID string
 	ToolCalls  []ToolCall
+	// ProviderState is protocol-private context of an assistant turn that
+	// must be sent back with it, such as the encrypted reasoning a stateless
+	// Responses request needs to continue after its tool calls. Callers only
+	// carry it along; ReviewResponse.AssistantMessage sets it.
+	ProviderState *ProviderState
+}
+
+// ProviderState is opaque context one endpoint asked to have replayed. It is
+// sent back only to the protocol, endpoint, and model that produced it.
+type ProviderState struct {
+	Origin string
+	Items  []json.RawMessage
 }
 
 type ToolDefinition struct {
@@ -214,9 +226,19 @@ type ReviewResponse struct {
 	ReasoningEffort        string                       `json:"reasoning_effort,omitempty"`
 	Reasoned               bool                         `json:"-"`
 	ToolsOmitted           bool                         `json:"-"`
+	// ProviderState is what the protocol needs replayed with this turn; it
+	// travels with the message AssistantMessage builds.
+	ProviderState *ProviderState `json:"-"`
+}
+
+// AssistantMessage is the history entry for this response's turn: its text,
+// its tool calls, and the provider state the next request has to replay.
+func (r *ReviewResponse) AssistantMessage() Message {
+	return Message{Role: RoleAssistant, Content: r.RawResponse, ToolCalls: r.ToolCalls, ProviderState: r.ProviderState}
 }
 
 type streamedResponse struct {
+	stateItems       []json.RawMessage
 	content          string
 	toolCalls        []ToolCall
 	usage            model.TokenUsage
@@ -265,6 +287,20 @@ type llmHTTPStatusError struct {
 
 type ReasoningBudgetExhaustedError struct {
 	ReasoningEffort string
+	// Truncated marks a response that had begun its answer when the token
+	// limit cut it off, rather than one that never got past reasoning.
+	Truncated bool
+}
+
+// ContentFilteredError is returned when the provider stopped the response
+// for its content policy. It is terminal: a lower effort or a retry of the
+// same request cannot satisfy the policy.
+type ContentFilteredError struct {
+	ReasoningEffort string
+}
+
+func (e *ContentFilteredError) Error() string {
+	return "llm: the provider stopped the response for its content policy (finish reason content_filter)"
 }
 
 type reasoningTimeoutController struct {
@@ -298,6 +334,9 @@ func (e *llmHTTPStatusError) Unwrap() error {
 }
 
 func (e *ReasoningBudgetExhaustedError) Error() string {
+	if e.Truncated {
+		return "llm: model exhausted its token budget before finishing the response; the output was cut off"
+	}
 	return reasoningBudgetExhaustedMessage
 }
 
@@ -444,6 +483,12 @@ func NewAPIClient(opts ClientOptions) *APIClient {
 // Protocol returns the wire API the client speaks.
 func (c *APIClient) Protocol() Protocol {
 	return c.protocol
+}
+
+// stateOrigin identifies the producer of provider state: the protocol, the
+// endpoint, and the model.
+func (c *APIClient) stateOrigin(model string) string {
+	return c.protocol.Name() + " " + c.baseURL + " " + model
 }
 
 // Capabilities implements CapabilityReporter.
@@ -827,6 +872,9 @@ func cloneMessages(messages []Message) []Message {
 	copy(cloned, messages)
 	for i := range cloned {
 		cloned[i].ToolCalls = cloneToolCalls(messages[i].ToolCalls)
+		if state := messages[i].ProviderState; state != nil {
+			cloned[i].ProviderState = &ProviderState{Origin: state.Origin, Items: append([]json.RawMessage(nil), state.Items...)}
+		}
 	}
 	return cloned
 }
@@ -1188,6 +1236,8 @@ func sanitizeMessagesForNoTools(messages []Message) []Message {
 		}
 		next := msg
 		next.ToolCalls = nil
+		// The state belonged to the tool calls this history no longer has.
+		next.ProviderState = nil
 		if next.Role == RoleTool {
 			next.Role = RoleUser
 			next.Name = ""
@@ -1522,6 +1572,26 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 			FinishReason:    streamed.lastFinishReason,
 		}
 	}
+	// A response the provider reports as cut short is never a result, even
+	// when the text it got as far as happens to parse.
+	switch FinishReason(streamed.lastFinishReason) {
+	case FinishContentFilter:
+		progress.recordFailure("response blocked by content filter")
+		return nil, callUsage, &ContentFilteredError{ReasoningEffort: completion.ReasoningEffort}
+	case FinishLength:
+		if streamed.reasoned {
+			// Reasoning spent the output budget: the effort ladder's lower
+			// rungs leave more of it for the answer.
+			progress.recordFailure("output cut off at the token limit")
+			return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: completion.ReasoningEffort, Truncated: true}
+		}
+		progress.recordFailure("invalid response")
+		return nil, callUsage, &InvalidResponseError{
+			RawContent:      streamed.content,
+			Reason:          "the response was cut off at the output-token limit and is incomplete",
+			ReasoningEffort: completion.ReasoningEffort,
+		}
+	}
 
 	toolCalls, content, recoveredXMLToolCalls := mergeContentToolCalls(streamed.toolCalls, streamed.content)
 	if recoveredXMLToolCalls > 0 {
@@ -1558,6 +1628,9 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 	resp.TokensUsed = callUsage
 	resp.ReasoningEffort = completion.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
+	if len(streamed.stateItems) > 0 {
+		resp.ProviderState = &ProviderState{Origin: c.stateOrigin(completion.Model), Items: streamed.stateItems}
+	}
 	if toolsOmitted {
 		resp.ToolsOmitted = true
 	}
@@ -1595,6 +1668,14 @@ func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, [
 	}
 	if out.Model == "" {
 		out.Model = c.model
+	}
+	// Provider state goes back only where it came from: another endpoint,
+	// protocol, or model cannot read (or would reject) it.
+	origin := c.stateOrigin(out.Model)
+	for i, msg := range out.Messages {
+		if msg.ProviderState != nil && msg.ProviderState.Origin != origin {
+			out.Messages[i].ProviderState = nil
+		}
 	}
 	if req.Finalize {
 		// Provider extras must not restore tools or override finalization's
@@ -1644,6 +1725,16 @@ func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, [
 			out.SchemaName = responseFormatName(req.SchemaKind)
 		} else {
 			dropped = append(dropped, "response_schema")
+		}
+	}
+	if out.MaxTokens != nil && !caps.OutputTokenLimit {
+		dropped = append(dropped, "max_tokens")
+		out.MaxTokens = nil
+	}
+	for _, field := range caps.UnsupportedFields {
+		if _, ok := out.ExtraBody[field]; ok {
+			dropped = append(dropped, "extra_body."+field)
+			delete(out.ExtraBody, field)
 		}
 	}
 	if out.ReasoningEffort != "" && !caps.ReasoningEffort {
@@ -2285,6 +2376,7 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 		sawToolCalls     bool
 		lastFinishReason string
 		receivedChunk    bool
+		stateItems       []json.RawMessage
 	)
 	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
 	ownsSink := false
@@ -2304,6 +2396,7 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 	}
 	partialResponse := func() *streamedResponse {
 		return &streamedResponse{
+			stateItems:       stateItems,
 			content:          contentBuilder.String(),
 			toolCalls:        finalizeToolCalls(toolCalls),
 			usage:            usage,
@@ -2389,6 +2482,9 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 
 		if chunk.FinishReason != "" {
 			lastFinishReason = string(chunk.FinishReason)
+		}
+		if len(chunk.StateItem) > 0 {
+			stateItems = append(stateItems, chunk.StateItem)
 		}
 		if chunk.Reasoning != "" {
 			if !reasoningStarted {
