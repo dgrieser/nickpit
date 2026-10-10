@@ -205,11 +205,11 @@ func TestProviderStateIsNotReplayedToAnotherModel(t *testing.T) {
 
 	client := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "model-a", Protocol: NewResponsesProtocol()})
 	stale := &ProviderState{
-		Origin: client.stateOrigin("model-b"),
+		Origin: client.stateOrigin("model-b", ""),
 		Items:  []json.RawMessage{json.RawMessage(`{"type":"reasoning","summary":[],"encrypted_content":"from-b"}`)},
 	}
 	own := &ProviderState{
-		Origin: client.stateOrigin("model-a"),
+		Origin: client.stateOrigin("model-a", ""),
 		Items:  []json.RawMessage{json.RawMessage(`{"type":"reasoning","summary":[],"encrypted_content":"from-a"}`)},
 	}
 	for _, state := range []*ProviderState{stale, own} {
@@ -429,7 +429,7 @@ func TestProviderStateIsNotReplayedToAnotherAccount(t *testing.T) {
 	accountA := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "m", Protocol: NewResponsesProtocol(), Tokens: StaticToken("key-a")})
 	accountB := NewAPIClient(ClientOptions{BaseURL: server.URL, Model: "m", Protocol: NewResponsesProtocol(), Tokens: StaticToken("key-b")})
 	state := &ProviderState{
-		Origin: accountA.stateOrigin("m"),
+		Origin: accountA.stateOrigin("m", StaticToken("key-a").AccountID()),
 		Items:  []json.RawMessage{json.RawMessage(`{"type":"reasoning","summary":[],"encrypted_content":"from-account-a"}`)},
 	}
 	if strings.Contains(state.Origin, "key-a") {

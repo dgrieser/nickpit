@@ -125,11 +125,21 @@ func (s *Store) HostID() (string, error) {
 	if id, err := s.readHostID(); err != nil || id != "" {
 		return id, err
 	}
-	// Create it under the credential lock and look again first: two
-	// first-time sign-ins must not each mint an ID and leave the later write
-	// as the one future sign-ins present.
+	// Create it under its own lock and look again first: two first-time
+	// sign-ins must not each mint an ID and leave the later write as the one
+	// future sign-ins present. The lock belongs to the host-ID file, not to a
+	// credential file: stores with different credential files in one
+	// directory share the host ID, so they must share its lock.
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return "", fmt.Errorf("chatgpt: creating %s: %w", s.Dir, err)
+	}
+	unlock, err := lockFile(s.hostFile() + ".lock")
+	if err != nil {
+		return "", fmt.Errorf("chatgpt: locking host id: %w", err)
+	}
+	defer unlock()
 	var id string
-	err := s.WithLock(func() error {
+	err = func() error {
 		var err error
 		if id, err = s.readHostID(); err != nil || id != "" {
 			return err
@@ -142,7 +152,7 @@ func (s *Store) HostID() (string, error) {
 			return err
 		}
 		return writeFileAtomic(s.hostFile(), append(data, '\n'))
-	})
+	}()
 	return id, err
 }
 

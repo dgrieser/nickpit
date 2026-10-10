@@ -3,6 +3,7 @@ package chatgpt
 import (
 	"context"
 	"fmt"
+	"github.com/dgrieser/nickpit/internal/llm"
 	"strings"
 	"sync"
 	"time"
@@ -54,15 +55,27 @@ func (s *Session) Credentials() Credentials {
 // logout in any process stops this one's next request, and a refresh or new
 // sign-in elsewhere is picked up instead of a stale copy being sent.
 func (s *Session) Token(ctx context.Context) (string, error) {
+	cred, err := s.Credential(ctx)
+	return cred.Token, err
+}
+
+// Credential returns the access token and the account it belongs to, taken
+// from one reconciled copy of the credentials under the session lock, so a
+// request never pairs one account's token with another's identity.
+func (s *Session) Credential(ctx context.Context) (llm.Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reconcileLocked(); err != nil {
-		return "", err
+		return llm.Credential{}, err
 	}
-	if !s.needsRefresh(s.creds, time.Now()) {
-		return s.creds.AccessToken, nil
+	token := s.creds.AccessToken
+	if s.needsRefresh(s.creds, time.Now()) {
+		var err error
+		if token, err = s.refreshLocked(ctx, false); err != nil {
+			return llm.Credential{}, err
+		}
 	}
-	return s.refreshLocked(ctx, false)
+	return llm.Credential{Token: token, Account: accountID(s.creds)}, nil
 }
 
 // reconcileLocked replaces the in-memory credentials with the stored ones.
@@ -242,6 +255,15 @@ func (l *LazySession) Token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return session.Token(ctx)
+}
+
+// Credential implements llm.CredentialSource.
+func (l *LazySession) Credential(ctx context.Context) (llm.Credential, error) {
+	session, err := l.get()
+	if err != nil {
+		return llm.Credential{}, err
+	}
+	return session.Credential(ctx)
 }
 
 // AccountID implements llm.AccountIdentifier.

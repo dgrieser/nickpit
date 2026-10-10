@@ -337,6 +337,7 @@ func chatStreamChunk(chunk openai.ChatCompletionStreamResponse) StreamChunk {
 			out.ReasoningKind = ReasoningRaw
 		}
 		out.Text += choice.Delta.Content
+		out.Refusal += choice.Delta.Refusal
 		for _, call := range choice.Delta.ToolCalls {
 			out.ToolCalls = append(out.ToolCalls, ToolCallDelta{
 				Index:     call.Index,

@@ -238,7 +238,10 @@ func (r *ReviewResponse) AssistantMessage() Message {
 }
 
 type streamedResponse struct {
+	// stateOrigin is the origin of the attempt that produced stateItems.
+	stateOrigin      string
 	stateItems       []json.RawMessage
+	refusal          string
 	content          string
 	toolCalls        []ToolCall
 	usage            model.TokenUsage
@@ -290,6 +293,17 @@ type ReasoningBudgetExhaustedError struct {
 	// Truncated marks a response that had begun its answer when the token
 	// limit cut it off, rather than one that never got past reasoning.
 	Truncated bool
+}
+
+// RefusalError is returned when the model refused the request and the
+// provider reported the refusal apart from the answer. It is terminal.
+type RefusalError struct {
+	Message         string
+	ReasoningEffort string
+}
+
+func (e *RefusalError) Error() string {
+	return "llm: the model refused the request: " + model.ClipLine(e.Message, 300)
 }
 
 // ContentFilteredError is returned when the provider stopped the response
@@ -488,12 +502,39 @@ func (c *APIClient) Protocol() Protocol {
 // stateOrigin identifies the producer of provider state: the protocol, the
 // endpoint, the model, and the account the credential belongs to — state one
 // account's request produced is never sent under another's.
-func (c *APIClient) stateOrigin(model string) string {
-	origin := c.protocol.Name() + " " + c.baseURL + " " + model
-	if account, ok := c.tokens.(AccountIdentifier); ok {
-		origin += " " + account.AccountID()
+func (c *APIClient) stateOrigin(model, account string) string {
+	return c.protocol.Name() + " " + c.baseURL + " " + model + " " + account
+}
+
+// credential takes the token for one request and the account it belongs to,
+// as one snapshot where the source can provide it.
+func (c *APIClient) credential(ctx context.Context) (Credential, error) {
+	if source, ok := c.tokens.(CredentialSource); ok {
+		return source.Credential(ctx)
 	}
-	return origin
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return Credential{}, err
+	}
+	cred := Credential{Token: token}
+	if account, ok := c.tokens.(AccountIdentifier); ok {
+		cred.Account = account.AccountID()
+	}
+	return cred, nil
+}
+
+// withStateFor returns req with provider state from any other origin removed:
+// another endpoint, protocol, model, or account cannot read (or would reject)
+// it. req itself is left untouched.
+func withStateFor(req *CompletionRequest, origin string) *CompletionRequest {
+	filtered := *req
+	filtered.Messages = slices.Clone(req.Messages)
+	for i, msg := range filtered.Messages {
+		if msg.ProviderState != nil && msg.ProviderState.Origin != origin {
+			filtered.Messages[i].ProviderState = nil
+		}
+	}
+	return &filtered
 }
 
 // Capabilities implements CapabilityReporter.
@@ -1582,6 +1623,13 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 			FinishReason:    streamed.lastFinishReason,
 		}
 	}
+	// A refusal the provider reports as such is terminal: re-prompting cannot
+	// change the decision, and parsing it as an answer would only produce an
+	// invalid response for the callers' output retry to spend attempts on.
+	if strings.TrimSpace(streamed.refusal) != "" {
+		progress.recordFailure("model refused the request")
+		return nil, callUsage, &RefusalError{Message: streamed.refusal, ReasoningEffort: completion.ReasoningEffort}
+	}
 	// A response the provider reports as cut short is never a result, even
 	// when the text it got as far as happens to parse.
 	switch FinishReason(streamed.lastFinishReason) {
@@ -1639,7 +1687,7 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 	resp.ReasoningEffort = completion.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
 	if len(streamed.stateItems) > 0 {
-		resp.ProviderState = &ProviderState{Origin: c.stateOrigin(completion.Model), Items: streamed.stateItems}
+		resp.ProviderState = &ProviderState{Origin: streamed.stateOrigin, Items: streamed.stateItems}
 	}
 	if toolsOmitted {
 		resp.ToolsOmitted = true
@@ -1677,14 +1725,6 @@ func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, [
 	}
 	if out.Model == "" {
 		out.Model = c.model
-	}
-	// Provider state goes back only where it came from: another endpoint,
-	// protocol, or model cannot read (or would reject) it.
-	origin := c.stateOrigin(out.Model)
-	for i, msg := range out.Messages {
-		if msg.ProviderState != nil && msg.ProviderState.Origin != origin {
-			out.Messages[i].ProviderState = nil
-		}
 	}
 	if req.Finalize {
 		// Provider extras must not restore tools or override finalization's
@@ -1936,7 +1976,12 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 	tokenRefreshed := false
 	var retries requestRetries
 	for attempt := 0; ; attempt++ {
-		body, err := c.protocol.EncodeRequest(req)
+		// Each attempt takes its credential afresh — a refresh or a new
+		// sign-in may have replaced it since the last one — and sends only the
+		// provider state of that credential's account.
+		cred, credErr := c.credential(ctx)
+		origin := c.stateOrigin(req.Model, cred.Account)
+		body, err := c.protocol.EncodeRequest(withStateFor(req, origin))
 		if err != nil {
 			progress.recordFailure("request could not be encoded")
 			return nil, fmt.Errorf("llm: encoding request: %w", err)
@@ -1946,7 +1991,12 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf(ctx, "Sending LLM request: attempt=%d request_retries=%d rate_limit_retries=%d", attempt+1, retries.bounded, retries.rateLimit)
 
-		httpResp, err := c.openStream(streamCtx, body)
+		var httpResp *http.Response
+		if credErr != nil {
+			err = credErr
+		} else {
+			httpResp, err = c.openStream(streamCtx, body, cred.Token)
+		}
 		if err != nil {
 			// The stream never opened, so nothing else can cancel the child
 			// context; release it here to avoid leaking one per failed attempt.
@@ -1969,9 +2019,12 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 		var statusErr *llmHTTPStatusError
 		var errBody []byte
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusBadRequest {
-			streamCancel()
+			// Read the error before cancelling: the body may still be in
+			// flight behind the headers, and cancelling the request's context
+			// would cut it off and lose the provider's error.
 			errBody, err = io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodyBytes))
 			_ = httpResp.Body.Close()
+			streamCancel()
 			if err != nil {
 				progress.recordFailure("network error")
 				return nil, fmt.Errorf("llm: reading error response: %w", err)
@@ -2064,6 +2117,7 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 					progress.recordFailure("closing stream failed")
 					return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
 				}
+				resp.stateOrigin = origin
 				return resp, nil
 			}
 		}
@@ -2163,13 +2217,9 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 // is defense-in-depth against a misbehaving upstream.
 const maxErrorBodyBytes = 16 << 20 // 16 MiB
 
-// openStream sends one streaming request with the current credential.
-func (c *APIClient) openStream(ctx context.Context, body []byte) (*http.Response, error) {
+// openStream sends one streaming request with token.
+func (c *APIClient) openStream(ctx context.Context, body []byte, token string) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+c.protocol.Path(), bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	token, err := c.tokens.Token(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2392,6 +2442,7 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 		lastFinishReason string
 		receivedChunk    bool
 		stateItems       []json.RawMessage
+		refusal          strings.Builder
 	)
 	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
 	ownsSink := false
@@ -2412,6 +2463,7 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 	partialResponse := func() *streamedResponse {
 		return &streamedResponse{
 			stateItems:       stateItems,
+			refusal:          refusal.String(),
 			content:          contentBuilder.String(),
 			toolCalls:        finalizeToolCalls(toolCalls),
 			usage:            usage,
@@ -2500,6 +2552,10 @@ func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink 
 		}
 		if len(chunk.StateItem) > 0 {
 			stateItems = append(stateItems, chunk.StateItem)
+		}
+		if chunk.Refusal != "" {
+			timeout.Stop()
+			refusal.WriteString(chunk.Refusal)
 		}
 		if chunk.Reasoning != "" {
 			if !reasoningStarted {
