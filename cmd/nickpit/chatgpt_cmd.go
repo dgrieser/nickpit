@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -121,14 +120,9 @@ func (a *app) newChatGPTCmd() *cobra.Command {
 				ShowURL: func(url string) {
 					_, _ = fmt.Fprintf(out, "Open this URL to sign in with ChatGPT:\n\n  %s\n\nWaiting for the browser to return to http://127.0.0.1 ...\n", url)
 				},
-				OnRegistration: func(clientID string) error {
-					if previous != nil && previous.ClientID == clientID {
-						return nil
-					}
-					// Keep the issued registration even if the code exchange fails,
-					// so a retry reauthorizes instead of registering again.
-					return store.Save(&chatgpt.Credentials{ClientID: clientID})
-				},
+				// Keep the issued registration even if the code exchange fails,
+				// so a retry reauthorizes instead of registering again.
+				OnRegistration: store.SaveRegistration,
 			}
 			if !noBrowser {
 				opts.OpenBrowser = openBrowser
@@ -137,7 +131,7 @@ func (a *app) newChatGPTCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := store.Save(creds); err != nil {
+			if err := store.Replace(creds); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(out, "\nSigned in as %s.\n", accountLabel(creds))
@@ -163,32 +157,20 @@ func (a *app) newChatGPTCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			creds, err := store.Load()
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			result, err := chatgpt.Logout(ctx, store, chatgpt.NewProvider(), forget)
 			if err != nil {
 				return err
 			}
 			out := cmd.ErrOrStderr()
-			if creds == nil {
+			if !result.SignedOut {
 				_, _ = fmt.Fprintln(out, "Not signed in.")
 				return nil
 			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-			defer cancel()
-			revokeErr := chatgpt.NewProvider().Revoke(ctx, creds)
-			if forget {
-				if err := os.Remove(store.AuthFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
-			} else {
-				// Keep the registration and account so the next sign-in
-				// reauthorizes the same client instead of registering again.
-				if err := store.Save(&chatgpt.Credentials{ClientID: creds.ClientID, Issuer: creds.Issuer, Subject: creds.Subject, Email: creds.Email, Name: creds.Name}); err != nil {
-					return err
-				}
-			}
 			_, _ = fmt.Fprintln(out, "Signed out; local credentials removed.")
-			if revokeErr != nil {
-				_, _ = fmt.Fprintf(out, "Remote sign-out could not be confirmed (%v); disconnect NickPit in ChatGPT settings if needed.\n", revokeErr)
+			if result.RevokeErr != nil {
+				_, _ = fmt.Fprintf(out, "Remote sign-out could not be confirmed (%v); disconnect NickPit in ChatGPT settings if needed.\n", result.RevokeErr)
 			}
 			return nil
 		},

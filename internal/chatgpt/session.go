@@ -71,12 +71,18 @@ func (s *Session) needsRefresh(creds *Credentials, now time.Time) bool {
 }
 
 func (s *Session) refreshLocked(ctx context.Context, force bool) (string, error) {
-	unlock, err := lockFile(s.Store.lockFile())
-	if err != nil {
-		return "", fmt.Errorf("chatgpt: locking credentials: %w", err)
-	}
-	defer unlock()
+	var token string
+	err := s.Store.WithLock(func() error {
+		var err error
+		token, err = s.refreshUnderLock(ctx, force)
+		return err
+	})
+	return token, err
+}
 
+// refreshUnderLock runs with the credential lock held: every other writer
+// (refresh, login, logout) waits, so what it reads is what it replaces.
+func (s *Session) refreshUnderLock(ctx context.Context, force bool) (string, error) {
 	// Another process may have rotated the tokens while this one waited.
 	stored, err := s.Store.Load()
 	if err != nil {
@@ -105,8 +111,18 @@ func (s *Session) refreshLocked(ctx context.Context, force bool) (string, error)
 	next, err := s.Provider.Refresh(ctx, stored)
 	if err != nil {
 		if RequiresSignIn(err) {
-			stored.AccessToken, stored.RefreshToken = "", ""
-			_ = s.Store.Save(stored)
+			// Clear only the session this refresh spent. Should the file no
+			// longer hold it — a writer outside the lock protocol replaced it
+			// — the newer credentials stay, and are used.
+			current, loadErr := s.Store.Load()
+			if loadErr == nil && current.SignedIn() && current.RefreshToken != stored.RefreshToken {
+				s.creds = current
+				return current.AccessToken, nil
+			}
+			if loadErr == nil && current != nil {
+				current.AccessToken, current.RefreshToken = "", ""
+				_ = s.Store.Save(current)
+			}
 			return "", fmt.Errorf("%w; run `nickpit chatgpt login` again", err)
 		}
 		return "", err
