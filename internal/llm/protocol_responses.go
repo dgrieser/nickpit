@@ -457,6 +457,7 @@ type responsesEventReader struct {
 
 	sawSummary       bool
 	lastSummaryIndex int
+	sawRefusal       bool
 }
 
 func (r *responsesEventReader) Next() (StreamChunk, error) {
@@ -510,6 +511,7 @@ type responsesEvent struct {
 	OutputIndex  int               `json:"output_index"`
 	SummaryIndex int               `json:"summary_index"`
 	Arguments    string            `json:"arguments"`
+	Refusal      string            `json:"refusal"`
 	Item         *responsesItem    `json:"item"`
 	Response     *responsesPayload `json:"response"`
 	Code         any               `json:"code"`
@@ -551,7 +553,16 @@ func (r *responsesEventReader) decode(data []byte) (StreamChunk, error) {
 	case "response.output_text.delta":
 		return StreamChunk{Text: event.Delta}, nil
 	case "response.refusal.delta":
+		if event.Delta != "" {
+			r.sawRefusal = true
+		}
 		return StreamChunk{Refusal: event.Delta}, nil
+	case "response.refusal.done":
+		// The final text repeats the deltas; it only counts when none came.
+		if !r.sawRefusal && event.Refusal != "" {
+			r.sawRefusal = true
+			return StreamChunk{Refusal: event.Refusal}, nil
+		}
 	case "response.reasoning_summary_text.delta":
 		delta := event.Delta
 		if r.sawSummary && event.SummaryIndex != r.lastSummaryIndex && delta != "" {

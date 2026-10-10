@@ -104,6 +104,8 @@ type APIClient struct {
 	// idleStreamTimeout overrides defaultIdleStreamTimeout when > 0; tests use
 	// it to exercise the idle-stream watchdog without waiting minutes.
 	idleStreamTimeout time.Duration
+	// errorBodyTimeout overrides defaultErrorBodyTimeout when > 0.
+	errorBodyTimeout time.Duration
 }
 
 type SchemaKind string
@@ -1539,36 +1541,6 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 		c.logf(ctx, "LLM request omits settings the %s protocol does not accept: %s", c.protocol.Name(), strings.Join(dropped, ","))
 	}
 
-	serializedPayload, err := c.protocol.EncodeRequest(completion)
-	if err != nil {
-		progress.recordFailure("request could not be encoded")
-		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
-	}
-	requestBodyBytes := len(serializedPayload)
-	c.logf(ctx, "LLM request size: request_body_bytes=%d max_request_bytes=%d", requestBodyBytes, c.maxRequestBytes)
-	if c.maxRequestBytes > 0 && requestBodyBytes > c.maxRequestBytes {
-		trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, completion, c.maxRequestBytes)
-		if trimErr != nil {
-			progress.recordFailure("request could not be trimmed")
-			return nil, callUsage, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
-		}
-		if !changed || after > c.maxRequestBytes {
-			progress.recordFailure("request too large after trimming")
-			return nil, callUsage, fmt.Errorf(
-				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
-				after,
-				c.maxRequestBytes,
-			)
-		}
-		completion = trimmed
-		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
-	}
-	payloadForLog, err := requestPayloadForLog(c.protocol, completion)
-	if err != nil {
-		progress.recordFailure("request could not be encoded")
-		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
-	}
-
 	maxTokensLog := "unset"
 	if completion.MaxTokens != nil {
 		maxTokensLog = fmt.Sprintf("%d", *completion.MaxTokens)
@@ -1595,7 +1567,6 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 		len(completion.Messages),
 		len(completion.Tools),
 	)
-	c.logJSON(ctx, "LLM request payload:", payloadForLog)
 
 	streamed, err := c.reviewStream(ctx, completion, req.ReasoningSink, req.MaxReasoning, &callUsage, progress)
 	if err != nil {
@@ -1612,6 +1583,15 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 	)
 	c.logRawModelResponse(ctx, streamed)
 
+	// A refusal the provider reports as such is terminal, and it is checked first: a refusal
+	// after reasoning has no content either, but it is no reasoning-only
+	// answer for a lower effort to fix. Re-prompting cannot
+	// change the decision, and parsing it as an answer would only produce an
+	// invalid response for the callers' output retry to spend attempts on.
+	if strings.TrimSpace(streamed.refusal) != "" {
+		progress.recordFailure("model refused the request")
+		return nil, callUsage, &RefusalError{Message: streamed.refusal, ReasoningEffort: completion.ReasoningEffort}
+	}
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(FinishLength) {
 		progress.recordFailure("reasoning budget exhausted")
 		return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: completion.ReasoningEffort}
@@ -1622,13 +1602,6 @@ func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress
 			ReasoningEffort: completion.ReasoningEffort,
 			FinishReason:    streamed.lastFinishReason,
 		}
-	}
-	// A refusal the provider reports as such is terminal: re-prompting cannot
-	// change the decision, and parsing it as an answer would only produce an
-	// invalid response for the callers' output retry to spend attempts on.
-	if strings.TrimSpace(streamed.refusal) != "" {
-		progress.recordFailure("model refused the request")
-		return nil, callUsage, &RefusalError{Message: streamed.refusal, ReasoningEffort: completion.ReasoningEffort}
 	}
 	// A response the provider reports as cut short is never a result, even
 	// when the text it got as far as happens to parse.
@@ -1974,6 +1947,7 @@ func (r requestRetries) backoffAttempt(status int) int {
 func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage, progress *retryProgress) (*streamedResponse, error) {
 	requestTooLargeRetried := false
 	tokenRefreshed := false
+	lastOrigin := ""
 	var retries requestRetries
 	for attempt := 0; ; attempt++ {
 		// Each attempt takes its credential afresh — a refresh or a new
@@ -1981,11 +1955,11 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 		// provider state of that credential's account.
 		cred, credErr := c.credential(ctx)
 		origin := c.stateOrigin(req.Model, cred.Account)
-		body, err := c.protocol.EncodeRequest(withStateFor(req, origin))
+		attemptReq, body, err := c.prepareAttempt(ctx, req, origin, attempt == 0 || origin != lastOrigin, progress)
 		if err != nil {
-			progress.recordFailure("request could not be encoded")
-			return nil, fmt.Errorf("llm: encoding request: %w", err)
+			return nil, err
 		}
+		lastOrigin = origin
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		detector := newReasoningLoopDetector(streamCancel, maxReasoning)
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
@@ -2019,15 +1993,10 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 		var statusErr *llmHTTPStatusError
 		var errBody []byte
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusBadRequest {
-			// Read the error before cancelling: the body may still be in
-			// flight behind the headers, and cancelling the request's context
-			// would cut it off and lose the provider's error.
-			errBody, err = io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodyBytes))
-			_ = httpResp.Body.Close()
-			streamCancel()
+			errBody, err = c.readErrorBody(ctx, httpResp, streamCancel)
 			if err != nil {
-				progress.recordFailure("network error")
-				return nil, fmt.Errorf("llm: reading error response: %w", err)
+				progress.recordFailure("request canceled")
+				return nil, err
 			}
 			statusErr = c.statusError(httpResp, c.protocol.ParseError(httpResp.StatusCode, errBody))
 		} else {
@@ -2144,16 +2113,11 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 		}
 		errResp := httpResp
 		if isRequestTooLarge(status, statusErr.message) && !requestTooLargeRetried {
-			serialized, serializeErr := c.protocol.EncodeRequest(req)
-			if serializeErr != nil {
-				progress.recordFailure("oversized request could not be encoded")
-				return nil, fmt.Errorf("llm: encoding oversized retry request: %w", serializeErr)
-			}
-			target := len(serialized) * 3 / 4
+			target := len(body) * 3 / 4
 			if c.maxRequestBytes > 0 {
 				target = min(target, c.maxRequestBytes)
 			}
-			trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, req, target)
+			trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, attemptReq, target)
 			if trimErr != nil {
 				progress.recordFailure("oversized request could not be trimmed")
 				return nil, fmt.Errorf("llm: trimming oversized retry request: %w", trimErr)
@@ -2213,9 +2177,87 @@ func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, si
 	}
 }
 
+// prepareAttempt renders req for one attempt under the credential of origin:
+// provider state from any other origin is removed first, and the request that
+// remains — the one actually sent — is fitted to max_request_bytes. Measuring
+// before the filter would count state that is never sent, and could reject a
+// request that fits. The payload is logged when logPayload is set.
+func (c *APIClient) prepareAttempt(ctx context.Context, req *CompletionRequest, origin string, logPayload bool, progress *retryProgress) (*CompletionRequest, []byte, error) {
+	attempt := withStateFor(req, origin)
+	body, err := c.protocol.EncodeRequest(attempt)
+	if err != nil {
+		progress.recordFailure("request could not be encoded")
+		return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+	}
+	if logPayload {
+		c.logf(ctx, "LLM request size: request_body_bytes=%d max_request_bytes=%d", len(body), c.maxRequestBytes)
+	}
+	if c.maxRequestBytes > 0 && len(body) > c.maxRequestBytes {
+		trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, attempt, c.maxRequestBytes)
+		if trimErr != nil {
+			progress.recordFailure("request could not be trimmed")
+			return nil, nil, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
+		}
+		if !changed || after > c.maxRequestBytes {
+			progress.recordFailure("request too large after trimming")
+			return nil, nil, fmt.Errorf(
+				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
+				after,
+				c.maxRequestBytes,
+			)
+		}
+		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
+		attempt = trimmed
+		if body, err = c.protocol.EncodeRequest(attempt); err != nil {
+			progress.recordFailure("request could not be encoded")
+			return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+		}
+	}
+	if logPayload {
+		payload, err := requestPayloadForLog(c.protocol, attempt)
+		if err != nil {
+			progress.recordFailure("request could not be encoded")
+			return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+		}
+		c.logJSON(ctx, "LLM request payload:", payload)
+	}
+	return attempt, body, nil
+}
+
 // maxErrorBodyBytes bounds how much of an error response body is read; it
 // is defense-in-depth against a misbehaving upstream.
 const maxErrorBodyBytes = 16 << 20 // 16 MiB
+
+// defaultErrorBodyTimeout bounds how long an error response's body may take
+// once its headers arrived. ResponseHeaderTimeout ends at the headers and the
+// idle-stream watchdog only covers successful streams, so without it a server
+// that sends an error status and never finishes the body would hang the call.
+const defaultErrorBodyTimeout = 30 * time.Second
+
+// readErrorBody reads a failed response's body and then cancels its request.
+// The body is read first because it may still be in flight behind the
+// headers, and cancelling would cut it off and lose the provider's error. The
+// read is bounded in time: past errorBodyTimeout, or on a broken connection,
+// whatever arrived is kept and the status alone drives the retry policy. Only
+// cancellation of the call itself is returned as an error.
+func (c *APIClient) readErrorBody(ctx context.Context, resp *http.Response, cancel context.CancelFunc) ([]byte, error) {
+	limit := c.errorBodyTimeout
+	if limit <= 0 {
+		limit = defaultErrorBodyTimeout
+	}
+	timer := time.AfterFunc(limit, cancel)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	timer.Stop()
+	_ = resp.Body.Close()
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("llm: reading error response: %w", ctx.Err())
+		}
+		c.logf(ctx, "LLM error response body incomplete (status=%s, read %d bytes): %v", resp.Status, len(body), err)
+	}
+	return body, nil
+}
 
 // openStream sends one streaming request with token.
 func (c *APIClient) openStream(ctx context.Context, body []byte, token string) (*http.Response, error) {

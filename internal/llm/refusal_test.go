@@ -30,6 +30,33 @@ func TestRefusalIsTerminalNotAnInvalidResponse(t *testing.T) {
 			},
 		},
 		{
+			name:     "responses_after_reasoning",
+			protocol: NewResponsesProtocol,
+			write: func(t *testing.T, w http.ResponseWriter) {
+				writeResponsesEvent(t, w, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "Considering the request."})
+				writeResponsesEvent(t, w, map[string]any{"type": "response.refusal.delta", "delta": "I can't help with that."})
+				writeResponsesEvent(t, w, completedEvent())
+			},
+		},
+		{
+			name:     "responses_done_without_delta",
+			protocol: NewResponsesProtocol,
+			write: func(t *testing.T, w http.ResponseWriter) {
+				writeResponsesEvent(t, w, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "Considering the request."})
+				writeResponsesEvent(t, w, map[string]any{"type": "response.refusal.done", "refusal": "I can't help with that."})
+				writeResponsesEvent(t, w, completedEvent())
+			},
+		},
+		{
+			name:     "chat_completions_after_reasoning",
+			protocol: ChatCompletionsProtocol,
+			write: func(t *testing.T, w http.ResponseWriter) {
+				writeSSEChunk(t, w, map[string]any{"choices": []map[string]any{{"index": 0, "delta": map[string]any{"reasoning_content": "Considering the request."}}}})
+				writeSSEChunk(t, w, map[string]any{"choices": []map[string]any{{"index": 0, "delta": map[string]any{"refusal": "I can't help with that."}, "finish_reason": "stop"}}})
+				writeSSEDone(t, w)
+			},
+		},
+		{
 			name:     "chat_completions",
 			protocol: ChatCompletionsProtocol,
 			write: func(t *testing.T, w http.ResponseWriter) {
@@ -52,8 +79,8 @@ func TestRefusalIsTerminalNotAnInvalidResponse(t *testing.T) {
 				SchemaKind: SchemaKindReview, Schema: json.RawMessage(`{"type":"object"}`),
 			})
 			var refusal *RefusalError
-			if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "can't help with that") {
-				t.Fatalf("err = %v, want *RefusalError", err)
+			if !errors.As(err, &refusal) || strings.TrimSpace(refusal.Message) != "I can't help with that." {
+				t.Fatalf("err = %v, want *RefusalError with the refusal once", err)
 			}
 			var invalid *InvalidResponseError
 			if errors.As(err, &invalid) {
