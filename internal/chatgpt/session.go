@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var errNoPlanUsage = fmt.Errorf("chatgpt: the sign-in did not grant ChatGPT plan usage (%s); run `nickpit chatgpt login --reconsent`", ScopePlanUsage)
+
 // refreshMargin is how long before expiry an access token is renewed.
 const refreshMargin = 2 * time.Minute
 
@@ -35,7 +37,7 @@ func NewSession(store *Store, provider *Provider) (*Session, error) {
 		return nil, ErrNotSignedIn
 	}
 	if !creds.PlanUsage() {
-		return nil, fmt.Errorf("chatgpt: the sign-in did not grant ChatGPT plan usage (%s); run `nickpit chatgpt login --reconsent`", ScopePlanUsage)
+		return nil, errNoPlanUsage
 	}
 	return &Session{Store: store, Provider: provider, creds: creds}, nil
 }
@@ -48,14 +50,54 @@ func (s *Session) Credentials() Credentials {
 }
 
 // Token returns a valid access token, refreshing first when it expires within
-// refreshMargin.
+// refreshMargin. Every call first reconciles with the credential file, so a
+// logout in any process stops this one's next request, and a refresh or new
+// sign-in elsewhere is picked up instead of a stale copy being sent.
 func (s *Session) Token(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reconcileLocked(); err != nil {
+		return "", err
+	}
 	if !s.needsRefresh(s.creds, time.Now()) {
 		return s.creds.AccessToken, nil
 	}
 	return s.refreshLocked(ctx, false)
+}
+
+// reconcileLocked replaces the in-memory credentials with the stored ones.
+// The file is only ever replaced atomically, so reading it without the lock
+// sees one consistent version. A signed-out file ends the session; a file
+// holding another account or registration (a new sign-in) is followed, and
+// AccountID changes with it so provider state of the old account is dropped.
+func (s *Session) reconcileLocked() error {
+	stored, err := s.Store.Load()
+	if err != nil {
+		return err
+	}
+	if !stored.SignedIn() {
+		return ErrNotSignedIn
+	}
+	if !stored.PlanUsage() {
+		return errNoPlanUsage
+	}
+	s.creds = stored
+	return nil
+}
+
+// AccountID identifies the signed-in account and registration without
+// revealing a credential: the issued client ID and the account subject.
+func (s *Session) AccountID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return accountID(s.creds)
+}
+
+func accountID(creds *Credentials) string {
+	if creds == nil || creds.Subject == "" {
+		return ""
+	}
+	return "chatgpt:" + creds.ClientID + "/" + creds.Subject
 }
 
 // ForceRefresh renews the access token regardless of its expiry, unless
@@ -200,6 +242,17 @@ func (l *LazySession) Token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return session.Token(ctx)
+}
+
+// AccountID implements llm.AccountIdentifier.
+func (l *LazySession) AccountID() string {
+	l.mu.Lock()
+	session := l.session
+	l.mu.Unlock()
+	if session == nil {
+		return ""
+	}
+	return session.AccountID()
 }
 
 // ForceRefresh implements llm.TokenSource.

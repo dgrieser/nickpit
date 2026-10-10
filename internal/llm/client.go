@@ -486,9 +486,14 @@ func (c *APIClient) Protocol() Protocol {
 }
 
 // stateOrigin identifies the producer of provider state: the protocol, the
-// endpoint, and the model.
+// endpoint, the model, and the account the credential belongs to — state one
+// account's request produced is never sent under another's.
 func (c *APIClient) stateOrigin(model string) string {
-	return c.protocol.Name() + " " + c.baseURL + " " + model
+	origin := c.protocol.Name() + " " + c.baseURL + " " + model
+	if account, ok := c.tokens.(AccountIdentifier); ok {
+		origin += " " + account.AccountID()
+	}
+	return origin
 }
 
 // Capabilities implements CapabilityReporter.
@@ -1741,7 +1746,7 @@ func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, [
 		dropped = append(dropped, "max_tokens")
 		out.MaxTokens = nil
 	}
-	for _, field := range caps.UnsupportedFields {
+	for _, field := range slices.Concat(caps.UnsupportedFields, caps.ReservedFields) {
 		if _, ok := out.ExtraBody[field]; ok {
 			dropped = append(dropped, "extra_body."+field)
 			delete(out.ExtraBody, field)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -72,6 +73,7 @@ func (p *responsesProtocol) Capabilities() Capabilities {
 		OutputTokenLimit:  true,
 		SamplingParams:    []string{"temperature", "top_p"},
 	}
+	caps.ReservedFields = p.reservedFields()
 	if p.plan {
 		caps.OutputTokenLimit = false
 		caps.SamplingParams = nil
@@ -248,7 +250,25 @@ func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	return mergeOrderedJSONObject(data, req.ExtraBody)
+	// The core already strips reserved fields from extra_body; dropping them
+	// here as well keeps the invariants — a streamed, stateless request, its
+	// conversation, and plan mode's tool form — whoever builds the request.
+	extra := maps.Clone(req.ExtraBody)
+	for _, field := range p.reservedFields() {
+		delete(extra, field)
+	}
+	return mergeOrderedJSONObject(data, extra)
+}
+
+// reservedFields are the request fields this protocol owns. Plan mode adds
+// store (plan usage requires store=false) and the top-level tools list (plan
+// usage admits function tools only through additional_tools).
+func (p *responsesProtocol) reservedFields() []string {
+	fields := []string{"stream", "input", "instructions", "include"}
+	if p.plan {
+		fields = append(fields, "store", "tools")
+	}
+	return fields
 }
 
 // responsesConversation maps the neutral history onto the Responses input
