@@ -17,26 +17,51 @@ import (
 // ResponsesProtocolName names the OpenAI Responses protocol.
 const ResponsesProtocolName = "responses"
 
-// responsesProtocol speaks POST /responses, OpenAI's Responses API. It is the
-// only route Sign in with ChatGPT admits (streamed, store=false), and works
-// with a platform API key as well. Requests are stateless: every call sends
-// the full conversation, so no response is stored server-side.
+// responsesProtocol speaks POST /responses, OpenAI's Responses API, with a
+// platform API key or — in plan mode — Sign in with ChatGPT tokens. Requests
+// are stateless (store=false): every call sends the full conversation, and
+// the encrypted reasoning that lets a reasoning model continue after its tool
+// calls travels back with the assistant turn as provider state.
 type responsesProtocol struct {
+	plan bool
+
 	mu      sync.Mutex
 	dropped map[string]bool
 }
 
-// NewResponsesProtocol returns a Responses protocol. It is stateful — it
-// remembers optional fields the endpoint rejected — so each client gets its
-// own.
+// ResponsesOptions configures a Responses protocol.
+type ResponsesOptions struct {
+	// ChatGPTPlan shapes requests for Sign in with ChatGPT plan usage, which
+	// admits a narrower request than the platform API: function tools only
+	// through an additional_tools input item, and no output-token limit or
+	// sampling knobs.
+	ChatGPTPlan bool
+}
+
+// NewResponsesProtocol returns a Responses protocol for a platform API key.
+// It is stateful — it remembers optional fields the endpoint rejected — so
+// each client gets its own.
 func NewResponsesProtocol() Protocol {
-	return &responsesProtocol{dropped: map[string]bool{}}
+	return NewResponsesProtocolWith(ResponsesOptions{})
+}
+
+// NewResponsesProtocolWith returns a Responses protocol configured by opts.
+func NewResponsesProtocolWith(opts ResponsesOptions) Protocol {
+	return &responsesProtocol{plan: opts.ChatGPTPlan, dropped: map[string]bool{}}
 }
 
 func (*responsesProtocol) Name() string { return ResponsesProtocolName }
 
-func (*responsesProtocol) Capabilities() Capabilities {
-	return Capabilities{
+// chatGPTPlanUnsupportedFields are the request fields Sign in with ChatGPT
+// plan usage rejects (its preview limitations), so they are never sent.
+var chatGPTPlanUnsupportedFields = []string{
+	"background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation",
+	"multi_agent", "previous_response_id", "prompt", "prompt_cache_retention", "safety_identifier",
+	"temperature", "top_logprobs", "top_p", "truncation", "user",
+}
+
+func (p *responsesProtocol) Capabilities() Capabilities {
+	caps := Capabilities{
 		// The Responses API never streams raw reasoning tokens, only the
 		// summaries requested with reasoning.summary.
 		Reasoning:         ReasoningSummary,
@@ -44,8 +69,15 @@ func (*responsesProtocol) Capabilities() Capabilities {
 		Tools:             true,
 		ParallelToolCalls: true,
 		StructuredOutput:  true,
+		OutputTokenLimit:  true,
 		SamplingParams:    []string{"temperature", "top_p"},
 	}
+	if p.plan {
+		caps.OutputTokenLimit = false
+		caps.SamplingParams = nil
+		caps.UnsupportedFields = chatGPTPlanUnsupportedFields
+	}
+	return caps
 }
 
 func (*responsesProtocol) Path() string { return "/responses" }
@@ -58,7 +90,11 @@ func (*responsesProtocol) SetHeaders(header http.Header, token string) {
 
 // responsesOptionalParams are the request fields the protocol adds of its own
 // accord. An endpoint that rejects one of them gets requests without it.
-var responsesOptionalParams = []string{"reasoning.summary", "temperature", "top_p"}
+var responsesOptionalParams = []string{"reasoning.summary", "include", "temperature", "top_p"}
+
+// responsesEncryptedReasoning asks for the reasoning items' encrypted content,
+// which a stateless request needs to replay them.
+const responsesEncryptedReasoning = "reasoning.encrypted_content"
 
 func (p *responsesProtocol) isDropped(param string) bool {
 	p.mu.Lock()
@@ -72,7 +108,8 @@ func (p *responsesProtocol) DropUnsupported(perr *ProviderError) bool {
 		return false
 	}
 	for _, param := range responsesOptionalParams {
-		named := perr.Param == param || perr.Param == "" && strings.Contains(perr.Message, "'"+param+"'")
+		named := perr.Param == param || strings.HasPrefix(perr.Param, param+"[") ||
+			perr.Param == "" && strings.Contains(perr.Message, "'"+param+"'")
 		if !named {
 			continue
 		}
@@ -90,11 +127,12 @@ func (p *responsesProtocol) DropUnsupported(perr *ProviderError) bool {
 type responsesRequest struct {
 	Model             string              `json:"model"`
 	Instructions      string              `json:"instructions,omitempty"`
-	Input             []responsesInput    `json:"input"`
+	Input             []any               `json:"input"`
 	Tools             []responsesTool     `json:"tools,omitempty"`
 	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
 	Text              *responsesText      `json:"text,omitempty"`
 	Reasoning         *responsesReasoning `json:"reasoning,omitempty"`
+	Include           []string            `json:"include,omitempty"`
 	MaxOutputTokens   *int                `json:"max_output_tokens,omitempty"`
 	Temperature       *float64            `json:"temperature,omitempty"`
 	TopP              *float64            `json:"top_p,omitempty"`
@@ -111,6 +149,15 @@ type responsesInput struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Output    string `json:"output,omitempty"`
+}
+
+// responsesAdditionalTools declares function tools from inside the input
+// list, the form ChatGPT plan usage admits them in. The tools are available
+// from this item's position on, so it leads the input.
+type responsesAdditionalTools struct {
+	Type  string          `json:"type"`
+	Role  string          `json:"role"`
+	Tools []responsesTool `json:"tools"`
 }
 
 type responsesTool struct {
@@ -140,13 +187,13 @@ type responsesReasoning struct {
 func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessage, error) {
 	instructions, input := responsesConversation(req.Messages)
 	out := responsesRequest{
-		Model:           req.Model,
-		Instructions:    instructions,
-		Input:           input,
-		MaxOutputTokens: req.MaxTokens,
-		Store:           false,
-		Stream:          true,
+		Model:        req.Model,
+		Instructions: instructions,
+		Input:        input,
+		Store:        false,
+		Stream:       true,
 	}
+	var tools []responsesTool
 	for _, tool := range req.Tools {
 		parameters := tool.Parameters
 		if len(parameters) == 0 {
@@ -154,29 +201,46 @@ func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessa
 		}
 		// Strict stays off for the same reason as on Chat Completions: the
 		// schemas use optional properties, which strict mode forbids.
-		out.Tools = append(out.Tools, responsesTool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: parameters})
+		tools = append(tools, responsesTool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: parameters})
 	}
-	if len(out.Tools) > 0 {
+	if len(tools) > 0 {
+		if p.plan {
+			// Plan usage rejects function tools in the top-level list.
+			out.Input = append([]any{responsesAdditionalTools{Type: "additional_tools", Role: "developer", Tools: tools}}, out.Input...)
+		} else {
+			out.Tools = tools
+		}
 		parallel := req.ParallelToolCalls
 		out.ParallelToolCalls = &parallel
 	}
 	if len(req.Schema) > 0 {
 		out.Text = &responsesText{Format: responsesFormat{Type: "json_schema", Name: req.SchemaName, Schema: req.Schema}}
 	}
-	if req.Temperature != nil && !p.isDropped("temperature") {
-		out.Temperature = req.Temperature
-	}
-	if req.TopP != nil && !p.isDropped("top_p") {
-		out.TopP = req.TopP
+	// The core only passes what Capabilities admits; the guards keep plan
+	// requests clean even for a caller that bypasses it.
+	if !p.plan {
+		out.MaxOutputTokens = req.MaxTokens
+		if req.Temperature != nil && !p.isDropped("temperature") {
+			out.Temperature = req.Temperature
+		}
+		if req.TopP != nil && !p.isDropped("top_p") {
+			out.TopP = req.TopP
+		}
 	}
 	reasoning := &responsesReasoning{Effort: req.ReasoningEffort}
 	if reasoning.Effort == "off" {
 		reasoning.Effort = "none"
 	}
-	if reasoning.Effort != "none" && !p.isDropped("reasoning.summary") {
-		// Without a summary the API streams no reasoning text at all, which
-		// would leave the reasoning display and budget nothing to observe.
-		reasoning.Summary = "auto"
+	if reasoning.Effort != "none" {
+		if !p.isDropped("reasoning.summary") {
+			// Without a summary the API streams no reasoning text at all,
+			// which would leave the reasoning display and budget nothing to
+			// observe.
+			reasoning.Summary = "auto"
+		}
+		if !p.isDropped("include") {
+			out.Include = []string{responsesEncryptedReasoning}
+		}
 	}
 	if *reasoning != (responsesReasoning{}) {
 		out.Reasoning = reasoning
@@ -190,11 +254,14 @@ func (p *responsesProtocol) EncodeRequest(req *CompletionRequest) (json.RawMessa
 
 // responsesConversation maps the neutral history onto the Responses input
 // list. Leading system messages become the instructions; a later one (a
-// nudge) stays in place as a developer message. Assistant tool calls and tool
-// results become function_call and function_call_output items.
-func responsesConversation(messages []Message) (string, []responsesInput) {
+// nudge) stays in place as a developer message, since system-role input items
+// are rejected on the plan route. An assistant turn replays its provider
+// state (the encrypted reasoning that produced it) ahead of its text and
+// function_call items, the order the model emitted them in; tool results
+// become function_call_output items.
+func responsesConversation(messages []Message) (string, []any) {
 	var instructions []string
-	input := make([]responsesInput, 0, len(messages))
+	input := make([]any, 0, len(messages))
 	leading := true
 	for _, msg := range messages {
 		switch msg.Role {
@@ -208,6 +275,11 @@ func responsesConversation(messages []Message) (string, []responsesInput) {
 			input = append(input, responsesInput{Role: "developer", Content: msg.Content})
 		case RoleAssistant:
 			leading = false
+			if msg.ProviderState != nil {
+				for _, item := range msg.ProviderState.Items {
+					input = append(input, item)
+				}
+			}
 			if msg.Content != "" {
 				input = append(input, responsesInput{Role: RoleAssistant, Content: msg.Content})
 			}
@@ -496,6 +568,12 @@ func (r *responsesEventReader) decode(data []byte) (StreamChunk, error) {
 			return StreamChunk{ToolCalls: []ToolCallDelta{{Index: &index, Arguments: event.Arguments}}}, nil
 		}
 	case "response.output_item.done":
+		if event.Item != nil && event.Item.Type == "reasoning" {
+			if item := replayableReasoningItem(data); item != nil {
+				return StreamChunk{StateItem: item}, nil
+			}
+			break
+		}
 		if event.Item == nil || event.Item.Type != "function_call" {
 			break
 		}
@@ -535,6 +613,37 @@ func (r *responsesEventReader) decode(data []byte) (StreamChunk, error) {
 		return StreamChunk{}, streamProviderError(perr)
 	}
 	return StreamChunk{}, nil
+}
+
+// replayableReasoningItem extracts a finished reasoning item in the form a
+// stateless request replays it: type, summary, and the encrypted content.
+// The server-side id and status are left out — with store=false there is no
+// stored item for an id to refer to. An item without encrypted content holds
+// nothing the model could resume from, so it is not kept.
+func replayableReasoningItem(event []byte) json.RawMessage {
+	var envelope struct {
+		Item struct {
+			Type             string          `json:"type"`
+			Summary          json.RawMessage `json:"summary"`
+			EncryptedContent string          `json:"encrypted_content"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(event, &envelope) != nil || envelope.Item.EncryptedContent == "" {
+		return nil
+	}
+	summary := envelope.Item.Summary
+	if len(summary) == 0 || string(summary) == "null" {
+		summary = json.RawMessage(`[]`)
+	}
+	item, err := json.Marshal(struct {
+		Type             string          `json:"type"`
+		Summary          json.RawMessage `json:"summary"`
+		EncryptedContent string          `json:"encrypted_content"`
+	}{Type: "reasoning", Summary: summary, EncryptedContent: envelope.Item.EncryptedContent})
+	if err != nil {
+		return nil
+	}
+	return item
 }
 
 // streamProviderError finishes an error reported inside the stream. It gets

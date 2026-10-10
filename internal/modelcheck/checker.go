@@ -612,7 +612,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 			probe.Error = "model stopped before required tool sequence completed"
 			return probe
 		}
-		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
+		messages = append(messages, resp.AssistantMessage())
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
@@ -689,7 +689,7 @@ func (c *Checker) toolsJSONSchemaProbe(ctx context.Context, effort string) Probe
 			probe.Status = StatusOK
 			return probe
 		}
-		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
+		messages = append(messages, resp.AssistantMessage())
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
