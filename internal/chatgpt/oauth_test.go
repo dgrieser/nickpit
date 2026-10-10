@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"math/big"
 	"net/http"
@@ -26,11 +27,18 @@ type fakeIssuer struct {
 	server *httptest.Server
 	key    *rsa.PrivateKey
 
-	mu            sync.Mutex
-	nonce         string
-	challenge     string
-	tokenForms    []url.Values
-	refreshCount  int
+	mu           sync.Mutex
+	nonce        string
+	challenge    string
+	tokenForms   []url.Values
+	refreshCount int
+	spent        map[string]bool
+	// refreshGate, when set, holds every refresh request until it is
+	// closed, announcing each on refreshStarted first.
+	refreshGate    chan struct{}
+	refreshStarted chan struct{}
+	// refreshDelay widens the window in which concurrent refreshes race.
+	refreshDelay  time.Duration
 	subject       string
 	expiresIn     int
 	revoked       []string
@@ -50,6 +58,18 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 }
 
 func (f *fakeIssuer) issuer() string { return f.server.URL }
+
+// gateRefreshes holds refresh requests until the returned release is called.
+// It is also released when the test ends, so a failed assertion cannot leave
+// a refresh blocking the server's Close.
+func (f *fakeIssuer) gateRefreshes(t *testing.T) (release func()) {
+	t.Helper()
+	f.refreshGate = make(chan struct{})
+	f.refreshStarted = make(chan struct{}, 8)
+	release = sync.OnceFunc(func() { close(f.refreshGate) })
+	t.Cleanup(release)
+	return release
+}
 
 func (f *fakeIssuer) provider() *Provider {
 	return &Provider{Issuer: f.issuer(), HTTPClient: f.server.Client()}
@@ -86,16 +106,31 @@ func (f *fakeIssuer) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			f.writeTokens(w, r.PostForm.Get("client_id"), f.nonce, "refresh-0")
 		case "refresh_token":
+			if f.refreshGate != nil {
+				f.refreshStarted <- struct{}{}
+				<-f.refreshGate
+			}
+			time.Sleep(f.refreshDelay)
+			token := r.PostForm.Get("refresh_token")
 			f.mu.Lock()
-			f.refreshCount++
+			// Refresh tokens rotate: each one is good for a single use, as
+			// with the real issuer, so a second spender is refused.
+			reused := token == "dead" || f.spent[token]
+			if f.spent == nil {
+				f.spent = map[string]bool{}
+			}
+			f.spent[token] = true
+			if !reused {
+				f.refreshCount++
+			}
 			n := f.refreshCount
 			f.mu.Unlock()
-			if r.PostForm.Get("refresh_token") == "dead" {
+			if reused {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`{"error":"refresh_token_reused"}`))
 				return
 			}
-			f.writeTokens(w, r.PostForm.Get("client_id"), "", "refresh-"+string(rune('0'+n)))
+			f.writeTokens(w, r.PostForm.Get("client_id"), "", fmt.Sprintf("refresh-%d", n))
 		}
 	case "/revoke":
 		_ = r.ParseForm()
