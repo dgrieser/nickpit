@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -182,12 +183,7 @@ type Capabilities struct {
 
 // AcceptsSampling reports whether name is one of SamplingParams.
 func (c Capabilities) AcceptsSampling(name string) bool {
-	for _, param := range c.SamplingParams {
-		if param == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.SamplingParams, name)
 }
 
 // String renders the capabilities for logs and the model check.

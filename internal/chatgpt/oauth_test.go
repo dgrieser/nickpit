@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -238,10 +239,7 @@ func TestVerifyIDTokenRejectsWrongAudienceAndNonce(t *testing.T) {
 	if _, err := p.verifyIDToken(context.Background(), issuer.sign(base), "client", "x", time.Now()); err == nil {
 		t.Fatal("wrong nonce accepted")
 	}
-	expired := map[string]any{}
-	for k, v := range base {
-		expired[k] = v
-	}
+	expired := maps.Clone(base)
 	expired["exp"] = time.Now().Add(-time.Hour).Unix()
 	if _, err := p.verifyIDToken(context.Background(), issuer.sign(expired), "client", "n", time.Now()); err == nil {
 		t.Fatal("expired token accepted")

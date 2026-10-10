@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -54,12 +55,7 @@ func (c *Credentials) PlanUsage() bool {
 	if c == nil {
 		return false
 	}
-	for _, scope := range c.Scopes {
-		if scope == ScopePlanUsage {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Scopes, ScopePlanUsage)
 }
 
 // Store locates the credential file and the per-installation host ID.

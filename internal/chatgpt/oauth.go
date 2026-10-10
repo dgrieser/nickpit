@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -614,7 +615,7 @@ func (p *Provider) verifyIDToken(ctx context.Context, token, clientID, nonce str
 	switch {
 	case claims.Issuer != p.Issuer, claims.Subject == "", claims.IssuedAt == 0, claims.Expiry == 0:
 		return nil, invalid
-	case !contains(audiences, clientID):
+	case !slices.Contains(audiences, clientID):
 		return nil, invalid
 	case claims.Azp != nil && *claims.Azp != clientID:
 		return nil, invalid
@@ -674,15 +675,6 @@ func decodeSegment(segment string, out any) error {
 		return err
 	}
 	return json.Unmarshal(data, out)
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func randomValue() string {
