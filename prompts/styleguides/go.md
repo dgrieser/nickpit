@@ -1,8 +1,8 @@
 ### Go — Common Developer Guideline
 
-> **Version**: Common ground for Go 1.19 – 1.26
+> **Version**: Common ground for Go 1.19 – 1.27
 > **Scope**: Language spec, idioms, concurrency, performance, CLI, file I/O, testing, and best practices — with examples throughout.
-> **Note**: This is the base/fallback guide covering what holds across Go 1.19 – 1.26. Features introduced after Go 1.19 are tagged with the version that added them and are available only when the module's `go` directive is at least that version. For version-specific detail, consult the matching guide (`go-1.19.md` … `go-1.26.md`).
+> **Note**: This is the base/fallback guide covering what holds across Go 1.19 – 1.27. Features introduced after Go 1.19 are tagged with the version that added them and are available only when the module's `go` directive is at least that version. For version-specific detail, consult the matching guide (`go-1.19.md` … `go-1.27.md`).
 
 ---
 
@@ -38,7 +38,7 @@ Check the module's `go` directive before reviewing language semantics or
 suggesting newer APIs. The `go` directive controls language version behavior;
 the installed toolchain may be newer than the module target. A feature is
 available only when the `go` directive is at least the version that introduced
-it. Consult the matching version guide (`go-1.19.md` … `go-1.26.md`) for detail.
+it. Consult the matching version guide (`go-1.19.md` … `go-1.27.md`) for detail.
 
 ```go
 module example.com/app
@@ -46,7 +46,7 @@ module example.com/app
 go 1.21.0
 ```
 
-##### Feature timeline (1.19 – 1.26)
+##### Feature timeline (1.19 – 1.27)
 
 | Since | Key language / standard-library additions |
 |---|---|
@@ -58,6 +58,7 @@ go 1.21.0
 | 1.24 | Generic type aliases; `go.mod` `tool` directive; `os.Root`; `testing.B.Loop`, `T.Context`, `T.Chdir`; `omitzero` JSON tag; `runtime.AddCleanup`; `weak` |
 | 1.25 | `sync.WaitGroup.Go`; `testing/synctest` (stable); container-aware `GOMAXPROCS`; `T.Attr`/`Output`; expanded `os.Root` |
 | 1.26 | `new(expr)`; recursive type constraints; `errors.AsType`; `crypto/hpke`; Green Tea GC default; `go fix` modernizers |
+| 1.27 | Generic methods; promoted fields as struct-literal keys; `encoding/json/v2` GA; `uuid`; `crypto/mldsa`; `strings`/`bytes.CutLast`; goroutine leak profile GA |
 
 Verify library APIs against the actual module versions in `go.mod` before
 claiming an API is missing or unavailable.
@@ -623,6 +624,10 @@ p := Post{ID: 1, Title: "Hello"}
 p.CreatedAt = time.Now() // promoted field access
 ```
 
+Before Go 1.27, promoted fields cannot be used as keys in a composite literal
+(`Post{CreatedAt: now}` is an error; write `Post{Timestamps: Timestamps{CreatedAt: now}}`).
+Go 1.27+ accepts promoted-field keys unless an embedded pointer must be traversed.
+
 Embedding is Go's alternative to inheritance. It is **composition**, not subclassing.
 
 ##### Methods
@@ -877,7 +882,7 @@ or behavior differs by type.
 
 ##### Version notes
 
-- **Type parameters on methods** are not allowed (only on the receiver type) in any version — use a free function.
+- **Type parameters on methods** (generic methods) require Go 1.27+; before that, use a free function. Even in 1.27, interface methods cannot have type parameters and a generic method never satisfies an interface method.
 - **Generic type aliases** (`type MySlice[T any] = []T`) require Go 1.24+.
 - **Recursive type constraints** (a type referring to itself in its own type parameter list) require Go 1.26+.
 
@@ -1114,6 +1119,8 @@ strings.Join([]string{"a","b"}, "-")    // "a-b"
 strings.TrimSpace("  hello  ")          // "hello"
 strings.ToUpper("hello")                // "HELLO"
 strings.ReplaceAll("aabbcc", "b", "x")  // "aaxxcc"
+strings.Cut("k=v=w", "=")               // "k", "v=w", true (1.18+)
+strings.CutLast("k=v=w", "=")           // "k=v", "w", true (1.27+)
 
 // Formatting
 s := fmt.Sprintf("user %d: %s", id, name)

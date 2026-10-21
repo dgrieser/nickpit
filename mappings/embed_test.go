@@ -174,6 +174,14 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"python", []string{"3.15-slim"}, "styleguides/python-3.15.md"},
 		{"python", []string{"3.14", "3.12"}, "styleguides/python-3.12.md"},
 		{"go", []string{"1.19.3"}, "styleguides/go-1.19.md"},
+		{"go", []string{"1.26"}, "styleguides/go-1.26.md"},
+		{"go", []string{"1.26.10"}, "styleguides/go-1.26.md"},
+		{"go", []string{"1.27"}, "styleguides/go-1.27.md"},
+		{"go", []string{"1.27.0"}, "styleguides/go-1.27.md"},
+		{"go", []string{"1.27.3"}, "styleguides/go-1.27.md"},
+		{"go", []string{"1.27-alpine"}, "styleguides/go-1.27.md"},
+		{"go", []string{"1.27", "1.26"}, "styleguides/go-1.26.md"},
+		{"go", []string{"1.28"}, "styleguides/go.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
