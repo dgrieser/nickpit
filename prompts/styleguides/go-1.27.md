@@ -148,11 +148,11 @@ _ = Resource{Meta: Meta{Owner: "x"}, Name: "y"}
 // cannot specify promoted field Name and enclosing embedded field Meta
 
 _ = Resource{Meta.Name: "y"}
-// invalid field name Meta.Name — the key is the bare field name, not a dotted path
+// invalid field name Meta.Name in struct literal — the key is the bare field name, not a dotted path
 
 type T struct{ M1; M2 }   // both have field ID
 _ = T{ID: 1}
-// unknown field ID — ambiguous promoted names are not selectable
+// unknown field ID in struct literal of type T — ambiguous promoted names are not selectable
 ```
 
 `go fix`'s new `embedlit` modernizer rewrites `Obj{Base: Base{Name: "x"}, N: 1}` to `Obj{Name: "x", N: 1}`.
@@ -255,7 +255,7 @@ with `tool` directives (1.24+) rather than a blank-import `tools.go` file.
 - Do not infer API availability from memory, a newer version's docs, or another
   project's dependency set.
 
-The same applies to the standard library: a symbol added in 1.27 (`strings.CutLast`, `uuid`, `encoding/json/v2`, …) is only usable when the file's effective Go version (go.mod `go` line, or a `//go:build go1.27` tag) is at least 1.27.
+The same applies to the standard library: a symbol added in 1.27 (`strings.CutLast`, `uuid`, `encoding/json/v2`, …) is only valid when the file's effective Go version (go.mod `go` line, or a `//go:build go1.27` tag) is at least 1.27. `go build` does not enforce this; `go vet` and (since 1.27) `go test` do.
 
 ---
 
@@ -304,7 +304,7 @@ pt := new(Point{X: 1})   // *Point
 // new(nil) is a compile error
 ```
 
-A `ptr[T any](v T) *T` helper is obsolete for modules on `go 1.26`+; `go fix` (`newexpr`) rewrites calls when the helper carries `//go:fix inline`.
+A `ptr[T any](v T) *T` helper is obsolete for modules on `go 1.26`+; `go fix` (`newexpr`) finds such `func varOf(x T) *T { return &x }` helpers, turns them into `//go:fix inline` wrappers around `new(x)`, and inlines their call sites.
 
 ##### Weak pointers (1.24+)
 
@@ -345,7 +345,7 @@ for k, v := range myIter2() {}  // 1.23+
 for i, v := range slices.Backward(s) {}  // 1.23+; go fix (slicesbackward) suggests this for reverse index loops
 ```
 
-Each iteration has its own loop variable (1.22+), so `x := x` copies and `tt := tt` shadows inside loops are redundant (`go fix` `forvar` removes them).
+Each iteration has its own loop variable (1.22+), so `x := x` copies and `tt := tt` shadows inside loops are redundant (`go fix` `forvar` removes them in `range` loops; copies in 3-clause loops are left alone).
 
 ##### switch / select
 
@@ -796,7 +796,7 @@ type ValidationError struct{ Field string }
 func (e *ValidationError) Error() string { return "invalid " + e.Field }
 
 errors.AsType[ValidationError](err)   // compile error: ValidationError does not satisfy error
-                                      // (Error has a pointer receiver)
+                                      // (method Error has pointer receiver)
 ```
 
 `go fix` (`errorsastype`) rewrites eligible `errors.As` calls.
@@ -903,7 +903,7 @@ t.Reset(10 * time.Second)   // no drain needed before Reset (1.23+ semantics, no
 fmt.Println(cap(t.C))       // 0
 ```
 
-Drain-before-`Reset` code (`if !t.Stop() { <-t.C }`) is no longer needed. In a non-blocking form (`select { case <-t.C: default: }`) it is harmless; a bare blocking `<-t.C` after `Stop` returns false can deadlock, because no stale value is left to receive. `GODEBUG=asynctimerchan=1` now **aborts the program** — see [GODEBUG Removals](#godebug-removals).
+Drain-before-`Reset` code (`if !t.Stop() { <-t.C }`) is now redundant: if the value has not been received, `Stop` returns `true` (even when the timer already expired), so the drain never runs; `Stop` returns `false` only when the value was already received or the timer was already stopped — and then a bare `<-t.C` blocks forever, as it always did. Suggest removing the idiom; do not report it as a new deadlock. `GODEBUG=asynctimerchan=1` now **aborts the program** — see [GODEBUG Removals](#godebug-removals).
 
 ##### sync.Mutex / sync.RWMutex
 
@@ -1160,7 +1160,7 @@ u2 := u.Clone()        // *URL — copies User too; mutating u2 never touches u
 v2 := values.Clone()   // url.Values — slices are copied, not shared
 ```
 
-Before 1.27, `u2 := *u` shares the `*Userinfo`, and copying a `url.Values` map shares its `[]string` slices — a frequent aliasing bug when building per-request URLs from a base. Prefer `Clone()` on 1.27.
+Copying a `url.Values` map (assignment, or a `for k, v := range` copy loop) shares its `[]string` slices — a frequent aliasing bug when building per-request queries from a base; use `Values.Clone()` on 1.27. `u2 := *u` for a `*url.URL` is fine (`*Userinfo` is immutable); `u.Clone()` is simply the clearer spelling.
 
 ---
 
@@ -1198,10 +1198,10 @@ err = jsonv2.UnmarshalDecode(dec, &v)                // *jsontext.Decoder (strea
 |---|---|---|---|
 | Duplicate object names | last wins | **error** (`duplicate object member name`) | `jsontext.AllowDuplicateNames(true)` |
 | Invalid UTF-8 | replaced with U+FFFD | **error** | `jsontext.AllowInvalidUTF8(true)` |
-| Field name matching on unmarshal | case-insensitive | **case-sensitive** | `jsonv2.MatchCaseInsensitiveNames(true)` or tag `case:ignore` |
+| Field name matching on unmarshal | case-insensitive | **case-sensitive** | `jsonv2.MatchCaseInsensitiveNames(true)` + `json.MatchCaseSensitiveDelimiter(true)` (v2's case-insensitive mode and `case:ignore` also ignore `_` and `-`, which v1 never did) |
 | nil slice / nil map | `null` | **`[]` / `{}`** | `jsonv2.FormatNilSliceAsNull(true)` / `FormatNilMapAsNull(true)` |
 | `time.Duration` | integer nanoseconds | **error: no default representation** | `json.FormatDurationAsNano(true)` |
-| `omitempty` | Go-empty (`0`, `false`, nil ptr, …) | **JSON-empty** (`null`, `""`, `{}`, `[]`) | use `omitzero` for Go-zero |
+| `omitempty` | Go-empty (`0`, `false`, nil ptr, …) | **JSON-empty** (`null`, `""`, `{}`, `[]`) | `json.OmitEmptyWithLegacySemantics(true)`; for new code use `omitzero` |
 | HTML characters `<>&` | escaped (`\u003c`) | **not escaped** | `jsontext.EscapeForHTML(true)` |
 | Map key order | sorted | **non-deterministic** | `jsonv2.Deterministic(true)` |
 | `[N]byte` | JSON array of numbers | **base64 string** | `json.FormatByteArrayAsArray(true)` |
@@ -1216,7 +1216,7 @@ jsonv2.Marshal(v, json.DefaultOptionsV1(), jsontext.AllowDuplicateNames(false))
 
 **Migration review points**
 
-- A `time.Duration` field (or nested type containing one) makes `jsonv2.Marshal` fail at runtime. Give it an explicit format, convert to a string, or pass `json.FormatDurationAsNano(true)`.
+- A `time.Duration` field (or nested type containing one) makes `jsonv2.Marshal` fail at runtime. Pass `json.FormatDurationAsNano(true)`, register a custom marshaler (`jsonv2.WithMarshalers(jsonv2.MarshalToFunc(...))`), or use a string/custom type. Do **not** suggest a `format:` tag option — it was removed and now errors.
 - `omitempty` on bool/number/pointer/interface fields changes meaning in v2 — use `omitzero` (identical in v1 and v2).
 - Clients that test `== null` for empty lists will see `[]` from v2.
 - Rejecting duplicate names is a **security improvement** (it closes parser-differential attacks); don't turn it off without a reason.
@@ -1236,7 +1236,7 @@ type Event struct {
 }
 ```
 
-> **The `inline` option was renamed to `embed`, and `format` and `unknown` were removed** during the experiment. v2 **errors** on `format:` but **silently ignores other unrecognised options** — a leftover `json:",inline"` no longer flattens; the field is emitted as a nested object (`{"Inner":{"a":1}}` instead of `{"a":1}`). Grep for `,inline` and `,unknown` when moving code written against `GOEXPERIMENT=jsonv2` in 1.25/1.26.
+> **The `inline` option was renamed to `embed`, and `format` and `unknown` were removed** during the experiment. v2 **errors** on `format:` but **silently ignores other unrecognised options** — a leftover `json:",inline"` no longer flattens; the field is emitted as a nested object (`{"Inner":{"a":1}}` instead of `{"a":1}`). Grep for `,inline`, `,unknown`, `format:`, `DiscardUnknownMembers` and `SkipFunc` (the latter two were also removed) when moving code written against `GOEXPERIMENT=jsonv2` in 1.25/1.26.
 
 v2 restricts `,string` to values that encode as JSON numbers; in v1 it also quoted strings and bools.
 
@@ -1377,7 +1377,7 @@ func TestAPI(t *testing.T) {
 ```
 
 - Uses an in-memory fake network — no loopback sockets; works inside `synctest` bubbles (it also works outside them).
-- `srv.URL` is `http://example.com`; the server answers **any** host.
+- `srv.URL` is `http://example.com` (set on the first `Client()`/`Start()` call); the client from `srv.Client()` routes **every** host, http or https, to the test server.
 - **Pitfall:** only `srv.Client()` is wired to the fake network. `http.Get(srv.URL)`, `http.DefaultClient`, or a client the code builds itself sends the request to the **real** `example.com` over the internet. Inject `srv.Client()` (or its `Transport`) into the code under test.
 - A nil handler serves 500s (it does not fall back to `http.DefaultServeMux`).
 
@@ -1437,7 +1437,7 @@ KEMs: `MLKEM768X25519` (X-Wing, recommended), `MLKEM768P256`, `MLKEM1024P384`, `
 
 ##### Reader-less crypto APIs (1.26+)
 
-Most `crypto/...` functions that take a random `io.Reader` **ignore** it and use the system CSPRNG (`cryptocustomrand=1` reverts). The covered set is: `dsa.GenerateKey`, `ecdh.Curve.GenerateKey`, `ecdsa.GenerateKey`/`SignASN1`/`Sign`/`PrivateKey.Sign`, `rsa.GenerateKey`/`GenerateMultiPrimeKey`/`EncryptPKCS1v15`, and `crypto/rand.Prime`. Anything else (notably `rsa.EncryptOAEP`) still needs `crypto/rand.Reader` — do not suggest `nil` there.
+Most `crypto/...` functions that take a random `io.Reader` **ignore** it and use the system CSPRNG (`cryptocustomrand=1` reverts). The covered set is: `dsa.GenerateKey`, `ecdh.Curve.GenerateKey`, `ecdsa.GenerateKey`/`SignASN1`/`Sign`, `rsa.GenerateKey`/`GenerateMultiPrimeKey`/`EncryptPKCS1v15`, and `crypto/rand.Prime`. Some functions already ignored the reader (`rsa.DecryptOAEP`, `rsa.SignPKCS1v15`, `mldsa.PrivateKey.Sign`), and `ed25519.GenerateKey(nil)` uses a secure source. Note `ecdsa.PrivateKey.Sign`: a non-nil reader is ignored, but `nil` switches to **deterministic RFC 6979** signatures. Functions that still use the reader — notably `rsa.EncryptOAEP`/`EncryptOAEPWithOptions` and `rsa.SignPSS` — need `crypto/rand.Reader`; do not suggest `nil` there.
 
 ```go
 key, _ := ecdsa.GenerateKey(elliptic.P256(), nil)
@@ -1472,7 +1472,7 @@ _ = state.LocalCertificate   // 1.27: chain we presented
 
 - `Certificate.RawSignatureAlgorithm` (also on `CertificateRequest`, `RevocationList`) exposes the DER AlgorithmIdentifier, even for `UnknownSignatureAlgorithm`.
 - On **Windows and macOS**, `SystemCertPool` now honours `SSL_CERT_FILE`/`SSL_CERT_DIR` and switches to the Go verifier when they are set (`GODEBUG=x509sslcertoverrideplatform=0` reverts; planned removal in 1.31). A stray `SSL_CERT_FILE` in a developer or CI environment now changes trust decisions on those platforms.
-- `pkix.Name.String()` renders string-typed values of unknown OIDs as strings instead of hex DER.
+- `pkix.Name.String()` renders string-typed values of unknown OIDs as strings instead of hex DER, and parsing into `pkix.Name` accepts more `AttributeTypeAndValue.Value` types, storing unknown ones as `asn1.RawValue` — code that type-asserts these values (e.g. to `string`) can change behaviour.
 - `ecdsa.PrivateKey.Sign` validates the digest length when non-nil `SignerOpts` are passed.
 
 ##### crypto/rsa
@@ -1639,6 +1639,17 @@ gofmt's column-alignment logic was fixed (it previously varied slightly by CPU a
 
 `compile`, `link`, `asm`, `cgo`, `cover`, and `pack` accept GCC-compatible `@file` response files (relevant to Bazel/build-system integrations with very long command lines).
 
+##### //line directives resolve relative paths [NEW in 1.27]
+
+The compiler now resolves a relative filename in a `//line` or `/*line*/` directive against the directory of the file containing the directive (matching `go/scanner`). Code generators that emitted paths relative to the working directory may now produce wrong positions in errors, coverage and stack traces; emit absolute or file-relative paths.
+
+##### Other 1.27 API additions
+
+- `math/big.(*Int).Divide(x, y, r, mode)` with rounding modes `big.Trunc`, `Floor`, `Round` (to nearest even), `Ceil`: `Divide(-7, 2, …, Floor)` → q=-4, r=1; `Trunc` → q=-3, r=-1.
+- `database/sql.ConvertAssign` and `driver.RowsColumnScanner` let drivers reuse `Rows.Scan` conversions and scan directly into destinations (driver authors only).
+- `go/types.Hasher`/`HasherIgnoreTags`, `go/constant.StringLen`, `go/scanner.(*Scanner).End`, `go/token.(*File).String` for tool authors.
+- Linker `-macos`/`-macsdk` flags set `LC_BUILD_VERSION` (defaults: macOS 13.0.0, SDK 26.2.0); linux/ppc64 (big-endian) now uses ELFv2 and supports cgo, PIE and external linking; Plan 9 defines `syscall.Errno`.
+
 ##### Tool directive in go.mod (1.24+)
 
 ```bash
@@ -1691,7 +1702,7 @@ func run() error { return nil }
 go: error loading go.mod: go.mod:5: removed GODEBUG "asynctimerchan" set to old value "1" (https://go.dev/doc/godebug#go-127)
 
 # //go:debug asynctimerchan=1  →  compile error
-./main.go:1:1: invalid //go:debug: removed GODEBUG "asynctimerchan" set to old value "1"
+./main.go:1:1: invalid //go:debug: removed GODEBUG "asynctimerchan" set to old value "1" (https://go.dev/doc/godebug#go-127)
 
 # GODEBUG=asynctimerchan=1 in the ENVIRONMENT  →  the program aborts at startup
 fatal error: removed GODEBUG "asynctimerchan" set to old value "1" in environment (https://go.dev/doc/godebug#go-127)
@@ -1699,12 +1710,13 @@ fatal error: removed GODEBUG "asynctimerchan" set to old value "1" in environmen
 
 The final default value (e.g. `asynctimerchan=0`, `x509keypairleaf=1`) is still accepted and is a no-op, so existing go.mod files that pinned the new behaviour keep building.
 
-> **Deployment check:** before rolling out a binary built with Go 1.27, search Dockerfiles, Kubernetes manifests, systemd units, CI configs, Helm values and `.env` files for `GODEBUG=` containing any setting above with its old value. The binary will **crash on start** — the general rule that unknown `GODEBUG` env settings are ignored does not apply to removed settings set to an old value.
+> **Deployment check:** before rolling out a binary built with Go 1.27, search Dockerfiles, Kubernetes manifests, systemd units, CI configs, Helm values and `.env` files for `GODEBUG=` containing any setting above with its old value. The binary will **crash on start** — the general rule that unknown `GODEBUG` env settings are ignored does not apply to removed settings set to an old value. This hits **every** Go 1.27 binary, even one that never uses the affected package (`GODEBUG=gotypesalias=0` aborts a program that does not import `go/types`).
 
 ##### New and changed settings [NEW in 1.27]
 
 - `tracebacklabels` now defaults to `1` for `go 1.27` modules.
 - `x509sslcertoverrideplatform` (default `1`) — see crypto/x509.
+- `httpservecontentmaxranges` (default `200`, backported to 1.27.2 and 1.26.9) — `ServeContent`/`ServeFile`/`FileServer` ignore a `Range` header with more ranges than this; `0` disables the limit.
 - `htmlmetacontenturlescape` (default `1`, backported to 1.25.8/1.26.1) — html/template escapes URLs in `<meta content="…;url=…">`.
 - `fips140ems` — see FIPS.
 
@@ -1840,7 +1852,7 @@ defer fr.Stop()
 - **Use promoted-field keys** (`Resource{Name: "web", Replicas: 3}`) to flatten literals of embedded structs; run `go fix` (`embedlit`).
 - **Use `strings.CutLast` / `bytes.CutLast`** instead of `LastIndex` + slicing.
 - **Use `uuid.NewV7()`** for sortable IDs and `uuid.New()` for opaque ones; drop third-party UUID libraries where the stdlib suffices.
-- **Use `encoding/json/v2`** for new code; use `omitzero`, explicit duration formats, and `,embed` (not `,inline`).
+- **Use `encoding/json/v2`** for new code; use `omitzero`, an explicit `time.Duration` representation, and `,embed` (not `,inline`).
 - **Use `url.URL.Clone()` / `url.Values.Clone()`** instead of struct copies.
 - **Use `httptest.NewTestServer` + `synctest`** for time-dependent HTTP tests, with `srv.Client()`.
 - **Use `synctest.Sleep`** instead of `time.Sleep` + `synctest.Wait`.
@@ -1862,13 +1874,13 @@ defer fr.Stop()
 | `strings.LastIndex` + manual slicing | Verbose, off-by-one prone | `strings.CutLast` |
 | `CutLast(addr, ":")` for host/port | Keeps IPv6 brackets | `net.SplitHostPort` |
 | `json:",inline"` with v2 | Silently ignored — no flattening | `json:",embed"` |
-| `time.Duration` field marshalled with v2 | Runtime error | explicit format / `json.FormatDurationAsNano(true)` |
+| `time.Duration` field marshalled with v2 | Runtime error | `json.FormatDurationAsNano(true)` or a custom marshaler — not a `format:` tag |
 | `omitempty` on bool/int/pointer for v2 | Semantics changed | `omitzero` |
 | String-matching `encoding/json` error text | Messages changed in 1.27 | `errors.As`/`errors.AsType` on error types |
-| `u2 := *u` to copy a `*url.URL` | Shares `User` | `u.Clone()` |
+| Copying `url.Values` by assignment or a range loop | Shares the `[]string` slices | `vals.Clone()` (1.27) |
 | `http.Get(srv.URL)` with `NewTestServer` | Hits the real example.com | `srv.Client().Get(...)` |
 | `GODEBUG=asynctimerchan=1` (or other removed setting with old value) | Binary aborts at startup | Remove it |
-| `if !t.Stop() { <-t.C }` before `Reset` | Can block forever (no stale value since 1.23) | Just `t.Reset(d)` |
+| `if !t.Stop() { <-t.C }` before `Reset` | Redundant since 1.23 (drain never runs; blocks if value already received) | Just `t.Reset(d)` |
 | `sk.Sign(nil, msg, crypto.SHA256)` with ML-DSA | Error — ML-DSA signs the message | `nil` or `*mldsa.Options` |
 | Comparing closure code pointers | More sharing in 1.27 | Compare explicit identifiers |
 | Golden files of gzip/zlib/zip/png bytes | Encoder output changed | Compare decompressed content |
@@ -1934,7 +1946,7 @@ exposed to.
   `filepath.Rel`, or when a lexical check stands in for symlink resolution on a
   directory an attacker can write to.
 
-JSON parser differentials: v2 rejects duplicate names and invalid UTF-8 by default. Flag code that re-enables `AllowDuplicateNames`/`AllowInvalidUTF8` (or keeps v1) on a request path where another component also parses the same JSON for authorization decisions.
+JSON parser differentials: v2 rejects duplicate names and invalid UTF-8 by default. Case-insensitive matching (v1 default; v2 `MatchCaseInsensitiveNames`/`case:ignore`, which also ignore `_`/`-`) is another differential vector. Flag code that re-enables `AllowDuplicateNames`/`AllowInvalidUTF8`/case-insensitive matching (or keeps v1) on a request path where another component also parses the same JSON for authorization decisions.
 
 ##### Naming conventions
 
