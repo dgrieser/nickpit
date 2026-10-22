@@ -76,10 +76,12 @@ Node 16 shipped seven V8 updates and many backports. A project that declares `"e
 
 Dates and V8 versions are from the Node.js release index; features from the 16.x changelog.[^3][^4]
 
+**Minors inside 14.x** matter the same way for projects that still claim `>=14`: 14.0.0 ships V8 8.1, so private methods/accessors and `WeakRef`/`FinalizationRegistry` need **14.6** (V8 8.4), top-level `await` in ESM **14.8**, CommonJS named-export detection and subpath patterns **14.13**, `import 'node:fs'` in ESM **14.13.1**, `fs.rm()` **14.14**, `crypto.randomUUID()` and `--experimental-abortcontroller` **14.17**, `require('node:fs')`, `base64url`, `spawn` `timeout` and `dns.setDefaultResultOrder()` **14.18**, `exports` pattern trailers and Corepack **14.19**.[^3][^5][^10]
+
 ##### Rules for claiming something is unavailable
 
 - Say "not available in Node 16" only when the API is absent in **16.20.2** (the final 16.x). Say "needs 16.x or later" when the declared `engines` range starts below the minor that introduced it.
-- **17.x is not a superset of late 16.x.** Several features were backported to 16.17+ but are *absent from 17.9.1*: `node:test`, `util.parseArgs()`, `module.isBuiltin()`, `os.machine()`, `diagnostics_channel.subscribe()`, `v8.startupSnapshot`, `http.setMaxIdleHTTPParsers()` (all verified absent on 17.9.1, present on 16.20.2). Likewise **14.21.3 has** `require('node:fs')`, `os.devNull`, `util.getSystemErrorMap()`, `util.toUSVString()`, `--dns-result-order` and `--no-addons` (backports in 14.18/14.19) that **15.14.0 lacks** (verified).
+- **17.x is not a superset of late 16.x.** Several features were backported to 16.17/16.18 but are *absent from 17.9.1*: `node:test`, `util.parseArgs()`, `module.isBuiltin()`, `diagnostics_channel.subscribe()`, `v8.startupSnapshot` (16.17), `os.machine()`, `http.setMaxIdleHTTPParsers()` (16.18) (all verified absent on 17.9.1, present on 16.20.2). Likewise **14.21.3 has** `util.getSystemErrorMap()` (14.17), `require('node:fs')`, `os.devNull`, `util.toUSVString()`, `--dns-result-order` (14.18) and `--no-addons` (14.19) that **15.14.0 lacks** (verified).
 - Check whether a feature is only present behind a flag (`--experimental-fetch`, `--experimental-global-webcrypto`, `--experimental-abortcontroller` on 14) before assuming application code can use it. Flags in production start scripts are a review finding of their own.
 - Third-party code may polyfill (e.g. `abort-controller`, `node-fetch`, `@ungap/structured-clone`). A call is fine when the polyfill is imported explicitly; do not assume a global exists because a type definition says so.
 
@@ -93,7 +95,7 @@ Node.js 15 (October 2020) and 16 (April 2021) together brought the following ove
 
 | Feature | Available from | Not in |
 |---|---|---|
-| Logical assignment `a ||= b`, `a &&= b`, `a ??= b` | Node 15.0 (V8 8.5) | 14 — **SyntaxError** |
+| Logical assignment `a ||= b`, `a &&= b`, `a ??= b` | Node 15.0 (V8 8.6) | 14 — **SyntaxError** |
 | `String.prototype.replaceAll` | Node 15.0 | 14 |
 | `Promise.any`, `AggregateError` | Node 15.0 | 14 |
 | RegExp match indices (`/d`, `.indices`) | Node 16.0 (V8 9.0) | 14, 15 — **SyntaxError** |
@@ -105,7 +107,7 @@ Node.js 15 (October 2020) and 16 (April 2021) together brought the following ove
 | `new Error(msg, { cause })` | Node 16.9 (V8 9.3) | 14, 15 — option silently ignored |
 | Class `static { … }` initialization blocks | Node 16.11 (V8 9.4) | 14, 15 — **SyntaxError** |
 
-Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `??`, `Promise.allSettled`, `String.prototype.matchAll`, `BigInt`, `globalThis`, `Object.fromEntries`, `Array.prototype.flat/flatMap`, numeric separators `1_000`, public and private class fields and private methods (`#x`, `#m()`), `static` class fields, `WeakRef` / `FinalizationRegistry`, `Intl.DisplayNames`/`Intl.ListFormat`, hashbang lines, stable `Array.prototype.sort`. All were verified on 14.21.3.[^8]
+Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `??`, `Promise.allSettled`, `String.prototype.matchAll`, `BigInt`, `globalThis`, `Object.fromEntries`, `Array.prototype.flat/flatMap`, numeric separators `1_000`, public and private class fields (`#x`), `static` class fields, `Intl.DisplayNames`/`Intl.ListFormat`, hashbang lines, stable `Array.prototype.sort`. **Private methods and accessors (`#m()`, `get #x()`) and `WeakRef` / `FinalizationRegistry` need 14.6+**: they shipped in V8 8.4, which Node 14 only received in 14.6.0 (14.0–14.4 use V8 8.1, 14.5 uses V8 8.3). All were verified on 14.21.3; the 14.6 boundary comes from the V8 8.4 release notes and the per-release V8 versions in the release index.[^3][^8][^21]
 
 ##### Node.js APIs
 
@@ -120,7 +122,7 @@ Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `?
 | `crypto.webcrypto` (experimental), `crypto.hkdf`, `crypto.generatePrime`, `X509Certificate` | Node 15.0–15.8 | not in 14 |
 | `crypto.randomUUID()` | Node 15.6, **backported to 14.17** | |
 | `require('node:fs')` (the `node:` scheme in `require`) | Node 16.0, **backported to 14.18** | **not in 15.14** |
-| `atob()`, `btoa()` globals (legacy; prefer `Buffer`) | Node 16.0 | not global on 14/15 (`require('buffer').atob` exists on 15.13+ and on 14.21.3, also legacy) |
+| `atob()`, `btoa()` globals (legacy; prefer `Buffer`) | Node 16.0 | not global on 14/15 (`require('buffer').atob` exists on 15.13+ and 14.17+, also legacy) |
 | `performance` global | Node 16.0 | 14: `require('perf_hooks').performance` |
 | `fs.cp()` / `fsPromises.cp()` (experimental) | Node 16.7 | |
 | `stream/consumers`, `stream/web` (experimental) | Node 16.7, 16.5 | |
@@ -134,7 +136,7 @@ Sources: Node.js 15/16 changelogs and the `added:` metadata of the 16.20.2 API d
 
 ##### Platform
 
-- **V8 9.4** in 16.11+ (9.0 at 16.0); Node 14 uses V8 8.4; Node 17 uses V8 9.5/9.6; Node 18 uses V8 10.x.[^3]
+- **V8 9.4** in 16.11+ (9.0 at 16.0); Node 14 uses V8 8.4 from 14.6 (8.1 in 14.0–14.4, 8.3 in 14.5); Node 15 uses V8 8.6; Node 17 uses V8 9.5/9.6; Node 18 uses V8 10.x.[^3]
 - **OpenSSL 1.1.1** in both 14 and 16 (17 switched to OpenSSL 3.0).[^11]
 - **ICU** full data is built in (`Intl` works for all locales); 16.20.2 ships ICU 71.1 / Unicode 14.
 - Node 16 is the first line with prebuilt Apple Silicon (arm64 macOS) binaries.[^4]
@@ -203,7 +205,7 @@ The reviewer must never suggest these as fixes for Node 16 code (and a fortiori 
 - Global `crypto` (Web Crypto) (19; flag in 16.15+/17.6+), `crypto.getRandomValues()` on the `crypto` module (17.4), `crypto.hash()` (21.7/20.12).
 - `AbortSignal.any()` (20.3 / 18.17), `events.addAbortListener()` (20.5 / 18.18), `util.aborted()` (19.7 / 18.16).
 - `readline/promises` (17.0), `util.styleText()` (21.7 / 20.12), `util.parseEnv()` (21.7), `util.MIMEType` (19.1 / 18.13).
-- `process.loadEnvFile()` and `--env-file` (20.6 / 21.7) — use the `dotenv` package.
+- `--env-file` (20.6) and `process.loadEnvFile()` (21.7 / 20.12) — use the `dotenv` package.
 - `os.availableParallelism()` (18.14) — use `os.cpus().length`.
 - `fs.glob()` (22), `fs.openAsBlob()` (19.8), `fs.statfs()` (18.15/19.6), `fsPromises.readdir(…, { recursive: true })` (20.1), `filehandle.readLines()` (18.11).
 - `http.Server#closeAllConnections()` / `closeIdleConnections()` (18.2) — track sockets yourself (see [HTTP](#http-and-networking-without-fetch)).
@@ -214,13 +216,13 @@ The reviewer must never suggest these as fixes for Node 16 code (and a fortiori 
 
 ##### Old APIs that are deprecated in 16
 
-See [Removed / changed](#removed--changed--migration-notes) for the full list: `new Buffer()` (runtime DEP0005), `fs.rmdir(path, { recursive: true })` (runtime DEP0147), `crypto.createCipher`/`createDecipher` (runtime DEP0106), `require('sys')` (runtime DEP0025), `OutgoingMessage#_headers` (runtime DEP0066), `exports` folder mappings `"./": "./"` (runtime DEP0148), `process.binding()` (doc-only DEP0111, several bindings runtime-deprecated in 16.0), `punycode` (doc-only DEP0040), `util.isArray()` and other `util.is*()` (doc-only), `buffer.slice()` (doc-only DEP0158 since 16.15; prefer `subarray()`).[^9]
+See [Removed / changed](#removed--changed--migration-notes) for the full list: `new Buffer()` (runtime DEP0005), `fs.rmdir(path, { recursive: true })` (runtime DEP0147), `crypto.createCipher`/`createDecipher` (runtime DEP0106), `require('sys')` (runtime DEP0025), `OutgoingMessage#_headers` (runtime DEP0066), `exports` folder mappings `"./lib/": "./lib/"` (runtime DEP0148), `process.binding()` (doc-only DEP0111, several bindings runtime-deprecated in 16.0), `punycode` (doc-only DEP0040), `util.isArray()` and other `util.is*()` (doc-only), `buffer.slice()` (doc-only DEP0158 since 16.15; prefer `subarray()`).[^9]
 
 ***
 
 #### Language: the ES2021/ES2022 subset you actually have
 
-Node 16.20.2 implements ES2021 completely and most of ES2022 (class fields, private methods, `static` blocks, `#x in obj`, `.at()`, `Object.hasOwn`, `error.cause`, RegExp `/d`, top-level `await` in ES modules). It does **not** implement ES2023+ (no `findLast`, no change-array-by-copy methods). Node 14 is roughly ES2020 plus class fields and private methods.
+Node 16.20.2 implements ES2021 and ES2022 completely (ES2022 needs 16.11+: class fields, private methods, `static` blocks, `#x in obj`, `.at()`, `Object.hasOwn`, `error.cause`, RegExp `/d`, top-level `await` in ES modules). It does **not** implement ES2023+ (no `findLast`, no change-array-by-copy methods). Node 14 is roughly ES2020 plus class fields (and, from 14.6, private methods and `WeakRef`).
 
 ##### Variables, equality and nullish handling
 
@@ -287,7 +289,7 @@ class Connection {
     Connection.registry.set(name, this);
   }
 
-  #assertOpen() {                  // private method (14+)
+  #assertOpen() {                  // private method (14.6+; V8 8.4)
     if (this.state !== 'open') throw new Error(`${this.name} is not open`);
   }
 
@@ -1045,7 +1047,7 @@ async function main() {
 main();
 ```
 
-- `fs.rmdir(path, { recursive: true })` emits runtime **DEP0147** on 16 and, unlike 14, **throws `ENOENT`** for a missing path (16.0 removed the "permissive" behaviour; verified). It is removed in later Node versions. Use `fs.rm(path, { recursive: true, force: true })`.
+- `fs.rmdir(path, { recursive: true })` emits runtime **DEP0147** on 16 and, unlike 14, **throws `ENOENT`** for a missing path (16.0 removed the "permissive" behaviour; verified). The option still works with a warning through Node 24 and is rejected with `ERR_INVALID_ARG_VALUE` from Node 25 (verified on 24.22.1 and 25.9.0). Use `fs.rm(path, { recursive: true, force: true })`.
 - `fs.cp()` (16.7) is experimental in 16; it is absent in 14.
 - `fs.exists()` (callback) is deprecated; `fs.existsSync()` is fine for startup checks but a TOCTOU race before an open.
 - Pass `encoding` explicitly (`'utf8'`), otherwise you get a `Buffer`.
@@ -1252,7 +1254,7 @@ if (isMainThread) {
 }
 ```
 
-Creating a worker per request is expensive; use a pool (for example `piscina` — it declares no `engines` field, so test the major you pin on the target runtime). `cluster` is fine for multi-process HTTP servers; in containers, prefer one process per container and scale horizontally.
+Creating a worker per request is expensive; use a pool (for example `piscina`: 5.x declares `engines.node >=20.x`; 3.x/4.x declare no `engines` field, so pin one of those and test it on the target runtime). `cluster` is fine for multi-process HTTP servers; in containers, prefer one process per container and scale horizontally.
 
 ***
 
@@ -1368,7 +1370,7 @@ console.log(Buffer.concat([decipher.update(ct), decipher.final()]).toString()); 
 - `crypto.createCipher()`/`createDecipher()` (no IV, weak key derivation) are **runtime-deprecated (DEP0106)** and removed in Node 22. Flag any use.
 - `pbkdf2(…)` requires an explicit `digest` (`'sha256'`/`'sha512'`); never `'sha1'` for new code.
 - Web Crypto is at `require('crypto').webcrypto` (15+, experimental in 16), **not** a global `crypto` (the global needs `--experimental-global-webcrypto` on 16.15+, and is default only in 19+). `crypto.getRandomValues()` on the module is 17.4+; in 16 use `crypto.webcrypto.getRandomValues()` or `randomBytes()`.
-- Legacy hashes such as `md4` work on 16 (OpenSSL 1.1.1) but throw `ERR_OSSL_EVP_UNSUPPORTED` on 17+ (OpenSSL 3, verified). webpack 4 hashes with md4: it builds on 16 and breaks on upgrade. Do not "fix" with `--openssl-legacy-provider` (that flag does not exist on 16, verified "bad option").
+- Legacy hashes such as `md4` work on 16 (OpenSSL 1.1.1) but throw `ERR_OSSL_EVP_UNSUPPORTED` on 17+ (OpenSSL 3, verified). webpack 4 hashes with md4: it builds on 16 and breaks on upgrade. Do not "fix" with `--openssl-legacy-provider`: the 16.17+ docs list it, but it only applies to builds dynamically linked against OpenSSL 3, and the official 16.20.2 binary (OpenSSL 1.1.1) rejects it with "bad option" (verified); it works on 17+.
 - TLS: do not set `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`. Use `--tls-min-v1.2` defaults (TLS 1.2 is the default minimum on 14/16).
 
 ##### Secrets, dependencies and supply chain
@@ -1489,7 +1491,7 @@ console.log(typeof assert.match);                          // function (assert.m
 ##### ESLint
 
 - **ESLint 8** is the last major supporting 14/16 (`^12.22.0 || ^14.17.0 || >=16.0.0`); ESLint 9 requires 18.18+.[^13] Use `.eslintrc.*` with `parserOptions.ecmaVersion: 2022` (or `2021` for 14) and `env: { node: true, es2021: true }`.
-- `eslint-plugin-n` (16.x supports Node 16; 17.x needs 18.18+) checks `n/no-unsupported-features/es-syntax`, `n/no-unsupported-features/es-builtins` and `n/no-unsupported-features/node-builtins` against `engines.node`. This is the single most effective guard against using 17+/18+ APIs.
+- `eslint-plugin-n` (16.x declares `>=16.0.0`; use 15.x for Node 14; 17.x needs 18.18+) checks `n/no-unsupported-features/es-syntax`, `n/no-unsupported-features/es-builtins` and `n/no-unsupported-features/node-builtins` against `engines.node`. This is the single most effective guard against using 17+/18+ APIs.
 - Recommended rules for these versions: `no-floating-promises` (via `@typescript-eslint`), `no-throw-literal`, `prefer-promise-reject-errors`, `n/no-deprecated-api`, `no-restricted-globals` for `fetch`/`structuredClone` when no polyfill exists.
 
 ```json
@@ -1559,7 +1561,7 @@ void legacy;
 | `module.createRequireFromPath()` | 16.0 | Removed (use `module.createRequire()`) |
 | `exports` folder mappings (`"./x/": "./x/"`) | 16.0 | Runtime DEP0148 warning (14.21.3 shows none); removed in 17 |
 | ESM main/index and extension lookup (DEP0151) | 16.0 | Runtime warning when an ES module package (`"type": "module"`) declares `"main": "./dist"` without file name and extension (verified; CommonJS packages imported from ESM do not warn) |
-| Invalid `package.json` `main` falling back to `index.js` (DEP0128) | 16.0 | Runtime-deprecated (verified: warns when the package is imported from ESM) |
+| Invalid `package.json` `main` falling back to `index.js` (DEP0128) | 16.0 | Runtime-deprecated (verified: warns when the package is loaded with `require()`; 14.21.3 is silent; an ESM `import` of a `"type": "module"` package reports DEP0151 instead) |
 | Changing `process.config` | 16.0 | Runtime-deprecated |
 | `http.IncomingMessage` `autoDestroy: true` | 16.0 | Incoming request streams destroy themselves after `'end'` |
 | ICU minimum 68 | 16.0 | `Intl` behaviour/locale data updates |
@@ -1599,7 +1601,7 @@ void legacy;
 | `buffer.slice()` | DEP0158 | Documentation-only | `buffer.subarray()` |
 | `res.on('aborted')`, `req.aborted` | DEP0156 | Documentation-only (16.12+) | `'close'` + `res.complete` |
 | `process.on('multipleResolves')` | DEP0160 | Documentation-only (16.15+) | — |
-| `url.parse()` | DEP0116 | **Revoked** in 16 ("legacy", not deprecated) | prefer WHATWG `new URL()`; `url.parse` has known hostname-spoofing pitfalls |
+| `url.parse()` | DEP0116 | **Revoked** since 15.13 ("legacy", not deprecated) | prefer WHATWG `new URL()`; `url.parse` has known hostname-spoofing pitfalls |
 | Unhandled rejections | DEP0018 | End-of-Life (15+) | handle every rejection |
 
 Statuses come from the Node 16.20.2 deprecations document; the runtime ones were reproduced on 16.20.2.[^9]
@@ -1621,7 +1623,7 @@ try { new URL('not a url'); } catch (e) { console.log(e.code); }   // ERR_INVALI
 - [ ] Deployed runtime is the final patch (16.20.2 / 14.21.3), not an older 16.x/14.x
 - [ ] `engines.node` states the real minimum *including minor* for APIs used (`.at()` 16.6, `Object.hasOwn`/`cause` 16.9, `static {}` 16.11, `AbortSignal.timeout` 16.14, `node:test` 16.17)
 - [ ] No Node 17/18+ APIs without polyfill: `fetch`, `structuredClone`, `findLast`, `toSorted`, `Object.groupBy`, `AbortSignal.any`, `readline/promises`, `os.availableParallelism`, `closeAllConnections`, `--env-file`, `require(esm)`, `import … with`
-- [ ] Code shared with Node 14: no `??=`/`||=`/`&&=`, `replaceAll`, `Promise.any`, `static {}`, `#x in o`, `/d`, `.at()`, `Object.hasOwn`, `timers/promises`, `stream/promises`, `require('node:…')` (unless ≥14.18), `AbortController` (unless flagged); `cause` assigned manually
+- [ ] Code shared with Node 14: private methods and `WeakRef` only if the minimum is ≥14.6; no `??=`/`||=`/`&&=`, `replaceAll`, `Promise.any`, `static {}`, `#x in o`, `/d`, `.at()`, `Object.hasOwn`, `timers/promises`, `stream/promises`, `require('node:…')` (unless ≥14.18), `AbortController` (unless flagged); `cause` assigned manually
 - [ ] No production `--experimental-*` flags (`--experimental-fetch`, `--experimental-specifier-resolution`, `--experimental-loader`) unless justified
 - [ ] `@types/node` major matches the runtime; TS `target`/`lib` match (`es2021`/`es2022` for 16.11+, `es2020` for 14)
 
@@ -1693,3 +1695,4 @@ try { new URL('not a url'); } catch (e) { console.log(e.code); }   // ERR_INVALI
 [^18]: Node.js 18 changelog (`server.requestTimeout` default 300000 ms). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V18.md
 [^19]: nodejs/node#39987 — dns: default to verbatim=true in dns.lookup(). https://github.com/nodejs/node/pull/39987
 [^20]: tsconfig/bases — `@tsconfig/node14` and `@tsconfig/node16`. https://github.com/tsconfig/bases
+[^21]: V8 release v8.4 (WeakRefs and FinalizationRegistry, private methods and accessors). https://v8.dev/blog/v8-release-84
