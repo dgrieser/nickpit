@@ -33,7 +33,7 @@ Before claiming that an API is missing, deprecated, or should be replaced, estab
 ```js
 // Runtime feature checks belong at startup, not scattered through the code base.
 const [major, minor] = process.versions.node.split('.').map(Number);
-const hasRequireEsm = process.features.require_module === true; // 20.19.0+ (or flag on 20.17+)
+const hasRequireEsm = process.features.require_module === true; // property exists from 20.19.0
 if (major === 20 && minor < 19) {
   console.warn(`Node ${process.version}: upgrade to >= 20.19.0 (and plan the move to 22/24 LTS)`);
 }
@@ -74,7 +74,7 @@ Node.js 20.0.0 also contains all semver-major changes of the non-LTS 19.x line, 
 | 20.1.0 (2023-05-03) | `fs.readdir`/`opendir` `recursive: true`; `fs.cp` `mode`; `dns.getDefaultResultOrder()`; `assert.CallTracker` runtime-deprecated |
 | 20.2.0 (2023-05-16) | `test.skip/todo/only` shorthands; `URLSearchParams#has(name, value)`/`delete(name, value)` |
 | 20.3.0 (2023-06-08) | `AbortSignal.any()`; `readable.asIndexedPairs()` deprecated; libuv 1.45 |
-| 20.4.0 (2023-07-04) | `node:test` `MockTimers`; `Symbol.dispose`/`Symbol.asyncDispose` and dispose methods on Node resources (experimental) |
+| 20.4.0 (2023-07-05) | `node:test` `MockTimers`; `Symbol.dispose`/`Symbol.asyncDispose` and dispose methods on Node resources (experimental) |
 | 20.5.0 (2023-07-18) | `events.addAbortListener()`; `--test-shard` |
 | 20.6.0 (2023-09-04) | `--env-file`; `import.meta.resolve()` unflagged; `module.register()` + `initialize` hook; `load` hook can return CommonJS; `ReadableStream.from()` |
 | 20.7.0 (2023-09-18) | multiple `--env-file`; npm 10; `process.sourceMapsEnabled` |
@@ -122,7 +122,7 @@ The project's runtime does not have the following. Each line was checked on 20.2
 - Global `navigator` (`navigator.hardwareConcurrency`, `navigator.userAgent`) — Node 21. Use `os.availableParallelism()`.
 - Unflagged global `WebSocket` — Node 22 (flagged by `--experimental-websocket` in 20.10+). Global `EventSource` needs `--experimental-eventsource` (20.18+, still flagged in 22).
 - `node --test 'glob/**/*.test.js'` (glob arguments) — Node 21; on 20 a glob is taken as a literal path ("Could not find …").
-- `node --run <script>` — Node 22. `--experimental-strip-types` / `--experimental-transform-types` (running `.ts` directly) — Node 22.6+.
+- `node --run <script>` — Node 22. `--experimental-strip-types` (Node 22.6) / `--experimental-transform-types` (Node 22.7) — running `.ts` directly.
 - `fs.glob()` / `fs.globSync()` / `fsPromises.glob()` — Node 22. (`path.matchesGlob()` exists from 20.17 as experimental.)
 - `node:sqlite` — Node 22.5. `module.enableCompileCache()` / `NODE_COMPILE_CACHE` — Node 22.1 (env var) / 22.8 (API). `module.registerHooks()` (synchronous hooks) — Node 22.15. `module.findPackageJSON()` — Node 22.14. `module.stripTypeScriptTypes()` — Node 22.13.
 - `util.getCallSite()` / `util.getCallSites()` — Node 22.9; `util.diff()` — Node 22.15. `assert.partialDeepStrictEqual()` — Node 22.13.
@@ -134,7 +134,7 @@ The project's runtime does not have the following. Each line was checked on 20.2
 
 ##### Node.js 21.x projects
 
-A project on Node 21 (EOL June 1, 2024) has the Node 21 additions above (`Object.groupBy`, `Map.groupBy`, `ArrayBuffer#transfer`, `JSON.rawJSON`, global `navigator`, glob arguments to `--test`, `fetch`/Web Streams marked stable) but **lacks** these Node 20.x backports, verified absent on 21.7.3: `require(esm)` (throws `ERR_REQUIRE_ESM`), syntax detection by default, `"module-sync"` condition, `process.features.require_module`, `process.getBuiltinModule()`, `process.availableMemory()`, `URL.parse()`, `Blob#bytes()`, `node:test` `suite()`, `path.matchesGlob()`, `stream.duplexPair()`, `zlib.crc32()`, `v8.queryObjects()`, `vm.constants.DONT_CONTEXTIFY`, `worker_threads.postMessageToThread()` and `--env-file-if-exists`. JSON imports still print an `ExperimentalWarning` on 21. Code written against 20.19 can therefore fail on 21.7.3; the fix is to upgrade to 22/24, not to "downgrade" the code.
+A project on Node 21 (EOL June 1, 2024) has the Node 21 additions above (`Object.groupBy`, `Map.groupBy`, `ArrayBuffer#transfer`, `JSON.rawJSON`, global `navigator`, glob arguments to `--test`, `fetch`/Web Streams marked stable) but **lacks** these Node 20.x backports, verified absent on 21.7.3: `require(esm)` (throws `ERR_REQUIRE_ESM`), syntax detection by default, `"module-sync"` condition, `process.features.require_module`, `process.getBuiltinModule()`, `process.availableMemory()`, `URL.parse()`, `Blob#bytes()`, `node:test` `suite()`, `path.matchesGlob()`, `stream.duplexPair()`, `zlib.crc32()`, `v8.queryObjects()`, `vm.constants.DONT_CONTEXTIFY`, `worker_threads.postMessageToThread()`, the `export { x as 'module.exports' }` interop, `node:test` `t.plan()`, `t.assert` and `t.fullName`, `util.parseArgs` `allowNegative`, and the flags `--test-force-exit`, `--allow-wasi`, `--inspect-wait`, `--report-exclude-network`, `--experimental-eventsource` and `--experimental-test-module-mocks` (all "bad option" on 21.7.3). `--env-file-if-exists` is not supported either: 21.7.3 rejects it as a "bad option" when the file exists and exits with "<file>: not found" when it is missing. 21.0.0 also **removed** `readable.asIndexedPairs()`, which still exists (deprecated) on 20. JSON imports still print an `ExperimentalWarning` on 21. Code written against 20.19 can therefore fail on 21.7.3; the fix is to upgrade to 22/24, not to "downgrade" the code.
 
 ##### Deprecated or removed APIs (older features)
 
@@ -147,7 +147,7 @@ A project on Node 21 (EOL June 1, 2024) has the Node 21 additions above (`Object
 | `url.parse()` (DEP0169) | doc-only (runtime with `--pending-deprecation`); invalid ports warn (DEP0170) | `new URL()`, `URL.canParse()`, `URL.parse()` (20.18+) |
 | `fs.rmdir(path, { recursive: true })` (DEP0147) | runtime warning | `fs.rm(path, { recursive: true, force: true })` |
 | `assert.CallTracker` (DEP0173) | runtime warning since 20.1.0 | `mock.fn()` from `node:test` |
-| `readable.asIndexedPairs()` | runtime warning since 20.3.0; removed in 22 | `readable.map()` with a counter |
+| `readable.asIndexedPairs()` | runtime warning (no code) since 20.3.0; **removed in 21.0.0** | `readable.map()` with a counter |
 | Import assertions `assert { type: 'json' }` | works, V8 prints a deprecation warning; **SyntaxError in 22** | import attributes `with { type: 'json' }` |
 | `util.isArray()`, `util.isDate()`, `util._extend()` … | doc-only in 20; runtime warnings from 22; all `util.is*` except `isArray`/`isDeepStrictEqual` removed in 23 | `Array.isArray()`, `instanceof Date`, `Object.assign()` |
 | `punycode` built-in (DEP0040) | doc-only in 20; runtime warning from 21 | `url.domainToASCII()` or userland `punycode` |
@@ -1210,7 +1210,7 @@ console.log(Buffer.concat([decipher.update(ct), decipher.final()]).toString()); 
 ```
 
 - `crypto.createCipher()` (no IV, MD5 key derivation) is deprecated and **removed in Node 22** — flag every use.
-- Pass `authTagLength` when decrypting GCM; accepting shorter tags without it is deprecated since 20.13.0 (DEP0182).
+- Pass `authTagLength` when decrypting GCM; accepting shorter tags without it is doc-deprecated since 20.13.0 (DEP0182; no runtime warning on 20).
 - In an ES module or script file, the global `crypto` is **Web Crypto** (`crypto.subtle`, `crypto.randomUUID()`, `crypto.getRandomValues()`), not `node:crypto`: `crypto.createHash` is `undefined` there. Import `node:crypto` explicitly. (In `node -e` and the REPL the name refers to the `node:crypto` module, which hides the difference.)
 - Web Crypto `Ed25519`/`X25519` became stable in 20.19.3; on older minors they were experimental.
 
@@ -1288,7 +1288,7 @@ try {
 }
 ```
 
-Observed on 20.20.2: without `--allow-fs-read` covering the entry file, the process cannot even load it; `child_process` and `new Worker()` throw `ERR_ACCESS_DENIED`; `net.createServer().listen()` still works; an `ExperimentalWarning` is printed. Since 20.7.0 multiple paths are given by repeating the flag (comma-separated lists are rejected). Many permission bypasses were fixed during the 20.x line (and later ones only in 22+), so treat the model as a seat belt against mistakes, not a sandbox for malicious code.
+Observed on 20.20.2: without `--allow-fs-read` covering the entry file, the process cannot even load it; `child_process` and `new Worker()` throw `ERR_ACCESS_DENIED`; `net.createServer().listen()` still works; an `ExperimentalWarning` is printed. Since 20.7.0 multiple paths are given by repeating the flag; a comma-separated list is not split: `--allow-fs-read=/tmp,/etc` is treated as one literal path and grants neither directory (verified on 20.20.2). Many permission bypasses were fixed during the 20.x line (and later ones only in 22+), so treat the model as a seat belt against mistakes, not a sandbox for malicious code.
 
 ##### Dependency and Supply-Chain Hygiene
 
@@ -1372,7 +1372,7 @@ Verified behaviour on 20.20.2 that reviewers should know:
 - The default reporter is `spec` on a TTY and `tap` otherwise; set `--test-reporter=spec` (or `junit`, 20.8+; `lcov`, 20.11+) in CI explicitly.
 - A subtest that is not awaited fails with "test did not finish before its parent and was cancelled".
 - `test.only()` runs everything unless `--test-only` is passed (the runner prints a hint).
-- Coverage: `--experimental-test-coverage` works with `--test` (20.1+). Coverage include/exclude globs and thresholds are Node 22 features.
+- Coverage: `--experimental-test-coverage` works with `--test` (flag available since 19.7/18.15; still experimental on 20). Coverage include/exclude globs and thresholds are Node 22 features.
 - `t.mock.timers.enable()` takes an options object since 20.11.0 (`{ apis, now }`); only that form can set the start time (`now`). The original 20.4 array form (`enable(['setTimeout'])`) still works on 20.20.2 (an array containing `'Date'` starts the clock at 0).
 - `MockTimers` and `t.plan()` are still Experimental on 20 (using mock timers prints an `ExperimentalWarning`).
 - `t.assert` exists (without `snapshot`); snapshot testing, `mock.module()` without `--experimental-test-module-mocks`, and `--experimental-test-isolation` are not available.
@@ -1618,7 +1618,7 @@ Because Node 20 is end-of-life, every review should keep the upgrade path open. 
 
 - `import … assert { type: 'json' }` → `SyntaxError` on 22+ (use `with`).
 - `crypto.createCipher()`/`createDecipher()` → removed in 22.
-- `readable.asIndexedPairs()` → removed in 22.
+- `readable.asIndexedPairs()` → removed in 21.0.0 (absent on 21.7.3 and 22).
 - `util.isBoolean()`, `isBuffer()`, `isDate()`, `isError()`, `isFunction()`, `isNull()`, `isNullOrUndefined()`, `isNumber()`, `isObject()`, `isPrimitive()`, `isRegExp()`, `isString()`, `isSymbol()`, `isUndefined()` → removed in 23 (only `util.isArray()` and `util.isDeepStrictEqual()` remain); `util.isArray()`/`util._extend()` print runtime warnings from 22.
 - `fs.F_OK`/`R_OK`/`W_OK`/`X_OK` on `fs` and `assert.CallTracker` → removed in 25.
 - `--experimental-policy` → removed in 22; `--experimental-permission` → `--permission` is the stable name from 22.13 (the old flag still works on 22).
