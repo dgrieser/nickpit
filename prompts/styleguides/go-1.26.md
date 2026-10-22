@@ -166,22 +166,26 @@ type Value[V Value[V]] interface {
 
 #### Project Layout & Modules
 
-##### go mod init now defaults to N-1 [NEW in 1.26]
+##### go mod init default version — N-1 only in 1.26.0
 
 ```bash
-# Using Go 1.26 toolchain:
-go mod init myapp
-# Creates go.mod with: go 1.25.0 (not 1.26.0)
-# This encourages modules compatible with currently supported Go versions.
+# Go 1.26.0 only:
+go mod init myapp   # go.mod: go 1.25.0 (one release behind the toolchain)
 
-# To override to the current toolchain version:
-go mod init myapp && go get go@1.26.0
+# Go 1.26.1 and later 1.26.x patch releases (the N-1 default was reverted,
+# golang/go#77653, #77860):
+go mod init myapp   # go.mod: go 1.26.N — the running toolchain's version
+
+# Pick the language version explicitly when it matters:
+go mod edit -go=1.25.0
 ```
+
+Do not assume a module's `go` line came from `go mod init` defaults; read it.
 
 ```
 module github.com/yourname/myapp
 
-go 1.25.0   // <-- N-1 default from go mod init with 1.26 toolchain
+go 1.26.0
 
 require (
     github.com/spf13/cobra v1.8.0
@@ -415,12 +419,22 @@ switch v := x.(type) { case int: _ = v }
 ##### crypto.Encapsulator / Decapsulator [NEW in 1.26]
 
 ```go
-// New interfaces for accepting abstract KEM keys
-type Encapsulator interface { Encapsulate() (ciphertext, sharedSecret []byte, err error) }
-type Decapsulator interface { Decapsulate(ciphertext []byte) (sharedSecret []byte, err error) }
+// crypto — interfaces for abstract KEM keys
+type Encapsulator interface {
+    Bytes() []byte
+    Encapsulate() (sharedKey, ciphertext []byte)
+}
+type Decapsulator interface {
+    Encapsulator() Encapsulator
+    Decapsulate(ciphertext []byte) (sharedKey []byte, err error)
+}
 
-// KeyExchanger — abstract ECDH private keys (hardware keys, etc.)
-type KeyExchanger interface { ECDH(remote *ecdh.PublicKey) ([]byte, error) }
+// crypto/ecdh.KeyExchanger — abstract ECDH private keys (hardware keys, etc.)
+type KeyExchanger interface {
+    PublicKey() *ecdh.PublicKey
+    Curve() ecdh.Curve
+    ECDH(*ecdh.PublicKey) ([]byte, error)
+}
 // Implemented by *ecdh.PrivateKey
 
 // crypto.MessageSigner — used by TLS 1.2+ (1.25+)
@@ -686,7 +700,6 @@ if ve, ok := errors.AsType[*ValidationError](err); ok {
 | Type safety | Runtime panic if misused | Compile-time error |
 | Verbosity | Needs temp var | Single expression |
 | Uses reflect | Yes — slower | No — faster |
-| Benchmark | ~95 ns, 40B, 2 allocs | ~30 ns, 24B, 1 alloc |
 | Variable scope | Leaks outside `if` | Scoped to `if` block |
 
 ```go
@@ -760,7 +773,7 @@ reqLogger := logger.WithGroup("request").With("id", reqID)
 slog.InfoContext(ctx, "handler", "status", 200)
 
 // Discard in benchmarks (1.24+)
-slog.SetDefault(slog.New(slog.DiscardHandler{}))
+slog.SetDefault(slog.New(slog.DiscardHandler)) // a variable, not a type
 ```
 
 ##### slog best practices
@@ -850,8 +863,8 @@ prof.WriteTo(os.Stdout, 2)
 //   main.processWorkItems.func1()
 //     /app/main.go:42 +0x1e
 
-// HTTP endpoint (when experiment enabled)
-http.HandleFunc("/debug/pprof/goroutineleak", pprof.Handler("goroutineleak").ServeHTTP)
+// HTTP endpoint: net/http/pprof registers /debug/pprof/goroutineleak
+// automatically when the experiment is enabled
 
 // Common leak pattern — early return from goroutine fan-out
 func processItems(items []Item) ([]Result, error) {
@@ -888,7 +901,7 @@ func processItems(ctx context.Context, items []Item) ([]Result, error) {
 }
 ```
 
-**Intended for Go 1.27 default.** Try it now to catch leaks in production.
+Without `GOEXPERIMENT=goroutineleakprofile`, `pprof.Lookup("goroutineleak")` returns `nil` in 1.26 — guard the lookup. (The profile became generally available in Go 1.27.)
 
 ##### Classifying races before reporting
 
@@ -1090,11 +1103,12 @@ proc, err := os.StartProcess("/bin/myapp", []string{"myapp"}, attr)
 if err != nil { return err }
 defer proc.Wait()
 
-// Get the underlying OS handle
-if handle, ok := proc.WithHandle(); ok {
-    // Use handle for OS-specific process management operations
-    // e.g., send signals via pidfd, query process status
-    fmt.Println("process handle available")
+// WithHandle runs f with the OS handle; the handle stays valid until f returns
+err = proc.WithHandle(func(handle uintptr) {
+    // OS-specific use, e.g. pidfd_send_signal on Linux
+})
+if errors.Is(err, os.ErrNoHandle) {
+    // handles unsupported (non-Linux/Windows, or Linux < 5.4)
 }
 ```
 
@@ -1179,8 +1193,8 @@ err = jsonv2.Unmarshal(data, &user,
 
 ```go
 cop := http.NewCrossOriginProtection()
-cop.AddAllowedOrigin("https://app.example.com")
-cop.AddPermittedPattern("/api/webhooks/")
+if err := cop.AddTrustedOrigin("https://app.example.com"); err != nil { return err }
+cop.AddInsecureBypassPattern("/api/webhooks/")  // exempt from the check — use sparingly
 handler := cop.Handler(mux)
 ```
 
@@ -1279,10 +1293,14 @@ p, _ = randPkg.Prime(nil, 256)                     // nil is fine
 // crypto/dsa:    GenerateKey
 // crypto/ecdh:   Curve.GenerateKey
 // crypto/ecdsa:  GenerateKey, SignASN1, Sign, PrivateKey.Sign
+//   (PrivateKey.Sign: a non-nil reader is ignored, but nil selects
+//    deterministic RFC 6979 signatures)
 // crypto/rsa:    GenerateKey, GenerateMultiPrimeKey, EncryptPKCS1v15
 // crypto/rand:   Prime
 
 // Exception: crypto/ed25519.GenerateKey still uses rand if non-nil
+// NOT covered: rsa.EncryptOAEP / EncryptOAEPWithOptions / SignPSS still use the
+// reader — passing nil panics (nil-pointer dereference); use crypto/rand.Reader
 
 // For deterministic testing: testing/cryptotest.SetGlobalRandom
 func TestCrypto(t *testing.T) {
@@ -1315,8 +1333,8 @@ cfg := &tls.Config{
 ```go
 import "crypto/fips140"
 
-// Run most code in FIPS mode, but selectively disable for specific operations
-GODEBUG=fips140=only ./myapp  // strict FIPS
+// Strict FIPS mode is enabled from the environment:
+//   GODEBUG=fips140=only ./myapp
 
 // In code: temporarily disable strict checks
 fips140.WithoutEnforcement(func() {
@@ -1326,7 +1344,7 @@ fips140.WithoutEnforcement(func() {
 })
 
 // Check module version
-v := fips140.Version() // e.g., "v1.26.0"
+v := fips140.Version() // "latest", or e.g. "v1.0.0" when built with GOFIPS140=v1.0.0
 ```
 
 ##### crypto/rsa — PKCS #1 v1.5 encryption deprecated [NEW in 1.26]
@@ -1338,11 +1356,11 @@ ciphertext, err := rsa.EncryptPKCS1v15(nil, pubKey, msg) // deprecated
 plaintext, err  := rsa.DecryptPKCS1v15(nil, privKey, ciphertext) // deprecated
 
 // PREFERRED: OAEP
-ciphertext, err = rsa.EncryptOAEP(sha256.New(), nil, pubKey, msg, nil)
-plaintext, err  = rsa.DecryptOAEP(sha256.New(), nil, privKey, ciphertext, nil)
+ciphertext, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, msg, nil) // reader required — nil panics
+plaintext, err  = rsa.DecryptOAEP(sha256.New(), nil, privKey, ciphertext, nil) // reader ignored
 
 // NEW: EncryptOAEPWithOptions — separate hash functions for padding and MGF1
-ciphertext, err = rsa.EncryptOAEPWithOptions(pubKey, msg, &rsa.OAEPOptions{
+ciphertext, err = rsa.EncryptOAEPWithOptions(rand.Reader, pubKey, msg, &rsa.OAEPOptions{
     Hash:    crypto.SHA256,
     MGFHash: crypto.SHA1, // legacy compatibility
     Label:   nil,
@@ -1491,12 +1509,12 @@ func ptr[T any](v T) *T { return &v }
 // go fix will replace all call sites: ptr(42) → new(42)
 ```
 
-##### go.mod init defaults to N-1
+##### go mod init default version
 
 ```bash
-# With 1.26 toolchain:
-go mod init myapp   # go.mod says "go 1.25.0" (not 1.26.0)
-go get go@1.26.0    # upgrade if you need 1.26 features specifically
+# Go 1.26.0 wrote "go 1.25.0"; 1.26.1+ write the toolchain version again.
+go mod init myapp
+go mod edit -go=1.26.0   # set the language version explicitly
 ```
 
 ##### Tool directive in go.mod (1.24+)
@@ -1537,7 +1555,7 @@ func run() error { return nil }
 # Expect 10–40% reduction in GC overhead for GC-heavy programs
 # Additional ~10% on amd64 CPUs with AVX-512 (Intel Ice Lake, AMD Zen 4+)
 
-# Revert to old GC (expected to be removed in 1.27):
+# Revert to old GC (announced for removal in 1.27; still accepted by go1.27.x):
 GOEXPERIMENT=nogreenteagc go build ./...
 
 # If you see GC regressions, file an issue and use the above temporarily
@@ -1552,16 +1570,14 @@ GOEXPERIMENT=nogreenteagc go build ./...
 # Effect: lower overhead for all cgo and syscall transitions
 ```
 
-##### Size-specialised malloc — up to 30% faster small allocs [NEW in 1.26]
+##### Size-specialised malloc — experimental, off by default in 1.26
 
 ```bash
-# Enabled by default
-# Small allocations (under ~80 bytes): up to 30% faster
-# Overall improvement: ~1% for allocation-heavy production workloads
-# Cost: ~60 KB larger binary (workload-independent)
-
-# Disable:
-GOEXPERIMENT=nosizespecializedmalloc go build ./...
+# Not mentioned in the 1.26 release notes and NOT enabled by default in 1.26.
+# The experiment exists and can be opted into:
+GOEXPERIMENT=sizespecializedmalloc go build ./...
+# It became the default in Go 1.27 (small <80-byte allocations up to 30% cheaper,
+# ~1% overall, ~60 KB larger binaries). Do not attribute those gains to 1.26.
 ```
 
 ##### Heap base address randomisation [NEW in 1.26]
@@ -1675,12 +1691,12 @@ defer fr.Stop()
 - **Use `errors.AsType`** instead of `errors.As` — the generic version is faster, cleaner, and catches misuse at compile time.
 - **Run `go fix ./...`** after upgrading — the modernizer will auto-apply dozens of idiom updates.
 - **Use `//go:fix inline`** on your `ptr[T]` helpers — `go fix` will replace call sites with `new(expr)` automatically.
-- **Enable `GOEXPERIMENT=goroutineleakprofile`** in production staging — goroutine leak detection is production-ready.
+- **Try `GOEXPERIMENT=goroutineleakprofile`** in staging to find goroutine leaks (experimental in 1.26; GA in 1.27).
 - **Set `t.ArtifactDir()`** for test output files (reports, screenshots) instead of `os.TempDir()`.
 - **Add `go test -artifacts`** to CI pipelines that generate test artifacts.
 - **Use `Rewrite` instead of `Director`** in `httputil.ReverseProxy` — `Director` is now deprecated.
 - **Expect `io.ReadAll` to be 2x faster** — no code change needed.
-- **Watch `asynctimerchan`** GODEBUG removal: 1.27 removes it — unbuffered timer channels become permanent.
+- **Watch `asynctimerchan`** GODEBUG removal: 1.27 removes it — unbuffered timer channels become permanent, and a Go 1.27 binary started with `GODEBUG=asynctimerchan=1` aborts at startup. Remove such settings from deployment configs before upgrading.
 
 ##### Don't
 
