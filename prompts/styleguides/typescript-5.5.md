@@ -1,7 +1,7 @@
 ### TypeScript 5.5: The Complete Production Developer Guide
 
 > **Version**: TypeScript 5.5 — 5.5.2 was the first stable build (June 20, 2024; 5.5.0 was the beta, 5.5.1 the RC). The latest and final patch release is **5.5.4 (July 22, 2024)**.[^1][^2]
-> **Support status (October 2026)**: unmaintained. The TypeScript team ships fixes only for the newest release and does not backport them. 5.6 replaced 5.5 on September 9, 2024. Since then 5.6–5.9, **6.0** (last JavaScript-based compiler; 6.0.3, April 16, 2026) and **7.0** (native Go compiler; 7.0.2, July 8, 2026, now the npm `latest` tag) have shipped.[^2][^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years, so 5.5 (June 2024) has dropped out of that window. Pin `@types/*` to their `ts5.5` dist-tags (see Toolchain Compatibility).[^4]
+> **Support status (October 2026)**: unmaintained. The TypeScript team ships fixes only for the newest release and does not backport them. 5.6 replaced 5.5 on September 9, 2024. Since then 5.6–5.9, **6.0** (last JavaScript-based compiler; 6.0.3, April 16, 2026) and **7.0** (native Go compiler; 7.0.2, July 8, 2026, now the npm `latest` tag) have shipped; 7.1 is in beta (`7.1.0-beta` on the npm `beta` tag).[^2][^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years, so 5.5 (June 2024) has dropped out of that window. Pin `@types/*` to their `ts5.5` dist-tags (see Toolchain Compatibility).[^4]
 > **Scope**: the complete TypeScript language and type system as usable in 5.5, the 5.5 changes relative to 5.4, tsconfig and module resolution for Node.js and bundlers, declaration files, async code, errors, security, performance, testing and tooling. The focus is on what a code reviewer must catch.
 > **Note**: this document is self-contained. Sections that cover 5.5-specific behaviour are marked **New in 5.5**. Every example was compiled with `tsc` 5.5.4; "new in 5.5" claims were checked against 5.4.5, and "not available" claims against the release that introduced the feature (5.6.3, 5.7.3, 5.8.3, 5.9.3, 6.0.3). Runtime claims were run on Node.js 18.20, 20.20, 22.23, 24.22 and 26.12. Unless a block says otherwise, examples assume `strict`, `target: es2022`, `module: nodenext`, an ES module package (`"type": "module"`), `lib: ["esnext"]` (which in 5.5 means ES2023 plus the listed proposals) and `@types/node`. Comments of the form `// error TS2322` mark the line where 5.5 reports that error; `// 5.4: error ...` describes the old behaviour.
 
@@ -161,13 +161,16 @@ export function noNarrowing(obj: Record<string, unknown>, key: string) {
 It also removes the need for a temporary under `noUncheckedIndexedAccess`:
 
 ```ts
-export function len(obj: Record<string, string | undefined>, key: string): number {
+// @noUncheckedIndexedAccess: true
+export function len(obj: Record<string, string>, key: string): number {
   if (obj[key] !== undefined) {
     return obj[key].length; // 5.5: ok; 5.4: error TS2532
   }
   return 0;
 }
 ```
+
+The same applies to records whose value type already includes `undefined` (`Record<string, string | undefined>`), with or without the flag.
 
 Like all property narrowing, it is **not invalidated by function calls**. This compiles and throws at runtime (verified on Node 22): `if (typeof obj[key] === "string") { clear(obj); obj[key].toUpperCase(); }`. When a call between the check and the use can mutate the object, copy the value into a `const` first.
 
@@ -228,7 +231,7 @@ export const mixed = a.union(new Set(["x"])); // Set<string | number>
 export const bad = a.union([4, 5]);           // error TS2345 arrays are not set-like
 ```
 
-**Runtime:** the methods exist on Node 22+ (V8 12.2), not on Node 20 or 18 (`a.union is not a function`). The type declarations do not tell you whether the runtime has them: if `lib` includes `esnext` but the deployment runs Node 20, these calls compile and crash. Match `lib` to the oldest runtime, or polyfill (core-js).
+**Runtime:** the methods shipped in V8 12.2 and exist on Node 22+ (verified on 22.23), not on Node 20 or 18 (`a.union is not a function`). The type declarations do not tell you whether the runtime has them: if `lib` includes `esnext` but the deployment runs Node 20, these calls compile and crash. Match `lib` to the oldest runtime, or polyfill (core-js).
 
 ##### New in 5.5: `--isolatedDeclarations`
 
@@ -288,6 +291,18 @@ Without the variable, `"outDir": "dist"` in a base file resolves next to the bas
 
 When an exported value's inferred type comes from a transitive package (`a` returns a type from `b`), declaration emit needs a module specifier for `b`. With pnpm (symlinked `.pnpm` store) 5.4 reported TS2742 ("The inferred type of 'w' cannot be named without a reference to '.pnpm/b@1/node_modules/b'"). 5.5 emits `import("b").Widget` when `b` is listed in the project's `dependencies`/`peerDependencies`/`optionalDependencies` **and** is resolvable from the project. Verified with a pnpm-style layout: 5.4 fails in every configuration; 5.5 succeeds only when `b` is both declared in `package.json` and linked at the project root. If TS2742 remains, add the dependency explicitly or annotate the export.
 
+##### New in 5.5: Compiler API, Editor and Performance Changes
+
+These items from the release notes do not change what code compiles, but they matter when reviewing build tooling:[^1]
+
+- **`ts.transpileDeclaration(source, { compilerOptions })`** produces a single file's `.d.ts` without a program, like `transpileModule` does for JavaScript. Its output is only correct for files that are free of `isolatedDeclarations` errors. It does not exist in 5.4 (verified: the named import fails there).
+- **`transpileModule` and `transpileDeclaration` skip the full type-check pass** and collect only the information emit needs (about 2x faster in the TypeScript team's measurements). Tools built on them (ts-jest, ts-loader `transpileOnly`) never reported type errors, and still do not.
+- **Named ESM imports from the `typescript` package** (`import { createSourceFile } from "typescript"`) work on Node because `cjs-module-lexer` now recognizes the package's CommonJS exports (verified on Node 22: 5.4 fails with a SyntaxError, 5.5 works).
+- **Package size**: 30.2 MB → 20.4 MB on disk, 5.5 MB → 3.7 MB packed (`tsserver.js` and `typingsInstaller.js` share one API library).
+- **Declaration emit reuses written type nodes** in more places instead of re-printing a normalized type, so some `.d.ts` diffs after the upgrade are cosmetic. (A plain annotated `export const x: boolean | string` was already copied verbatim by 5.4.)
+- **Checker performance**: monomorphized AST/control-flow nodes, control-flow-graph optimizations and cached contextual types for discriminated unions.
+- **Editor / `--watch` reliability**: stale `tsconfig.json` errors are cleared, delete-then-write sequences (`npm ci`) are handled, symlinks are tracked in failed resolutions, and project references contribute to auto-imports.
+
 ##### New in 5.5: Behaviour Changes That Break Builds
 
 **5.0-deprecated options no longer work.** `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out`, `preserveValueImports`, `prepend` in project references and implicitly OS-specific `newLine`. Verified behaviour on 5.5.4:[^1][^10]
@@ -297,7 +312,9 @@ When an exported value's inferred type comes from a transitive package (`a` retu
 | option set, no `ignoreDeprecations` | error TS5101/TS5107 | error TS5101/TS5107 (same text) | error **TS5102** "Option ... has been removed" |
 | option set, `"ignoreDeprecations": "5.0"` | option **works** | accepted but **silently ignored** | still TS5102 |
 
-The silent-ignore step is a trap: a config that sets `suppressImplicitAnyIndexErrors` or `suppressExcessPropertyErrors` plus `ignoreDeprecations: "5.0"` compiled on 5.4 and now reports the previously suppressed TS7053/TS2353 errors; `importsNotUsedAsValues: "preserve"` no longer keeps side-effect imports of type-only modules (verified: 5.4 emits `import "./t";`, 5.5 drops it). Replace `importsNotUsedAsValues`/`preserveValueImports` with `verbatimModuleSyntax`, `out` with `outFile`, and delete the rest.
+The 5.5 release notes say these options "will be an error to specify in TypeScript 6.0"; in practice 5.6.3 already rejects them with TS5102 (verified), so a config that relies on `ignoreDeprecations: "5.0"` breaks on the very next minor release.
+
+The silent-ignore step is a trap: a config that sets `suppressImplicitAnyIndexErrors` or `suppressExcessPropertyErrors` plus `ignoreDeprecations: "5.0"` compiled on 5.4 and now reports the previously suppressed TS7053/TS2353 errors; `importsNotUsedAsValues: "preserve"` no longer keeps side-effect imports of type-only modules (verified with `module: commonjs`: 5.4 emits `require("./t");`, 5.5 drops it). Replace `importsNotUsedAsValues`/`preserveValueImports` with `verbatimModuleSyntax`, `out` with `outFile`, and delete the rest.
 
 **Stricter decorator grammar.** An unparenthesized decorator must be an identifier, optionally followed by `.name` accesses and one call; anything else — including a chain that starts with `super` or `this` — must be parenthesized:
 
@@ -324,7 +341,7 @@ import path from "node:path";
 export const myPath = path.parse("/a/b"); // .d.ts keeps the directive above
 ```
 
-Library authors whose published types rely on Node or React globals must either add `preserve="true"` or document that consumers need `@types/node` in their `types`.
+Library authors whose published types rely on Node or React globals must either add `preserve="true"` or document that consumers need `@types/node` in their `types`. Verified: for `Buffer`/`node:path` declarations 5.4.5 emitted `/// <reference types="node" resolution-mode="require"/>` (even duplicated it), 5.5.4 emits nothing unless the source carries `preserve="true"`. The attribute is backward compatible — older compilers ignore unknown attributes.
 
 **`lib.d.ts` changes.** DOM typings were regenerated; expect occasional new errors in DOM-heavy code.[^1]
 
@@ -357,6 +374,7 @@ The project's compiler is 5.5. Never suggest the following — they do not exist
 - `import defer * as ns from "..."` (syntax error in 5.5), `--module node20`, the minimal `tsc --init` template.
 
 **TypeScript 6.0** (March 2026)
+- `lib: ["dom"]` implying iterable DOM collections: 6.0 merges `dom.iterable`/`dom.asynciterable` into `dom`. In 5.5, `for...of` over a `NodeList` still needs `"dom.iterable"` in `lib` — do not suggest removing it.
 - `--target es2025`/`--lib es2025`, `RegExp.escape`, `Map/WeakMap.prototype.getOrInsert`/`getOrInsertComputed`, `Temporal` types, `--stableTypeOrdering`, `#/` subpath imports, `--moduleResolution bundler` with `--module commonjs`, `"types": ["*"]`.
 - 6.0 defaults (`strict: true`, `module: esnext`, floating latest `target`, `types: []`, `rootDir: "."`, `noUncheckedSideEffectImports: true`) do **not** apply: in 5.5 the defaults are `strict: false`, `target: es5`, `module: commonjs` (for ES5/ES3 targets), all `@types` packages included, `rootDir` inferred from the inputs.
 - 6.0 deprecations (`target: es5`, `moduleResolution: node`/`node10`/`classic`, `baseUrl`, `module: amd/umd/system`, `outFile`, `downlevelIteration`, `esModuleInterop: false`, `module`-keyword namespaces) are **valid, silent options in 5.5**. Recommend moving away from them for upgradeability, but do not call them errors.
@@ -561,7 +579,7 @@ export const name: string = data.name;
 ```
 
 - Use `with { type: "json" }` (TypeScript 5.3+). The older `assert { type: "json" }` still compiles on 5.5 but is a **SyntaxError on Node 22 and 24** (verified: "Unexpected identifier 'assert'"); Node 18/20 accept both. TypeScript reports TS2880 for `assert` only from 5.8.
-- Importing JSON from an ES module **without** the attribute compiles on 5.5 (5.7+ reports TS1543) but throws `ERR_IMPORT_ATTRIBUTE_MISSING` on Node 20, 22 and 24 (verified). Flag it in review.
+- Importing JSON from an ES module **without** the attribute compiles on 5.5 (5.7+ reports TS1543) but throws at runtime on every supported Node release (verified): `ERR_IMPORT_ASSERTION_TYPE_MISSING` on Node 18 and 20, `ERR_IMPORT_ATTRIBUTE_MISSING` on Node 22 and 24. Flag it in review.
 - `resolveJsonModule` is required for JSON imports. Under `node10` a default import of JSON also needs `esModuleInterop` (TS1259 otherwise); `bundler` and `nodenext` allow it as is.
 
 ##### `paths`, `baseUrl` and Subpath Imports
