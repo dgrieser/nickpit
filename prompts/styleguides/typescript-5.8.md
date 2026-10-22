@@ -229,16 +229,16 @@ The class still effectively has a `string` index signature; the property is not 
 ##### New in 5.8: `lib.d.ts` changes
 
 - DOM declarations were regenerated; occasional new errors in DOM-heavy code are expected on upgrade.[^1]
-- `lib.esnext.float16.d.ts` (`Float16Array`, `Math.f16round()`, `DataView#getFloat16()`/`setFloat16()`) and `lib.esnext.promise.d.ts` (`Promise.try()`) are new in 5.8 (5.7.3 reports TS2693 — or TS2552 without the DOM lib — for `Float16Array`, TS2551 for `f16round`, TS2339 for `Promise.try`). They are only available with `--lib esnext` (or `esnext.float16`/`esnext.promise`). Runtime support is a separate question: Node.js 22.23.4 has neither (`typeof Float16Array === "undefined"`, `typeof Promise.try === "undefined"`); Node.js 24.22.1 has both.
+- `lib.esnext.float16.d.ts` (`Float16Array`, `Math.f16round()`, `DataView#getFloat16()`/`setFloat16()`) and `lib.esnext.promise.d.ts` (`Promise.try()`) are new in 5.8 (5.7.3 reports TS2552 for `Float16Array` — or TS2693 when `@types/node` is loaded, because it declares a `Float16Array` type — TS2551 for `f16round`, TS2339 for `Promise.try`). They are only available with `--lib esnext` (or `esnext.float16`/`esnext.promise`). Runtime support is a separate question: Node.js 22.23.4 has neither (`typeof Float16Array === "undefined"`, `typeof Promise.try === "undefined"`); Node.js 24.22.1 has both.
 
 ```ts
-// --target esnext --lib esnext,dom (5.8.3: ok; 5.7.3: TS2693, TS2551, TS2339)
+// --target esnext --lib esnext,dom (5.8.3: ok; 5.7.3: TS2552, TS2551, TS2339)
 const halfs = new Float16Array(2);
 console.log(Math.f16round(1.337), halfs.length);
 const p: Promise<number> = Promise.try(() => 1);
 ```
 
-- Known incompatibility found while testing: with `@types/node` **26.x** and the DOM lib, TypeScript 5.8.3 (and 5.7.3) report error TS2430 inside `lib.dom.d.ts` ("Interface 'TextDecoder' incorrectly extends interface 'import("node:util").TextDecoder'") unless `skipLibCheck` is on. `@types/node` 22.x and 24.x work with 5.8.3, and 5.9.3+ accept 26.x. Keep `@types/node` on the major of the Node.js version you actually run, and drop `"dom"` from `lib` in Node-only projects.
+- Known incompatibility found while testing: with `@types/node` **26.x**, the DOM lib and an `es2024` or later lib (including `esnext`), TypeScript 5.8.3 (and 5.7.3) report error TS2430 inside `lib.dom.d.ts` ("Interface 'TextDecoder' incorrectly extends interface 'import("node:util").TextDecoder'") unless `skipLibCheck` is on. `@types/node` 22.x and 24.x work with 5.8.3, and 5.9.3+ accept 26.x. Keep `@types/node` on the major of the Node.js version you actually run, and drop `"dom"` from `lib` in Node-only projects.
 
 ##### New in 5.8: Performance
 
@@ -256,7 +256,7 @@ The project compiles with TypeScript 5.8. None of the following exist in 5.8.3; 
 
 | Feature | Introduced in | What 5.8.3 does |
 | --- | --- | --- |
-| `import defer * as ns from "…"` (deferred module evaluation) | 5.9 | parse errors TS1005/TS1434 |
+| `import defer * as ns from "…"` (deferred module evaluation; in 5.9 only under `--module esnext`/`preserve`) | 5.9 | parse errors TS1005/TS1434 |
 | `--module node20` / `--moduleResolution node20` | 5.9 | TS6046 |
 | Minimal `tsc --init` template (`module: nodenext`, `types: []`, …) | 5.9 | 5.8.3 writes the long commented template with `target: es2016`, `module: commonjs`, `esModuleInterop`, `forceConsistentCasingInFileNames`, `strict`, `skipLibCheck` — outdated defaults for new code |
 | `Error.isError()` (`lib.esnext.error`) | 5.9 | TS2339 |
@@ -284,7 +284,7 @@ Also not in 5.8 (and not in 5.9–7.0 either): narrowing of generic conditional 
 
 ##### Deprecated or removed before 5.8 (still relevant in review)
 
-- **Removed in 5.5** (deprecated in 5.0; error TS5102/TS5108 on 5.8.3 even with `"ignoreDeprecations": "5.0"`): `--target ES3`, `--out`, `--charset`, `--keyofStringsOnly`, `--noImplicitUseStrict`, `--noStrictGenericChecks`, `--suppressExcessPropertyErrors`, `--suppressImplicitAnyIndexErrors`, `--preserveValueImports`, `--importsNotUsedAsValues` (any value other than the old default `remove`), and `prepend` in project references (TS5023 as a flag).[^16] Replace `importsNotUsedAsValues`/`preserveValueImports` with `--verbatimModuleSyntax`.
+- **Removed in 5.5** (deprecated in 5.0; error TS5102/TS5108 on 5.8.3 even with `"ignoreDeprecations": "5.0"`): `--target ES3`, `--out`, `--charset`, `--keyofStringsOnly`, `--noImplicitUseStrict`, `--noStrictGenericChecks`, `--suppressExcessPropertyErrors`, `--suppressImplicitAnyIndexErrors`, `--preserveValueImports`, `--importsNotUsedAsValues` (any value other than the old default `remove`), and `prepend` in project references (TS5102 in `references`).[^16] Replace `importsNotUsedAsValues`/`preserveValueImports` with `--verbatimModuleSyntax`.
 - **Experimental decorators** (`--experimentalDecorators`) remain supported but are the legacy proposal. New code uses standard decorators (5.0+); frameworks that need parameter decorators or `emitDecoratorMetadata` (Angular before its standard-decorator migration, NestJS, TypeORM, InversifyJS) still require the legacy flag. Never mix the two models in one project.
 - **`--moduleResolution node` (`node10`)** works in 5.8 but ignores `package.json` `"exports"`/`"imports"`; it type-checks imports that fail at runtime and misses ones that succeed. Use `node16`/`node18`/`nodenext` for Node.js and `bundler` for bundled code.
 - **`--target ES5`** is still the 5.8 *default* — always set `target` explicitly.
@@ -404,7 +404,7 @@ Verified on 5.8.3 + Node.js 22.23.4/24.22.1: `import { mk, type User } from "./u
 
 - Every relative import needs the real file extension (`./user.ts`), and every type-only import needs `type` — otherwise Node.js fails at runtime: `SyntaxError: The requested module './user.ts' does not provide an export named 'User'` (verified; `verbatimModuleSyntax` catches it as TS1484).
 - No `enum`, runtime `namespace`, parameter properties, `import =`, `<T>x` assertions or decorators (`--erasableSyntaxOnly` catches all but decorators).
-- `paths` aliases and down-levelling are not applied. `.tsx` is not supported. Files under `node_modules` are never stripped — packages must ship JavaScript.
+- `paths` aliases and down-levelling are not applied. `.tsx` is not supported. Files under `node_modules` are never stripped — packages must ship JavaScript. `--experimental-transform-types` (which transformed enums, namespaces and parameter properties) was removed in Node.js 26 (`bad option` on 26.12.1), so do not rely on it to run non-erasable code.
 - Add `"lib"` and `"types": ["node"]` to the recommended config above; `target: esnext` + no `lib` pulls in the DOM lib.
 
 ##### Strictness flags worth knowing
@@ -474,7 +474,7 @@ console.log(helper, ok);
 ##### `verbatimModuleSyntax`, `isolatedModules`, type-only imports
 
 ```ts
-// --verbatimModuleSyntax
+// --verbatimModuleSyntax --module preserve (bundler resolution, so extensionless specifiers are fine)
 import { type User, createUser } from "./users"; // ok: User is erased, createUser kept
 import type { Session } from "./session"; // ok: whole statement erased
 import { Role } from "./roles"; // error TS1484 — Role is a type
@@ -1805,9 +1805,9 @@ Upgrading from 5.7 to 5.8 is low-risk; expect a handful of new, mostly legitimat
    - `import … assert { … }` is now TS2880 — switch to `with { … }` (Node.js 22+ rejects `assert` at runtime anyway).
    - `require()`/`import x = require()` of ESM from CommonJS no longer errors. If the package must support Node.js < 20.19/22.12, change to `--module node18` or `node16` so the compiler keeps rejecting it.
    - Required ES modules must not use top-level `await` anywhere in their graph; the compiler does not check this.
-3. **`--module node18`** is available for projects pinned to Node.js 18 semantics. Node.js 18 reached end-of-life on April 30, 2025 and Node.js 20 on April 30, 2026; Node.js 22 (maintenance LTS until April 2027), 24 (LTS) and 26 (Current, LTS from October 28, 2026) are the supported lines as of October 2026.[^21]
+3. **`--module node18`** is available for projects pinned to Node.js 18 semantics. Node.js 18 reached end-of-life on April 30, 2025 and Node.js 20 on April 30, 2026; Node.js 22 (maintenance LTS until April 30, 2027), 24 (maintenance LTS since October 20, 2026, until April 30, 2028) and 26 (Current, Active LTS from October 28, 2026) are the supported lines as of October 2026.[^21]
 4. **Declaration emit**: non-literal computed class property names (`[propName]`) are preserved; they were TS1166 errors in 5.7. Check generated `.d.ts` against older consumer TypeScript versions if you support them.
-5. **DOM lib** regenerated — fix new DOM typing errors rather than pinning old libs. If `@types/node` 26.x is installed alongside the DOM lib, expect TS2430 in `lib.dom.d.ts` without `skipLibCheck` (use the `@types/node` major matching your Node.js runtime).
+5. **DOM lib** regenerated — fix new DOM typing errors rather than pinning old libs. If `@types/node` 26.x is installed alongside the DOM lib and an `es2024`+/`esnext` lib, expect TS2430 in `lib.dom.d.ts` without `skipLibCheck` (use the `@types/node` major matching your Node.js runtime).
 6. **New opt-in flags** to consider: `--erasableSyntaxOnly` (if the code runs or may run under Node.js type stripping, or simply to keep TypeScript's emit trivial), `--libReplacement false` (performance; becomes the default in 6.0).
 7. **Use 5.8.3**, not 5.8.2 (declaration-emit fixes; complete `--erasableSyntaxOnly`).
 
