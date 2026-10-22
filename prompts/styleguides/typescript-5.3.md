@@ -3,7 +3,7 @@
 #### Overview
 
 > **Version**: TypeScript 5.3. The GA build, **5.3.2, shipped on November 20, 2023**; the latest and final patch is **5.3.3 (published to npm on December 6, 2023)**.[^1][^2][^3]
-> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.3 received no fixes after 5.3.3. Newer lines followed: 5.4 (March 6, 2024), 5.5 (June 2024), 5.6 (September 2024), 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today.[^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years; since June 2026 new `@types/node` releases require TypeScript 5.6 (see [Tooling](#tooling-and-type-packages)).[^4]
+> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.3 received no fixes after 5.3.3. Newer lines followed: 5.4 (March 6, 2024), 5.5 (June 2024), 5.6 (September 2024), 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today (7.1 is in beta).[^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years; since June 2026 new `@types/node` releases require TypeScript 5.6 (see [Tooling](#tooling-and-type-packages)).[^4]
 > **Scope**: the complete TypeScript language and compiler as usable in 5.3 — types, narrowing, generics, `satisfies`, `const` type parameters, classes and decorators, `using`, enums, modules and module resolution, strictness flags, tsconfig, tooling — with every 5.3 change versus 5.2 marked **New in 5.3**.
 > **Note**: this document is self-contained. Everything that shipped before 5.3 is carried forward. Every `ts` block was compiled with `tsc` 5.3.3 (`strict`, `target: es2022`, `module: nodenext`, `lib: ["esnext", "dom"]`, `@types/node` 22.19.21) unless a `// @ts-config:` comment in the block says otherwise; lines marked `// error TSnnnn` fail on 5.3.3 with exactly that diagnostic. `// @file: name` starts another file of a multi-file example, `// @pkgtype: commonjs` marks examples that live in a `"type": "commonjs"` package (the default is `"type": "module"`), and blocks marked `// @run` were also emitted and executed on Node.js 22.23.4.
 
@@ -42,7 +42,7 @@ The project pins TypeScript 5.3.x. Before flagging code as wrong because of an A
 | `resolution-mode` attribute on `import type … with {…}` and `import("pkg", { with: {…} })` types — stable, no longer nightly-only | syntax | [`resolution-mode`](#new-in-53-resolution-mode-in-import-types-and-all-module-modes) |
 | `resolution-mode` honoured under `bundler` and `node10`, ignored without error under `classic` | module resolution | [`resolution-mode`](#new-in-53-resolution-mode-in-import-types-and-all-module-modes) |
 | Narrowing on each `case` condition of `switch (true)` | narrowing | [`switch (true)`](#new-in-53-switch-true-narrowing) |
-| Narrowing on `=== true` / `=== false` / `!== true` comparisons | narrowing | [Boolean comparisons](#new-in-53-narrowing-on-comparisons-to-booleans) |
+| Narrowing on `=== true` / `=== false` / `!== true` comparisons (PR #53681) | narrowing | [Boolean comparisons](#new-in-53-narrowing-on-comparisons-to-booleans) |
 | `instanceof` narrows through a `[Symbol.hasInstance]` type predicate; a right operand with `[Symbol.hasInstance]` need not be a constructor | narrowing | [`Symbol.hasInstance`](#new-in-53-instanceof-narrowing-through-symbolhasinstance) |
 | TS2855: `super.x` where `x` is a base-class field | new error (breaking) | [`super` checks](#new-in-53-super-property-access-checks) |
 | Clickable type inlay hints; `preferTypeOnlyAutoImports` | editor | [Editor and API](#new-in-53-editor-compiler-and-api-changes) |
@@ -305,7 +305,7 @@ TS2855: "Class field 'handle' defined by the parent class is not accessible in t
 
 - **Interactive inlay hints**: type inlay hints are clickable and jump to the type's definition (needs a 5.3-based editor TypeScript).[^1]
 - **`preferTypeOnlyAutoImports`**: editor preference (VS Code: `typescript.preferences.preferTypeOnlyAutoImports`) that makes auto-imports in type positions use `import { type X }` even without `verbatimModuleSyntax`. It first appears in 5.3's `UserPreferences`. The older `autoImportFileExcludePatterns` (4.8) still excludes paths from auto-import; `autoImportSpecifierExcludeRegexes` is 5.6 and not available.[^1]
-- **JSDoc parsing skipped by `tsc`**: the command-line compiler no longer builds JSDoc nodes for TypeScript files, which reduces parse time and memory. API consumers can choose via the new `JSDocParsingMode` enum (`ParseAll`, `ParseNone`, `ParseForTypeErrors`, `ParseForTypeInfo`) on `createSourceFile` options / the compiler host; 5.3.3 also exposed it to `transpileModule` (issue #56625).[^1][^9] Tools that read JSDoc through the compiler API (doc generators, custom lint rules) must request `ParseAll` explicitly.
+- **JSDoc parsing mostly skipped by `tsc`**: the command-line compiler now parses with `JSDocParsingMode.ParseForTypeErrors`, which still parses JSDoc in JavaScript files but, in TypeScript files, only JSDoc comments containing `@see` or `@link`; this reduces parse time and memory. API consumers choose via the new `JSDocParsingMode` enum (`ParseAll`, `ParseNone`, `ParseForTypeErrors`, `ParseForTypeInfo`) on `createSourceFile` options, the compiler host or the language-service host; 5.3.3 also exposed it to `transpileModule` (issue #56625).[^1][^9] `ParseAll` remains the API default when no mode is given, so doc generators and lint rules that read JSDoc only lose it if they opt into another mode (or reuse `tsc`'s host settings).
 - **Faster intersection comparisons**: assignability checks such as `T & (A | B | …)` → `T` use the original intersection form as a fast path.[^1]
 - **`tsserverlibrary.js` → `typescript.js`**: `lib/tsserverlibrary.js` is now a ~1 KB re-export of `typescript.js` (which now contains the server API). Loading `tsserverlibrary.js` as a browser global throws; import `typescript` instead. Package size dropped by about 20 %.[^1][^12]
 - **API d.ts types**: 5.3.2 redefined the deprecated `AssertClause`/`AssertEntry` API types as type aliases and broke compilation of `typescript.d.ts` under `exactOptionalPropertyTypes`; both were fixed in 5.3.3 (issues #56477, #56478).[^9]
@@ -504,7 +504,7 @@ These conventions are not enforced by the compiler but keep 5.3 code reviewable:
 - **Readonly by default** for parameters and data structures that are not mutated (`readonly T[]`, `ReadonlyMap`, `Readonly<T>`).
 - **No `namespace`** in modules (use ES modules); `declare namespace` stays acceptable in `.d.ts` files for global augmentation.
 - **Imports** grouped as built-ins (`node:` prefix), external packages, internal aliases, relative; let the formatter or `eslint-plugin-import`/`simple-import-sort` order them. Type-only imports marked with `type`.
-- **Comments** explain why, not what; JSDoc on exported API (`/** … */`), including `@deprecated`, which editors surface. Note that `tsc` 5.3 no longer parses JSDoc for type checking of `.ts` files, which does not affect editors.
+- **Comments** explain why, not what; JSDoc on exported API (`/** … */`), including `@deprecated`, which editors surface. Note that `tsc` 5.3 skips most JSDoc in `.ts` files (it keeps comments with `@see`/`@link`), which does not affect editors or type checking.
 
 ```ts
 // Result type instead of throwing for expected failures
@@ -925,7 +925,7 @@ Review notes:
 
 - Numeric enums accept any `number` (`l3`), so they are no validation of external input; check with `Object.values(Level).includes(x)` style guards or use a union.
 - Numeric enums have reverse mappings (`Level[1] === "Low"`), so `Object.keys(Level)` returns both names and numbers.
-- `const enum` is inlined only by a whole-program `tsc` build. Under `isolatedModules` (required by esbuild, swc, tsx, Vite) a `const enum` *declared in an ambient `.d.ts`* cannot be referenced (TS2748 "Cannot access ambient const enums when 'isolatedModules' is enabled"), and `tsc` 5.3 itself emits local `const enum`s as ordinary enum objects with property lookups (verified: `export const y = L.A;` instead of `1 /* L.A */`). Do not export `const enum` from libraries.
+- `const enum` is inlined only by a whole-program `tsc` build. Under `isolatedModules` (required by esbuild, swc, tsx, Vite) a `const enum` *declared in an ambient `.d.ts`* cannot be referenced (TS2748 "Cannot access ambient const enums when 'isolatedModules' is enabled"), and under `isolatedModules` `tsc` 5.3 itself emits even file-local `const enum`s as ordinary enum objects with property lookups (verified: `export const y = L.A;` instead of the `1 /* L.A */` it inlines without `isolatedModules`). Do not export `const enum` from libraries.
 - Adding a member in the middle of an auto-numbered enum renumbers the rest; persisted values (databases, wire formats) must use explicit initializers.
 
 ***
@@ -1012,7 +1012,7 @@ export class Service {
 }
 ```
 
-**Decorator metadata (5.2) needs a runtime polyfill.** `context.metadata` is typed as `DecoratorMetadataObject` (never `undefined`), but the emitted helper only creates it when `Symbol.metadata` exists. No Node.js release up to 24 defines `Symbol.metadata` (verified: `typeof Symbol.metadata === "undefined"` on Node.js 18, 20, 22 and 24). Without a polyfill, `context.metadata.x = …` throws `TypeError: Cannot set properties of undefined` while the class is being defined:
+**Decorator metadata (5.2) needs a runtime polyfill.** `context.metadata` is typed as `DecoratorMetadataObject` (never `undefined`), but the emitted helper only creates it when `Symbol.metadata` exists. No Node.js release up to 26 defines `Symbol.metadata` (verified: `typeof Symbol.metadata === "undefined"` on Node.js 18, 20, 22, 24 and 26.12.1). Without a polyfill, `context.metadata.x = …` throws `TypeError: Cannot set properties of undefined` while the class is being defined:
 
 ```ts
 // @run
@@ -1197,7 +1197,7 @@ export const v = VERSION;
 export type { U, U2, User };
 ```
 
-TS1484: "'User' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled." In a CommonJS file (`"type": "commonjs"` or `.cts`) under `verbatimModuleSyntax`, ESM syntax is an error (TS1286 "ESM syntax is not allowed in a CommonJS module when 'verbatimModuleSyntax' is enabled"); such files must use `import x = require("x")` and `export =`. That makes `verbatimModuleSyntax` awkward for CJS-emitting projects — `isolatedModules` plus `consistent-type-imports` linting is the usual alternative there.
+TS1484: "'User' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled." In a CommonJS file (`"type": "commonjs"` or `.cts`) under `verbatimModuleSyntax`, ESM syntax is an error (TS1286 "ESM syntax is not allowed in a CommonJS module when 'verbatimModuleSyntax' is enabled" for imports, TS1287 for `export` on value declarations); such files must use `import x = require("x")` and `export =`. That makes `verbatimModuleSyntax` awkward for CJS-emitting projects — `isolatedModules` plus `consistent-type-imports` linting is the usual alternative there.
 
 Side effects: with `verbatimModuleSyntax`, `import { type A } from "./a.js"` still emits `import {} from "./a.js"`, which *runs* the module; `import type { A }` removes the import entirely. Choose deliberately when the imported module has side effects.
 
@@ -1240,7 +1240,7 @@ TypeScript checks against the declarations selected by `lib` (default: derived f
 | Node.js 18 | `es2022` | `["es2022"]` (`es2023.array` would also declare `toSorted` etc.) | `toSorted`/`toReversed`/`toSpliced`/`with`, `DisposableStack`, `SuppressedError`, `Symbol.metadata` |
 | Node.js 20 | `es2022` | `["es2023"]` | `DisposableStack`, `SuppressedError`, `Symbol.metadata` |
 | Node.js 22 | `es2022` | `["es2023"]` | `DisposableStack`, `SuppressedError`, `Symbol.metadata` |
-| Node.js 24 | `es2022` (or `esnext` with care) | `["es2023", "esnext.disposable"]` | `Symbol.metadata` |
+| Node.js 24 | `es2022` (or `esnext` with care) | `["es2023", "esnext.disposable"]` | `Symbol.metadata` (still absent in Node.js 26) |
 | Evergreen browsers | `es2022` | `["es2023", "dom", "dom.iterable"]` | depends on the browser baseline |
 
 (Runtime availability checked with `typeof` probes on Node.js 18.20.8, 20.20.2, 22.23.4 and 24.22.1. Node.js 18 and 20 are end-of-life as of October 2026.) `findLast`/`findLastIndex` exist from Node.js 18; the copying array methods (`toSorted`, `toReversed`, `toSpliced`, `with`) from Node.js 20.
@@ -1460,10 +1460,10 @@ Upgrading **5.2 → 5.3**:
 2. **`instanceof` with a class that defines `static [Symbol.hasInstance](x): x is T`** now narrows to `T` instead of the class; member accesses that relied on the instance type now fail (TS2339) — those were latent bugs.
 3. **More narrowing** (`switch (true)`, `=== true/false`) can make previously necessary assertions redundant; typescript-eslint's `no-unnecessary-type-assertion` will flag them.
 4. **Import attributes**: `with` replaces `assert` in new code; `assert` keeps working in 5.3 but is rejected at runtime by Node.js 22+.
-5. **API consumers**: `tsserverlibrary.js` is a thin wrapper; `JSDocParsingMode` is available; `AssertClause`/`AssertEntry` are deprecated in the API in favour of `ImportAttributes`/`ImportAttribute`. Tools that inspect JSDoc via a program created with `tsc`-like hosts must request `ParseAll`.
+5. **API consumers**: `tsserverlibrary.js` is a thin wrapper; `JSDocParsingMode` is available; `AssertClause`/`AssertEntry` are deprecated in the API in favour of `ImportAttributes`/`ImportAttribute`. `ParseAll` is still the API default; tools that set another `jsDocParsingMode` to save memory lose JSDoc nodes in `.ts` files.
 6. **DOM lib**: small changes (e.g. a generic `SubtleCrypto.exportKey(format: KeyFormat, key)` overload returning `Promise<ArrayBuffer | JsonWebKey>`, `generateKey("Ed25519", …)`, and on `RTCInboundRtpStreamStats` a new optional `mid` and a new *required* `trackIdentifier`); test doubles that construct such objects may need updates.[^18]
-8. **`const` type parameters / `satisfies` with mutable array constraints** now infer mutable tuples instead of the constraint (see [`satisfies`](#satisfies-as-const-and-const-type-parameters)); downstream code that relied on `string[]` may see tuple types.
-7. Use **5.3.3**, not 5.3.2 (boolean-comparison narrowing regression).
+7. **`const` type parameters / `satisfies` with mutable array constraints** now infer mutable tuples instead of the constraint (see [`satisfies`](#satisfies-as-const-and-const-type-parameters)); downstream code that relied on `string[]` may see tuple types.
+8. Use **5.3.3**, not 5.3.2 (boolean-comparison narrowing regression).
 
 Upgrading **out of 5.3** (what to expect, so reviewers can judge "upgrade TypeScript" suggestions):
 
