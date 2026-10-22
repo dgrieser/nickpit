@@ -2,7 +2,7 @@
 
 > **Version**: Node.js 24.0.0 was released on 2025-05-06 and became LTS ("Krypton") with 24.11.0 on 2025-10-28. As of October 2026 it is in **Maintenance LTS** (since 2026-10-20) and is supported until **2028-04-30**. Latest patch: **24.22.1 (2026-10-21, security release)**.[^1][^2][^3]
 > **Engine and bundled components (24.22.1)**: V8 13.6.233.17, npm 11.19.1, undici 7.30.1, libuv 1.52.1, OpenSSL 3.5.9, ICU 78.3 (Unicode 17).
-> **Release landscape (2026-10-22)**: Node.js 26.12.1 is the newest release ("Current"; scheduled to enter LTS on 2026-10-28). Node.js 22 ("Jod") is in Maintenance LTS until 2027-04-30. Node.js 25 (odd, never LTS) reached end-of-life on 2026-06-01 with 25.9.0 as its last release. Node.js 27 has no stable release; per the release schedule it only starts as an alpha channel.[^2]
+> **Release landscape (2026-10-22)**: Node.js 26.12.1 is the newest release ("Current"; scheduled to enter LTS on 2026-10-28). Node.js 22 ("Jod") is in Maintenance LTS until 2027-04-30. Node.js 25 (odd, never LTS) reached end-of-life on 2026-06-01 with 25.9.0 as its last release. Node.js 27 has no release yet: per the release schedule it starts as an alpha channel on 2026-10-28, and 27.0.0 is planned for 2027-04-22.[^2]
 > **Scope**: The JavaScript language as implemented by Node 24's V8 (ES2025 plus the shipped Stage 3/4 features listed below) and the Node.js 24 runtime APIs: modules, TypeScript type stripping, async patterns, errors, I/O and streams, HTTP/fetch, security, testing, performance, observability and tooling. Projects whose engine is pinned to 25.x are reviewed with this guide too (see "Version-aware review").
 > **Note**: This document is self-contained. Everything from earlier Node/ECMAScript versions that is still correct is carried forward. Sections marked **New in 24** (or **New in 24.x** with the minor that introduced it) cover behavior that is not available on Node 22.
 
@@ -44,7 +44,7 @@ Review code against the Node version the project actually runs on. Look at, in t
 
 - **Verify before claiming something is unavailable.** Node backports a lot of features to older LTS lines in minor releases. Node 22.23.4, for example, has `import.meta.main`, `process.execve()`, `module.registerHooks()`, `--permission`, type stripping enabled by default, `require(esm)` without a flag and `zstd` compression, even though several of these were announced with Node 23/24. Say "not available in 24" only when the API is absent from Node 24.22.1 (this guide lists the verified cases).
 - **Minor versions matter inside the 24 line.** Many APIs arrived in 24.x minors (for example `crypto.randomUUIDv7()` in 24.16.0, `util.debounce()` in 24.22.0). Code that uses them needs `"engines": { "node": ">=24.16" }` (or later) rather than `>=24`. The **New in 24.x** markers give the minimum minor.
-- **Node 25 is not a superset of Node 24.22.** Node 25 stopped at 25.9.0 (2026-04-01). Features backported to 24.x after that are missing from 25.9.0: verified absent on 25.9.0 are `util.debounce()`, `util.throttle()`, `util.markPromiseAsHandled()`, `MIMEType.parse()`, `crypto.randomUUIDv7()`, `crypto.parsePKCS12()`, `crypto.createMac()`, `res.writeInformation()`, `req.signal` on `IncomingMessage`, `Blob.prototype.textStream()`, `StatementSync.prototype.close()`, the 64 KiB `Buffer.poolSize` default, `--experimental-package-map`, `--experimental-import-text`, `--test-randomize`. Conversely 25.x has features 24 lacks (see "Do not use or recommend"). Node 25 is end-of-life; a project pinned to 25.x should move to 24 LTS or 26.
+- **Node 25 is not a superset of Node 24.22.** Node 25 stopped at 25.9.0 (2026-04-01). Features backported to 24.x after that are missing from 25.9.0: verified absent on 25.9.0 are `util.debounce()`, `util.throttle()`, `util.markPromiseAsHandled()`, `MIMEType.parse()`, `crypto.randomUUIDv7()`, `crypto.parsePKCS12()`, `crypto.createMac()`, `res.writeInformation()`, `req.signal` on `IncomingMessage`, `Blob.prototype.textStream()`, `StatementSync.prototype.close()`, the 64 KiB `Buffer.poolSize` default, `--experimental-package-map`, `--experimental-import-text`, `--test-randomize`, `--experimental-test-tag-filter`, `process.permission.drop()`, `--allow-openssl-store`, `net.BlockList.PRIVATE_RANGES`/`addCIDRs()`, hex colours in `util.styleText()`, and the `aes-*-siv`/`aes-*-gcm-siv` ciphers. Conversely 25.x has features 24 lacks (see "Do not use or recommend"). Node 25 is end-of-life; a project pinned to 25.x should move to 24 LTS or 26.
 - **Type definitions can lie.** A newer `@types/node` (for example 26.x) type-checks code against APIs that do not exist at runtime on 24. Pin `@types/node@24` for a Node 24 project.
 - **Experimental status is part of the contract.** Check the stability index in the v24 docs. Stability 1.0/1.1 (early/active development) APIs can change in any minor; flag their use in libraries and production code paths, and require a comment pinning the expected behavior.
 
@@ -86,12 +86,12 @@ Iterator helpers, `Set` methods, `Array.fromAsync`, `Object.groupBy`/`Map.groupB
 - **Web Locks**: `navigator.locks` and `worker_threads.locks` (24.5.0).
 - **Crypto**: OpenSSL 3.5 (24.5.0); `crypto.argon2()`/`argon2Sync()` (24.7.0); ML-KEM via `crypto.encapsulate()`/`decapsulate()` and ML-DSA/SLH-DSA signing (24.6–24.8); `crypto.randomUUIDv7()` (24.16.0); `crypto.hash()` `outputLength` for XOFs (24.4.0); `crypto.createMac()`/`getMacs()` and `crypto.parsePKCS12()` (24.22.0); Web Crypto gained AES-OCB, ChaCha20-Poly1305, ML-DSA, ML-KEM, SHA-3, SHAKE, Argon2, KMAC and `SubtleCrypto.supports()` (24.7–24.18).[^24]
 - **HTTP**: `res.writeInformation()` for arbitrary 1xx responses (24.18.0); `req.signal` on `IncomingMessage` (24.16.0); `http.setGlobalProxyFromEnv()` (24.14.0); `shouldUpgradeCallback` server option (24.9.0); `optimizeEmptyRequests` server option (24.12.0); `httpValidation` header-validation option (24.19.0). HTTP/2 priority signaling was removed (24.2.0, DEP0194).[^25]
-- **fs**: `fs.mkdtempDisposableSync()`/`fsPromises.mkdtempDisposable()` (24.4.0), `Dir` is (async-)disposable (24.1.0), `fs.Utf8Stream` (24.6.0), `fs.watch` `ignore` (24.14.0), `stat` `throwIfNoEntry` for the promise/callback forms (24.15.0) and `signal` (24.16.0), caller-supplied `readFile()` buffers (24.19.0).[^26]
+- **fs**: `fs.mkdtempDisposableSync()`/`fsPromises.mkdtempDisposable()` (24.4.0), `Dir` is (async-)disposable (24.1.0; also backported to 22.23.4), `fs.Utf8Stream` (24.6.0), `fs.watch` `ignore` (24.14.0), `stat` `throwIfNoEntry` for the promise/callback forms (24.15.0) and `signal` (24.16.0), caller-supplied `readFile()` buffers (24.19.0).[^26]
 - **util**: `util.debounce()`/`util.throttle()`/`util.markPromiseAsHandled()` (24.22.0), `MIMEType.parse()` (24.21.0), `util.convertProcessSignalToExitCode()` (24.14.0), `util.deprecate()` options (24.12.0), hex colours in `styleText()` (24.16.0). `util.getCallSite()` was removed in 24.10.0 (use `util.getCallSites()`).[^23]
 - **Buffers**: the default `Buffer.poolSize` grew from 8 KiB to 64 KiB (24.18.0). 24.0.0–24.11.0 had a bug where `Buffer.allocUnsafe()` returned zero-filled memory; 24.11.1 restored the documented (uninitialized) behaviour — never rely on either.[^4]
 - **Streams**: `bytes()` in `node:stream/consumers` (24.14.0), `stream.compose()` stable (24.19.0), `Blob.prototype.textStream()` (24.19.0), `CompressionStream('brotli')` (24.7.0, also backported to 22).[^27]
 - **Timers**: `clearImmediate()` now only clears immediates; passing a `Timeout` no longer cancels it (verified: 22 cancels, 24 does not).
-- **Other**: `import.meta.main` (24.2.0), `--watch-kill-signal` (24.4.0), `NODE_USE_SYSTEM_CA=1` (24.6.0), `--env-file` stable (24.10.0), module compile cache stable (24.15.0), `--no-require-module` (24.15.0; the old `--no-experimental-require-module` spelling is legacy). Several of these were backported to 22.x — check before flagging them on a 22-compatible project.
+- **Other**: `import.meta.main` (24.2.0), `--watch-kill-signal` (24.4.0), `NODE_USE_SYSTEM_CA=1` (24.6.0), `--env-file` stable (24.10.0), module compile cache stable (24.15.0), `--no-require-module` (24.15.0; the old `--no-experimental-require-module` spelling is legacy), built-in proxy support for `http.request()`/`https.request()` under `NODE_USE_ENV_PROXY` (24.5.0; `fetch` since 24.0), `--max-heap-size` (24.15.0), AES-SIV and AES-GCM-SIV in `createCipheriv()` (24.22.0; absent on 22 and 25.9.0). Several of these were backported to 22.x — check before flagging them on a 22-compatible project.
 
 ***
 
@@ -327,7 +327,8 @@ try {
 | `fs.opendir()`/`fsPromises.opendir()` `Dir` (24.1.0) | `Symbol.dispose` and `Symbol.asyncDispose` |
 | `fsPromises.mkdtempDisposable()` / `fs.mkdtempDisposableSync()` (24.4.0) | removes the temp directory |
 | `http.Server`, `https.Server`, `net.Server` | `Symbol.asyncDispose` (closes the server) |
-| `dgram.Socket`, `ChildProcess` (`Symbol.dispose` kills it) | yes |
+| `dgram.Socket` | `Symbol.asyncDispose` (closes the socket) |
+| `ChildProcess` | `Symbol.dispose` (kills the child) |
 | `worker_threads.Worker` (24.2.0) | `Symbol.asyncDispose` (terminates) |
 | `stream.Readable`/`Writable` | `Symbol.asyncDispose` (destroys) |
 | `node:sqlite` `DatabaseSync`, `StatementSync` (24.22.0), `Session` | `Symbol.dispose` |
@@ -817,7 +818,7 @@ import { a } from './exports-a.cjs';     // works only if the CJS lexer detects 
 ```
 
 - Named exports are detected statically (on 24.14.0+ by the `merve` lexer, earlier by `cjs-module-lexer`). Detected: `exports.a = ...`, `module.exports = { a, b: b }` with identifier values, re-exports via `module.exports = require(...)`. **Not detected** (verified): `module.exports = { d: 4 }` with literal values and `module.exports = someObject` — `import { d } from './c3.cjs'` fails with "Named export 'd' not found". Use the default import and destructure.
-- **Changed since 22**: the namespace of an imported CommonJS module also has a `'module.exports'` key (`Object.keys(ns)` → `['default', 'module.exports', ...]`). Code that enumerates the namespace must expect it.
+- **Changed since 22**: the namespace of an imported CommonJS module also has a `'module.exports'` key (verified: `Object.keys(ns)` is `['a', 'default', 'module.exports']` for `exports.a = 1` on 24, `['a', 'default']` on 22). Code that enumerates the namespace must expect it.
 
 ##### `require(esm)` (stable since 24.15.0)
 
@@ -967,7 +968,7 @@ for await (const entry of dir) console.log(entry.parentPath, entry.name);
 - **BAD**: `fs.rmdir(dir, { recursive: true })` (DEP0147 warning). **GOOD**: `fs.rm(dir, { recursive: true, force: true })`.
 - `fs.truncate()` with a file descriptor throws on 24 — use `fs.ftruncate(fd)`. `dirent.path` is gone — use `dirent.parentPath`.
 - `fs.glob()`/`fsPromises.glob()`/`fs.globSync()` are stable since 24.0 (experimental on 22). `exclude` accepts a function or glob patterns.
-- Close what you open: a `FileHandle` closed by garbage collection prints `Warning: Closing file descriptor N on garbage collection` plus DEP0137 (verified; DEP0137 moved to End-of-Life in 25), and letting a `Dir` close on GC is documentation-deprecated (DEP0200). Use `await using`.
+- Close what you open: a `FileHandle` closed by garbage collection prints `Warning: Closing file descriptor N on garbage collection` plus DEP0137 (verified; DEP0137 moved to End-of-Life in 25, where a `FileHandle` closed by GC throws and crashes the process — verified on 25.9.0), and letting a `Dir` close on GC is documentation-deprecated (DEP0200). Use `await using`.
 - `fs.watch` is platform-dependent (event types and filenames differ between Linux, macOS and Windows, and events can be duplicated or coalesced); 24.14 adds an `ignore` option. Prefer a tested watcher library for production file watching.
 - `fsPromises.mkdtempDisposable(prefix)` / `fs.mkdtempDisposableSync()` (24.4.0) return `{ path, remove(), [Symbol.asyncDispose] }` — ideal for tests.
 - `fs.Utf8Stream` (24.6.0, port of SonicBoom) is a fast synchronous-or-async UTF-8 file writer intended for loggers.
@@ -1325,7 +1326,7 @@ try {
 - It is **synchronous**: every query blocks the event loop. Keep queries small and indexed, or run the database in a worker thread for servers with concurrent traffic.
 - Binding `undefined` throws `ERR_INVALID_ARG_TYPE` on 24 (verified; Node 26.10 binds it as `NULL`). Convert to `null` explicitly.
 - Named parameters can be passed with or without the prefix (`{ name }` or `{ ':name': ... }`); unknown named parameters throw `ERR_INVALID_STATE` unless `allowUnknownNamedParameters` is set (verified).
-- Integers above 2⁵³ need `readBigInts: true` (database option, 24.4.0) or `stmt.setReadBigInts(true)`; otherwise they lose precision.
+- Integers outside the safe range (±2⁵³−1) need `readBigInts: true` (database option, 24.4.0) or `stmt.setReadBigInts(true)`; otherwise reading them throws `RangeError [ERR_OUT_OF_RANGE]: Value is too large to be represented as a JavaScript number` (verified) — a latent crash once IDs or counters grow.
 - Defensive mode is on by default since 24.14.0 (prevents SQL from corrupting the database file via `PRAGMA writable_schema` etc.); foreign keys are enforced by default; double-quoted string literals are rejected by default.
 - `db.setAuthorizer(callback)` (24.10.0) can deny statement classes (e.g. return `constants.SQLITE_DENY` for `SQLITE_DROP_TABLE`) when executing partly untrusted SQL; extensions are disabled unless `allowExtension: true` **and** `enableLoadExtension(true)`, and cannot be loaded under the permission model.
 - Close statements and databases (`using`, `stmt.close()` on 24.22+, `db.close()`); `db.createSession()`/`applyChangeset()` provide change tracking; `sqlite.backup()` creates online backups.
@@ -1387,7 +1388,7 @@ Verified on 24.22.1 (`node --test`): all six tests pass; on 22 `it.expectFailure
 - Use `node:assert/strict` (or `t.assert`) — loose `assert.equal` uses `==`.
 - `t.mock.*` mocks are restored after the test; top-level `mock.*` must be restored with `mock.restoreAll()`/`mock.reset()`.
 - `mock.module()` requires `--experimental-test-module-mocks` (early development). On 24.15+ use the `exports` option (`{ exports: { default, named } }`); `defaultExport`/`namedExports` are deprecated.
-- `mock.timers.enable({ apis })` accepts `'setTimeout'`, `'setInterval'`, `'setImmediate'` (the `node:timers/promises` forms are mocked too), `'Date'`, and on 24 also `'scheduler.wait'` and `'AbortSignal.timeout'` (verified on 24.22.1 although the API docs list only the first four; 22 rejects them with `ERR_INVALID_ARG_VALUE`). `enable()` without `apis` mocks all of them.
+- `mock.timers.enable({ apis })` accepts `'setTimeout'`, `'setInterval'`, `'setImmediate'` (the `node:timers/promises` forms are mocked too), `'Date'`, and on 24 also `'scheduler.wait'` and `'AbortSignal.timeout'` (verified on 24.22.1 although the API docs list only the first four; 22 rejects them with `ERR_INVALID_ARG_VALUE`; `AbortSignal.timeout` support is **New in 24.16**). `enable()` without `apis` mocks the default set, which on 24.22.1 includes `AbortSignal.timeout` (verified). Because `setImmediate` is mocked too, awaiting a real `setImmediate` inside a fake-timer test hangs.
 - New in 24.x: `--test-randomize` / `--test-random-seed=<n>` (24.16.0) to find order-dependent tests; `--test-rerun-failures=<state file>` (24.7.0); `--test-global-setup=<module>` (24.0, early development); test `tags` + `--experimental-test-tag-filter` (24.19.0); `t.waitFor()`, `assert.register()` for custom assertions; `--test-isolation=process|none` (default `process`).
 - Coverage: `--experimental-test-coverage` (still experimental) with `--test-coverage-lines/branches/functions=<threshold>` and `--test-coverage-include/exclude` globs.
 - `--test-concurrency`, `--test-timeout`, `--test-name-pattern`, `--test-skip-pattern`, `--test-only` (`only: true` tests) and `--watch` are available. Never commit `it.only`/`describe.only`.
@@ -1501,7 +1502,7 @@ if (import.meta.main) {                 // importable for tests without side eff
 ```
 
 - Set `process.exitCode` instead of calling `process.exit()` so buffered output is flushed.
-- Writing to a closed pipe (`mycli | head -1`) emits an `EPIPE` `'error'` on `process.stdout`; without a listener the process crashes with "Unhandled 'error' event" and exit code 1 (verified). Add `process.stdout.on('error', (err) => { if (err.code === 'EPIPE') process.exit(0); else throw err; })` in CLIs that produce large output.
+- Writing to a closed pipe (`mycli | head -1`) with `process.stdout.write()` emits an `EPIPE` `'error'` on `process.stdout`; without a listener the process crashes with "Unhandled 'error' event" and exit code 1 (verified). `console.log()` swallows stream errors, so the same loop written with `console.log` exits 0 but keeps doing useless work. Add `process.stdout.on('error', (err) => { if (err.code === 'EPIPE') process.exit(0); else throw err; })` in CLIs that produce large output.
 - Respect backpressure for large outputs (`if (!process.stdout.write(chunk)) await once(process.stdout, 'drain')`).
 - Colours via `util.styleText()` are disabled automatically when output is not a TTY or `NO_COLOR` is set.
 
