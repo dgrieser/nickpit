@@ -71,9 +71,16 @@ C# 15 is the default language version for projects that target `net11.0` (`csc -
 
 All six are listed on the official "What's new in C# 15" page; the Roslyn feature-status page lists the first five under **C# 15.0** and "Unsafe evolution" as "Merged as preview feature".[^6][^7] The Roslyn compiler breaking-changes document describes the memory-safety changes as **C# 16** behaviour, which confirms they are not part of C# 15.[^8]
 
+The Roslyn feature-status page lists two smaller C# 15 items that the "What's new" page omits:[^7]
+
+- **Non-virtual static interface members without runtime DIM support**: static (non-virtual) methods and constants in interfaces now compile for targets whose runtime lacks default-interface-member support, such as `netstandard2.0`. Verified: `interface I { static int F() => 1; const int C = 2; }` in a `netstandard2.0` library reports `CS9327: Feature 'static members in interfaces' is not available in C# 14.0` under `LangVersion` 14 and compiles under 15. Static *abstract*/*virtual* members still need runtime support.
+- **`ExtendedLayoutAttribute`** (`System.Runtime.InteropServices`, interop layouts; the memory-safety preview's `safe` modifier refers to "explicit or extended layout types"). Interop-only; rarely seen in application code.
+
+The .NET 11 docs still call C# 15 "the latest C# preview release" until .NET 11 reaches GA.[^6]
+
 ##### Runtime and libraries (.NET 11)
 
-- **Runtime Async** (runtime-native async methods): the BCL itself is compiled with it; **your code opts in** with `<Features>runtime-async=on</Features>`. Verified on RC 2: without the flag a `net11.0` app still compiles async methods to state machines. See [Async/Await and Runtime Async](#asyncawait-and-runtime-async).[^9]
+- **Runtime Async** (runtime-native async methods): the BCL itself is compiled with it; **your code opts in** with `<Features>runtime-async=on</Features>`, and the runtime docs still call it **"a preview feature"** for application code. Verified on RC 2: without the flag a `net11.0` app still compiles async methods to state machines. See [Async/Await and Runtime Async](#asyncawait-and-runtime-async).[^9]
 - **Hardware baseline raised**: x86/x64 now requires **x86-64-v2** (SSE4.2, POPCNT, CX16); Windows Arm64 requires **LSE**. Older CPUs fail at startup with "The current CPU is missing one or more of the baseline instruction sets."[^9][^10]
 - **Behavioural changes that silently change results** (all verified on 10.0.13 vs 11 RC 2): unchecked float→`byte`/`sbyte`/`short`/`ushort`/`char` casts **saturate**; `Math.Round(double, digits)` is **correctly rounded** (`Math.Round(2.675, 2)` is `2.68` on .NET 10 and `2.67` on .NET 11); `DateOnly`/`TimeOnly.TryParse*` **throw** `ArgumentException` for invalid `DateTimeStyles`/format specifiers; `IHost.RunAsync`/`StopAsync` **throw** when a `BackgroundService` fails.[^11]
 - **New APIs**: `Process.RunAndCaptureTextAsync` and friends, `ZstandardStream`, `X25519DiffieHellman`, `Enumerable.FullJoin` and tuple-returning `Join`/`GroupJoin`, `EqualityComparer<T>.Create(keySelector)`, `Random.NextInteger<T>`/`NextBinaryFloat<T>`, `StringStream`/`ReadOnlyMemoryStream`/`WritableMemoryStream`/`ReadOnlySequenceStream`, `Decimal32`/`Decimal64`/`Decimal128`, `JsonNamingPolicy.PascalCase`, `System.Text.Json` union support and JSON Lines, async validation (`AsyncValidationAttribute`, `IAsyncValidatableObject`, `IAsyncValidateOptions<T>`), request-body compression content types.[^12]
@@ -116,6 +123,7 @@ These are on the Roslyn "working set" (in progress, targeting a later C#) or pre
 
 - `RSACryptoServiceProvider.Encrypt(byte[], bool)` / `Decrypt(byte[], bool)` — obsolete **SYSLIB0064**; use the overloads that take `RSAEncryptionPadding` (prefer `RSA.Create()` with `RSAEncryptionPadding.OaepSHA256`).[^20]
 - `IStartupValidator` — obsolete **SYSLIB0066**; implement `IAsyncStartupValidator`.[^20]
+- The `set` accessor of `AsnEncodedData.RawData` — obsolete **SYSLIB0065** (cryptography obsoletion, .NET 11 Preview 6); construct the appropriate type to decode, or use `AsnEncodedData.CopyFrom(AsnEncodedData)`. Verified: all three IDs (SYSLIB0064/0065/0066) warn on RC 2.[^33]
 - ASP.NET Core **`ConcurrencyLimiter` middleware removed** (`UseConcurrencyLimiter`, `Microsoft.AspNetCore.ConcurrencyLimiter`) — use the rate limiting middleware (`AddRateLimiter` with a concurrency limiter).[^15]
 - MVC compatibility options, obsolete Blazor APIs, obsolete `ImageTagHelper` members and an obsolete `ModelMetadataIdentity.ForProperty` overload are removed.[^15]
 - EF Core: the `EFOptimizeContext` MSBuild property is removed (use `EFScaffoldModelStage`/`EFPrecompileQueriesStage`); owned JSON collections without an explicit key are obsolete (warning `OwnedEntityMappedToJsonCollectionWarning`); synchronous I/O with the Cosmos provider can no longer be re-enabled; `SqlAuthenticationMethod.ActiveDirectoryPassword` is obsolete.[^17]
@@ -248,10 +256,10 @@ Verified facts about the compiler-generated type (RC 2):
 
 ##### The `default` trap — always handle `null`
 
-`default(Pet)` (an unassigned field, an array element, `default`, a failed `TryGetValue` out parameter) has `Value == null`. A switch that only lists the case types then throws `SwitchExpressionException` at run time. The compiler warns only when flow analysis sees the default value or when a case type is nullable:
+`default(Pet)` (an unassigned field, an array element, `default`, a failed `TryGetValue` out parameter) has `Value == null`. A switch that only lists the case types then throws `SwitchExpressionException` at run time. When no case type is nullable, the compiler treats `Value` as "not null" and **never** warns about the missing `null` arm — not even for an explicit `Pet pet = default;` local:
 
 ```csharp
-// BAD: compiles cleanly for the field, throws at run time
+// BAD: compiles without any warning, throws at run time
 var shelter = new Shelter();
 try
 {
@@ -291,7 +299,7 @@ public sealed record Bird(string Name);
 public union Pet(Cat, Dog, Bird);
 ```
 
-With a local `Pet pet = default;` the compiler reports `CS8655` ("the pattern 'null' is not covered") — with a field, parameter or array element it cannot know, so the review must check. If any case type is nullable (`union MaybeName(string?, int)`), `Value` is maybe-null and `CS8655` fires for every switch without a `null` arm.
+Verified on RC 2: `Pet pet = default; _ = pet switch { Cat c => ..., Dog d => ... };` compiles without any warning and throws `SwitchExpressionException` at run time. The language reference states the rule: "When no case type is nullable, the compiler treats `Value` as 'not null' and does not warn if a `null` arm is omitted. However, handling `null` is still needed for correctness whenever a union can have its default value." The review must therefore check every union that can be `default` (fields, arrays, `default`, `out` parameters, deserialized DTO members). If any case type is nullable (`union MaybeName(string?, int)`), `Value` is maybe-null and `CS8655` fires for every switch without a `null` arm (verified).[^21]
 
 ##### Exhaustiveness is the point — keep `CS8509` an error
 
@@ -366,6 +374,8 @@ public readonly struct IntOrBool : IUnion
     public bool TryGetValue(out bool value) { value = _bool; return _tag == 2; }
 }
 ```
+
+Custom unions may also be **classes** (for class-based unions the `null` pattern matches both a null reference and a null `Value`) or delegate their union members to a nested `IUnionMembers` interface with static `Create` factory methods (useful when constructors must stay private). Review these with the same soundness rules.[^21]
 
 At run time, `value is IUnion { Value: var inner }` inspects a boxed union generically. Compiler-generated unions always implement `IUnion`; custom unions do so only if they declare it (the compiler requires just `[Union]`, the constructors and `Value`).
 
@@ -470,7 +480,7 @@ Rules verified on RC 2:
 - Arrays, spans and other targets without constructor arguments: `CS9355: 'with(...)' elements are not supported for type 'object[]'` / `'ReadOnlySpan<int>'`.
 - Read-only interface targets (`IEnumerable<T>`, `IReadOnlyList<T>`) accept only an empty `with()`: `CS9357`.
 - A `Dictionary<,>` collection expression can take constructor arguments but **cannot contain elements** in C# 15 (`CS9215`: `Dictionary` has no single-argument `Add`); dictionary element syntax (`["k": v]`) is not part of C# 15.
-- **Breaking change**: inside a collection expression, `with(...)` now always means construction arguments. Code that called a method named `with` (`[with(x, y), z]`) must write `@with(x, y)`. Verified: the .NET 10.0.402 compiler already treats it this way (reporting the feature as preview), so the break appears when upgrading to a 10.0.4xx SDK, not only when moving to C# 15.[^8]
+- **Breaking change**: inside a collection expression, `with(...)` now always means construction arguments. Code that called a method named `with` (`[with(x, y), z]`) must write `@with(x, y)`. The breaking-changes document says this applies "when the LangVersion is set to 15 or greater", but the compilers are stricter: verified, the .NET 10.0.402 compiler (Roslyn 5.9) already binds it as construction arguments under C# 14 (`CS8652` preview + `CS9355`), and the RC 2 compiler does the same under `LangVersion` 14 (`CS9327` + `CS9355`). The break therefore appears when upgrading to a 10.0.4xx or 11 SDK, regardless of `LangVersion`.[^8]
 
 Review uses: passing a comparer (`StringComparer.Ordinal`/`OrdinalIgnoreCase`) to sets and dictionaries is a correctness issue, not style — a `HashSet<string>` built with the default comparer is case-sensitive ordinal, which may not be what the domain needs. Capacity hints are a performance nicety; only flag their absence on hot paths with known large sizes.
 
@@ -529,7 +539,7 @@ Review notes:
 
 #### Labeled break and continue (New in C# 15)
 
-`break label;` exits, and `continue label;` restarts the next iteration of, the enclosing loop or `switch` statement that carries the label. This replaces flag variables and `goto` for nested loops.[^24]
+`break label;` exits the enclosing loop or `switch` statement that carries the label; `continue label;` starts the next iteration of the enclosing **loop** that carries the label (a `continue` aimed at a labeled `switch` is `CS9394`, verified). This replaces flag variables and `goto` for nested loops.[^24]
 
 ```csharp
 int[,] grid = { { 0, 0, 1 }, { 0, 2, 0 }, { 3, 0, 0 } };
@@ -691,7 +701,7 @@ Review rules:
 - `#nullable disable` in new files, or `<Nullable>disable</Nullable>`, is a regression.
 - Use the flow attributes (`[NotNullWhen]`, `[MaybeNullWhen]`, `[NotNullIfNotNull]`, `[MemberNotNull]`, `[DoesNotReturn]`) instead of `!` at call sites.
 - `required` (C# 11) forces object-initializer assignment, but **not** non-null values from deserializers that bypass it; `System.Text.Json` honours `required` (missing property → `JsonException`) and, with `RespectNullableAnnotations = true` (.NET 9+), rejects `null` for non-nullable reference properties.
-- **New in C# 15**: a union's `Value` is "maybe null" if any case type is nullable; otherwise it gets the null state of the value it was created from, and `default` is maybe-null — see the union section.
+- **New in C# 15**: a union's `Value` defaults to "maybe null" only if some case type is nullable; otherwise its default null state is "not null" — even for `default(Pet)`, whose `Value` is actually `null` at run time. Creating a union from a case value gives `Value` that value's null state, and a `true` result from `HasValue`/`TryGetValue` makes it "not null". Missing `null` arms on `default`-able unions are therefore invisible to the compiler — see the union section.[^21]
 
 ---
 
@@ -900,7 +910,8 @@ Verified on RC 2 with three nested `async Task` methods that complete synchronou
 | default `net11.0` (no flag) | 4 state machines | 13 frames (state-machine `MoveNext`/`Start` frames visible) |
 | `-features:runtime-async=on` | 0 | 5 frames (just the real call chain) |
 
-- `EnablePreviewFeatures` is no longer required for `net11.0`, but the feature is **not** on by default for your code. Against `net10.0` references the same flag fails with `SYSLIB5007` (`AsyncHelpers` is "for evaluation purposes only").
+- `EnablePreviewFeatures` is no longer required for `net11.0`, but the runtime docs still describe Runtime Async as "a preview feature", and it is **not** on by default for your code. Against `net10.0` references the same flag fails with `SYSLIB5007` (`AsyncHelpers` is "for evaluation purposes only") plus `CA2252` (preview features) (verified).
+- The docs name `<UseRuntimeAsync>false</UseRuntimeAsync>` as the per-project opt-out; the RC 2 SDK's MSBuild targets do not reference that property, and `<UseRuntimeAsync>true</UseRuntimeAsync>` does **not** opt in (verified: state machines are still emitted). Only the `Features` flag above changes code generation.
 - Observable semantics are unchanged in the cases checked: `AsyncLocal<T>` values set inside an awaited method do not flow back to the caller, exceptions are stored in the returned task (not thrown at the call site), and `await` rethrows them.
 - Benefits: smaller code, fewer allocations, cleaner *live* stack traces for profilers and debuggers. Exception stack traces (`ex.StackTrace`) already looked clean before.
 - The removed `DOTNET_RuntimeAsync`/`UNSUPPORTED_RuntimeAsync` environment variables no longer do anything.
@@ -1534,7 +1545,7 @@ public sealed record Repo(string Name, int StargazersCount);
 - `HttpClient.Timeout` covers the whole request; per-call deadlines use a `CancellationToken`. A timeout surfaces as `TaskCanceledException` with an inner `TimeoutException`.
 - Resilience: `Microsoft.Extensions.Http.Resilience` (`AddStandardResilienceHandler()`) gives retries with jitter, circuit breaker and timeouts. Retries must be limited to idempotent requests.
 - `EnsureSuccessStatusCode()` throws `HttpRequestException` with `StatusCode` set; check status codes explicitly where 404/409 are expected outcomes.
-- **New in .NET 11**: `GZipCompressedContent`, `BrotliCompressedContent`, `ZstandardCompressedContent` (request-body compression), `SocketsHttpHandler.ShouldEvictConnection` and `InitialHttp2MaxConcurrentStreams`, typed DNS queries via `DnsResolver`. Only compress request bodies for servers known to accept `Content-Encoding` on requests.[^12]
+- **New in .NET 11**: `GZipCompressedContent`, `BrotliCompressedContent`, `ZstandardCompressedContent` (request-body compression), `SocketsHttpHandler.InitialHttp2MaxConcurrentStreams`, typed DNS queries via `Dns.ResolveSrv/Mx/Txt/...` and `DnsResolver`. `SocketsHttpHandler.ShouldEvictConnection` is **experimental** (verified: using it is error `SYSLIB5008` "for evaluation purposes only") — flag it in production code like any other `SYSLIB5xxx` API. Only compress request bodies for servers known to accept `Content-Encoding` on requests.[^12]
 - **New in .NET 11**: `SslStream` no longer downloads intermediate certificates (AIA) on the **server** side by default; Linux client-side AIA fetching is limited to two fetches per chain build.[^11]
 
 ---
@@ -1612,7 +1623,8 @@ public sealed record Circle(double Radius) : Shape;
 public sealed record Square(double Side) : Shape;
 ```
 
-- A union is serialized as its current case value; nothing records which case it was. Deserialization works only when the JSON token kind (number vs string vs object vs array) selects exactly one case; otherwise it throws `JsonException` ("ambiguous for union type ... Specify a custom type classifier"). For object-shaped alternatives use a closed hierarchy with `[JsonPolymorphic]`, or `[JsonUnion(TypeClassifier = typeof(...))]` with a classifier.
+- A union is serialized as its current case value; nothing records which case it was. Deserialization works only when the JSON token kind (number vs string vs object vs array) selects exactly one case; otherwise it throws `JsonException` ("ambiguous for union type ... Specify a custom type classifier"). For object-shaped alternatives use a closed hierarchy with `[JsonPolymorphic]`, or `[JsonUnion(TypeClassifier = typeof(JsonUnionTypeStructuralClassifier))]` (built in; picks the case whose properties match — verified with `union Pet(Cat, Dog)` where `Cat(Name, Lives)` and `Dog(Name, Age)` round-trip) or a custom `JsonTypeClassifierFactory`. Structural classification breaks silently when two cases have the same property names; prefer an explicit discriminator for public contracts.
+- **New in .NET 11**: `[JsonPolymorphic(InferClosedTypePolymorphism = true)]` on a `closed` base derives the `[JsonDerivedType]` list from the closed hierarchy (verified: `new Circle(2)` serializes as `{"$type":"Circle","Radius":2}` and round-trips). The discriminator defaults to the type name, so renaming a subclass changes the wire format — use explicit `[JsonDerivedType(typeof(Circle), "circle")]` for stable public contracts.[^12]
 - A `default` union serializes as `null` (verified).
 - **New in .NET 11**: `JsonSerializer.SerializeAsyncEnumerable(..., topLevelValues: true)` writes JSON Lines; `[JsonNamingPolicy]` attribute on types/members; type-level `[JsonIgnore(Condition = ...)]` defaults; built-in converters for `Decimal32`/`Decimal64`/`Decimal128`.[^12]
 
@@ -1972,7 +1984,7 @@ public union Shape(Circle, Square);
 
 - `<AnalysisLevel>latest-recommended</AnalysisLevel>` (or `latest-all` with selective suppressions), `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`, `<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>` with an `.editorconfig`.
 - Do not suppress with `#pragma warning disable` without a comment; never suppress `CS8509`/`CS8655` (exhaustiveness), `CA2000` (disposal), `CA2100`/`CA3001` (SQL injection), `CA5350`/`CA5351` (weak crypto), `CA2016` (forward `CancellationToken`), `CA2254` (constant log templates), `CS8600`–`CS8625` (nullability) wholesale.
-- New/changed in the .NET 11 SDK: **IDE0410** (use labeled jump statements), reduced-noise **CA1873** (expensive logging arguments). Verified: with `EnforceCodeStyleInBuild` and `dotnet_diagnostic.IDE0410.severity = warning`, the flag-variable nested-loop pattern reports IDE0410.[^25]
+- New/changed in the .NET 11 SDK: **IDE0410** (use labeled jump statements), reduced-noise **CA1873** (expensive logging arguments; now only Information level and below by default, with the reason in the message). `AnalysisLevel=latest` previously applied the .NET 9 rule set by mistake; the .NET 11 SDK applies the .NET 11 rules, so upgrading can surface new analyzer warnings. Verified: with `EnforceCodeStyleInBuild` and `dotnet_diagnostic.IDE0410.severity = warning`, the flag-variable nested-loop pattern reports IDE0410.[^25]
 - Obsoletion warnings with custom IDs (`SYSLIBxxxx`) cannot be suppressed with `CS0618`; suppress the specific ID only with a tracked migration plan.
 - Trimming/AOT analyzers: `IsAotCompatible`/`IsTrimmable` for libraries; IL2026/IL2057/IL3050 are real runtime failures in published AOT apps (see next section).
 - Package hygiene: `dotnet list package --vulnerable --include-transitive` (NuGet audit warnings NU1901–NU1904 are on by default), lock files, `--min-publish-age-hours` source policy (.NET 11 SDK).
@@ -2029,7 +2041,7 @@ When a project moves from `net10.0`/C# 14 to `net11.0`/C# 15, check these first.
 | Change | Symptom | Fix |
 |---|---|---|
 | `union`, `closed` become contextual keywords | `union Foo;` → `CS9370`; `closed field;` → `CS1519`; types named `closed` → `CS9380` (verified) | Escape: `@union`, `@closed` |
-| `with(...)` in a collection expression means constructor arguments | `[with(x, y), z]` no longer calls a method named `with` (`CS9355` for arrays) (verified, already with the 10.0.4xx compiler) | `@with(x, y)` |
+| `with(...)` in a collection expression means constructor arguments | `[with(x, y), z]` no longer calls a method named `with` (`CS9355` for arrays) (verified, already with the 10.0.4xx compiler and also under `LangVersion` 14) | `@with(x, y)` |
 | Collection expressions of span type have *declaration-block* safe-context | New ref-safety errors when a `Span<T> s = [..]` declared in a loop is assigned to an outer `scoped` span | Use an array or hoist the declaration |
 | `ref readonly`-returning synthesized delegates/local functions need `InAttribute` | `CS0518` on unusual target frameworks | Reference an assembly that defines `System.Runtime.InteropServices.InAttribute` |
 | `&&`/`||` with an interface-typed left operand and a `dynamic` right operand | `CS7083` at compile time (was a run-time `RuntimeBinderException`) | Cast the left operand to a class or `dynamic` |
@@ -2049,7 +2061,13 @@ Sources: Roslyn "breaking changes since C# 14".[^8]
 | `IHost.RunAsync`/`StopAsync` throw on `BackgroundService` failure (verified) | Non-zero exit code; `catch` blocks around `RunAsync` now run | Intended; log and exit |
 | Nine `Microsoft.Extensions.*` libraries in the shared framework (verified: in the ref pack, and restore reports NU1510) | NU1510 for explicit references; assemblies not copied to output | Remove the references for `net11.0` |
 | `IAsyncValidateOptions<T>` derives from `IValidateOptions<T>` | Synchronous access to async-only-validated options throws (verified) | `ValidateOnStart()` and start the host first; implement `Validate` |
-| `IStartupValidator` obsolete (SYSLIB0066), `RSACryptoServiceProvider.Encrypt/Decrypt(byte[], bool)` obsolete (SYSLIB0064) (verified) | Warnings with custom IDs | Migrate APIs |
+| `IStartupValidator` obsolete (SYSLIB0066), `RSACryptoServiceProvider.Encrypt/Decrypt(byte[], bool)` obsolete (SYSLIB0064), `AsnEncodedData.RawData` setter obsolete (SYSLIB0065) (verified) | Warnings with custom IDs | Migrate APIs |
+| `ChangeToken.OnChange` gains `Func<Task>`/`Func<TState, Task>` overloads (verified present only on `net11.0`) | Existing `async` lambdas silently rebind from `Action` (`async void`) to `Func<Task>`: re-registration now waits for the task, and changes during the callback are coalesced | Usually an improvement; cast to `Action` to keep fire-and-forget |
+| `Environment.TickCount`/`TickCount64` on Windows exclude sleep/hibernation time | Timeouts measured with tick counts no longer "expire" across a suspend | Use `DateTime.UtcNow`/`TimeProvider` if wall-clock time is meant |
+| `CborReader`/`CborWriter` enforce a default maximum nesting depth | Deeply nested CBOR that used to be accepted now fails | Keep a depth limit for untrusted input; see the breaking-change article before raising it |
+| `[OptionsValidator]` source generator reports error SYSLIB1205 when the class also implements `IValidateOptions<T>.Validate` explicitly (RC 1) | Build error; previously two divergent `Validate` paths existed | Keep either the generator or the handwritten `Validate`, not both |
+| VSTest / `Microsoft.NET.Test.Sdk` no longer bring in `Newtonsoft.Json` | Test projects that used `JsonConvert`/`JObject` transitively fail to compile, or fail at run time with `FileNotFoundException` | Add an explicit `Newtonsoft.Json` `PackageReference` |
+| NuGet restore no longer considers the global packages folder when the requested version does not exist (RC 1) | Restore may pick a different (higher) version from the sources, or fail with NU1102 where a cached version used to satisfy it | Reference only versions that exist on your package sources |
 | Named mutexes default to user scope on Unix | Cross-user coordination stops working | Review cross-user named-mutex use against the breaking-change article |
 | ZIP entries validate CRC32; TAR headers validate checksums; `TarWriter` writes hard-link entries | Corrupt or tampered archives now fail while reading | Handle read failures on untrusted archives |
 | `DeflateStream`/`GZipStream` write headers/footers for empty payloads | Byte-exact output comparisons change | Update golden files |
@@ -2064,7 +2082,7 @@ Sources: .NET 11 breaking changes index and linked articles.[^11]
 
 ##### ASP.NET Core 11 and EF Core 11
 
-- `ConcurrencyLimiter` middleware removed; MVC compatibility options removed; Microsoft.OpenApi 3.x with OpenAPI 3.2 as the default document version; OpenAPI lists all `ProducesResponseType` entries per status code; response compression always emits `Vary: Accept-Encoding`; hosting emits OpenTelemetry HTTP semantic-convention tags; Kestrel stricter protocol compliance; HttpSys exposes TLS channel binding tokens by default; passkey sign-in enforces confirmation and lockout; SqlClient Entra ID authentication moved to a separate package.[^15]
+- `ConcurrencyLimiter` middleware removed; MVC compatibility options removed; Microsoft.OpenApi 3.x with OpenAPI 3.2 as the default document version (verified: `AddOpenApi()` emits `"openapi": "3.2.0"` with `Microsoft.AspNetCore.OpenApi` 11.0.0-rc.2); OpenAPI server URL no longer has a trailing slash when `PathBase` is empty; Blazor static SSR defers antiforgery validation to the middleware; `WebAssemblyHostBuilder` loads environment variables into `IConfiguration`; OpenAPI lists all `ProducesResponseType` entries per status code; response compression always emits `Vary: Accept-Encoding`; hosting emits OpenTelemetry HTTP semantic-convention tags; Kestrel stricter protocol compliance; HttpSys exposes TLS channel binding tokens by default; passkey sign-in enforces confirmation and lockout; SqlClient Entra ID authentication moved to a separate package.[^15]
 - EF Core 11: requires .NET 11; SQL Server compatibility level 160 default; `Migrate()` throws without migrations; split-query concurrency exception; `SqlVector<T>` not loaded by default; `EFOptimizeContext` removed; tools packages no longer reference `Microsoft.EntityFrameworkCore.Design` (add it explicitly); Cosmos provider: unmapped JSON properties are no longer preserved (data loss on save!), `__jObject` removed, sync I/O impossible, `id` characters no longer escaped.[^17]
 
 ---
@@ -2075,6 +2093,7 @@ Sources: .NET 11 breaking changes index and linked articles.[^11]
 
 - [ ] `TargetFramework` is `net11.0` (or the project deliberately multi-targets and keeps `union`/`closed` and other C# 15 syntax out of the older legs)
 - [ ] No `<LangVersion>preview</LangVersion>`, no `runtime-async` or memory-safety feature flags without an explicit decision
+- [ ] No suppressed experimental diagnostics (`SYSLIB5006` composite ML-KEM, `SYSLIB5008` `ShouldEvictConnection`, `SYSLIB5009` HPKE, `SYSLIB5007`) in production code without an explicit decision
 - [ ] `global.json` moves off the RC SDK once .NET 11 GA ships; RC 2 go-live support ends 2026-11-10
 - [ ] `Nullable` enabled, `TreatWarningsAsErrors` on, `AnalysisLevel` set, `EnforceCodeStyleInBuild` on
 - [ ] No `PackageReference` to the nine `Microsoft.Extensions.*` libraries now in the shared framework (`net11.0`-only projects)
@@ -2177,3 +2196,4 @@ Sources: .NET 11 breaking changes index and linked articles.[^11]
 [^30]: Breaking change: Math.Round and MathF.Round return correctly rounded results (.NET 11). https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/11/math-round-digits
 [^31]: Breaking change: Synchronous access to async-validated options throws (.NET 11 RC 1). https://learn.microsoft.com/en-us/dotnet/core/compatibility/extensions/11/async-options-validation-sync-access
 [^32]: Breaking change: IHost.RunAsync and IHost.StopAsync throw when a BackgroundService fails (.NET 11). https://learn.microsoft.com/en-us/dotnet/core/compatibility/extensions/11/ihost-runasync-stopasync-throw-backgroundservice-failure
+[^33]: Breaking change: .NET 11 obsoletions in cryptography (SYSLIB0065). https://learn.microsoft.com/en-us/dotnet/core/compatibility/cryptography/11/obsolete-apis
