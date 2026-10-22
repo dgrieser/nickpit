@@ -99,7 +99,7 @@ These belong to newer compilers. Syntax, compiler options, library typings and n
 
 A 5.2 project in 2026 runs a three-year-old compiler against current dependencies. These break most often:
 
-- **`@types/node`**: verified against `tsc` 5.2.2 *without* `skipLibCheck`: `@types/node` 20.19.37, 22.19.21 and 24.19.2 type-check cleanly; **26.6.5 does not** — it references `IteratorObject`, `AsyncIteratorObject` and `BuiltinIteratorReturn` (TypeScript 5.6 lib types) and produces TS2304/TS2416 errors in `globals.d.ts`, `fs.d.ts` and `stream.d.ts`. `skipLibCheck: true` hides these errors, but declarations that mention the missing types degrade silently. The last `@types/node` releases whose `typeScriptVersion` field is still `5.2` are 20.19.37 and 22.19.15 (both 2026-03-06). Pin `@types/node` to the **major of the deployment runtime** (`~22.19.x` for Node.js 22) and do not let a caret range float to 26.
+- **`@types/node`**: verified against `tsc` 5.2.2 *without* `skipLibCheck`: `@types/node` 20.19.37, 22.19.21 and 24.19.2 type-check cleanly; **26.6.5 does not** — it references `IteratorObject`, `AsyncIteratorObject` and `BuiltinIteratorReturn` (TypeScript 5.6 lib types) and produces TS2304/TS2416 errors in `globals.d.ts`, `fs.d.ts` and `stream.d.ts`. `skipLibCheck: true` hides these errors, but declarations that mention the missing types degrade silently. The npm dist-tag `ts5.2` of `@types/node` points to 25.5.0 (2026-03-12); per major, the last releases whose `typeScriptVersion` field is still `5.2` are 20.19.37 and 22.19.15 (both 2026-03-06) — later 20.x/22.x releases declare `5.3`, and 24.19.2 declares `5.6` even though it currently type-checks under 5.2. Pin `@types/node` to the **major of the deployment runtime** (`~22.19.x` for Node.js 22) and do not let a caret range float to 26.
 - **typescript-eslint**: 8.x (8.72.0 in October 2026) declares `typescript: ">=4.8.4 <6.1.0"` and therefore still supports 5.2.[^19] Type-aware lint rules (`no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unnecessary-condition`) are the most valuable complement to the compiler on 5.2, which lacks the 5.6 truthiness checks.
 - **`tslib`**: with `importHelpers: true`, `using` needs `__addDisposableResource`/`__disposeResources`, which first appear in **tslib 2.6.0** (2023-06-26).[^18] Verified: with tslib 2.5.3 installed, 5.2 reports `TS2343: This syntax requires an imported helper named '__addDisposableResource' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.`; 2.6.2 compiles.
 - Libraries that ship `.d.ts` files written for newer compilers (using `NoInfer`, `IteratorObject`, `BuiltinIteratorReturn`, import attributes in `import()` types) fail the same way. When a dependency upgrade produces errors inside `node_modules/**/*.d.ts`, the fix is to pin the dependency or upgrade TypeScript — not to add `@ts-ignore` or blanket `skipLibCheck` without understanding the cause.
@@ -465,7 +465,7 @@ Verified with `tsc` 5.2.2 (emit, `--traceResolution`) and the TSConfig reference
 | `moduleResolution` | `node10` for `commonjs`; **`classic`** for `es2015`/`es2020`/`es2022`/`esnext`; `node16`/`nodenext` for those modules | Verified with `--traceResolution`: `"module": "esnext"` without `moduleResolution` resolves with `Classic`, which never looks into `node_modules` package folders — `@types/node` 22 then fails with TS2792 "Cannot find module 'undici-types'". `classic` and `node10` also ignore `package.json` `exports`. Always set `moduleResolution` (or use `nodenext`). |
 | `strict` | `false` | Every serious project sets it. |
 | `useDefineForClassFields` | `true` when `target` ≥ `es2022`, else `false` | Changes class-field semantics (see Classes). |
-| `esModuleInterop` | `false` (documented as implied `true` by `module: node16/nodenext`[^16]) | Default imports of CommonJS packages behave differently. |
+| `esModuleInterop` | `false`, but implied `true` when `module` is `node16`/`nodenext` (verified in the 5.2 compiler source, `getESModuleInterop`)[^16] | Default imports of CommonJS packages behave differently. |
 | `types` | every package under `node_modules/@types` | Globals from unrelated `@types` packages leak in; list them explicitly. |
 | `lib` | derived from `target` | With `target: "es2022"` the default lib has no `toSorted` and no `Disposable`. |
 
@@ -564,7 +564,7 @@ TypeScript 5.0 deprecated a set of options. In 5.0–5.4 they are errors unless 
 | Option | 5.2 without escape hatch | Replacement |
 |---|---|---|
 | `"target": "es3"` | TS5107 "Option 'target=ES3' is deprecated and will stop functioning in TypeScript 5.5." | `es5` or later |
-| `importsNotUsedAsValues`, `preserveValueImports` | TS5101 | `verbatimModuleSyntax` |
+| `importsNotUsedAsValues` (any value except the default `remove`), `preserveValueImports` | TS5101 | `verbatimModuleSyntax` |
 | `keyofStringsOnly` | TS5101 | `string & keyof T` / `Extract<keyof T, string>` |
 | `suppressImplicitAnyIndexErrors` | TS5101 | fix the index signatures or use `noUncheckedIndexedAccess` |
 | `suppressExcessPropertyErrors` | TS5101 | fix the object literals |
@@ -608,7 +608,7 @@ import type { Id } from "./util.js";
 
 - The `.js` extension names the **output** file. 5.2 cannot rewrite `.ts` specifiers on emit.
 - In a CommonJS-format file (`.cts`, or `.ts` without `"type": "module"`), `verbatimModuleSyntax` rejects `import … from` (TS1286 "ESM syntax is not allowed in a CommonJS module when 'verbatimModuleSyntax' is enabled.") and `export const` (TS1287). Use `import x = require("x")` and `export =`, or switch the file to ESM.
-- A CommonJS file importing an ES module is TS1479 in 5.2 ("…the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import("./util.js")' call instead."). TypeScript only models `require(esm)` from 5.8; on 5.2 use `await import()`.
+- A CommonJS file importing an ES module is TS1479 in 5.2 ("…the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import("./util.js")' call instead."); the `import x = require("./util.js")` form is TS1471 ("…The specifier only resolves to an ES module, which cannot be imported with 'require'."). TypeScript only models `require(esm)` from 5.8; on 5.2 use `await import()`.
 - `__dirname`, `__filename` and `require` do not exist in ESM. Use `fileURLToPath(new URL(".", import.meta.url))`, or `import.meta.dirname`/`import.meta.filename` (Node.js 20.11+; typed by `@types/node` 20.11+, not by TypeScript itself).
 
 ##### JSON modules: the 5.2 trap
@@ -1328,7 +1328,7 @@ Never call overridable methods from a base constructor. Re-declaring an inherite
 ```ts
 class Animal { kind: string = "animal"; }
 class Dog extends Animal {
-  kind: "dog"; // error TS2612
+  kind: "dog"; // error TS2612 (plus TS2564 under strictPropertyInitialization)
 }
 class Cat extends Animal {
   declare kind: "cat"; // OK: type-only redeclaration, nothing emitted
@@ -1452,7 +1452,7 @@ export { c, lit, name, m, Flags };
 
 - Since 5.0 all enums are union enums and an out-of-range *literal* is rejected, but any computed `number` (from JSON, a database, arithmetic) is still accepted. A `switch` over an enum needs a `default` that throws.
 - String enums are nominal: plain strings are not assignable, so parse external input explicitly.
-- `const enum` is inlined by `tsc` but cannot be compiled by single-file transpilers; under `isolatedModules`, `const enum`s declared in `.d.ts` files are an error (TS2748). Do not publish `const enum`s in libraries.
+- `const enum` is inlined by `tsc` but cannot be compiled by single-file transpilers; under `isolatedModules`, every access to a `const enum` declared in a `.d.ts` file is an error (TS2748 "Cannot access ambient const enums when 'isolatedModules' is enabled."). Do not publish `const enum`s in libraries.
 - Enums, runtime namespaces, parameter properties and `import x = require()` are TypeScript-only runtime syntax: Node.js type stripping (`--experimental-strip-types`, default in Node.js 23.6+/22.18+) rejects them. 5.2 has no `erasableSyntaxOnly` to enforce this (5.8); lint for it (`@typescript-eslint/no-namespace`, a ban on `TSEnumDeclaration`/`TSParameterProperty`) if the code must run unbundled with type stripping.
 
 ##### Namespaces
