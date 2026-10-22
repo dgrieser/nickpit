@@ -32,7 +32,7 @@ Global truths about C# 12 / .NET 8:
 | `[Experimental]` attribute | Using a type or member marked `[Experimental("ID")]` is a compile **error** until the ID is suppressed | [Experimental](#new-in-c-12-experimentalattribute) |
 | Interceptors (*preview*) | Source generators substitute call sites; opt-in via `InterceptorsPreviewNamespaces` | [Interceptors](#new-in-c-12-interceptors-preview-only) |
 
-Each of these features was verified on SDK 8.0.426: with `<LangVersion>11</LangVersion>` every language feature above fails with `error CS9058: Feature '…' is not available in C# 11.0`; the `[Experimental]` attribute is the exception (the compiler honors it at any language version, but the attribute type exists only in the .NET 8 BCL).[^4]
+Each of these features was verified on SDK 8.0.426: with `<LangVersion>11</LangVersion>` every language feature above fails with `error CS9058: Feature '…' is not available in C# 11.0`. Two items are exceptions: the `[Experimental]` attribute (the compiler honors it at any language version, but the attribute type exists only in the .NET 8 BCL) and interceptors (gated only by the `InterceptorsPreviewNamespaces` feature flag, not by the language version — they also work with `LangVersion 11`).[^4]
 
 ##### Runtime and libraries (.NET 8)
 
@@ -44,7 +44,7 @@ Each of these features was verified on SDK 8.0.426: with `<LangVersion>11</LangV
 - **System.Text.Json**: snake_case/kebab-case naming policies, `JsonUnmappedMemberHandling.Disallow`, populate mode for read-only members (`JsonObjectCreationHandling.Populate`), non-public members with `[JsonInclude]`, `JsonSerializerOptions.MakeReadOnly()`, `TypeInfoResolverChain`, `JsonStringEnumConverter<TEnum>`, `IAsyncEnumerable` streaming helpers (`GetFromJsonAsAsyncEnumerable`), `Half`/`Int128`/`UInt128`/`Memory<T>` support, an option to disable reflection (`JsonSerializerIsReflectionEnabledByDefault`).[^5]
 - **Extensions**: keyed DI services (`AddKeyedSingleton`, `[FromKeyedServices]`, `GetRequiredKeyedService`), `IHostedLifecycleService`, options validation source generator (`[OptionsValidator]`), configuration-binding source generator, `LoggerMessageAttribute` shorter constructors, `IMeterFactory` and `MetricCollector<T>`.[^5]
 - **Data annotations**: `[Length]`, `[AllowedValues]`, `[DeniedValues]`, `[Base64String]`, `RangeAttribute.MinimumIsExclusive/MaximumIsExclusive`.[^5]
-- **Other**: SHA-3 (`SHA3_256`, `SHA3_384`, `SHA3_512`, with `IsSupported`), `System.Net.IPNetwork` (new BCL type for CIDR ranges with `Parse`/`TryParse`/`Contains`), stream-based `ZipFile` overloads, `GC.RefreshMemoryLimit()`, dynamic PGO on by default, AVX-512/`Vector512<T>`.[^5]
+- **Other**: SHA-3 (`SHA3_256`, `SHA3_384`, `SHA3_512`, with `IsSupported`), `System.Net.IPNetwork` (new BCL type for CIDR ranges with `Parse`/`TryParse`/`Contains`), stream-based `ZipFile` overloads, `GC.RefreshMemoryLimit()`, dynamic PGO on by default, AVX-512/`Vector512<T>`, HTTPS proxy support (`all_proxy`/`WebProxy` with an `https://` proxy), `TensorPrimitives` (System.Numerics.Tensors package), source-generated COM interop (`[GeneratedComInterface]`).[^5]
 - **ASP.NET Core 8**: Native AOT for minimal APIs and gRPC (`WebApplication.CreateSlimBuilder`, Request Delegate Generator), `IExceptionHandler`, `[FromForm]` binding with antiforgery middleware (`UseAntiforgery`), Identity API endpoints (`MapIdentityApi<TUser>()`), keyed services in endpoints, short-circuit routing (`.ShortCircuit()`, `MapShortCircuit`), `HTTP_PORTS`/`HTTPS_PORTS`, request timeouts middleware, new built-in metrics, Blazor Web App unified model.[^7]
 - **EF Core 8**: complex types (`[ComplexType]`/`ComplexProperty`), primitive collections (`List<int>` columns stored as JSON, and `Contains` over parameter collections via `OPENJSON`/`json_each`), raw SQL for unmapped types (`Database.SqlQuery<T>`), lazy loading for no-tracking queries, `HierarchyId`, `DateOnly`/`TimeOnly` on SQL Server, sentinel values for defaults.[^8]
 - **Containers and SDK**: ASP.NET Core images listen on **port 8080** by default, images include a non-root `app` user, Debian 12 base, `dotnet publish`/`dotnet pack` default to **Release**, `dotnet restore` reports known-vulnerable packages (NuGet audit), `BinaryFormatter` is disabled for most project types.[^9]
@@ -88,7 +88,7 @@ The project's compiler language version is C# 12 and its BCL is .NET 8. Never su
 ##### Deprecated or removed in .NET 8
 
 - **`BinaryFormatter` is disabled** for ASP.NET Core, class library, console and most other project types: `Serialize`/`Deserialize` throw `NotSupportedException` unless `EnableUnsafeBinaryFormatterSerialization` is set. Treat any use as a security finding; it is removed entirely in .NET 9.[^9]
-- New obsoletions with custom diagnostic IDs (SYSLIB0047–SYSLIB0051), for example `XmlSecureResolver` (SYSLIB0047), `RSA.EncryptValue`/`DecryptValue` (SYSLIB0048), `JsonSerializerOptions.AddContext<T>()` (SYSLIB0049), the formatter-based serialization infrastructure such as `FormatterConverter`/`IFormatter` (SYSLIB0050), and the legacy serialization hooks `Exception(SerializationInfo, StreamingContext)` / `Exception.GetObjectData` (SYSLIB0051) — all verified as warnings on SDK 8.0.426.[^9]
+- New obsoletions with custom diagnostic IDs (SYSLIB0048–SYSLIB0053): `RSA.EncryptValue`/`DecryptValue` (SYSLIB0048), `JsonSerializerOptions.AddContext<T>()` (SYSLIB0049), the formatter-based serialization infrastructure such as `FormatterConverter`/`IFormatter` (SYSLIB0050), the legacy serialization hooks `Exception(SerializationInfo, StreamingContext)` / `Exception.GetObjectData` (SYSLIB0051), the old `Regex` extensibility members such as `Regex.InitializeReferences` (SYSLIB0052) and the `AesGcm(key)` constructor without a tag size (SYSLIB0053) — all verified as warnings against `net8.0` and absent against `net7.0`. `XmlSecureResolver` (SYSLIB0047) was already obsolete in .NET 7.[^9]
 - `JsonSerializerOptions.AddContext<TContext>()` → use `TypeInfoResolver` or `TypeInfoResolverChain`.
 - `dotnet publish` and `dotnet pack` default to the `Release` configuration in .NET 8 projects.[^9]
 
@@ -335,7 +335,7 @@ Console.WriteLine(ReferenceEquals(empty, Array.Empty<int>()));   // True
 Semantics a reviewer must know:
 
 - **No natural type**: `var x = [1, 2];` is `error CS9176: There is no target type for the collection expression`. The target type decides what is built.
-- **Interface targets get a compiler-chosen type.** `IEnumerable<T>`, `IReadOnlyCollection<T>` and `IReadOnlyList<T>` receive a read-only synthesized type (`<>z__ReadOnlyArray<T>` on SDK 8.0.426) whose `ICollection<T>.Add` throws `NotSupportedException`; `ICollection<T>`/`IList<T>` receive a `List<T>`. Never downcast the result.
+- **Interface targets get a compiler-chosen type.** `IEnumerable<T>`, `IReadOnlyCollection<T>` and `IReadOnlyList<T>` receive a read-only compiler-synthesized type (on SDK 8.0.426: `<>z__ReadOnlyArray<T>`, `<>z__ReadOnlySingleElementList<T>` for one element, and `Array.Empty<T>()` for `[]`) whose `ICollection<T>.Add` throws `NotSupportedException`; `ICollection<T>`/`IList<T>` receive a `List<T>`. Never downcast the result.
 - **Spans cannot escape.** `static Span<int> M() => [1, 2];` is `error CS9203` (the storage may be on the stack).
 - **No dictionaries.** `Dictionary<K,V> d = [];` (empty) compiles, but elements do not (`CS9215`); dictionary expressions are not part of C# 12.
 - **Overload ambiguity.** `M([1])` with overloads `M(List<int>)` and `M(HashSet<int>)` is `CS0121`. With `M(ReadOnlySpan<int>)` and `M(int[])`, the span overload wins.
@@ -476,7 +476,7 @@ public static class FastPath
 }
 ```
 
-Review: a suppression of an experimental diagnostic is an explicit opt-in to an unstable API — require a comment that says why, and prefer `<NoWarn>` scoped to one project over a global suppression. On `netstandard2.0` or `net7.0` the attribute type does not exist (CS0234) unless polyfilled.
+Review: a suppression of an experimental diagnostic is an explicit opt-in to an unstable API — require a comment that says why, and prefer `<NoWarn>` scoped to one project over a global suppression. On `netstandard2.0` or `net7.0` the attribute type does not exist (CS0246, or CS0234 when fully qualified) unless polyfilled.
 
 ***
 
@@ -1269,7 +1269,7 @@ public sealed record User(string Name, bool IsActive, string Department);
 Pitfalls:
 - **Side effects inside `Select`/`Where`** run once per enumeration (and not at all if never enumerated).
 - **Closures over loop variables** are safe in `foreach` (each iteration has a new variable) but a captured variable that changes before enumeration changes the query.
-- **New in .NET 8**: `Enumerable.Sum` over `int[]`/`List<int>` (span-able sources) is vectorized and adds elements in a different order. Inputs whose intermediate sums overflow can now throw `OverflowException` where .NET 7 returned a value — and vice versa (verified: 32 × 100,000,000 followed by 32 × −100,000,000 returns 0 on .NET 7 for an `IEnumerable` but throws on .NET 8; as an array it throws on .NET 7 and returns 0 on .NET 8). Use `long` accumulation for values near `int` limits.[^9]
+- **New in .NET 8**: `Enumerable.Sum` over `int[]`/`List<int>` (span-able sources) is vectorized and adds elements in a different order. Whether `OverflowException` is thrown now depends on the source type (verified on 7.0.20 vs 8.0.32): an `int[]` of 64 values alternating +2,000,000,000/−2,000,000,000 sums to 0 on .NET 7 but throws on .NET 8 (lanes overflow); 32 × 100,000,000 followed by 32 × −100,000,000 throws on .NET 7 and returns 0 on .NET 8 as an array, while the same data as a non-span `IEnumerable<int>` (`arr.Select(x => x)`) throws on both. Use `long` accumulation for values near `int` limits.[^9]
 - LINQ in hot paths allocates enumerators and delegates; loops over arrays/spans are cheaper. Measure before rewriting.
 - `.ToList()` immediately followed by `foreach` is an unnecessary copy unless the source can change during iteration.
 - `Cast<T>()`/`OfType<T>()` with a type that can never match is flagged by CA2021 (**new analyzer in .NET 8**).
@@ -1546,7 +1546,7 @@ public sealed partial class EmailSettingsValidator : IValidateOptions<EmailSetti
 
 - `IOptions<T>`: singleton, read once. `IOptionsSnapshot<T>`: scoped, re-read per request (cannot be injected into singletons). `IOptionsMonitor<T>`: singleton with change notifications.
 - `ValidateOnStart()` requires a host (`IHost.StartAsync` runs the validation); without it, invalid configuration surfaces on the first `.Value` access in production traffic.
-- Options classes are mutable and bound by reflection unless `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` (on by default with Native AOT/trimming). **New in .NET 8**: the binder throws for values it cannot convert (`ConfigurationBinder` "throws for mismatched value") and silently skips invalid array elements.[^9]
+- Options classes are mutable and bound by reflection unless `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` (on by default with Native AOT/trimming). An unconvertible scalar value (`Port = "abc"`) throws `InvalidOperationException` on binding. **New in .NET 8**: an unconvertible array/collection element is silently skipped (`["1","x","3"]` binds as `[1, 3]`), unless `BinderOptions.ErrorOnUnknownConfiguration = true`, which now also throws for such mismatches (verified on 8.0.32).[^9]
 - Never put secrets in `appsettings.json`; use environment variables, user secrets (development) or a vault provider.
 
 ***
@@ -1905,7 +1905,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)   // a default scheme is required
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)   // explicit default scheme
     .AddJwtBearer(o =>                    // package Microsoft.AspNetCore.Authentication.JwtBearer 8.0.x
     {
         o.Authority = "https://login.example.com/";
@@ -1948,7 +1948,8 @@ app.Run();
 ```
 
 - `UseAuthentication` must come before `UseAuthorization`, and both before the endpoints they protect. `UseCors` goes before authentication/authorization.
-- `AddAuthentication()` without a default scheme makes every challenge fail with `InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found` — a 500 instead of a 401 (verified).
+- `AddAuthentication()` without a default scheme works only while exactly one scheme is registered (since ASP.NET Core 7 that single scheme becomes the default; verified 401). Once a second scheme is added (`.AddJwtBearer().AddJwtBearer("Other", …)`, or cookies plus bearer), every challenge fails with `InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found` — a 500 instead of a 401 (verified on 8.0.32). Set the default scheme explicitly.
+- **JwtBearer 8 event change**: `TokenValidatedContext.SecurityToken` is now a `JsonWebToken` (Microsoft.IdentityModel.JsonWebTokens), not a `JwtSecurityToken`; code that does `context.SecurityToken as JwtSecurityToken` silently gets `null` (verified). Use `JsonWebToken` or set `options.UseSecurityTokenValidators = true` only as a temporary migration aid.[^25]
 - JWT bearer: keep `ValidateIssuer`, `ValidateAudience`, `ValidateLifetime` and `ValidateIssuerSigningKey` enabled (defaults when `Authority`/`Audience` are set); `RequireHttpsMetadata = false` belongs only in development.
 - `AllowAnyOrigin()` combined with `AllowCredentials()` makes the app fail at startup once the policy is used (`InvalidOperationException: The CORS protocol does not allow specifying a wildcard (any) origin and credentials at the same time`, verified); `SetIsOriginAllowed(_ => true)` with credentials bypasses that check and is a security hole.
 - A fallback policy that requires authenticated users makes "forgot `[Authorize]`" fail closed. Without it, endpoints are anonymous by default.
@@ -1957,7 +1958,7 @@ app.Run();
 ##### Hosting, ports and proxies
 
 - **New in .NET 8**: container images default to port **8080** (`ASPNETCORE_HTTP_PORTS=8080`) and run as the non-root `app` user; Kubernetes manifests and Dockerfiles that still expose port 80 break.[^9] `HTTP_PORTS`/`HTTPS_PORTS` configuration keys are new in .NET 8.[^7]
-- Behind a reverse proxy, call `app.UseForwardedHeaders()` with `KnownProxies`/`KnownNetworks` configured (or `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` only when the proxy is trusted and the app is not directly reachable). Otherwise `RemoteIpAddress`, scheme and host are wrong — and trusting `X-Forwarded-For` from anyone lets clients spoof IPs for rate limiting and audit logs.
+- Behind a reverse proxy, call `app.UseForwardedHeaders()` with `KnownProxies`/`KnownNetworks` configured (or `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` only when the proxy is trusted and the app is not directly reachable). Otherwise `RemoteIpAddress`, scheme and host are wrong — and trusting `X-Forwarded-For` from anyone lets clients spoof IPs for rate limiting and audit logs. **Changed in 8.0.17** (servicing): the middleware now ignores *all* `X-Forwarded-*` headers (including `-Proto`, `-Host`, `-Prefix`) from proxies not listed in `KnownProxies`/`KnownNetworks`; deployments that relied on the old behavior see HTTPS redirect loops or failed authentication after patching. Fix by listing the proxies — clearing both lists, or the `Microsoft.AspNetCore.HttpOverrides.IgnoreUnknownProxiesWithoutFor` switch, restores the insecure behavior and is a finding.[^26]
 - `UseHttpsRedirection` + HSTS for internet-facing apps; when TLS terminates at a proxy, forwarded headers must run first or redirects loop.
 - Kestrel request limits (`MaxRequestBodySize` defaults to 30,000,000 bytes, header limits) — raise per endpoint (`[RequestSizeLimit]`, `[DisableRequestSizeLimit]`) only where needed.
 
@@ -1992,7 +1993,8 @@ app.Run();
 
 - **Identity API endpoints**: `builder.Services.AddIdentityApiEndpoints<IdentityUser>()` + `app.MapIdentityApi<IdentityUser>()` add register/login/refresh endpoints with bearer tokens or cookies. They are opaque tokens issued by ASP.NET Core Identity — not JWTs, not OIDC; review that registration/confirmation flows and email sending are configured.[^7]
 - **Keyed services** in endpoints: `([FromKeyedServices("big")] ICache cache) => …`.
-- **`[AsParameters]`** (.NET 7) groups parameters into a type; `IFormFile` binding and complex form binding are new in .NET 8.
+- **`[AsParameters]`** (.NET 7) groups parameters into a type; `IFormFile`/`IFormFileCollection` binding exists since .NET 7, while `[FromForm]` binding of complex types and `IFormCollection` (with the mandatory antiforgery check) are new in .NET 8.
+- **Other ASP.NET Core 8 breaking changes**: `ISystemClock` is obsolete (authentication handlers use `TimeProvider`); `UseHttpLogging()` requires `AddHttpLogging()` and `UseRateLimiter()` requires `AddRateLimiter()` (startup throws otherwise); `ConcurrencyLimiterMiddleware` is obsolete; Web SDK projects that trim default to `TrimMode=full`.[^25]
 - **Metrics**: hosting, Kestrel and SignalR publish `System.Diagnostics.Metrics` instruments (`http.server.request.duration`, …) for OpenTelemetry.[^7]
 - **Blazor**: the Blazor Web App template unifies Server and WebAssembly with per-component render modes (`@rendermode InteractiveServer`); code in an interactive WebAssembly component runs in the browser — never place secrets or authorization decisions there.
 - `WebApplication.CreateSlimBuilder()` (Native AOT template) omits HTTPS/HTTP3 and some configuration sources unless added; `WebApplication.CreateEmptyBuilder()` adds nothing.
@@ -2420,7 +2422,7 @@ public sealed class CheckoutMetrics
 
 #### Containers and Deployment
 
-- **New in .NET 8**: official images listen on port 8080 (`ASPNETCORE_HTTP_PORTS=8080`) and include a non-root `app` user (`USER app` or `USER $APP_UID`); Debian 12 is the default base; chiseled Ubuntu images (`8.0-jammy-chiseled`) have no shell or package manager.[^9]
+- **New in .NET 8**: official images listen on port 8080 (`ASPNETCORE_HTTP_PORTS=8080`) and include a non-root `app` user (`USER app` or `USER $APP_UID`); Debian 12 is the default base; chiseled Ubuntu images (`8.0-jammy-chiseled`) have no shell or package manager. Also changed in the 8.0 images: Alpine images no longer contain `ca-certificates` and `libintl`, Alpine and Debian images no longer contain the Kerberos package (`krb5-libs`/`libkrb5`; add it for Negotiate/Kerberos auth), and multi-platform tags are Linux-only.[^9]
 - `dotnet publish` can build container images without a Dockerfile (`dotnet publish -t:PublishContainer`, .NET 8 SDK); since SDK 8 the default tag is `latest` — pin explicit tags in CI.[^9]
 - Do not run as root; do not bake secrets into images; set `DOTNET_gcServer`/memory limits consciously; configure `HEALTHCHECK`/Kubernetes probes against health endpoints.
 - Graceful shutdown: hosted services must honor the `CancellationToken` in `StopAsync`/`ExecuteAsync`; `HostOptions.ShutdownTimeout` defaults to 30 seconds in .NET 8.
@@ -2486,7 +2488,8 @@ public sealed class QueueWorker(ILogger<QueueWorker> logger, TimeProvider clock)
 | Crypto | `new AesGcm(key)` obsolete (SYSLIB0053); `RSA.EncryptValue/DecryptValue` obsolete (SYSLIB0048) | Pass `tagSizeInBytes`; use `Encrypt/Decrypt` with padding |
 | LINQ | Vectorized `Enumerable.Sum` changes overflow behavior for some inputs | Accumulate in `long` near limits |
 | Globalization | `TwoDigitYearMax` default 2029 → 2049 | Never parse two-digit years from external data |
-| Configuration | Binder throws for unconvertible values; skips invalid array elements | Fix configuration or validate options at startup |
+| Configuration | Binder silently skips unconvertible array elements; with `ErrorOnUnknownConfiguration = true` it throws for them | Fix configuration or validate options at startup |
+| ASP.NET Core | JwtBearer events expose `JsonWebToken` instead of `JwtSecurityToken`; `ISystemClock` obsolete; `AddHttpLogging`/`AddRateLimiter` required; forwarded headers from unknown proxies ignored since 8.0.17 | Update token handling; register services; list `KnownProxies`/`KnownNetworks` |
 | Containers | Default port 80 → 8080; non-root `app` user; Debian 12 | Update `EXPOSE`, probes, Kubernetes `containerPort`, file permissions |
 | SDK | `dotnet publish`/`pack` default to Release; RID no longer implies self-contained; NuGet audit warnings on restore | Update CI scripts; fix vulnerable packages |
 | ASP.NET Core | Minimal API form binding requires antiforgery (`UseAntiforgery`) | Add middleware or `.DisableAntiforgery()` for token-authenticated APIs |
@@ -2551,7 +2554,7 @@ public sealed class QueueWorker(ILogger<QueueWorker> logger, TimeProvider clock)
 
 - [ ] `UseExceptionHandler` + `IExceptionHandler`/ProblemDetails; no exception details in production responses
 - [ ] Minimal API inputs validated explicitly (no built-in validation in .NET 8)
-- [ ] Authentication has a default scheme; fallback authorization policy or `[Authorize]` everywhere; correct middleware order
+- [ ] Authentication has an explicit default scheme (mandatory once several schemes are registered); fallback authorization policy or `[Authorize]` everywhere; correct middleware order
 - [ ] CORS lists origins explicitly; antiforgery for cookie-authenticated forms
 - [ ] Forwarded headers restricted to known proxies; container port 8080 and non-root user reflected in deployment manifests
 - [ ] Request timeouts/rate limits configured where needed and handlers observe `RequestAborted`
@@ -2606,3 +2609,5 @@ public sealed class QueueWorker(ILogger<QueueWorker> logger, TimeProvider clock)
 [^22]: Breaking changes in EF Core 8. https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/breaking-changes
 [^23]: What's new in EF Core 9 (experimental Native AOT and precompiled queries). https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-9.0/whatsnew
 [^24]: ASP.NET Core support for Native AOT (.NET 8 compatibility table). https://learn.microsoft.com/en-us/aspnet/core/fundamentals/native-aot?view=aspnetcore-8.0
+[^25]: Breaking changes in ASP.NET Core 8 (security token events return a JsonWebToken, ISystemClock obsolete, AddHttpLogging/AddRateLimiter required, TrimMode full). https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/8/overview
+[^26]: Breaking change: Forwarded headers middleware ignores X-Forwarded-* headers from unknown proxies (ASP.NET Core 8.0.17 / 9.0.6). https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies
