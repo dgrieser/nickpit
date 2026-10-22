@@ -39,8 +39,8 @@ Verified behaviour of the SDKs around the boundary:
 | Setup | Result |
 |---|---|
 | SDK 9.0.319, `net9.0`, no `LangVersion` | C# 13; `x?.P = v` → `CS8652 … 'null conditional assignment' is currently in Preview` |
-| SDK 9.0.319, `LangVersion=12` | every C# 13 feature → `CS9202: Feature '…' is not available in C# 12.0. Please use language version 13.0 or greater.` |
-| SDK 9.0.319, `LangVersion=preview` | early previews of C# 14 compile: `field`, null-conditional assignment, `nameof(List<>)`, simple-lambda parameter modifiers, first-class span conversions, `extension` blocks, partial constructors (user-defined `+=` does not) — unsupported, flag it |
+| SDK 9.0.319, `LangVersion=12` | C# 13 features → `CS9202: Feature '…' is not available in C# 12.0. Please use language version 13.0 or greater.` (exceptions: partial properties → `CS8703`, the method-group example below → `CS8917`) |
+| SDK 9.0.319, `LangVersion=preview` | early previews of C# 14 compile: `field`, null-conditional assignment, `nameof(List<>)`, simple-lambda parameter modifiers, first-class span conversions, `extension` blocks, partial constructors and partial events (user-defined `+=` does not) — unsupported, flag it |
 | SDK 10.0.402, `net9.0`, no `LangVersion` | still C# 13: C# 14 syntax → `CS9260: Feature '…' is not available in C# 13.0` |
 | SDK 10.0.402, `net9.0`, `LangVersion=14` | C# 14 syntax compiles against the .NET 9 BCL — unsupported; flag it |
 
@@ -85,10 +85,12 @@ Rules for the reviewer:
 - **Serialization**: `BinaryFormatter` always throws `PlatformNotSupportedException`.
 - **Runtime**: Server GC uses DATAS by default; faster managed exception handling (2–4× in micro-benchmarks); stack allocation of non-escaping boxes; loop optimizations; floating-point → integer conversions saturate on x86/x64; CET shadow stacks on Windows.[^6][^11]
 - **Trimming/AOT**: `[FeatureSwitchDefinition]` and `[FeatureGuard]`; `UnsafeAccessor` supports generics.
+- **Reflection/IO/numerics**: `PersistedAssemblyBuilder` (save `Reflection.Emit` assemblies to disk), `System.Reflection.Metadata.TypeName` parsing, `ZLibCompressionOptions`/`BrotliCompressionOptions` (zlib-ng replaces zlib), `TarEntry.DataOffset`, `BigInteger` length limit, `Tensor<T>` in the `System.Numerics.Tensors` 9.x package (marked `[Experimental]`, `SYSLIB5001`).
+- **Behaviour changes worth knowing**: `BinaryReader.ReadString()` returns `"�"` for malformed UTF-8 instead of throwing; passing a `StringValues` (e.g. a header value) to `string.Join`/`string.Concat`/`Path.Combine`/`Path.Join`/`StringBuilder.AppendJoin` is now `CS0121` (ambiguous between the `params string[]` and `params ReadOnlySpan<string>` overloads; cast to `string[]`); `TimeSpan.FromMilliseconds(int/long)` in expression trees is `CS0854` (see Numbers).[^17]
 
 ##### ASP.NET Core 9, EF Core 9, SDK
 
-- ASP.NET Core 9: `Microsoft.AspNetCore.OpenApi` `AddOpenApi()`/`MapOpenApi()` (OpenAPI 3.0 documents), `MapStaticAssets()`, `HybridCache`, `TypedResults.InternalServerError`, `ProducesProblem` on route groups, `ExceptionHandlerOptions.StatusCodeSelector`, keyed services in middleware, `[DisableHttpMetrics]`, analyzer `ASP0026`, OIDC Pushed Authorization Requests. Swashbuckle is no longer in the Web API template.[^7]
+- ASP.NET Core 9: `Microsoft.AspNetCore.OpenApi` `AddOpenApi()`/`MapOpenApi()` (OpenAPI 3.0 documents), `MapStaticAssets()`, `HybridCache`, `TypedResults.InternalServerError`, `ProducesProblem` on route groups, `ExceptionHandlerOptions.StatusCodeSelector`, keyed services in middleware, `[DisableHttpMetrics]`, analyzer `ASP0026`, OIDC Pushed Authorization Requests, deletable Data Protection keys (`IDeletableKeyManager`; deleting a key makes its payloads unreadable), SignalR polymorphic hub parameters and Native AOT support. Swashbuckle is no longer in the Web API template.[^7]
 - EF Core 9: pending model changes and user transactions around `Migrate()` now throw; `UseSeeding`/`UseAsyncSeeding`; migration locking; `ToHashSetAsync`; Native AOT/precompiled queries (experimental).[^8][^9]
 - SDK 9: Terminal Logger on by default, `dotnet test` runs target frameworks in parallel, `dotnet tool install --allow-roll-forward`, BuildChecks (`/check`), workload sets, new CA rules (CA1514, CA1515, CA1871, CA1872, CA2022, CA2262–CA2265), NuGet audit sources.[^12]
 
@@ -131,7 +133,7 @@ The project compiles with C# 13 against the .NET 9 BCL. None of the following ex
 - `new X509Certificate2(byte[]/string …)` and `X509Certificate2Collection.Import(…)` loading overloads — `SYSLIB0057`; use `X509CertificateLoader.LoadCertificate*`/`LoadPkcs12*`.[^16]
 - `Thread.VolatileRead/VolatileWrite` (`SYSLIB0054`; use `Volatile.Read/Write`), `ServicePointManager` (`SYSLIB0014`, has no effect on `HttpClient`), `AuthenticationManager` (`SYSLIB0009`), `Assembly.LoadFrom(…, AssemblyHashAlgorithm)` (`SYSLIB0056`).[^16]
 - Older still-flagged obsoletions: `WebRequest`/`HttpWebRequest`/`WebClient` (`SYSLIB0014`), `Rfc2898DeriveBytes` constructors without a hash algorithm (`SYSLIB0041`), `RNGCryptoServiceProvider` and `*CryptoServiceProvider`/`*Managed` crypto types (`SYSLIB0021`/`SYSLIB0023`), `Thread.Abort`, Code Access Security.
-- Targeting `net7.0` produces an out-of-support warning (`NETSDK1138`) with the .NET 9 SDK; `netstandard1.x` targets produce a warning too.[^17]
+- Targeting `net7.0` (or any older `netX.0`/`netcoreappX.Y`) produces the out-of-support warning `NETSDK1138` — but only in executable projects: the SDK sets `CheckEolTargetFramework=true` only when `OutputType` is not `Library`, so an EOL library target builds silently (verified on SDK 9.0.319). `netstandard1.x` targets produce `NETSDK1215` in every project type.[^17]
 - `String.Trim/TrimStart/TrimEnd(ReadOnlySpan<char>)` overloads from the .NET 9 previews were removed from the reference assemblies at GA (they remain in `System.Private.CoreLib` for binary compatibility, but source cannot call them: `CS1503`). Do not "fix" code to call them; use `MemoryExtensions.Trim(span, trimChars)` on spans.
 
 ***
@@ -202,6 +204,7 @@ Console.WriteLine(join.Compile()("a", "b")); // ab
 - A `params ReadOnlySpan<T>` parameter cannot be captured by a lambda or stored in a field, and `async` methods cannot declare span parameters at all (`CS4012: Parameters of type 'ReadOnlySpan<int>' cannot be declared in async methods or async lambda expressions.`). For `async` APIs take `params IEnumerable<T>`/`IReadOnlyList<T>`.
 - With `params IEnumerable<T>`/`IReadOnlyList<T>` the compiler synthesizes the storage; do not cast it back to an array or `List<T>` and mutate it.
 - A library that *adds* a span overload changes which overload existing callers bind to on recompilation — check expression-tree callers (EF Core, Moq `Setup(...)`, AutoMapper projections).
+- Types with implicit conversions to both `T` and `T[]` become ambiguous: `string.Join(",", stringValues)` with an ASP.NET Core `StringValues` is `CS0121` on .NET 9 (verified); write `string.Join(",", (string?[])stringValues)` or `stringValues.ToString()`.[^17]
 
 ***
 
@@ -581,7 +584,7 @@ Solution/
 - `global.json` with `rollForward: latestPatch` keeps the feature band (9.0.3xx) and accepts newer patches. `"rollForward": "disable"` demands that exact SDK, so builds fail on machines and images that only have a newer patch.
 - **NuGet audit**: on `net9.0` the default `NuGetAuditMode` is `direct` (top-level packages only); `all` is the default only for `net10.0`+ projects. Set `all` explicitly to see vulnerable transitive packages (`NU1901`–`NU1904`).[^22]
 - Central Package Management (`Directory.Packages.props` with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`) avoids version drift between projects.
-- Keep ASP.NET Core / EF Core / `Microsoft.Extensions.*` 9.x packages on the same patch as the runtime (9.0.21 in October 2026). Out-of-band `Microsoft.Extensions.*` libraries such as `Microsoft.Extensions.Http.Resilience` and `Microsoft.Extensions.Caching.Hybrid` use their own 9.x minor versions (9.10.0 in October 2026).
+- Keep ASP.NET Core / EF Core / `Microsoft.Extensions.*` 9.x packages on the same patch as the runtime (9.0.21 in October 2026). Out-of-band `Microsoft.Extensions.*` libraries such as `Microsoft.Extensions.Http.Resilience` and `Microsoft.Extensions.Caching.Hybrid` use their own minor versions: the last 9.x release is 9.10.0 (October 14, 2025); the 10.x line (10.11.0 in October 2026) follows .NET 10.
 - `InvariantGlobalization` changes culture-sensitive behaviour: all cultures behave like the invariant culture, and `new CultureInfo("de-DE")` throws `CultureNotFoundException` (verified on 9.0.21; `PredefinedCulturesOnly` defaults to `true` in invariant mode). Flag it in apps that format dates/currencies for users.
 
 ***
@@ -915,6 +918,7 @@ Console.WriteLine((int)big);                              // .NET 9 x64: 2147483
 Console.WriteLine((int)nan);                              // .NET 9 x64: 0
 ```
 
+- **`TimeSpan.FromMilliseconds(integer)` breaks expression trees on .NET 9.** An `int`/`long` argument now binds to the new `FromMilliseconds(long milliseconds, long microseconds = 0)` overload, and expression trees cannot contain calls that rely on optional arguments: `Expression<Func<int, TimeSpan>> e = x => TimeSpan.FromMilliseconds(x);` compiles on .NET 8 and .NET 10 but fails on .NET 9 with `CS0854: An expression tree may not contain a call or invocation that uses optional arguments` — this hits EF Core `Where`/`Select` lambdas. `FromDays`/`FromHours`/`FromMinutes`/`FromSeconds`/`FromMicroseconds` have single-argument integer overloads and are not affected. Fix: pass a `double` (`TimeSpan.FromMilliseconds((double)x)`) or compute the `TimeSpan` outside the expression. (Verified on .NET 8.0.32, 9.0.21 and 10.0.13.)[^30]
 - **Float → integer conversions saturate on x86/x64 in .NET 9** (out-of-range values clamp to `MinValue`/`MaxValue`, `NaN` → 0). On .NET 8.0.32 x64 `(int)1e20`, `(int)-1e20` and `(int)double.NaN` all returned `int.MinValue` (`0x80000000`). Code that relied on the sentinel, or tests asserting it, change behaviour; validate ranges explicitly instead.[^23]
 - Use `checked` (or `<CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>`) for arithmetic on sizes, money in minor units, and anything derived from user input.
 - **Dates**: store and compare `DateTimeOffset`/UTC; `new DateTime(...)` has `Kind = Unspecified`. Inject `TimeProvider` (.NET 8) instead of calling `DateTime.UtcNow`/`DateTimeOffset.UtcNow` in logic that needs testing.
@@ -1017,7 +1021,7 @@ var all = Task.WhenAll(FailAsync("A"), FailAsync("B"));
 try { await all; }
 catch (Exception ex)
 {
-    // await rethrows only the first exception; the Task keeps all of them
+    // await rethrows only one exception (the first recorded — usually A, but B under load); the Task keeps all of them
     Console.WriteLine($"{ex.Message}; total={all.Exception!.InnerExceptions.Count}");   // A; total=2
 }
 
@@ -1585,7 +1589,7 @@ app.Run();
 public sealed record Forecast(string City, int TemperatureC);
 ```
 
-- `HybridCache` combines an in-process cache with an optional `IDistributedCache` (Redis, SQL Server) and coalesces concurrent misses for the same key. It was in preview at .NET 9 GA; the first stable package is 9.3.0 (March 2025). It runs on .NET 9 (and down to .NET Framework 4.7.2).
+- `HybridCache` combines an in-process cache with an optional `IDistributedCache` (Redis, SQL Server) and coalesces concurrent misses for the same key. It was in preview at .NET 9 GA; the first stable package is 9.3.0 (March 2025). The package ships `net9.0`, `net8.0`, `netstandard2.0`/`2.1` and `net462` builds, so it also works in libraries that target older frameworks.
 - Cached objects are deserialized per call by default (safe against mutation). Only mark types immutable (`[ImmutableObject(true)]` + `sealed`) when they truly are, to enable instance reuse.
 - Cache keys built from user input must be normalized and bounded in length; include tenant/user identity in keys of per-user data.
 - `IMemoryCache` without `SizeLimit` and per-entry `Size` is unbounded memory.
@@ -1599,6 +1603,8 @@ public sealed record Forecast(string City, int TemperatureC);
 - **Pending model changes now throw.** `Migrate()`/`MigrateAsync()`/`dotnet ef database update` fail with `PendingModelChangesWarning` as an error when the model differs from the last migration's snapshot — commonly caused by non-deterministic `HasData` (`DateTime.Now`, `Guid.NewGuid()`) or by forgetting to add a migration. Fix the model; suppress (`ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))`) only for the documented false-positive cases.
 - **Migrations inside a user transaction now throw** (`MigrationsUserTransactionWarning`). EF 9 starts its own transaction and takes a migration lock to protect against concurrent application; remove the `BeginTransaction`/`CreateExecutionStrategy` wrapper around `MigrateAsync`.
 - **`Microsoft.EntityFrameworkCore.Design` not found** by `dotnet ef` with SDK 9.0.200+ when the reference is `PrivateAssets=all` — add `<Publish>true</Publish>` to the `PackageReference` as the documented workaround.
+- **All pending migrations run in one transaction** (part of migration locking): if any migration fails, all of them roll back. EF 10 reverts to one transaction per migration; on EF 9 do not rely on earlier migrations of a batch having been committed.
+- **EF tools no longer support .NET Framework startup projects**; `EF.Constant()`/`EF.Parameter()` inside compiled queries throw `InvalidCastException`; `AsNoTrackingWithIdentityResolution` is rejected for some queries over JSON collections. The Azure Cosmos DB provider has many high-impact changes (discriminator renamed to `$type`, `id` mapping, sync I/O blocked) — read the list before upgrading Cosmos apps.
 - `EF.Functions.Unhex()` returns `byte[]?`; `ToString()` on a null value translates to `''`; compiled models reference value-converter methods directly, so those methods must not be `private`; SQL Server `IndexOf` propagates `NULL`.
 - EF Core 9 targets `net8.0`; it is supported until November 10, 2026 like .NET 9. EF Core 10 requires `net10.0`.
 
@@ -1670,7 +1676,7 @@ Review rules:
 - **Pagination**: always `OrderBy` before `Skip`/`Take`; prefer keyset pagination for deep pages.
 - **`Find` vs `FirstOrDefault`**: `FindAsync` checks the change tracker first; both are fine, but do not use `SingleOrDefault` on non-unique columns.
 - **Migrations in production**: apply from a deployment step or a migration bundle, not from every app instance's startup. EF 9's migration lock prevents corruption but still serializes startup.
-- **Primitive collections** (`ids.Contains(p.Id)` with a `List<int>`) are sent as a single JSON parameter since EF 8; EF 9 adds `EF.Constant()`/`EF.Parameter()` and `TranslateParameterizedCollectionsToConstants()` to control it — use them only after measuring query plans.
+- **Primitive collections** (`ids.Contains(p.Id)` with a `List<int>`) are sent as a single JSON parameter since EF 8; `EF.Constant()` (EF 8.0.2), and in EF 9 `EF.Parameter()` and the `TranslateParameterizedCollectionsToConstants()` context option, control it — use them only after measuring query plans. In EF 9, `EF.Constant`/`EF.Parameter` inside `EF.CompileQuery`/`EF.CompileAsyncQuery` throw `InvalidCastException` at runtime.[^28]
 - **Precompiled queries and Native AOT** in EF Core 9 are explicitly experimental — not for production.[^9]
 - `HasData` seeding must be deterministic; use `UseSeeding`/`UseAsyncSeeding` (EF 9) for data that depends on runtime values.
 
@@ -1745,7 +1751,7 @@ foreach (string input in new[] { "a.txt", "../etc/passwd", "/etc/passwd", "../fi
 
 ##### Named mutexes on Unix — changed in 9.0.21
 
-Starting with .NET 9.0.21 (and 8.0.32, 10.0.13), named `Mutex` objects on Unix are **user-scoped by default** instead of global; backing files move from `/tmp` to `$XDG_RUNTIME_DIR` or a directory under the user's home from the user database. Cross-user coordination via named mutexes stops working, and processes running as a UID without a passwd entry (common with `docker run -u <uid>` or Kubernetes `runAsUser`) fail to create named mutexes unless `XDG_RUNTIME_DIR` points to a writable directory. The opt-out is the `System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal` runtime configuration switch.[^29]
+Starting with .NET 9.0.21 (and 8.0.32, 10.0.13), named `Mutex` objects on Unix are **user-scoped by default** instead of global; backing files move from `/tmp` to `$TMPDIR` where that is per-user (macOS), otherwise `$XDG_RUNTIME_DIR`, otherwise a directory under the home directory from the user database (not `$HOME`; on 9.0.21 without `XDG_RUNTIME_DIR` it was `~/.dotnet/corefx/Runtime/SharedMemory/`). Cross-user coordination via named mutexes stops working, and processes running as a UID without a passwd entry (common with `docker run -u <uid>` or Kubernetes `runAsUser`) fail to create named mutexes unless `XDG_RUNTIME_DIR` points to a writable directory. The opt-out is the `System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal` runtime configuration switch.[^29]
 
 ***
 
@@ -1760,7 +1766,7 @@ Review rules:
 - **Strings**: `StringBuilder` or `string.Create` for building; `AsSpan()` slicing instead of `Substring` for parsing; `SearchValues` for repeated `IndexOfAny`.
 - **Collections**: pre-size `List<T>`/`Dictionary` when the count is known; `FrozenDictionary` for read-only lookups; `CollectionsMarshal.AsSpan(list)` only when the list is not modified meanwhile.
 - **Async**: `ValueTask` only for hot paths that usually complete synchronously; avoid `async` wrappers that only `return await` a single call (but keep them when `using`/`try` needs the await).
-- **DATAS**: Server GC on .NET 9 starts with one heap and adds heaps with load (`GC.GetConfigurationVariables()["GCDynamicAdaptationMode"]` is `1` on 9.0.21 with Server GC, `0` on 8.0.32). Containers with memory limits benefit; latency-critical services with steady high allocation can opt out with `<GarbageCollectionAdaptationMode>0</GarbageCollectionAdaptationMode>` — only after measuring.
+- **DATAS**: Server GC on .NET 9 starts with one heap and adds heaps with load (`GC.GetConfigurationVariables()["GCDynamicAdaptationMode"]` is `1` on 9.0.21 and `0` on 8.0.32; on 9.0.21 the variable reads `1` under Workstation GC as well, but DATAS only takes effect with Server GC). Containers with memory limits benefit; latency-critical services with steady high allocation can opt out with `<GarbageCollectionAdaptationMode>0</GarbageCollectionAdaptationMode>` — only after measuring.
 - **Exceptions on hot paths** remain expensive even after .NET 9's speed-up; use `Try*` patterns.
 - **Regex**: `[GeneratedRegex]` or a `static readonly Regex` with `RegexOptions.Compiled`; never construct the same `Regex` per call.
 - **JSON**: reuse `JsonSerializerOptions`; source generation for startup time and AOT.
@@ -1864,8 +1870,8 @@ Review rules:
 
 #### Analyzers and Tooling
 
-- **Defaults**: the .NET 9 SDK enables a small set of CA rules as warnings by default; in a plain `net9.0` project `CA2264` (non-nullable value passed to `ThrowIfNull`) and `CA2265` (span compared to `null`/`default`) fire without configuration. `AnalysisLevel` `9.0-recommended` (or `latest-recommended`) additionally enabled `CA1871`, `CA1872` and `CA2022` in the same test file. Recommend `<AnalysisLevel>9.0-recommended</AnalysisLevel>` + `TreatWarningsAsErrors`.
-- **New .NET 9 rules**: CA1514 (redundant length argument), CA1515 (public types in executables), CA1871 (nullable struct to `ThrowIfNull`), CA1872 (`BitConverter.ToString` → `Convert.ToHexString`), CA2022 (inexact `Stream.Read` — reported for variables typed `Stream`, not for `MemoryStream`), CA2262 (`MaxResponseHeadersLength` is in KB), CA2263 (prefer generic overload), CA2264, CA2265.[^12]
+- **Defaults**: the .NET 9 SDK enables a small set of CA rules as warnings by default; in a plain `net9.0` project `CA2022` (inexact `Stream.Read`), `CA2264` (non-nullable value passed to `ThrowIfNull`) and `CA2265` (span compared to `null`/`default`) fire without configuration. `AnalysisLevel` `9.0-recommended` (or `latest-recommended`) additionally enabled `CA1871`, `CA1872` and `CA2262` in the same test file (verified on SDK 9.0.319). Recommend `<AnalysisLevel>9.0-recommended</AnalysisLevel>` + `TreatWarningsAsErrors`.
+- **New .NET 9 rules**: CA1514 (redundant length argument), CA1515 (public types in executables), CA1871 (nullable struct to `ThrowIfNull`), CA1872 (`BitConverter.ToString` → `Convert.ToHexString`), CA2022 (inexact `Stream.Read`, on by default — reported for variables typed `Stream`, not for `MemoryStream`), CA2262 (`MaxResponseHeadersLength` is in KB), CA2263 (prefer generic overload), CA2264, CA2265.[^12]
 - **Nullable warnings** (`CS86xx`) are part of the compiler, not of `AnalysisLevel` — `<Nullable>enable</Nullable>` plus `TreatWarningsAsErrors` makes them errors.
 - **BuildChecks** (`dotnet build /check`) catch MSBuild script problems (e.g. `BC0101` shared output path, `BC0102` double writes).
 - **Terminal Logger** is the default for `build`/`test`/`publish` in the .NET 9 SDK; CI logs that parse MSBuild output may need `--tl:off` or `MSBUILDTERMINALLOGGER=off`.
@@ -1887,6 +1893,8 @@ From .NET 8 / C# 12 to .NET 9 / C# 13:[^17][^20]
 | JSON | `JsonDocument?` properties get a `Null`-kind document; metadata names unescaped | Check `null` handling and `$type`/`$id` with escaped names |
 | Crypto | `X509Certificate2` loading ctors obsolete (`SYSLIB0057`) | `X509CertificateLoader` |
 | JIT | Floating-point → integer casts saturate (x86/x64) | Validate ranges; update tests asserting `int.MinValue` sentinels |
+| BCL | New integer `TimeSpan.From*` overloads; `FromMilliseconds(int/long)` inside expression trees → `CS0854` | Cast to `double` or hoist out of EF/LINQ-provider lambdas |
+| BCL | `BinaryReader.ReadString()` yields U+FFFD for malformed data; `String.Trim(ReadOnlySpan<char>)` preview overloads removed | Validate input explicitly; recompile anything built against .NET 9 previews |
 | Runtime | Empty environment variables are kept (`SetEnvironmentVariable("X", "")` no longer deletes `X` on Unix — verified: `""` on 9.0.21, `null` on 8.0.32) | Use `null` to delete; treat `""` as set |
 | Diagnostics | `Debug.Assert` messages include the condition text | Tests matching assert output change |
 | DI | `[FromKeyedServices]` no longer falls back to non-keyed services | Register keyed services explicitly |
@@ -1894,7 +1902,7 @@ From .NET 8 / C# 12 to .NET 9 / C# 13:[^17][^20]
 | Inline arrays | Default `Equals`/`GetHashCode` throw `NotSupportedException` | Implement equality explicitly |
 | ZIP | `ZipArchiveEntry` names/comments respect the UTF-8 flag | Re-test archives with non-ASCII names |
 | Containers | .NET 9 images no longer install `zlib` (the runtime bundles zlib-ng) | Add `zlib` explicitly if native code needs it |
-| SDK | Terminal Logger default; `dotnet test` parallel across TFMs; warning for `net7.0`/`netstandard1.x` targets | Adjust CI parsing; retarget |
+| SDK | Terminal Logger default; `dotnet test` parallel across TFMs; `NETSDK1138` for `net7.0` executables, `NETSDK1215` for `netstandard1.x` | Adjust CI parsing; retarget |
 | ASP.NET Core | Dev-cert export, `ValidateOnBuild`/`ValidateScopes` in Development for `HostBuilder`, middleware with multiple constructors, forwarded headers from unknown proxies ignored (9.0.6) | Review host setup and proxy configuration |
 | EF Core 9 | Pending model changes / user transactions throw on migrate | See EF Core section |
 | 9.0.21 | Named mutexes user-scoped on Unix | See Security section |
@@ -1920,7 +1928,7 @@ From .NET 8 / C# 12 to .NET 9 / C# 13:[^17][^20]
 ##### C# 13 features
 
 - [ ] `params ReadOnlySpan<T>` for new read-only variadic APIs; no span `params` captured, stored or used across `await`
-- [ ] Expression-tree call sites compile against the new span overloads (explicit arrays where needed)
+- [ ] Expression-tree call sites compile against the new span overloads (explicit arrays where needed); no `TimeSpan.FromMilliseconds(int/long)` inside EF/LINQ-provider lambdas (`CS0854`)
 - [ ] `Lock` fields typed as `Lock` (no conversion to `object`, no `CS9216`); no `await` in locks; `SemaphoreSlim` for async
 - [ ] `\e` instead of `\x1b`; no members named `field`
 - [ ] `[OverloadResolutionPriority]` only in libraries, with a documented reason
@@ -1994,3 +2002,4 @@ From .NET 8 / C# 12 to .NET 9 / C# 13:[^17][^20]
 [^27]: Breaking change: Forwarded headers middleware ignores X-Forwarded-* headers from unknown proxies (ASP.NET Core 8.0.17 / 9.0.6). https://learn.microsoft.com/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies
 [^28]: Breaking changes in EF Core 9. https://learn.microsoft.com/ef/core/what-is-new/ef-core-9.0/breaking-changes
 [^29]: Breaking change: Named mutexes default to user scope on Unix (.NET 8.0.32, 9.0.21, 10.0.13, 11 RC 2). https://learn.microsoft.com/dotnet/core/compatibility/core-libraries/11/named-mutexes-unix-default-scope
+[^30]: Breaking change: New TimeSpan.From*() overloads that take integers; TimeSpan.FromMilliseconds API reference. https://learn.microsoft.com/dotnet/core/compatibility/core-libraries/9.0/timespan-from-overloads , https://learn.microsoft.com/dotnet/api/system.timespan.frommilliseconds
