@@ -61,6 +61,7 @@ style_guides:
       "1.24": styleguides/go-1.24.md
       "1.25": styleguides/go-1.25.md
       "1.26": styleguides/go-1.26.md
+      "1.27": styleguides/go-1.27.md
   python:
     default: styleguides/python.md
     versions:

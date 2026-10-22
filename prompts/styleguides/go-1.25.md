@@ -773,7 +773,7 @@ reqLogger := logger.With("requestID", reqID)
 slog.InfoContext(ctx, "processing", "id", id)
 
 // Discard in tests/benchmarks (1.24+)
-slog.SetDefault(slog.New(slog.DiscardHandler{}))
+slog.SetDefault(slog.New(slog.DiscardHandler))
 ```
 
 ##### slog.GroupAttrs [NEW in 1.25]
@@ -1296,11 +1296,11 @@ GOEXPERIMENT=jsonv2 go test ./...
 import "net/http"
 
 cop := http.NewCrossOriginProtection()
-// Configure allowed origins
-cop.AddAllowedOrigin("https://app.example.com")
-cop.AddSafeOrigin("https://trusted-partner.com")
-// Pattern-based bypass
-cop.AddPermittedPattern("/api/webhooks/") // webhooks don't have Fetch metadata
+// Trust additional origins (returns an error for a malformed origin)
+if err := cop.AddTrustedOrigin("https://app.example.com"); err != nil { log.Fatal(err) }
+if err := cop.AddTrustedOrigin("https://trusted-partner.com"); err != nil { log.Fatal(err) }
+// Pattern-based bypass (ServeMux pattern syntax) — exempted requests are not checked
+cop.AddInsecureBypassPattern("/api/webhooks/")
 
 handler := cop.Handler(mux) // wrap your existing handler
 http.ListenAndServe(":8080", handler)

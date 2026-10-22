@@ -988,12 +988,13 @@ slog.InfoContext(ctx, "processing", "id", id)
 ##### slog.DiscardHandler [NEW in 1.24]
 
 ```go
-// Discard all log output — useful in tests and benchmarks
-logger := slog.New(slog.DiscardHandler{})
+// Discard all log output — useful in tests and benchmarks.
+// DiscardHandler is a variable of type Handler, not a type: no {}.
+logger := slog.New(slog.DiscardHandler)
 slog.SetDefault(logger)
 
 // Or pass as a no-op logger to a component
-service := NewService(slog.New(slog.DiscardHandler{}))
+service := NewService(slog.New(slog.DiscardHandler))
 ```
 
 ---
@@ -1848,7 +1849,7 @@ for _, part := range strings.Split(largeString, ",") { // allocates []string
 ```go
 // Eliminates log overhead in benchmarks
 b.ResetTimer()
-slog.SetDefault(slog.New(slog.DiscardHandler{}))
+slog.SetDefault(slog.New(slog.DiscardHandler))
 for b.Loop() { processWithLogging(data) }
 ```
 
@@ -1891,7 +1892,7 @@ type Better struct { B int64; A bool; C bool } // 16 bytes
 - **Use `b.Loop()`** in all new benchmarks.
 - **Use `strings.SplitSeq`, `Lines`, `FieldsSeq`** for large-input string splitting — no slice allocation.
 - **Use `go tool <name>` and the `tool` directive** instead of `tools.go` blank-import pattern.
-- **Use `slog.DiscardHandler{}`** to silence logging in tests and benchmarks.
+- **Use `slog.DiscardHandler`** to silence logging in tests and benchmarks.
 - **Use `crypto/rand.Text()`** for generating random tokens.
 - **Use `crypto/hkdf.Key`, `crypto/pbkdf2.Key`, `crypto/sha3`** instead of `golang.org/x/crypto` equivalents.
 - **Use `hash/maphash.Comparable`** to hash arbitrary comparable values.
