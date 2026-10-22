@@ -9,7 +9,7 @@
 
 #### Overview
 
-Node.js 26 is the **last release line under the old two-majors-per-year model**. Starting with Node.js 27, the project ships **one major release per year**: a six-month **Alpha** channel (October–March, prerelease versions such as `27.0.0-alpha.1`, semver-major changes still allowed), a **Current** phase from April to October, and then **30 months of LTS** — every major becomes LTS, the odd/even distinction disappears and version numbers follow the calendar year of the first Current release (27.0.0 in 2027, 28.0.0 in 2028). The Node.js 27 alpha channel starts in late October 2026 (scheduled 2026-10-28), and **27.0.0 is planned for April 2027** (2027-04-22 in the release schedule). As of 2026-10-22 no 27.x build has been published; Node.js 26.12.1 is the newest release of any line.[^3][^4]
+Node.js 26 is the **last release line under the old two-majors-per-year model**. Starting with Node.js 27, the project ships **one major release per year**: a six-month **Alpha** channel (October–March, prerelease versions such as `27.0.0-alpha.1`, semver-major changes still allowed), a **Current** phase from April to October, and then **30 months of LTS** — every major becomes LTS, the odd/even distinction disappears and version numbers follow the calendar year of the first Current release (27.0.0 in 2027, 28.0.0 in 2028). The Node.js 27 alpha channel starts in late October 2026 (scheduled 2026-10-28), and **27.0.0 is planned for April 2027** (2027-04-22 in the release schedule). As of 2026-10-22 no 27.x release — not even `27.0.0-alpha.1` — has been published; only untested automated nightly builds (`v27.0.0-nightly…`) exist, and Node.js 26.12.1 is the newest release of any line.[^3][^4]
 
 Headline changes in Node.js 26 relative to 25 and 24:[^1][^5]
 
@@ -61,7 +61,7 @@ Everything from ES2025 and earlier is available: iterator helpers, new `Set` met
 - **Temporal on by default.** `--no-harmony-temporal` disables it; APIs that need it then throw `ERR_NO_TEMPORAL` (added 26.2.0; verified with `fs.statSync('.').mtimeInstant`).[^1][^8]
 - **Undici 8.** `fetch()` negotiates HTTP/2 via ALPN for `https:` URLs (verified: a local `http2.createSecureServer({ allowHTTP1: true })` sees `req.httpVersion === '2.0'` on 26.12.1 and `'1.1'` on 24/25). Legacy undici handler wrappers and "fake" `Blob` objects are gone.[^9]
 - **`readable.read()` returns one chunk at a time** (PR #60441). Code that calls `read()` with no argument and expects all buffered data concatenated now gets only the first chunk.
-- **HTTP upgrades with bodies** (PR #60016): `Content-Length`/`Transfer-Encoding` on an `Upgrade` request are now honoured; the second argument of the `'upgrade'` event wraps the socket in a stream. Use `req.socket` for socket-specific fields.
+- **HTTP upgrades with bodies** (PR #60016): `Content-Length`/`Transfer-Encoding` on an `Upgrade` request are now honoured. The request body is no longer exposed raw on the socket argument: when a body is received, the second argument of the `'upgrade'` event is a `Duplex` that emits socket data only after the body, and the parsed body is emitted from `req`. Use `req.socket` for socket-specific fields.
 - **`localStorage` returns `undefined`** when `--localstorage-file` is not set (25.x exposed an object); `sessionStorage` is still an in-memory `Storage` object.
 - **`util.inspect()` marks proxies**: `Proxy({ a: 1 })` instead of `{ a: 1 }` — snapshot tests that print proxied objects change.
 - **`assert` printf-style messages**: `assert.strictEqual(1, 2, 'val %d', 7)` reports `val 7` (24/25 print `val %d`).
@@ -70,6 +70,7 @@ Everything from ES2025 and earlier is available: iterator helpers, new `Set` met
 - **`diagnostics_channel.tracePromise()`** behaves consistently when the traced function returns a non-promise.
 - **Removed:** `--experimental-transform-types` (the flag is now a `bad option`), `response.writeHeader()` (DEP0063 end-of-life), `require('_stream_readable')` and the other `_stream_*` modules (DEP0193, DEP0125 end-of-life), AES-GCM decryption with a short auth tag and no `authTagLength` (DEP0182 end-of-life, now `ERR_CRYPTO_INVALID_AUTH_TAG`).
 - **Runtime-deprecated:** `module.register()` (DEP0205), passing a `CryptoKey` to `node:crypto` functions (DEP0203), `KeyObject.from()` with a non-extractable `CryptoKey` (DEP0204), `Duplex.toWeb(stream, { type })` (DEP0201).
+- Smaller 26.0 changes: raw key formats in the `KeyObject` APIs, an Ed25519 context parameter, async crypto job errors decorated with OpenSSL details, the SQLite Percentile extension enabled, and `stream.finished()` preserving the `AsyncLocalStorage` context only when needed.
 - Build/platform: GCC 13.2 to build from source, Python 3.9 dropped from the build, AIX/IBM i targets Power 9, Windows SDK 11; Alpine Linux promoted to tier 2 in 26.11.0.
 
 ##### Additions in 26.x minor releases **New in 26**
@@ -80,7 +81,7 @@ Many of these were later backported to Node.js 24.x[^27] (24.22.1 has `util.debo
 |---|---|
 | 26.1.0 (2026-05-07) | experimental `node:ffi` (flag `--experimental-ffi`, `--allow-ffi` under the permission model); `crypto.randomUUIDv7()`; `req.signal` on `http.IncomingMessage`; `signal` option for `fs.stat()`; `statfs.frsize`; `process.execve()` throws instead of aborting on failure; test runner `--test-randomize`/`--test-random-seed`, mock timers for `AbortSignal.timeout`; `util.styleText()` hex colours; `v8.startHeapProfile()`; `diagnostics_channel.boundedChannel()`; `sqlite` `database.serialize()`/`deserialize()` |
 | 26.2.0 (2026-05-20) | `stream.compose` stable; `fs.Stats`/`BigIntStats` `atimeInstant`/`mtimeInstant`/`ctimeInstant`/`birthtimeInstant` (`Temporal.Instant`); `response.writeInformation()` for arbitrary 1xx; test tags (`--experimental-test-tag-filter`) |
-| 26.3.0 (2026-06-01) | `Buffer.poolSize` default 8 KiB → **64 KiB**; `httpValidation` server option; `process.permission.drop()` |
+| 26.3.0 (2026-06-01) | `Buffer.poolSize` default 8 KiB → **64 KiB** (also in 24.18.0+); `httpValidation` server option; `process.permission.drop()` |
 | 26.3.1 (2026-06-18) | security release (TLS hostname/SNI fixes, `http.Agent` response-queue poisoning, permission-model fixes) |
 | 26.4.0 (2026-06-24) | `fs.readFile()` with caller-supplied buffers; package maps (`--experimental-package-map`); `net` `setKeepAlive()` interval/count; TLS `certificateCompression`; experimental `node:vfs` (`--experimental-vfs`); `net.BoundSocket`; `dgram` `bindSync()`/`connectSync()` |
 | 26.5.0 (2026-07-08) | `blob.textStream()`; `--experimental-import-text`; `ReadableStreamTee` in `node:stream/web`; negotiated TLS groups |
@@ -91,9 +92,9 @@ Many of these were later backported to Node.js 24.x[^27] (24.22.1 has `util.debo
 | 26.8.1 / 26.8.2 (2026-08-26 / 09-09) | `--version` fix; Undici 8.10.2; OpenSSL 3.5.8; DEP0208/DEP0209 documentation deprecations |
 | 26.9.0 (2026-09-16) | `node:ffi` enabled by default (still experimental); `node:bench` (`--experimental-bench`); generic MAC API (`crypto.createMac()`, `crypto.getMacs()`); experimental DTLS; VFS integrated with module loaders; Web `Worker` global (`--experimental-web-worker`) |
 | 26.10.0 (2026-09-22) | `util.debounce()`, `util.throttle()`, `util.markPromiseAsHandled()`; `crypto.parsePKCS12()`; `fs.openAsBlobSync()`; `sqlite` binds `undefined` as `NULL` |
-| 26.11.0 (2026-10-07) | `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`/`isValidHeaderValue()`; `process.ref()`/`unref()` stable; **`sqlite.DatabaseSync`/`StatementSync` renamed to `Database`/`Statement`** (old names are deprecated aliases, DEP0210/DEP0211); `--process-timeout=<duration>`; `util.isPartialDeepStrictEqual()`; HTTP/2 `connectionWindowSize`; Alpine tier 2 |
-| 26.12.0 (2026-10-14) | `http.websocketMask()`/`websocketUnmask()`; startup throws when WebAssembly or RX memory is unavailable; `t.assert.called()`/`callCount()`/`lastCalledWith()`/`nthCalledWith()` |
-| 26.12.1 (2026-10-21) | security release: TLS non-canonical IP rejection and IP normalization, `dns` NUL-byte validation, Brotli decoder fix, `http` agent data guard, crypto random-cache reset across snapshots, permission-model fixes (wildcards, `realpathSync`), NSS 3.131.1 root certificates |
+| 26.11.0 / 26.11.1 (2026-10-07) | `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`/`isValidHeaderValue()`; `process.ref()`/`unref()` stable; **`sqlite.DatabaseSync`/`StatementSync` renamed to `Database`/`Statement`** (old names are deprecated aliases, DEP0210/DEP0211); `--process-timeout=<duration>`; `util.isPartialDeepStrictEqual()`; HTTP/2 `connectionWindowSize`; `perf_hooks` histogram `diff()`/`snapshot()`; Alpine tier 2. 26.11.1 only reverts documentation-tooling changes |
+| 26.12.0 (2026-10-14) | `http.websocketMask()`/`websocketUnmask()`; startup throws when WebAssembly or RX memory is unavailable; `t.assert.called()`/`callCount()`/`lastCalledWith()`/`nthCalledWith()`; `process.finalization` marked release candidate; "module: synchronously load most ES modules" (#62530) landed here and was **reverted in 26.12.1** — do not rely on 26.12.0-only loader timing |
+| 26.12.1 (2026-10-21) | security release: TLS non-canonical IP rejection and IP normalization, `dns` NUL-byte validation, Brotli decoder fix, `http` agent data guard, crypto random-cache reset across snapshots, permission-model fixes (wildcards, `realpathSync`), invalid ZIP local headers no longer cached, NSS 3.131.1 root certificates, Undici 8.12.2; reverts the 26.12.0 synchronous ESM loading change |
 
 **Always pin the latest 26.x patch.** Three 26.x patch releases were security releases (26.3.1, 26.5.1, 26.12.1). A project on 26.x older than 26.12.1 runs with known High-severity TLS and DNS vulnerabilities.[^1]
 
@@ -124,9 +125,10 @@ As of 2026-10-22 these exist only on the Node.js `main` branch (built on V8 15.x
 - `node:net/promises` (`netPromises.connect()`, `netPromises.listen()`) and `server[Symbol.asyncIterator]()` for `net.Server`.
 - `fs.mkstemp()`/`fsPromises.mkstemp()`/`fs.mkstempSync()`; `mkdtemp*` defaulting to `'buffer'` encoding for `Buffer` prefixes.
 - `zlib.crc32c()`; `tlsSocket.socket`; the `"private"` field in `package.json` handled by Node; `--allow-env`; VFS unflagged; test-runner `ctx.mockReturnValue()`, `mockResolvedValue()`, `mockRejectedValue()`, `mockThrownValue()`.
-- `process.finalization.register()` returning an unregister function.
+- `process.finalization.register()`/`registerBeforeExit()` returning an unregister function.
+- `--experimental-strip-private-modules` (type stripping for `.ts` files of `"private": true` packages inside `node_modules`); `dns.reverse()` no longer consulting hosts files; `WebSocket`/`CloseEvent` no longer disableable with `--no-experimental-websocket`; frozen `sourceMap.payload`.
 - REPL top-level `await` without the ability to disable it (`--no-experimental-repl-await` still exists in 26).
-- 27 removals/deprecations that have **not** happened in 26: `node:domain` runtime deprecation (DEP0032 is documentation-only in 26), passing `CryptoKey` to `node:crypto` becoming an error (DEP0203/0204 are warnings in 26), SHAKE without `outputLength` becoming an error (DEP0198 warns in 26), `zlib` classes without `new` throwing (DEP0184 warns in 26), runtime deprecation of OpenSSL engine options (DEP0183), `node:http` classes without `new` (DEP0195), `require('node:_http_*')` (DEP0199), `Hmac#digest()` twice (DEP0206), `http2` `.aborted` (DEP0207). In 26 these still work (with or without a warning).
+- 27 removals/deprecations that have **not** happened in 26: `node:domain` runtime deprecation (DEP0032 is documentation-only in 26), passing `CryptoKey` to `node:crypto` becoming an error (DEP0203/0204 are warnings in 26), SHAKE without `outputLength` becoming an error (DEP0198 warns in 26), `zlib` classes without `new` throwing (DEP0184 warns in 26), runtime deprecation of OpenSSL engine options (DEP0183, e.g. `clientCertEngine`), `node:http` classes without `new` (DEP0195), `require('node:_http_*')` (DEP0199), `Hmac#digest()` twice (DEP0206, documentation-only in 26), `net.Server.prototype._listen2` (DEP0208), `AbortSignal` used to dispose resources (DEP0209); end-of-life of `require('node:_tls_common')`/`_tls_wrap` (DEP0192) and of the `domain` property on async resources/`MakeCallback` (DEP0097); new documentation deprecation of `http2` `.aborted`/`'aborted'` (DEP0207). In 26 these still work (with or without a warning).
 
 ##### ECMAScript features not shipped in V8 14.6
 
@@ -135,7 +137,7 @@ Verified on 26.12.1 (`typeof` is `undefined` or the syntax is a `SyntaxError`):
 - `Math.sumPrecise()` (ES2026, behind `--js-sum-precise` only) — use a compensated summation helper.
 - Joint iteration `Iterator.zip()`/`Iterator.zipKeyed()`, iterator chunking `Iterator.prototype.chunks()`/`windows()`, `Iterator.prototype.includes()`, `Iterator.prototype.join()` (all Stage 4 for ES2027, not in V8 14.6).
 - Decorators (`@dec class` / `@dec method()`; `--js-decorators` is "in progress / experimental"), `Symbol.metadata`.
-- `import defer` (deferred module evaluation), source phase imports (`import source x from`), `ShadowRealm`, Immutable `ArrayBuffer` (`transferToImmutable()`), `Intl.Locale.prototype.variants`, RegExp buffer boundaries `\A`/`\z`, `Promise.allKeyed()` (Await Dictionary), `String.dedent`, `Math.clamp`.
+- `import defer` (deferred module evaluation), source phase imports for **JavaScript** modules (`import source` works only for `.wasm` modules — see below), `ShadowRealm`, Immutable `ArrayBuffer` (`transferToImmutable()`), `Intl.Locale.prototype.variants`, RegExp buffer boundaries `\A`/`\z`, `Promise.allKeyed()` (Await Dictionary), `String.dedent`, `Math.clamp`.
 - `import text from './x.txt' with { type: 'text' }` works only with `--experimental-import-text` (26.5+).
 
 ##### Flagged or early-development Node APIs
@@ -271,7 +273,7 @@ console.log(typeof require.resolve);
 // import config from './config.json' with { type: 'json' };
 ```
 
-JSON modules require `with { type: 'json' }` (the old `assert { ... }` syntax was removed in Node 22). JSON modules only expose a default export. Importing text files needs `--experimental-import-text` (26.5+). `import ... from './x.wasm'` works without a flag (also in 24) but prints an `ExperimentalWarning` — treat it as experimental.
+JSON modules require `with { type: 'json' }` (the old `assert { ... }` syntax was removed in Node 22). JSON modules only expose a default export. Importing text files needs `--experimental-import-text` (26.5+). `import ... from './x.wasm'` works without a flag since 24.5.0/22.19.0 (Stability 1.2) but importing module *instances* prints an `ExperimentalWarning`; `import source mod from './x.wasm'` and `import.source()` (Wasm source phase imports, since 24.0) yield a `WebAssembly.Module` for custom instantiation.
 
 ##### `require(esm)` — stable
 
@@ -654,7 +656,7 @@ console.log(Buffer.stringLength(buf), buf.toString().length);         // 6 6
 - `Buffer.from(base64String)` is **lenient** — it silently ignores invalid characters. `Uint8Array.fromBase64()` throws `SyntaxError`. Prefer the strict one for untrusted input (tokens, signatures).
 - `atob`/`btoa` are legacy (Latin-1 only); do not use them for binary data.
 - `buf.slice()` is documentation-deprecated (DEP0158) in favour of `buf.subarray()` — both **share memory** with the original. Copy (`Buffer.from(sub)`) before storing a small slice of a large pooled buffer, otherwise the whole backing store stays alive.
-- `Buffer.allocUnsafe(n)` returns uninitialized memory from the pool (default **64 KiB pool since 26.3.0**, 8 KiB before). Never send it before filling every byte. `Buffer.alloc(n)` zero-fills.
+- `Buffer.allocUnsafe(n)` returns uninitialized memory from the pool (default **64 KiB pool since 26.3.0** and 24.18.0, 8 KiB before). Never send it before filling every byte. `Buffer.alloc(n)` zero-fills.
 - Compare secrets with `crypto.timingSafeEqual()` (equal-length buffers), never `===` or `buf.equals()`.
 - `new Buffer()`/`Buffer()` are deprecated (DEP0005) and `SlowBuffer` is gone (25.0).
 
@@ -750,7 +752,7 @@ try {
 - Never `throw 'string'` or plain objects — they carry no stack. Lint with `no-throw-literal` / `prefer-promise-reject-errors`.
 - Branch on `err.code` (`ENOENT`, `ERR_INVALID_ARG_TYPE`, `ECONNRESET`), never on `err.message` — Node.js messages may change in any release.
 - Do not log-and-rethrow at every layer; handle once at the boundary.
-- `Error.captureStackTrace(obj)` and `Error.stackTraceLimit` are V8-specific; fine in Node code. In V8 14.6 `err.stack` is an own accessor property installed at construction (the formatted string is computed lazily), so the stack reflects where the error was *created*, not where it was thrown.
+- `Error.captureStackTrace(obj)` and `Error.stackTraceLimit` are V8-specific; fine in Node code. In current V8 (24, 25 and 26 alike) `err.stack` is an own accessor property installed at construction (the formatted string is computed lazily), so the stack reflects where the error was *created*, not where it was thrown.
 
 ##### Aggregates and suppressed errors
 
@@ -1941,7 +1943,7 @@ Additional patterns to flag:
 10. **Runtime deprecations to fix before Node 27**: `module.register()` → `registerHooks()`; `CryptoKey` in `node:crypto` → `KeyObject.from()`; `Duplex.toWeb({ type })` → `readableType`; SHAKE without `outputLength`; `zlib` classes without `new`; `url.parse()`; `punycode`; `util.isArray()`; `Buffer()`.
 11. **Native addons**: rebuild for ABI 147 (or use Node-API); prebuilt binaries for 24 do not load on 26.
 12. **Build from source**: GCC ≥ 13.2, Python ≥ 3.10.
-13. **`Buffer.poolSize` is 64 KiB** (26.3): code that relied on small pooled slices sharing an 8 KiB slab sees different memory retention; never depend on the pool size.
+13. **`Buffer.poolSize` is 64 KiB** (26.3; 25.x still uses 8 KiB): code that relied on small pooled slices sharing an 8 KiB slab sees different memory retention; never depend on the pool size.
 14. **ML-KEM/ML-DSA PKCS#8 exports default to the seed-only format**: consumers that parse the expanded private-key encoding must handle seed-only keys.
 15. **From 25 (if upgrading from 24)**: `SlowBuffer`, `fs.F_OK`…, `fs.rmdir({ recursive })`, `assert.CallTracker`, multi-argument `assert.fail()`, `process.on('multipleResolves')` are gone; `--allow-net` is required for network access under `--permission`.
 
