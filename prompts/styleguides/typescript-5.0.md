@@ -15,7 +15,7 @@ Global truths about TypeScript 5.0:
 - **Two decorator systems.** 5.0 implements the TC39 (stage 3) decorators by default and keeps the old `--experimentalDecorators` implementation behind the flag. They have different signatures, different emit and different capabilities; a decorator library is written for exactly one of them.
 - **`tsc` defaults are old.** Without a tsconfig, 5.0 defaults to `target: es5`, `module: commonjs`, `moduleResolution: node10`, non-strict checking and automatic inclusion of every `@types/*` package. Real projects must set these explicitly.
 - **Emit is not bundling.** `tsc` never rewrites import specifiers, never adds polyfills for library APIs, and never resolves `paths` aliases at runtime.
-- **The compiler itself needs Node.js 12.20 or newer** (the 5.0 package targets ES2018; `engines.node` is `>=12.20`; 4.9 declared `>=4.2.0`).[^5]
+- **The compiler itself needs Node.js 12.20 or newer** (the 5.0 package targets ES2018; `engines.node` is `>=12.20`; 4.9 declared `>=4.2.0`).[^5] The 5.0 release notes say "at least Node.js 10"; the published `engines` field and the API Breaking Changes page (12.20) are authoritative.
 
 ***
 
@@ -39,7 +39,7 @@ TypeScript 5.0 is a large release: a new decorator implementation, a new module-
 | `lib: es2023` (only `findLast`/`findLastIndex`); `lib.decorators.d.ts`, `lib.decorators.legacy.d.ts` | Lib | [Target and lib](#target-and-lib) |
 | Relational operators (`<`, `>`, `<=`, `>=`) reject `number \| string` operands | Checker (breaking) | [Relational coercion](#new-in-50-forbidden-implicit-coercions-in-relational-operators) |
 | Stricter checking of constructor-parameter decorators under `--experimentalDecorators` | Checker (breaking) | [Legacy decorators](#legacy---experimentaldecorators) |
-| `newLine` defaults to `lf`; `forceConsistentCasingInFileNames` defaults to `true` | Default changes | [Default changes](#new-in-50-default-changes) |
+| `newLine` defaults to `lf`; `forceConsistentCasingInFileNames` defaults to `true`; default `target` is `es5` (was `es3`) | Default changes | [Default changes](#new-in-50-default-changes) |
 | Deprecation of `target: es3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues`, `preserveValueImports`, `prepend`; new `ignoreDeprecations` | Config (breaking) | [Deprecations](#new-in-50-deprecations-and-ignoredeprecations) |
 | Case-insensitive import sorting auto-detection, exhaustive `switch`/`case` completions | Editor | [Editor](#editor-and-language-service) |
 | Compiler requires ES2018 / Node.js 12.20; API package restructured (`typescriptServices.js` and `protocol.d.ts` removed) | Packaging (breaking) | [Tooling](#tooling) |
@@ -57,11 +57,11 @@ The project's compiler is 5.0. **Never suggest any of the following** — 5.0.4 
 - **TypeScript 5.4**: `NoInfer<T>` (TS2304 *Cannot find name* in 5.0), preserved narrowing in closures after the last assignment (5.0 still reports TS18048 inside the closure), `Object.groupBy`/`Map.groupBy` types, `Promise.withResolvers` types, `module: preserve`, `require()` in `bundler` resolution.[^10]
 - **TypeScript 5.5**: inferred type predicates (`[1, undefined].filter(x => x !== undefined)` is still `(number | undefined)[]` in 5.0), narrowing of constant indexed accesses `obj[key]`, JSDoc `@import`, regular-expression syntax checking, `isolatedDeclarations`, `${configDir}` in tsconfig, `Set` methods (`union`, `intersection`, …) types, `Array.fromAsync`, `String.prototype.isWellFormed`, `AbortSignal.any` types, and **`target: es2023`** (5.0 accepts `lib: es2023` but rejects `target: es2023` with TS6046).[^11]
 - **TypeScript 5.6–5.9**: errors on always-truthy/always-nullish conditions (5.6), `--noUncheckedSideEffectImports`, `--noCheck`, `--strictBuiltinIteratorReturn`, iterator-helper types (5.6); never-initialized-variable checks, `--rewriteRelativeImportExtensions`, `target: es2024` (5.7); `--module node18`, `--erasableSyntaxOnly`, `--libReplacement`, `require()` of ESM under `nodenext` (5.8); `import defer`, `--module node20`, the minimal `tsc --init` (5.9).[^12]
-- **TypeScript 6.0 / 7.0**: `strict` on by default, `types: []` by default, `es2025` target/lib, the `Temporal` types, removal of `baseUrl`/`moduleResolution: node10`/`target: es5`, the native Go compiler (`tsgo`) and its LSP. Do not apply their defaults to a 5.0 project — a 5.0 tsconfig must spell every setting out.[^2]
+- **TypeScript 6.0 / 7.0**: `strict` on by default, `types: []` by default, `es2025` target/lib, the `Temporal` types, the deprecation (6.0, error unless `"ignoreDeprecations": "6.0"`) and removal (7.0) of `baseUrl`, `moduleResolution: node10` and `target: es5`, the native Go compiler (`tsgo`) and its LSP. Do not apply their defaults to a 5.0 project — a 5.0 tsconfig must spell every setting out.[^2]
 
 Deprecated or removed **older** features that 5.0 reports:
 
-- **Deprecated in 5.0** (TS5101/TS5107 *"is deprecated and will stop functioning in TypeScript 5.5"*, reported as an **error** that makes `tsc` exit with code 2 although output is still emitted; silenced with `"ignoreDeprecations": "5.0"`): `target: es3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues` (any value except `remove`), `preserveValueImports`, `prepend` in project references. These become hard errors in 5.5. Details in [Deprecations](#new-in-50-deprecations-and-ignoredeprecations).
+- **Deprecated in 5.0** (TS5101/TS5107 *"is deprecated and will stop functioning in TypeScript 5.5"*, reported as an **error** that makes `tsc` exit with code 2 although output is still emitted; silenced with `"ignoreDeprecations": "5.0"`): `target: es3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues` (any value except `remove`), `preserveValueImports`, `prepend` in project references. 5.5 still accepts them with `"ignoreDeprecations": "5.0"` but silently ignores them (verified: `suppressExcessPropertyErrors` no longer suppresses TS2353); 5.6 and later reject them as removed (TS5102/TS5108). Details in [Deprecations](#new-in-50-deprecations-and-ignoredeprecations).
 - `typingOptions` and `enableAutoDiscovery` in tsconfig/jsconfig are no longer supported (use `typeAcquisition`).[^13]
 - The `typescriptServices.js` bundle and `protocol.d.ts` are gone from the npm package; the compiler API's `ts.Map`, `ts.Set`, `ts.ESMap`, `ts.Iterator`, `ts.Collection` types and the old top-level node factory functions were removed.[^13]
 
@@ -142,6 +142,7 @@ Review notes:
 - `verbatimModuleSyntax` with `module: commonjs` (or `node16` files that are CommonJS) rejects every ESM `import`/`export` (TS1286/TS1287). Use it in ESM projects; see [verbatimModuleSyntax](#new-in-50---verbatimmodulesyntax).
 - `skipLibCheck: true` is the norm, and for 5.0 it is close to mandatory: recent `@types/node` releases do not type-check under 5.0 (see [`@types` packages](#types-packages-and-typescript-50)).
 - `moduleResolution: bundler` **requires** `module: es2015` or later in 5.0 (TS5095 with `commonjs`); `module: preserve` does not exist until 5.4.
+- 5.0 silently accepts `moduleResolution: node16`/`nodenext` with a different `module` (e.g. `module: esnext`), which models neither Node.js nor a bundler correctly; 5.2+ reject the mismatch (TS5110 *"Option 'module' must be set to 'Node16' when option 'moduleResolution' is set to 'Node16'"*). Flag it now so the upgrade does not break.[^8]
 
 ##### New in 5.0: Multiple configuration files in `extends`
 
@@ -243,10 +244,11 @@ Review rules:
 
 - `newLine` now defaults to `lf` on every platform; the old OS-dependent inference (`crlf` on Windows) is gone and cannot be selected.[^1] (Not reproducible on the Linux test machine, where both 4.9 and 5.0 emit LF.)
 - `forceConsistentCasingInFileNames` now defaults to `true`, so `import "./Mod"` for `mod.ts` is an error on case-insensitive file systems too.[^1]
+- The default `target` (no `target` set) is now `es5` instead of `es3`, a consequence of the ES3 deprecation that the release notes do not list. Verified: `export const o = { get x() { return 1; } }` without `--target` is TS1056 *"Accessors are only available when targeting ECMAScript 5 and higher"* in 4.9.5 and compiles in 5.0.4.
 
 ##### New in 5.0: Deprecations and `ignoreDeprecations`
 
-5.0 deprecates the options below. They still work in 5.0–5.4, but `tsc` reports each one as an **error** (TS5101, or TS5107 for `target=ES3`), exits with code 2 and still emits output; CI pipelines that treat a non-zero exit as failure break immediately. `"ignoreDeprecations": "5.0"` silences them until 5.5, where they stop working (5.5 reports them as removed). 4.9.5 also accepts `"ignoreDeprecations": "5.0"` to ease the upgrade; any other value (`"5.1"`) is TS5103 *Invalid value* in 5.0.[^1]
+5.0 deprecates the options below. They still work in 5.0–5.4, but `tsc` reports each one as an **error** (TS5101, or TS5107 for `target=ES3`), exits with code 2 and still emits output; CI pipelines that treat a non-zero exit as failure break immediately. `"ignoreDeprecations": "5.0"` silences them in 5.0–5.5. In 5.5 the options **no longer have any effect** (still accepted with `ignoreDeprecations`, otherwise TS5101), and from 5.6 on they are errors (TS5102 *"Option '…' has been removed"*, TS5108 for `target=ES3`); 6.0 keeps rejecting them (verified on 5.4, 5.5, 5.6 and 6.0).[^11] 4.9.5 also accepts `"ignoreDeprecations": "5.0"` to ease the upgrade; any other value (`"5.1"`) is TS5103 *Invalid value* in 5.0.[^1]
 
 | Deprecated | Replacement |
 |---|---|
@@ -262,9 +264,9 @@ Review rules:
 | `preserveValueImports` | `verbatimModuleSyntax` |
 | `prepend` in `references` | a bundler, or separate outputs |
 
-`importsNotUsedAsValues: "remove"` (the old default) is not reported. Review rule: `ignoreDeprecations` is a **migration aid**, not a fix; every PR that adds it must also carry a plan to remove the deprecated option before moving past 5.4.
+`importsNotUsedAsValues: "remove"` (the old default) is not reported. Review rule: `ignoreDeprecations` is a **migration aid**, not a fix; every PR that adds it must also carry a plan to remove the deprecated option before moving past 5.4 (a 5.5 upgrade silently changes behaviour, a 5.6+ upgrade fails).
 
-**5.0.4 crash:** combining `verbatimModuleSyntax` with `importsNotUsedAsValues: "error"` (with or without `ignoreDeprecations`) makes 5.0.4 throw `Debug Failure. False expression.` from `isReferencedAliasDeclaration` instead of reporting a diagnostic; 5.1+ report TS5104 *"Option 'importsNotUsedAsValues' is redundant and cannot be specified with option 'verbatimModuleSyntax'"*. `preserveValueImports` plus `verbatimModuleSyntax` reports TS5104 normally. Remove the old option when introducing `verbatimModuleSyntax`.
+**5.0.4 crash:** combining `verbatimModuleSyntax` with `importsNotUsedAsValues: "error"` (with or without `ignoreDeprecations`, with or without `noEmit`) makes 5.0.4 throw `Debug Failure. False expression.` from `isReferencedAliasDeclaration` as soon as a file contains a regular import such as `import { b, type X } from "./x"` (a project with only `import type` statements gets the TS5104 diagnostic instead); 5.1–5.4 report TS5104 *"Option 'importsNotUsedAsValues' is redundant and cannot be specified with option 'verbatimModuleSyntax'"*. `preserveValueImports` plus `verbatimModuleSyntax` reports TS5104 normally. Remove the old option when introducing `verbatimModuleSyntax`.
 
 ***
 
@@ -420,7 +422,7 @@ Under `module: node16`/`nodenext` the module format of each file is decided like
 
 ##### Import assertions and JSON
 
-5.0 supports **import assertions** (`assert { type: "json" }`, since 4.5) only with `module: esnext` or `nodenext` (TS2821 with `es2022`, `node16` or `commonjs`). **Import attributes** (`with { type: "json" }`) do not exist before 5.3 — 5.0 reports a syntax error.
+5.0 supports **import assertions** (`assert { type: "json" }`, since 4.5) only with `module: esnext` or `nodenext` (TS2821 with `es2022`, `node16` or `commonjs`); under `nodenext` only in files that are ESM — in a CommonJS-format file it is TS2836 *"Import assertions are not allowed on statements that transpile to commonjs 'require' calls"*. **Import attributes** (`with { type: "json" }`) do not exist before 5.3 — 5.0 reports a syntax error.
 
 ```ts
 // @resolveJsonModule: true
@@ -448,7 +450,7 @@ Node.js 22 removed support for `assert` in favour of `with`; code that must run 
 DefinitelyTyped only tests type packages against TypeScript versions younger than two years, and each published `@types` package records the oldest supported version in its `typeScriptVersion` field.[^4] Verified against the npm registry and `tsc` 5.0.4:
 
 - The last `@types/node` releases that still declare 5.0 support are **16.18.126**, **18.19.84**, **20.17.28** and **22.13.14** (published until March 27, 2025). These type-check cleanly under 5.0.4.
-- Some later releases still happen to work (22.19.0, 24.2.0, 20.19.43 compile cleanly), but `@types/node` 24.10+, 25.x and 26.x reference `Disposable`, `Symbol.dispose` and `Symbol.asyncDispose`, which 5.0 has no lib for: 5.0.4 reports 48–81 errors (TS2304, TS2339, TS1165, TS2416) in the declaration files.
+- Some later releases still happen to work (22.19.0, 24.2.0, 20.19.43 compile cleanly), but `@types/node` 24.10+, 25.x and 26.x reference `Disposable`, `Symbol.dispose` and `Symbol.asyncDispose`, which 5.0 has no lib for, and use 5.2+ syntax such as mixed labeled/unlabeled tuples: 5.0.4 reports dozens of errors in the declaration files (90 for `@types/node` 26.6.5, mostly TS2304, TS2339, TS1165, TS1169, plus TS5084).
 - Fixes: pin `@types/node` (`"@types/node": "~20.17.28"` / `"~22.13.14"`, matching the Node.js major you run), or enable `skipLibCheck` — which hides real errors in your own `.d.ts` files too. The same applies to other `@types/*` packages and to libraries that ship their own types written for newer compilers (declarations that use `NoInfer`, `Disposable`, `Symbol.dispose` or mixed tuple labels fail under 5.0).
 - Review rule: an upgrade of an `@types/*` package or a library in a 5.0 project must pass `tsc` without `skipLibCheck`, or the PR must say why it is acceptable.
 
@@ -884,7 +886,7 @@ const r3 = fnGood(["a", "b"]);    // readonly ["a", "b"]
 export { exact, r2, r3 };
 ```
 
-Review rule: when you see `const T`, the constraint should be `readonly` (arrays/tuples) — otherwise the modifier silently does nothing. 4.9 rejects the syntax entirely (TS1139).
+Review rule: when you see `const T`, the constraint should be `readonly` (arrays/tuples) — otherwise the modifier silently does nothing in 5.0. 5.3 changed this (microsoft/TypeScript#55229): newer compilers infer a mutable tuple `["a", "b"]` for a mutable constraint, so `r1check` above compiles on 5.3+ but not on 5.0–5.2 (verified). Do not rely on the 5.3 behaviour. 4.9 rejects the syntax entirely (TS1139).
 
 ##### Controlling inference without `NoInfer`
 
@@ -1098,7 +1100,7 @@ Fields must be initialised in the declaration or the constructor. `field!: Type`
 | field | `undefined` | `ClassFieldDecoratorContext<This, Value>` | an initializer transform `(initial) => value` |
 | `accessor` field | `{ get, set }` | `ClassAccessorDecoratorContext<This, Value>` | `{ get?, set?, init? }` |
 
-Each context has `kind`, `name`, `static`, `private`, `access` (`get`/`set`/`has`) and `addInitializer()`. It has **no `metadata`** in 5.0 (5.2).
+Every context has `kind`, `name` and `addInitializer()`. Member contexts add `static`, `private` and `access`: `access.has` everywhere, `access.get` for methods, getters, fields and accessors, `access.set` for setters, fields and accessors (`ClassDecoratorContext` has none of these). No context has `metadata` in 5.0 (5.2).
 
 ```ts
 function logged<This, Args extends unknown[], R>(
