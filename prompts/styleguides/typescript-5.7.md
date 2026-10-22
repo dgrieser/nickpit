@@ -121,7 +121,7 @@ const p = "./foo.ts";
 const m2 = await import(p);              // emitted as import(__rewriteRelativeImportExtension(p))
 ```
 
-Verified emit (5.7.3, `--module nodenext`, `"type": "module"`): static and literal dynamic imports are rewritten in place. A **non-literal** `import(expr)` is wrapped in an injected runtime helper, `__rewriteRelativeImportExtension(path, preserveJsx)`, which rewrites at runtime only strings that start with `./` or `../`. 5.7.3 inlines this helper even under `importHelpers` (verified). The same files run unchanged with `node src/main.ts` (Node.js 22.18+/24) and as compiled `dist/main.js`. On 5.6.3 the option is unknown (TS5023), and `.ts` specifiers fail with TS5097.
+Verified emit (5.7.3, `--module nodenext`, `"type": "module"`): static and literal dynamic imports are rewritten in place. The release notes call dynamic imports the hard case for path rewriting; the emitted helper covers only `import()` calls in the compiled code, never paths built inside dependencies. A **non-literal** `import(expr)` is wrapped in an injected runtime helper, `__rewriteRelativeImportExtension(path, preserveJsx)`, which rewrites at runtime only strings that start with `./` or `../`. 5.7.3 inlines this helper even under `importHelpers` (verified). The same files run unchanged with `node src/main.ts` (Node.js 22.18+/24) and as compiled `dist/main.js`. On 5.6.3 the option is unknown (TS5023), and `.ts` specifiers fail with TS5097.
 
 What is **not** rewritten:
 
@@ -232,7 +232,7 @@ export { asU8, owned, raw };
 Review guidance:
 
 - Errors such as `Type 'Buffer' is not assignable to type 'Uint8Array<ArrayBufferLike>'` after a 5.7 upgrade mean `@types/node` is too old. Update it (the current `@types/node` ships a `ts5.7/` variant through `typesVersions`). Do not cast.
-- `buf.buffer` may be larger than the view and may be shared. Small `Buffer.from(string)`/`Buffer.allocUnsafe` results are views into Node's shared 8 KiB pool. On Node.js 22, `Buffer.from("abc").buffer.byteLength` is 8192, and a 3-byte `readFileSync` result also sat on an 8192-byte `ArrayBuffer`. Code that does `new Uint8Array(b.buffer)` or posts `b.buffer` reads or transfers unrelated bytes. Use `b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)`, or copy with `Uint8Array.prototype.slice()`. The 5.7 types make this visible as `ArrayBufferLike`. Do not paper over it with `as ArrayBuffer`.
+- `buf.buffer` may be larger than the view and may be shared. Small `Buffer.from(string)`/`Buffer.allocUnsafe` results are views into Node's shared pool (`Buffer.poolSize`: 8 KiB on Node.js 22, 64 KiB on Node.js 24 and 26). On Node.js 22, `Buffer.from("abc").buffer.byteLength` is 8192 (65536 on Node.js 24), and a small `readFileSync` result also sat on a pool-sized `ArrayBuffer`. Code that does `new Uint8Array(b.buffer)` or posts `b.buffer` reads or transfers unrelated bytes. Use `b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)`, or copy with `Uint8Array.prototype.slice()`. The 5.7 types make this visible as `ArrayBufferLike`. Do not paper over it with `as ArrayBuffer`.
 - Write `Uint8Array<ArrayBuffer>` in signatures that really need a non-shared, transferable buffer (Web Crypto `BufferSource`, `postMessage` transfer lists, `structuredClone` transfer).
 - Combining `lib: ["dom"]` (or no `lib`, which includes DOM) with a recent `@types/node` (26.x tested) and `skipLibCheck: false` on 5.7.3 produces TS2430 conflicts inside `lib.dom.d.ts` (`TextDecoder`/`TextEncoder` vs `node:util`). Node-only projects should set `lib` explicitly without `dom`. Mixed projects need `skipLibCheck: true`.
 
@@ -253,7 +253,7 @@ const v3 = ns.version;                                             // error TS23
 
 Verified boundaries:
 
-- 5.6.3 accepts all of the above. On Node.js 22/24 the attribute-less import throws `ERR_IMPORT_ATTRIBUTE_MISSING`, and the named import fails at link time.
+- 5.6.3 reports none of the 5.7 errors above (only the `ns.version` TS2339, which every version reports). On Node.js 22/24 the attribute-less import throws `ERR_IMPORT_ATTRIBUTE_MISSING`, and the named import fails at link time.
 - Under `--module node16`, 5.7 reports TS1544 for named JSON imports. It also rejects the `with { … }` attribute itself (TS2823: import attributes require `esnext`, `nodenext` or `preserve`). ESM projects that import JSON must use `nodenext` (or `preserve`/`esnext` with a bundler).
 - The deprecated `assert { type: "json" }` syntax is **still accepted by 5.7 under `nodenext`**. Node.js 22+ rejects it with a `SyntaxError`, and Node.js 18/20 print a deprecation warning. 5.8 turns it into TS2880. On 5.7, a reviewer must flag `assert {` in import declarations manually.
 - In CommonJS output files (`.cts`, or `.ts` without `"type": "module"`), `import x = require("./x.json")` and default imports keep working without attributes.
@@ -319,7 +319,7 @@ The project's compiler is 5.7.3. A reviewer must never suggest the following. Th
 | `--libReplacement` | unknown option. 5.7 always looks up `@typescript/lib-*` |
 | Computed property names preserved in declaration files (`[propName]: number` in `.d.ts`) | 5.7 emits an index signature or reports an error |
 | TS2880 for `import … assert { … }` under `nodenext` | not reported. See the JSON import section |
-| `lib` types for `Float16Array`, `Math.f16round`, `Promise.try` (5.8 `esnext`) | not declared even with `lib: ["esnext"]` (TS2304/TS2339/TS2551, verified) |
+| `lib` types for `Float16Array`, `Math.f16round`, `Promise.try` (5.8 `esnext`) | not declared even with `lib: ["esnext"]` (TS2552 for `Float16Array`, TS2551 for `Math.f16round`, TS2339 for `Promise.try`, verified) |
 
 ##### TypeScript 5.9 (2025-07-31)[^11]
 
@@ -346,11 +346,11 @@ The project's compiler is 5.7.3. A reviewer must never suggest the following. Th
 
 ##### TypeScript 7.0 (2026-07-08)
 
-7.0 is the native (Go) compiler, shipped in the `typescript` npm package. It removes everything 6.0 deprecated and does not yet have the full programmatic API (planned for 7.1).[^13] A 5.7 project upgrades through 5.8 → 5.9 → 6.0 (fixing deprecations) before 7.0. Do not recommend `tsgo`/`@typescript/native-preview` commands for a 5.7 build.
+7.0 is the native (Go) compiler, shipped in the `typescript` npm package as `tsc`. It removes everything 6.0 deprecated and ships without a programmatic API: tools that need one keep using the 6.0 API (`@typescript/typescript6`), and a new API is expected in 7.1.[^13] A 5.7 project upgrades through 5.8 → 5.9 → 6.0 (fixing deprecations) before 7.0. Do not recommend `tsgo`/`@typescript/native-preview` commands for a 5.7 build.
 
 ##### Removed Before 5.7 (Do Not Accept in Configs)
 
-The options deprecated in 5.0 stopped working in 5.5. `"ignoreDeprecations": "5.0"` no longer revives them. On 5.7 each one is a hard error (TS5102/TS5108, verified):
+The options deprecated in 5.0 stopped working in 5.5. `"ignoreDeprecations": "5.0"` no longer revives them. On 5.7 each one is a hard error (TS5102/TS5108, verified) when set to a non-default value. Set to its default (`"importsNotUsedAsValues": "remove"`, `"preserveValueImports": false`, `"keyofStringsOnly": false`), 5.7.3 accepts it silently, so such a leftover line is dead configuration, not proof the option still works:
 
 - `importsNotUsedAsValues` and `preserveValueImports`: use `verbatimModuleSyntax`.
 - `out`: use `outFile`.
@@ -1273,7 +1273,7 @@ export { withoutAwait, withAwait };
 ##### Concurrency Limits, Timeouts and Cancellation
 
 - `Promise.all` over thousands of items starts them all at once. Use a pool (p-limit) or chunking for network and DB calls.
-- Pass `AbortSignal` through async APIs. `AbortSignal.timeout(ms)` and `AbortSignal.any([...])` are typed in `@types/node` and DOM; check the runtime (`AbortSignal.any` needs Node.js ≥ 20.3).
+- Pass `AbortSignal` through async APIs. `AbortSignal.timeout(ms)` and `AbortSignal.any([...])` are typed in `@types/node` and DOM; check the runtime (`AbortSignal.any` needs Node.js ≥ 20.3 or ≥ 18.17).
 - `Promise.withResolvers` needs `lib` `es2024`/`esnext` **and** Node.js ≥ 22.
 - Top-level `await` needs `module` `es2022`/`esnext`/`nodenext`/`preserve` and an ES-module output file. Under `nodenext` in a CommonJS-format file it fails with TS1309 ("The current file is a CommonJS module and cannot use 'await' at the top level").
 
