@@ -1,6 +1,6 @@
 ### TypeScript 7.0: The Complete Production Developer Guide
 
-> **Version**: TypeScript 7.0 — the native compiler written in Go. The release candidate `7.0.1-rc` shipped on June 18, 2026; the stable release `7.0.2` shipped on **July 8, 2026** (there is no `7.0.0` or `7.0.1` stable package — `7.0.2` *is* the first and, as of October 22, 2026, the latest 7.0 release).[^1][^2]
+> **Version**: TypeScript 7.0 — the native compiler written in Go. The release candidate `7.0.1-rc` shipped on June 18, 2026; the stable release `7.0.2` shipped on **July 8, 2026** (there is no `7.0.0` or `7.0.1` stable package — `7.0.2` *is* the first and, as of October 22, 2026, the latest 7.0 release). The 7.0 beta was distributed only as `@typescript/native-preview` (beta tag `7.0.0-dev.20260421.2`, April 21, 2026), not as a `typescript` version.[^1][^2]
 > **Status (October 2026)**: 7.0 is the current stable line (`npm install -D typescript` installs 7.0.2). TypeScript 6.0 (6.0.2, March 23, 2026; latest patch 6.0.3, April 16, 2026) is the last compiler built on the JavaScript codebase and gets no new features; its API lives on in the `@typescript/typescript6` compatibility package. TypeScript **7.1 is only at beta** (`7.1.0-beta`, October 20, 2026) — nothing from 7.1 is available in a 7.0 project.[^2][^3][^4]
 > **Scope**: The TypeScript language as usable with the 7.0 compiler, everything that changed versus 6.0 and 5.x, `tsconfig.json` choices for Node.js and bundlers, the tooling ecosystem as of October 2026, and the bugs a reviewer must catch.
 > **Note**: This document is self-contained. Sections that cover 7.0-specific behaviour are marked **New in 7.0**; behaviour inherited from 6.0 is marked **(6.0+)** because most projects reach 7.0 directly from 5.x.
@@ -31,11 +31,11 @@ Global truths about TypeScript 7.0:
   - `--checkers <n>` — number of type-checker workers per project. More workers: faster on big codebases, more memory. `--checkers 1` checks single-threaded. Microsoft warns that in rare cases *different* checker counts can surface order-dependent results, so pin the value if local and CI results must match.[^1]
   - `--builders <n>` — number of projects built concurrently under `tsc --build`. It multiplies with `--checkers` (`--checkers 4 --builders 4` allows 16 checkers). Changing it must not change results.[^1]
   - `--singleThreaded` — parse, check and emit on one thread (debugging, constrained CI, or when an outer tool already parallelises).[^1]
-  - `--pprofDir <dir>` — writes Go pprof CPU/memory profiles. `--quiet`/`-q` and `--watchInterval` are also new on the command line. (`--generateTrace`, `--extendedDiagnostics`, `--generateCpuProfile` still exist.)
+  - `--pprofDir <dir>` — writes Go pprof CPU/memory profiles. `--quiet`/`-q` ("Do not print diagnostics" — the exit code is still non-zero on errors, but a CI log shows nothing; flag `-q` in CI scripts) and `--watchInterval` are also new on the command line. `--generateTrace` and `--extendedDiagnostics` work; `--generateCpuProfile <file>` is still accepted but writes no file in 7.0.2 — use `--pprofDir`.
 - **`--watch` rebuilt** on a Go port of the Parcel file watcher, replacing polling-heavy watching.[^1]
 - **No `tsserver`.** The package ships only `bin/tsc`. Editors talk to a new multi-threaded LSP server; VS Code uses a dedicated TypeScript 7 extension (the command "Disable TypeScript 7 Language Server" reverts to 6.0), and Visual Studio enables TypeScript 7 per workspace. `compilerOptions.plugins` (language-service plugins) is still accepted by `tsc` but nothing loads the plugins.[^1]
 - **Positions are UTF-8 byte offsets** internally (relevant only to tools consuming the unstable API).[^6]
-- **Unstable IPC API.** 7.0.2 already exports `typescript/unstable/sync`, `typescript/unstable/async`, `typescript/unstable/ast` and related subpaths: a client that spawns the Go binary and talks to it over a pipe. It is explicitly unstable and not a replacement for the 6.0 API; 7.1 renames the entry points to `typescript/sync`, `typescript/async`, `typescript/ast`, `typescript/fs`.[^4] Do not build production tooling on `typescript/unstable/*`.
+- **Unstable IPC API.** 7.0.2 already exports `typescript/unstable/sync`, `typescript/unstable/async`, `typescript/unstable/fs` (only `createVirtualFileSystem`), `typescript/unstable/ast` and related subpaths: a client (`new API(…)`, `api.updateSnapshot()`, disposable `Snapshot` objects) that spawns the Go binary and talks to it over a pipe. It is explicitly unstable and not a replacement for the 6.0 API; 7.1 ships the API under `typescript/sync`, `typescript/async`, `typescript/ast`, `typescript/fs` with different functions.[^4] Do not build production tooling on `typescript/unstable/*`.
 
 ##### Default changes (6.0+, enforced in 7.0)
 
@@ -93,7 +93,7 @@ Options removed back in 5.5 (`importsNotUsedAsValues`, `preserveValueImports`, `
   Generated `.d.ts` files and snapshot tests of type output therefore change on upgrade even when nothing else does; the types are equivalent.
 - **Diagnostics for `isolatedDeclarations` differ.** For `export function id(a: number) { return a; }` 6.0 reports TS9007 "Function must have an explicit return type annotation" at the name; 7.0.2 reports TS9039 "Type containing private name 'a' can't be used with --isolatedDeclarations" at the `return` expression. For an untyped arrow (`export const sum = (a: number, b: number) => a + b`) 6.0 reports TS9007, 7.0.2 TS9013. The fix (annotate the return type) is the same; CI greps for TS9007 need updating.
 - **JavaScript emit for `.ts` input is unchanged.** A file mixing an `import` default from a CommonJS module, an `enum`, parameter properties, `#private` fields, static fields, an async generator, object spread and a `using` declaration produced byte-identical JavaScript with 6.0.3 and 7.0.2 at both `target: es2025` and `target: es2017`. Differences in emit are limited to `.d.ts` union ordering (above) and declaration emit from `.js` input.
-- **After a grammar error in a file, 7.0 may report fewer follow-up semantic errors** in that file than 6.0. Fix the first error and recompile before concluding that code is clean.
+- **Parser details differ.** A malformed `...T?` at the end of a tuple type, Closure function types and standalone JSDoc `?` are now *parse* errors (TS1005/TS1110) rather than grammar errors; AST positions are UTF-8 byte offsets.[^6]
 
 ##### JavaScript and JSDoc checking (New in 7.0)
 
@@ -103,7 +103,8 @@ Options removed back in 5.5 (`importsNotUsedAsValues`, `preserveValueImports`, `
 - `@enum` is a plain tag: using the object as a type is TS2749. Values in type positions (`@typedef {FORWARD | BACKWARD}`) are TS2749 — write `typeof FORWARD`.
 - `arguments` no longer implies a rest parameter: `f("x")` on a function with no parameters is TS2554.
 - Closure syntax `{function(string): void}` and the standalone `{?}` type are parse errors (TS1005/TS1110).
-- `@class`/`@constructor`, postfix `!`, identifier-named typedefs, `this` aliases, `module.exports = {}` placeholders, whole-prototype assignment and mixing `module.exports = …` with `module.exports.x = …` are gone or changed.
+- JSDoc postfix `=` (`{number=}`) still makes a parameter optional but no longer adds `undefined` when `strictNullChecks` is off. (Postfix/prefix `!` — `{string!}`, `{!number}` — still works in 7.0.2.)
+- `@class`/`@constructor`, identifier-named typedefs, `this` aliases, `module.exports = {}` placeholders, whole-prototype assignment and mixing `module.exports = …` with `module.exports.x = …` are gone or changed.
 - Declaration emit from `.js` input was rewritten and does not aim to match 6.0 byte for byte.
 
 ##### The compiler API is gone (New in 7.0)
@@ -123,7 +124,7 @@ Options removed back in 5.5 (`importsNotUsedAsValues`, `preserveValueImports`, `
 
 | Tool | Status with 7.0 |
 | --- | --- |
-| typescript-eslint 8.72.0 | Peer range `typescript >=4.8.4 <6.1.0`; type-aware rules need the 6.0 API. Run it on 6.0 via the alias above. Issue #12518 ("TypeScript 7.0.2 Support") was closed as a duplicate of #10940; 8.65.0 added a warning when TS 7 is detected.[^5] |
+| typescript-eslint 8.72.0 | Peer range `typescript >=4.8.4 <6.1.0`; type-aware rules need the 6.0 API. Run it on 6.0 via the alias above. Issue #12518 ("TypeScript 7.0.2 Support") was closed as not planned on July 8, 2026 and later locked as a duplicate of #10940 ("Use TS 7 for type information"); 8.65.0 (July 20, 2026) added a warning when TS 7 is detected and the parser option `onUnsupportedTypeScriptVersion`.[^5][^10] |
 | ts-jest 29.4.15 | Peer range `typescript >=4.3 <7`. Uses `LanguageService`; keep it on 6.0 or switch to a transpile-only transformer (SWC/esbuild) plus a separate `tsc --noEmit`. |
 | ts-node 10.9.2 | Last release 2023; needs the compiler API. Use Node.js type stripping, `tsx`, or compile first. |
 | ts-morph, ts-loader, fork-ts-checker, `@angular/compiler-cli`, Vue (vue-tsc/Volar), Svelte, Astro, MDX | Depend on the 6.0 API or tsserver. Angular: type-check with 7.0 `tsc`, keep 6.0 for the Angular compiler/editor; Vue/Svelte/Astro/MDX: stay on 6.0 for now.[^1] |
@@ -137,7 +138,7 @@ Options removed back in 5.5 (`importsNotUsedAsValues`, `preserveValueImports`, `
 - **`dom` includes `dom.iterable` and `dom.asynciterable`**; those lib names still exist but are empty.[^3]
 - **`#/` subpath imports** (`"imports": { "#/*": "./src/*" }`) resolve under `nodenext` and `bundler` (5.9: TS2307). At runtime Node.js 24.22 accepts them; **Node.js 20.20 and 22.23 throw `ERR_INVALID_MODULE_SPECIFIER`**, so do not use `#/` in code that must run on Node.js 22.[^3]
 - **`moduleResolution: bundler` with `module: commonjs`** is allowed (5.9: TS5095).[^3]
-- **Less context-sensitivity for methods without `this`.** In a generic call, a method-syntax property that never uses `this` no longer blocks inference, so `{ consume(y) { y.toFixed() }, produce(x: number) { return x * 2 } }` infers `T = number` in 6.0/7.0 (5.9: TS2339 on `unknown`).[^3]
+- **Less context-sensitivity for methods without `this`.** In a generic call, a method-syntax property that never uses `this` no longer blocks inference, so `{ consume(y) { y.toFixed() }, produce(x: number) { return x * 2 } }` infers `T = number` in 6.0/7.0 (5.9: TS18046 "'y' is of type 'unknown'").[^3]
 - **Command-line files with a present `tsconfig.json`** are an error (TS5112) — use `--ignoreConfig`.
 
 ***
@@ -148,11 +149,12 @@ Options removed back in 5.5 (`importsNotUsedAsValues`, `preserveValueImports`, `
 
 TypeScript 7.1 is at beta (October 20, 2026). None of the following works with 7.0.2 — never suggest them for a project pinned to 7.0:[^4]
 
-- **`--target es2026` / `--lib es2026`** — 7.0.2's `--target` accepts `es2015`…`es2025` and `esnext` only.
+- **`--target es2026` / `--lib es2026`** — 7.0.2's `--target` accepts `es2015`…`es2025` and `esnext` only (TS6046).
+- **`Math.sumPrecise`, `Iterator.concat`, `JSON.rawJSON`** (and the `JSON.parse` reviver source-text overload) — first declared by 7.1's `es2026` lib; 7.0.2 reports TS2339 even with `lib: ["esnext"]`. (`Error.isError`, `Array.fromAsync`, `Map`/`WeakMap` `getOrInsert*` and the `Uint8Array` base64/hex methods are already in 7.0's `esnext` lib.)
 - **Source phase imports**: `import source mod from "./x.wasm"` and `import.source(…)` returning `AbstractModuleSource`/`WebAssembly.Module`.
 - **Import attributes on ambient module declarations**: `declare module "*.css" with { type: "css" } { … }`, and attribute-typed `"text"`/`"bytes"` imports.
 - **`contentMappers`** in `tsconfig.json` and the **`--runExternalCode`** flag; the VS Code setting `js/ts.contentMappers.enabled`.
-- **The stable API entry points** `typescript/sync`, `typescript/async`, `typescript/fs` (`createFileSystem`, `createFileSystemWithLib`, `createFileSystemLayer`), `typescript/ast`, `typescript/ast/is`, `typescript/ast/factory`, `api.createSnapshot`, `program.emitToString()`, `Disposable` API objects. 7.0 only has `typescript/unstable/*`.
+- **The stable API entry points** `typescript/sync`, `typescript/async`, `typescript/fs` (`createFileSystem`, `createFileSystemWithLib`, `createFileSystemLayer`), `typescript/ast`, `typescript/ast/is`, `typescript/ast/factory`, `api.createSnapshot`, `snapshot.update()`, `program.emitToString()`. 7.0 only has `typescript/unstable/*` (`API.updateSnapshot`, `createVirtualFileSystem`).
 - **7.1 `esnext` lib additions**: `Promise.allKeyed`, `Promise.allSettledKeyed`, `Iterator.zip`, `Iterator.zipKeyed`, `Iterator.prototype.chunks`, `Iterator.prototype.join`, `Iterator.prototype.includes`. On 7.0.2 these are type errors.
 - 7.1's stricter checking of distributive conditional type parameters — do not "fix" 7.0 code for an error only 7.1 reports.
 
@@ -1210,7 +1212,7 @@ Iterator helper objects are consumed once: iterating `evens`-style pipelines twi
 | `Array.fromAsync` | `esnext` | yes | yes | yes |
 | `Temporal`, `Map.prototype.getOrInsert`, `Uint8Array.prototype.toBase64` | `esnext` | **no** | **no** | yes |
 
-(Runtime columns measured with `typeof` checks on those exact Node.js builds.)
+(Runtime columns measured with `typeof` checks on those exact Node.js builds.) The reverse gap exists too: Node.js 26.12 ships `Iterator.concat`, but 7.0.2 has no declaration for it in any lib (it arrives with 7.1's `es2026`), so code using it needs a local `declare global` augmentation or a newer compiler — do not "fix" a TS2339 on it by casting to `any`.
 
 Rules for review:
 
@@ -1267,7 +1269,7 @@ go(FORWARD, Color.Red);
 
 - 6.0 accepted `@param {Color}` for an `@enum` object and `{FORWARD | BACKWARD}` for values; 7.0 reports TS2749 ("'Color' refers to a value, but is being used as a type here. Did you mean 'typeof Color'?").
 - `/** @typedef {T} Name */` is the only typedef form; `/** @typedef {T} */ Name;` is gone.
-- `{?}` (unknown type) and Closure function types `{function(string): void}` are parse errors; write `{any}` and `{(s: string) => void}`. Postfix `!` (`{string!}`) is unsupported — write `{string}`.
+- `{?}` (unknown type) and Closure function types `{function(string): void}` are parse errors; write `{any}` and `{(s: string) => void}`. Non-null markers (`{string!}`, `{!number}`) are still accepted by 7.0.2 and mean the same as `{string}`/`{number}` under `strictNullChecks`; do not flag them as 7.0 breakage.
 
 ##### Rest parameters, `arguments`, optional parameters
 
@@ -1354,9 +1356,8 @@ Every exported declaration must spell its type when it cannot be read syntactica
 ```
 
 - `tsc -b` (or `--build`) builds referenced projects in dependency order; `composite` requires `declaration` (implied) and all files covered by `include`/`files`.
-- If a referenced project has errors, its outputs are not written and dependants fail with TS6305 ("Output file '…/dist/index.d.ts' has not been built from source file …") — fix the upstream error first.
+- Since 5.6, `tsc -b` still writes the outputs of a referenced project that has type errors and goes on to build its dependants (all errors are reported, exit code non-zero) — verified on 7.0.2. Add `--stopBuildOnErrors` to stop after the first failing project. `tsc -p app` (no `--build`) against a referenced project whose outputs do not exist yet fails with TS6305 ("Output file '…/dist/index.d.ts' has not been built from source file …").
 - `--builders <n>` (7.0) builds independent projects concurrently; total checker threads = builders × checkers.
-- `--stopBuildOnErrors` skips building downstream projects when an upstream project has errors.
 - A referenced project cannot set `noEmit` (TS6310 "Referenced project '…' may not disable emit"); use `emitDeclarationOnly` when a bundler produces the JavaScript.
 
 ##### Fast, deterministic CI checks
@@ -1587,3 +1588,4 @@ More patterns to flag:
 [^7]: Node.js documentation — Modules: TypeScript (type stripping, unsupported syntax, recommended tsconfig). https://nodejs.org/api/typescript.html
 [^8]: Announcing TypeScript 6.0 Beta — `--stableTypeOrdering` cost and purpose, deprecation plan. https://devblogs.microsoft.com/typescript/announcing-typescript-6-0-beta/
 [^9]: Oxc blog — Type-aware linting is stable (tsgolint v7 built on TypeScript 7.0.2). https://oxc.rs/blog/2026-07-22-type-aware-linting-stable
+[^10]: typescript-eslint CHANGELOG — 8.65.0 (2026-07-20): "add warning when TS 7 is detected", `onUnsupportedTypeScriptVersion`. https://github.com/typescript-eslint/typescript-eslint/blob/main/CHANGELOG.md
