@@ -59,7 +59,8 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 
 - Smarter type-alias preservation in error messages and hovers.
 - **Leading and middle rest elements in tuples**: `[...string[], number]`, `[boolean, ...string[], number]`.
-- **Stricter `in` operator** checks (a right operand of primitive type is TS2361; 4.2 extended the check to more cases).
+- **Stricter `in` operator** checks: a right operand of primitive type was already TS2361; 4.2 extends the check to type parameters constrained to primitives (`function f<T extends string>(x: T) { "a" in x }`).
+- Relaxed rules between optional properties and string index signatures: a type with optional properties (`{ a?: number }`) is assignable to `{ [k: string]: number }`.
 - **`--noPropertyAccessFromIndexSignature`**: forces `obj["key"]` for keys that only come from an index signature.
 - **`abstract` construct signatures**: `abstract new () => T`.
 - **`--explainFiles`**: prints why each file is in the program.
@@ -94,7 +95,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - **Tail-recursion elimination on conditional types**: tail-recursive conditional types may recurse 1000 times; the general instantiation-depth limit rises from 50 (4.0–4.4) to 100 (from the compiler source).
 - **`module: es2022`** — top-level `await` with ES modules; **`#field in obj`** private-field presence checks; template string types as discriminants.
 - **Import assertions** (`import data from "./x.json" assert { type: "json" }`) — syntax only; the later `with` form (import attributes) arrives in 5.3.
-- **`--preserveValueImports`** (requires `isolatedModules` + type-only imports for types); `lib` replacement via `@typescript/lib-*` packages in `node_modules`.
+- **`--preserveValueImports`** (requires `module` ≥ `es2015`, TS5095 otherwise; combined with `isolatedModules`, every type must be imported with `type`, TS1444); `lib` replacement via `@typescript/lib-*` packages in `node_modules`.
 - **Breaking**: `Awaited` changes some inferred generic types; a compiler option at the root of a tsconfig without a `compilerOptions` object is an error.
 
 ##### 4.6 (February 2022)[^12]
@@ -130,7 +131,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 ##### 4.9 (November 2022)[^1]
 
 - **`satisfies` operator**: validates an expression against a type without widening its inferred type.
-- **Unlisted-property narrowing with `in`**: `"name" in obj` narrows `object` to `object & Record<"name", unknown>`; the left operand must be `string | number | symbol` and the right operand `object`.
+- **Unlisted-property narrowing with `in`**: `"name" in obj` narrows `object` to `object & Record<"name", unknown>`; the left operand must be `string | number | symbol` and the right operand `object` — so `"a" in x` with an **unconstrained** type parameter `x: T` becomes an error (TS2322 "Type 'T' is not assignable to type 'object'"; 4.8 accepts it). Constrain `T extends object`.
 - **Auto-accessors**: `accessor name: string` (ECMAScript decorators-proposal syntax; desugars to a private field plus `get`/`set`).
 - **Errors on direct `NaN` equality** (`x === NaN`, TS2845, suggests `Number.isNaN`).
 - File watching uses file-system events by default; "Remove Unused Imports" and "Sort Imports" editor commands; go-to-definition on `return`.
@@ -296,7 +297,7 @@ import { twice } from "./util.js";     // OK: resolves to util.ts at compile tim
 import { twice } from "./util.ts";     // TS2691 in 4.x (5.0 reports TS5097 and offers allowImportingTsExtensions)
 ```
 
-- **CommonJS files cannot statically import ESM-only packages.** 4.9 reports TS1479 ("The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module…"); 4.7/4.8 report TS1471 for the same code. The fix is a dynamic `import()`, which `node16` preserves in CJS output, or converting the file to ESM (`.mts` / `"type": "module"`).
+- **CommonJS files cannot statically import ESM-only packages.** 4.8 and 4.9 report TS1479 ("The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module…"); 4.7 reports TS1471 ("…The specifier only resolves to an ES module, which cannot be imported synchronously") for the same code. The fix is a dynamic `import()`, which `node16` preserves in CJS output, or converting the file to ESM (`.mts` / `"type": "module"`).
 - **`import()` under `module: commonjs` is rewritten to `require()`.** With `module: commonjs`, `await import("esm-only")` emits `Promise.resolve().then(() => require("esm-only"))`. That compiles cleanly under `moduleResolution: node` (which ignores `exports`) and fails at runtime: `ERR_PACKAGE_PATH_NOT_EXPORTED` when the package only exports an `import` condition, `ERR_REQUIRE_ESM` on Node.js 18 when it exports `default` (Node.js 20.19+/22.12+ can `require()` synchronous ESM). Verified with Node.js 18.20.8, 20.20.2 and 22.23.4. A CommonJS service that must load ESM-only dependencies (`node-fetch` 3, `chalk` 5, `nanoid` 4, …) needs `module: node16` on 4.7+.
 - **`exports` wins over `typesVersions`** (4.9 fix): a library publishing `typesVersions` for old compilers must also map `"types@<4.8"`-style conditions in `exports` for `node16` consumers.
 - `resolution-mode` works on `/// <reference types="pkg" resolution-mode="require" />` (4.7+); on `import type … assert { "resolution-mode": … }` stable 4.7–5.2 report "Resolution mode assertions are unstable" — do not use it on 4.x.
@@ -330,7 +331,7 @@ Rules:
 - Import a module for its side effects with a bare `import "./register";`.
 - Mark type-only imports explicitly: `import type { User } from "./types";` (3.8+) or `import { createUser, type User } from "./types";` (**4.5+**; a parse error, TS1005, before 4.5). The same goes for re-exports: `export type { User } from "./types";` / `export { type User } from "./types";` (4.5+).
 - Under `isolatedModules` (needed for esbuild, swc, Babel, `ts-jest` `isolatedModules`, Vite), re-exporting a type without `type` is TS1205; a file without any `import`/`export` is TS1208 in 4.x (5.0 dropped TS1208); accessing an ambient (`declare const enum` in a `.d.ts`) const enum is TS2748. Note: on 4.0–4.4 a single parse error (such as `export { type X }`) makes `tsc` report only syntax errors for the whole program, so a version mismatch can hide the isolatedModules errors entirely.
-- `importsNotUsedAsValues` (`remove` | `preserve` | `error`, 3.8+) and `preserveValueImports` (**4.5+**, requires `isolatedModules`) control elision in 4.x. Both are **deprecated in 5.0** (TS5101 "will stop functioning in TypeScript 5.5") and removed in 5.5; their replacement is `verbatimModuleSyntax` (5.0). On 4.x, the portable way to enforce type-only imports is `isolatedModules` plus the `@typescript-eslint/consistent-type-imports` lint rule; avoid introducing `importsNotUsedAsValues: "error"` in a project that is about to move to 5.x.
+- `importsNotUsedAsValues` (`remove` | `preserve` | `error`, 3.8+) and `preserveValueImports` (**4.5+**, requires `module` ≥ `es2015`; together with `isolatedModules` it reports TS1444 for types imported without `type`) control elision in 4.x. Both are **deprecated in 5.0** (TS5101 "will stop functioning in TypeScript 5.5") and removed in 5.5; their replacement is `verbatimModuleSyntax` (5.0). On 4.x, the portable way to enforce type-only imports is `isolatedModules` plus the `@typescript-eslint/consistent-type-imports` lint rule; avoid introducing `importsNotUsedAsValues: "error"` in a project that is about to move to 5.x.
 
 ##### `paths`, `baseUrl` and `rootDirs`
 
@@ -1181,7 +1182,7 @@ Object.keys(new B());
 // es2021: []      es2022/esnext: [ 'name' ]
 ```
 
-**Compiler bug in all 4.x versions (and 5.0)**: TS2729 is reported for `target: esnext` but **not** for `target: es2022`, although both emit native class fields. Raising `target` to `es2022` therefore silently converts "field initialiser reads a parameter property" into a runtime `TypeError`. When reviewing a `target` bump to `es2022`, search for field initialisers that use constructor parameter properties, and for subclasses whose fields redeclare base-class properties (they now overwrite values set by the base constructor and shadow base accessors). Use `declare name: string;` to redeclare a property's type without emitting a field.
+**Compiler bug in all 4.x versions (and 5.0; fixed in 5.1)**: TS2729 is reported for `target: esnext` but **not** for `target: es2022`, although both emit native class fields. Raising `target` to `es2022` therefore silently converts "field initialiser reads a parameter property" into a runtime `TypeError`. When reviewing a `target` bump to `es2022`, search for field initialisers that use constructor parameter properties, and for subclasses whose fields redeclare base-class properties (they now overwrite values set by the base constructor and shadow base accessors). Use `declare name: string;` to redeclare a property's type without emitting a field.
 
 ##### Parameter properties, visibility and `#private`
 
@@ -1493,7 +1494,7 @@ export function* good(): Generator<number, string, string> {
 
 None of these will be fixed in 4.x. Each was reproduced on the final patch of the stated versions.
 
-- **`target: es2022` hides TS2729** (4.6–4.9 and 5.0.4; 5.4 reports it): a field initialiser that reads a constructor parameter property (`x = this.dep.y` with `constructor(private dep: Dep)`) is reported for `target: esnext` but not for `target: es2022`, and the emitted native class field throws `TypeError` at runtime. See [Class field semantics](#class-field-semantics-usedefineforclassfields).
+- **`target: es2022` hides TS2729** (4.6–4.9 and 5.0.4; fixed in 5.1): a field initialiser that reads a constructor parameter property (`x = this.dep.y` with `constructor(private dep: Dep)`) is reported for `target: esnext` but not for `target: es2022`, and the emitted native class field throws `TypeError` at runtime. See [Class field semantics](#class-field-semantics-usedefineforclassfields).
 - **One syntax error hides all type errors.** When any file in the program has a syntax error, `tsc` reports only syntax errors. A single 4.5+ construct (`import { type X }`, `satisfies`, `accessor`, `infer X extends`) compiled by an older 4.x compiler produces one TS1005 and masks every real type error in the project until it is fixed.
 - **Narrowing is not preserved in closures** (all 4.x; fixed for the after-last-assignment case in 5.4) — code that copies to a `const` is correct, not redundant.
 - **Numeric enums accept any number** (all 4.x; 5.0 rejects out-of-range literals).
@@ -1640,9 +1641,9 @@ TypeScript 5.0 (March 16, 2023) is the next release after 4.9; there is no 4.10.
 - Replace `importsNotUsedAsValues`/`preserveValueImports` usage with explicit `import type`/`type` modifiers so that the switch to `verbatimModuleSyntax` is mechanical.
 - Pin `@types/*` and linting to versions that support both 4.9 and 5.x during the transition (e.g. `typescript-eslint` 6.21–8.x).
 
-##### 5.0 deprecations (warning-as-error TS5101 in 5.0–5.4, removed in 5.5)
+##### 5.0 deprecations (errors TS5101/TS5107 in 5.0–5.4, removed in 5.5)
 
-In 5.0, each of these is an **error** unless `"ignoreDeprecations": "5.0"` is set (verified: 5.0.4 reports TS5101 for `importsNotUsedAsValues`):[^17]
+In 5.0, each of these is an **error** unless `"ignoreDeprecations": "5.0"` is set (verified on 5.0.4: TS5101 for `importsNotUsedAsValues: "preserve"`/`"error"`, TS5107 for `target: ES3`; the default values such as `importsNotUsedAsValues: "remove"` are not reported):[^17]
 
 - `target: ES3`
 - `out` (use `outFile`)

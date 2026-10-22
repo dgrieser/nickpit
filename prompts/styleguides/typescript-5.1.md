@@ -89,7 +89,7 @@ The compiler is TypeScript 5.1.6. Everything below was compiled on 5.1.6 and fai
 
 ##### Deprecated or removed older features (do not introduce in 5.1 code)
 
-- Deprecated **in 5.0**, still accepted by 5.1 only with `"ignoreDeprecations": "5.0"` (otherwise TS5101/TS5107 "is deprecated and will stop functioning in TypeScript 5.5"), **without effect from 5.5 and rejected from 5.6** (the official notes announced hard errors for 5.5/6.0; 5.5.4 still accepts them with `ignoreDeprecations: "5.0"`, 5.6.3 rejects them with TS5102/TS5108): `target: ES3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues`, `preserveValueImports`, and `prepend` in project references.[^6] The only valid `ignoreDeprecations` value in 5.1 is `"5.0"`; anything else (for example `"5.5"`) is TS5103 "Invalid value for '--ignoreDeprecations'".
+- Deprecated **in 5.0**, still accepted by 5.1 only with `"ignoreDeprecations": "5.0"` (otherwise TS5101/TS5107 "is deprecated and will stop functioning in TypeScript 5.5"), **without effect from 5.5 and rejected from 5.6** (the official notes announced hard errors for 5.5/6.0; 5.5.4 still accepts them with `ignoreDeprecations: "5.0"`, 5.6.3 rejects them with TS5102/TS5108): `target: ES3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues`, `preserveValueImports`, and `prepend` in project references.[^6] The only valid `ignoreDeprecations` value in 5.1 is `"5.0"`; anything else (for example `"5.5"`) is TS5103 "Invalid value for '--ignoreDeprecations'" (verified, also without any deprecated option set).
 - 5.0 also changed two defaults that 5.1 keeps: `newLine` is `lf` (no OS-based inference) and `forceConsistentCasingInFileNames` is `true`.
 - `experimentalDecorators` and `emitDecoratorMetadata` are **not** deprecated in 5.1 and remain required for Angular, NestJS, TypeORM, InversifyJS and other frameworks that depend on parameter decorators or `reflect-metadata`. New framework-independent decorators should use the standard form.
 - `moduleResolution: "node"` is the old spelling of `node10` (both accepted by 5.1). It is not deprecated in 5.1 but it predates `exports` support; new projects should use `node16`/`nodenext` or `bundler`.
@@ -691,7 +691,7 @@ export { addHostBad, addHost, frozen };
 
 ##### Excess property checks and structural typing
 
-Object literals assigned directly to a typed target get excess-property checks; the same object passed through a variable does not. (In 5.1 the excess-property error is reported as TS2322 with the elaboration "Object literal may only specify known properties"; 5.5+ reports TS2353 — do not treat the code difference as a different problem.)
+Object literals assigned directly to a typed target get excess-property checks; the same object passed through a variable does not. (In 5.1 the excess-property error is reported as TS2322 with the elaboration "Object literal may only specify known properties"; 5.3+ reports TS2353 (verified: 5.2.2 TS2322, 5.3.3 TS2353) — do not treat the code difference as a different problem.)
 
 ```ts
 interface Point { x: number; y: number }
@@ -1036,19 +1036,21 @@ export type { Producer, Consumer, A, B };
 ##### `Omit`/`Pick` on unions are not distributive
 
 ```ts
-type Event =
+type UiEvent =   // not `Event`: in a script file with lib "dom" that collides with the global Event (TS2300)
   | { type: "click"; x: number; at: Date }
   | { type: "key"; key: string; at: Date };
 
-type NoAtBad = Omit<Event, "at">;              // { type: "click" | "key" } — x and key are gone
+type NoAtBad = Omit<UiEvent, "at">;              // { type: "click" | "key" } — x and key are gone
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
-type NoAt = DistributiveOmit<Event, "at">;     // keeps the union
+type NoAt = DistributiveOmit<UiEvent, "at">;     // keeps the union
 
 declare const e: NoAt;
 if (e.type === "click") e.x.toFixed();
 declare const eb: NoAtBad;
 // @ts-expect-error TS2339 Property 'x' does not exist on type 'NoAtBad'
 eb.x;
+
+export type { NoAt };
 ```
 
 `Omit<T, K>` also does not check that `K` is a key of `T` (`K extends keyof any`) — a typo in `K` silently omits nothing.
@@ -1230,13 +1232,13 @@ Review notes:
 | | Standard decorators (5.0+) | `experimentalDecorators: true` |
 |---|---|---|
 | Spec | Stage 3 TC39 proposal[^19] | old Stage 1/2 TypeScript design |
-| Signature | `(value, context) => replacement \| void`; a one-parameter decorator function is TS1238 "The runtime will invoke the decorator with 2 arguments" | `(target, propertyKey, descriptor?)` |
+| Signature | `(value, context) => replacement \| void`; a decorator declaring a different parameter count is rejected (TS1241 on a method, TS1238 on a class: "The runtime will invoke the decorator with 2 arguments, but the decorator expects 1") | `(target, propertyKey, descriptor?)` |
 | Parameter decorators | **not supported** (TS1206 "Decorators are not valid here") | supported |
 | `emitDecoratorMetadata` | **not supported** (TS5052 without `experimentalDecorators`) | supported (`design:type`, `design:paramtypes`) |
 | Metadata | `context.metadata` / `Symbol.metadata` only from 5.2 | via `reflect-metadata` |
 | Fields | can return an initializer transform | receive no descriptor |
 | `accessor` | supported (`ClassAccessorDecoratorContext`) | not applicable |
-| Placement | before or after `export`/`export default`, not both | 5.1 accepts both positions here too |
+| Placement | before or after `export`/`export default`, not both (TS8038) | 5.1 accepts both positions here too, also not both at once (TS8038) |
 | Runtime | emitted helpers (`__esDecorate`, `__runInitializers`), runs on any ES2015+ runtime | `__decorate`, `__param`, `__metadata` |
 
 Frameworks built on parameter decorators or `reflect-metadata` — NestJS, TypeORM, InversifyJS, tsyringe, class-validator/class-transformer, Angular's constructor injection — require `experimentalDecorators`. Mixing the two systems in one compilation is impossible: the flag switches the whole program. Do not "modernise" a NestJS project by removing `experimentalDecorators`.
@@ -1440,7 +1442,7 @@ Delete such augmentations when upgrading to 5.2+, where they become redundant ex
 
 ##### `@types/node` for a 5.1 project
 
-As described in Version-Aware Review: install from the `ts5.1` tag (`@types/node@24.1.0`). Match the **major** to the runtime where possible — `@types/node@24` declares APIs that Node 20 lacks (`fs.glob`, `process.getBuiltinModule`, …), so on a Node 20 runtime prefer the newest `@types/node@20.x` that still compiles with 5.1, and verify with `tsc`.
+As described in Version-Aware Review: install from the `ts5.1` tag (`@types/node@24.1.0`). Match the **major** to the runtime where possible — `@types/node@24` declares APIs that Node 20 lacks (`fs.glob` from Node 22.0, the `node:sqlite` module from Node 22.5, …; `process.getBuiltinModule` is *not* such a case — it was backported to Node 20.16), so on a Node 20 runtime prefer the newest `@types/node@20.x` that still compiles with 5.1, and verify with `tsc`.
 
 ***
 
@@ -1824,9 +1826,9 @@ A 5.1 codebase is three years behind (October 2026). What breaks or changes firs
 | Release | Change that can break a 5.1 build |
 |---|---|
 | 5.2 | `module` and `moduleResolution` must agree for `node16`/`nodenext` (TS5109/TS5110); TS2729 now reported for field initializers reading parameter properties under `target: es2022`; DOM lib changes; `using`/decorator metadata become available |
-| 5.3 | Import attributes `with`; `assert` still accepted |
+| 5.3 | Import attributes `with`; `assert` still accepted; excess-property errors change from TS2322 to TS2353 (update `@ts-expect-error` comments or tooling that matches codes) |
 | 5.4 | More accurate conditional-type constraints, intersection reduction, stricter enum compatibility; `NoInfer`, `Object.groupBy` typings |
-| 5.5 | Options deprecated in 5.0 stop working (ignored even with `ignoreDeprecations: "5.0"`); excess-property errors change from TS2322 to TS2353; inferred type predicates change inferred types of `filter` results; regex syntax errors |
+| 5.5 | Options deprecated in 5.0 stop working (ignored even with `ignoreDeprecations: "5.0"`); inferred type predicates change inferred types of `filter` results; regex syntax errors |
 | 5.6 | Options deprecated in 5.0 are rejected (TS5102/TS5108); always-truthy/nullish checks (TS2872 for `if (/re/)`); `strictBuiltinIteratorReturn` under `strict` |
 | 5.7 | `TypedArray`s generic over `ArrayBufferLike` (breaks some `Buffer`/`Uint8Array` code); never-initialized variable checks |
 | 6.0 | New defaults (`strict`, `module: esnext`, `types: []`, `target: es2025`, …), many options deprecated (`moduleResolution: node10`, `baseUrl`, `target: es5`, …) |
