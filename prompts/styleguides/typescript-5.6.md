@@ -154,7 +154,7 @@ const asObj: IteratorObject<number, BuiltinIteratorReturn, unknown> = it; // no 
 const proto: Iterator<number> = it;                                       // no error: protocol type
 
 declare const anyIterator: Iterator<number>;
-anyIterator.map((n) => n);    // error TS2339: 'map' does not exist on the protocol type Iterator<number>
+anyIterator.map((n) => n);    // error TS2339: 'map' does not exist on the protocol type Iterator<number> (plus TS7006 for 'n')
 const fixed = Iterator.from(anyIterator);
 fixed.map((n) => n);          // no error: Iterator.from() wraps any iterator
 export { asObj, proto };
@@ -415,8 +415,8 @@ The project's compiler is 5.6. None of the following exists in it; never suggest
 
 ##### Deprecated or removed as of 5.6
 
-- **No longer have any effect since 5.5** (deprecated in 5.0; error in 6.0): `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `preserveValueImports` (use `verbatimModuleSyntax`), `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out` (use `outFile`), `prepend` in project references, implicitly OS-specific `newLine`.[^4] Flag them in tsconfig files: they silently do nothing.
-- `ignoreDeprecations: "5.0"` no longer re-enables them.
+- **Removed in 5.5** (deprecated in 5.0): `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `preserveValueImports` (use `verbatimModuleSyntax`), `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out` (use `outFile`), `prepend` in project references, implicitly OS-specific `newLine`.[^4] On 5.6 setting any of these options is a hard configuration error (the `newLine` item only means the default is now LF) (`error TS5102: Option 'charset' has been removed. Please remove it from your configuration.`, `TS5108` for `target: "ES3"`); a tsconfig that still contains them does not build.
+- `ignoreDeprecations: "5.0"` no longer silences them (verified: TS5102 is still reported).
 - Legacy `experimentalDecorators` still works but is not the standard; new code should use standard decorators (see Decorators).
 
 ##### Future-proofing (works in 5.6, removed in 7.0)
@@ -706,7 +706,7 @@ const a: Args = ["x", 1, 2, true];
 const xs: readonly number[] = [1, 2];
 xs.push(3);                                        // error TS2339: 'push' does not exist on readonly number[]
 function mutate(v: number[]) { v.push(0); }
-mutate(xs);                                        // error TS4104: readonly array not assignable to mutable
+mutate(xs);                                        // error TS2345: 'readonly number[]' is not assignable to 'number[]'
 
 // Array covariance is unsound:
 const dogs: { bark(): void }[] = [];
@@ -1313,7 +1313,7 @@ Use `with`, not the older `assert` keyword (deprecated in 6.0, removed in 7.0).
 
 ##### `verbatimModuleSyntax` (5.0+) and type-only imports
 
-`verbatimModuleSyntax` makes the rule simple: imports/exports without `type` are kept, those with `type` are dropped. It replaces `importsNotUsedAsValues` and `preserveValueImports` (both no-ops since 5.5).
+`verbatimModuleSyntax` makes the rule simple: imports/exports without `type` are kept, those with `type` are dropped. It replaces `importsNotUsedAsValues` and `preserveValueImports` (both removed in 5.5: setting either is error TS5102).
 
 ```ts
 // @opts: {"verbatimModuleSyntax": true}
