@@ -31,6 +31,7 @@ TypeScript 5.9 is a small release. There were no changes between the release can
 | Minimal, prescriptive `tsc --init` output | Tooling | [tsc --init](#new-in-59-tsc---init-output) |
 | `lib.d.ts`: `ArrayBuffer` is no longer a structural supertype of typed arrays, `SharedArrayBuffer` is no longer assignable to `ArrayBuffer` (even with `lib` below `es2024`), and `Uint8Array<ArrayBufferLike>` is no longer a `BufferSource` | Breaking lib change | [ArrayBuffer](#new-in-59-arraybuffer-typed-arrays-and-buffer) |
 | `lib.esnext`: `Error.isError()` (`esnext.error`) and `Atomics.pause()` (`esnext.sharedmemory`) | Lib | [Target and lib](#target-and-lib) |
+| `lib.es2022.intl`: `Intl.Segments.prototype.containing()` returns `SegmentData \| undefined` (5.8: `SegmentData`); not in the release notes | Breaking lib change | [Target and lib](#target-and-lib) |
 | Type-argument inference no longer "leaks" type variables | Breaking checker change | [Generics](#new-in-59-type-argument-inference-changes) |
 | DOM APIs carry MDN summary descriptions in hovers | Editor | [Tooling](#editor-and-language-service) |
 | Expandable hovers (preview) and configurable maximum hover length | Editor | [Tooling](#editor-and-language-service) |
@@ -214,7 +215,7 @@ Without the flag, `{ ...defaults, ...userOptions }` silently replaces a default 
 |---|---|
 | Node.js 20 (EOL April 30, 2026) | `es2023` (what `--module node20` implies) |
 | Node.js 22 (maintenance LTS until April 2027) | `es2024` |
-| Node.js 24 (LTS) / 26 | `es2024` plus selected `esnext.*` libs for APIs the runtime has |
+| Node.js 24 (maintenance LTS since October 20, 2026) / 26 (Current; LTS from October 28, 2026) | `es2024` plus selected `esnext.*` libs for APIs the runtime has |
 | Evergreen browsers via bundler | `es2022`–`es2024`, `lib: ["es2024", "dom", "dom.iterable"]` |
 
 Node.js release dates are from the Node.js release schedule.[^11]
@@ -241,6 +242,17 @@ export { groups };
 ```
 
 With `lib: ["esnext"]` the first two lines compile — but `lib: esnext` also admits `Promise.try` and `Float16Array`, which Node.js 22 lacks (Node.js 20 lacks all of them). When in doubt, check `typeof Promise.try` on the deployed runtime; the runtime column above was checked on Node.js 20.20.2, 22.23.4, 24.22.1 and 26.12.1.
+
+```ts
+// @lib: ["es2022"]
+// New in 5.9 (lib): containing() returns undefined for an index outside the string
+const words = new Intl.Segmenter("en", { granularity: "word" }).segment("hello world");
+const w: string = words.containing(100).segment;   // error TS2532 in 5.9 (5.8 typed it as SegmentData)
+const w2: string = words.containing(0)?.segment ?? "";
+export { w, w2 };
+```
+
+`Intl.Segments.prototype.containing(i)` really returns `undefined` when `i` is out of range (verified on Node.js 22); 5.9 fixes the type, so upgrades surface new TS2532/TS18048 errors at call sites that dereferenced the result unchecked — real bugs, not noise.
 
 ***
 
@@ -959,7 +971,7 @@ declare function id<T>(x: T): T;
 export const x = call(wrap(id), 1);
 ```
 
-Known fallout (from the PR discussion): some `fp-ts` pipelines infer different tuple types, and MobX `observable.map([[k, v]])` calls needed library changes. When a 5.8 → 5.9 upgrade produces new inference errors in generic-heavy code (state libraries, functional pipelines, ORMs), add explicit type arguments at the failing call rather than loosening types with `any`.
+Known fallout (from the PR discussion): `fp-ts` exact-type tests saw different (no longer tuple-preserving) types, and a user reported new errors in MobX `observable.map(...)` calls that were fixed in MobX. When a 5.8 → 5.9 upgrade produces new inference errors in generic-heavy code (state libraries, functional pipelines, ORMs), add explicit type arguments at the failing call rather than loosening types with `any`.
 
 ***
 
@@ -1486,7 +1498,7 @@ export { firstFive, v };
 
 #### New in 5.9: ArrayBuffer, Typed Arrays and `Buffer`
 
-5.7 made typed arrays generic over their buffer (`Uint8Array<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike>`). 5.9 completes the change: `ArrayBuffer` is no longer a structural supertype of typed arrays, and `SharedArrayBuffer` is no longer structurally assignable to `ArrayBuffer` (the `[Symbol.species]` member moved from the `SharedArrayBuffer` instance type to its constructor), so a view typed with the default `ArrayBufferLike` is no longer a `BufferSource`.[^1]
+5.7 made typed arrays generic over their buffer (`Uint8Array<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike>`). 5.9 completes the change: `ArrayBuffer` is no longer a structural supertype of typed arrays, and `SharedArrayBuffer` is no longer structurally assignable to `ArrayBuffer` (in 5.9's lib, `ArrayBuffer[Symbol.toStringTag]` is the literal type `"ArrayBuffer"` instead of `string`, so a `Uint8Array` or `SharedArrayBuffer` — tagged `"Uint8Array"`/`"SharedArrayBuffer"` — no longer matches it structurally; the `SharedArrayBuffer` `[Symbol.species]` member also moved from the instance type to the constructor), so a view typed with the default `ArrayBufferLike` is no longer a `BufferSource`.[^1]
 
 The exact boundary, measured with 5.8.3 and 5.9.3 (`Uint8Array → ArrayBuffer`, `SharedArrayBuffer → ArrayBuffer`, `Uint8Array<ArrayBufferLike> → Uint8Array<ArrayBuffer>`, `Uint8Array<ArrayBufferLike> → BufferSource`):
 
@@ -1797,11 +1809,12 @@ Upgrading from 5.8 to 5.9 (all verified by compiling the same code with 5.8.3 an
 
 1. **ArrayBuffer / typed-array assignability** (most common break). Expect TS2322/TS2345 around `Buffer`, `Uint8Array`, `BufferSource`, `BlobPart`, `crypto.subtle`, `TextDecoder`. Update `@types/node`, annotate `Uint8Array<ArrayBuffer>`, or pass `.buffer` correctly sliced (see [ArrayBuffer section](#new-in-59-arraybuffer-typed-arrays-and-buffer)).
 2. **Type-argument inference** changes in generic-heavy code. Add explicit type arguments at the failing call sites.
-3. **DOM lib regeneration**: some DOM types changed shape (`lib.dom.d.ts` is regenerated every release). Update code rather than pinning an old `@types/web` unless necessary.
-4. **`tsc --init`** writes different defaults; existing tsconfigs are unaffected.
-5. **`module: nodenext`** now implies `resolveJsonModule`; JSON imports that used to fail now compile (and must use `with { type: "json" }` in ESM files).
-6. **New syntax** (`import defer`) and **new option value** (`module: node20`) are rejected by 5.8 and earlier; do not use them in libraries whose `.ts` sources or tsconfig are consumed by older compilers.
-7. Nothing was removed from the compiler options in 5.9. The options deprecated in 5.0 were announced for removal in 5.5, but 5.5.4 still accepts them with `"ignoreDeprecations": "5.0"`; they fail unconditionally from 5.6 (verified on 5.5.4 and 5.6.3).
+3. **`Intl.Segments.containing()`** now returns `SegmentData | undefined`; dereferencing the result without a check is TS2532 (see [Target and lib](#target-and-lib)).
+4. **DOM lib regeneration**: some DOM types changed shape (`lib.dom.d.ts` is regenerated every release). Update code rather than pinning an old `@types/web` unless necessary.
+5. **`tsc --init`** writes different defaults; existing tsconfigs are unaffected.
+6. **`module: nodenext`** now implies `resolveJsonModule`; JSON imports that used to fail now compile (and must use `with { type: "json" }` in ESM files).
+7. **New syntax** (`import defer`) and **new option value** (`module: node20`) are rejected by 5.8 and earlier; do not use them in libraries whose `.ts` sources or tsconfig are consumed by older compilers.
+8. Nothing was removed from the compiler options in 5.9. The options deprecated in 5.0 were announced for removal in 5.5, but 5.5.4 still accepts them with `"ignoreDeprecations": "5.0"`; they fail unconditionally from 5.6 (verified on 5.5.4 and 5.6.3).
 
 Upgrading from 5.9 to 6.0 is covered in [Deprecations that become errors in 6.0](#deprecations-that-become-errors-in-60). Upgrading to 7.0 additionally needs every tool that imports the `typescript` API (linters, `ts-morph`, `ts-patch`, Angular compiler, custom transformers) to keep a 6.0 installation side by side, since 7.0 has no API.[^5]
 
