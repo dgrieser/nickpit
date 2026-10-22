@@ -48,7 +48,7 @@ TypeScript 6.0 contains few language features. It is a **configuration and ecosy
 | Option | 5.9 default | 6.0 default |
 |---|---|---|
 | `strict` (and every `strict*` family flag) | `false` | `true` |
-| `module` | `commonjs` (for `target` < ES2015) | `esnext` |
+| `module` | `commonjs` (`target` < ES2015), else `es2015` | documented as `esnext`; 6.0.3 actually derives it from `target`: `es2022` for the default `es2025` target (`esnext` only with `target: esnext`) |
 | `moduleResolution` | `node10` / `classic` depending on `module` | `bundler` (unless `module` is `node16`/`node18`/`node20`/`nodenext`) |
 | `target` | `es5` | `es2025` (floating: the newest supported ES year) |
 | `types` | every package in `node_modules/@types` | `[]` (nothing auto-included) |
@@ -69,7 +69,8 @@ TypeScript 6.0 contains few language features. It is a **configuration and ecosy
 - `moduleResolution: bundler` may be combined with `module: commonjs`.
 - `--stableTypeOrdering` makes union/property ordering match 7.0.
 - `--ignoreConfig` compiles command-line files while ignoring a present `tsconfig.json`.
-- Inference: functions that never use `this` are no longer context-sensitive, so method-syntax callbacks infer like arrow functions.
+- Inference: functions that never use `this` are no longer context-sensitive, so method-syntax callbacks infer like arrow functions. After the RC, checking of function expressions in generic calls (notably generic JSX) was also tightened, and the `assert` deprecation was extended to `import(…, { assert: … })`.
+- `esnext.intl` gains the `Intl.Locale` info getters (`getWeekInfo()`, `getTextInfo()`, `getCalendars()`, `getTimeZones()` …) and `Intl.DateTimeFormat` overloads that format Temporal objects; `Intl.DurationFormat` is typed in `es2025.intl`. The old lib names `esnext.promise`, `esnext.iterator` and `esnext.float16` remain valid aliases of the new `es2025.*` files.
 
 **API compatibility**: 6.0 is API-compatible with 5.9 — tools built on the `typescript` npm package keep working.[^1]
 
@@ -92,12 +93,12 @@ The compiler is TypeScript 6.0. These belong to newer releases, other tools, or 
 - **TypeScript 7.1** — a 7.1.0-beta exists on npm (2026-10-20); do not recommend anything from it.
 - **Library APIs without 6.0 typings**: `Math.sumPrecise`, `Iterator.concat`, `Iterator.zip`, async iterator helpers (`AsyncIterator.prototype.map` and friends), `Error.captureStackTrace` without `@types/node`. Using them requires a local `declare global` augmentation and a runtime that has them.
 - **APIs that are typed only in `esnext`** must not be suggested when the project's `lib` is `es2025` or lower: `Temporal`, `Map.prototype.getOrInsert`/`getOrInsertComputed`, `Uint8Array.fromBase64`/`toBase64`/`fromHex`/`toHex`, `Error.isError`, `Array.fromAsync`, `Atomics.pause`, `DisposableStack`/`AsyncDisposableStack`, `Symbol.dispose` (with `using`), `Intl.Locale.prototype.getWeekInfo()` and the other `Intl.Locale` info getters.
-- **Runtime APIs the deployment target lacks** — verified with the installed runtimes: Node.js 20 has none of Iterator helpers, `Set` methods, `Promise.try`, `RegExp.escape`, `Float16Array`, `Object.groupBy`, `Array.fromAsync`; Node.js 22 lacks `Promise.try`, `RegExp.escape`, `Float16Array`, `Intl.DurationFormat`, `Error.isError`, `DisposableStack`; Node.js 24 lacks `Temporal`, `Map.prototype.getOrInsert` and `Uint8Array.fromBase64`; Node.js 25 lacks `Temporal` and `getOrInsert`; Node.js 26 has all of them. No Node.js release has `Math.sumPrecise`.
+- **Runtime APIs the deployment target lacks** — verified with the installed runtimes: Node.js 20 has none of Iterator helpers, `Set` methods, `Promise.try`, `RegExp.escape`, `Float16Array`, `Object.groupBy`, `Array.fromAsync`; Node.js 22 lacks `Promise.try`, `RegExp.escape`, `Float16Array`, `Intl.DurationFormat`, `Error.isError`, `DisposableStack`; Node.js 24 lacks `Temporal`, `Map.prototype.getOrInsert` and `Uint8Array.fromBase64`; Node.js 25 lacks `Temporal` and `getOrInsert`; Node.js 26 has all of them (and also `Iterator.concat`, which 6.0 does not type). No Node.js release has `Math.sumPrecise`.
 - **Decorators in Node.js type stripping**: Node's built-in TypeScript support does not transform decorators, enums, namespaces with values, parameter properties or `import =` aliases.[^6]
 
 ##### Deprecated or removed older features (do not introduce in 6.0 code)
 
-- Removed **before** 6.0 (errors with no escape hatch since 5.5): `charset`, `importsNotUsedAsValues`, `preserveValueImports`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `out`, `target: es3`, `prepend` in project references. (6.0.3 reports TS5102 "has been removed" for them, TS5023 "Unknown compiler option" for `prepend`, and silently tolerates `importsNotUsedAsValues: "remove"`, the old default value.)[^7]
+- Removed **before** 6.0 (errors with no escape hatch since 5.5): `charset`, `importsNotUsedAsValues`, `preserveValueImports`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `out`, `target: es3`, `prepend` in project references. (6.0.3 reports TS5102 "has been removed" for all of them, including `prepend` in a project reference, and silently tolerates `importsNotUsedAsValues: "remove"`, the old default value.)[^7]
 - Deprecated **in 6.0** (see the Deprecations section): everything listed in What's New.
 - `experimentalDecorators` and `emitDecoratorMetadata` are **not** deprecated in 6.0 and still work, but new code should use standard decorators (5.0+).
 
@@ -154,9 +155,9 @@ export function legacy(x) { // error TS7006: Parameter 'x' implicitly has an 'an
 }
 ```
 
-`alwaysStrict` follows `strict` and is now always on: emitted CommonJS starts with `"use strict"`, and sloppy-mode-only code (`with`, octal literals, reserved words such as `static`, `public`, `await` used as identifiers) is rejected.
+`alwaysStrict` no longer follows `strict`: it is on even with `"strict": false` (only `"alwaysStrict": false` plus `ignoreDeprecations` turns it off). Emitted CommonJS starts with `"use strict"`, and sloppy-mode-only code (`with`, octal literals, reserved words such as `static`, `public`, `await` used as identifiers) is rejected.
 
-##### `module` → `esnext`, `moduleResolution` → `bundler` **[New in 6.0]**
+##### `module` → ES modules, `moduleResolution` → `bundler` **[New in 6.0]**
 
 When `module` is not set, 6.0 emits **ECMAScript modules** and resolves imports with **bundler** rules (extensionless relative imports are accepted). This silently changes the output of any project that relied on the old CommonJS default:
 
@@ -167,7 +168,7 @@ import { two } from "./lib";   // accepted under moduleResolution: bundler
 console.log(two);
 ```
 
-Compiled with 5.9, `dist/main.js` was CommonJS (`require("./lib")`) and ran on every Node.js version. Compiled with 6.0, `dist/main.js` contains `import { two } from "./lib";` — **no compile error**, but Node.js 20, 22 and 24 all fail at run time with `ERR_MODULE_NOT_FOUND: Cannot find module '…/dist/lib'` (Node.js ESM requires file extensions; Node 24 additionally warns `MODULE_TYPELESS_PACKAGE_JSON`). Review rule: **every tsconfig that emits code for Node.js must set `module` explicitly** (`nodenext`, `node20`, or `commonjs`), never rely on the default.
+Compiled with 5.9, `dist/main.js` was CommonJS (`require("./lib")`) and ran on every Node.js version. Compiled with 6.0, `dist/main.js` contains `import { two } from "./lib";` — **no compile error**, but Node.js 20, 22 and 24 all fail at run time with `ERR_MODULE_NOT_FOUND: Cannot find module '…/dist/lib'` (Node.js ESM requires file extensions; Node 24 additionally warns `MODULE_TYPELESS_PACKAGE_JSON`). The effective default is narrower than the release notes say: 6.0.3 computes `module` from `target`, so with the default `target: es2025` it is `es2022`, not `esnext` (7.0.2 behaves the same). Verified consequence: a config without `module` rejects import attributes (`import data from "./data.json" with { type: "json" }` is TS2823) and `import defer` (TS18060); setting `"module": "esnext"` (or `preserve`) fixes both. Review rule: **every tsconfig must set `module` explicitly**; for code that Node.js loads it must be `nodenext`, `node20` or `commonjs`. Never rely on the default.
 
 ##### `target` → `es2025` **[New in 6.0]**
 
@@ -201,7 +202,7 @@ Fix with an explicit list, which is also faster (the TypeScript team reports 20�
 
 ##### `rootDir` → directory of `tsconfig.json` **[New in 6.0]**
 
-In 5.9, a config with `"outDir": "dist"` and sources only under `src/` emitted `dist/index.js`, because `rootDir` was inferred as `src`. In 6.0 the inferred root is the config directory, and instead of silently writing `dist/src/index.js`, `tsc` stops with:
+In 5.9, a config with `"outDir": "dist"` and sources only under `src/` emitted `dist/index.js`, because `rootDir` was inferred as `src`. In 6.0 the inferred root is the config directory. `tsc` reports the following error — and, unless `noEmitOnError` is set, still writes `dist/src/index.js` (verified on 6.0.3 and 7.0.2):
 
 ```text
 error TS5011: The common source directory of 'tsconfig.json' is './src'. The 'rootDir' setting must be explicitly set to this or another path to adjust your output's file layout.
@@ -228,6 +229,7 @@ The fix for assets is an ambient declaration (`declare module "*.css" {}`) or th
 ##### `ignoreDeprecations: "6.0"` and `--ignoreConfig` **[New in 6.0]**
 
 - `"ignoreDeprecations": "6.0"` turns all 6.0 deprecation errors (TS5101, TS5107, TS2880) back into silent acceptance. It does **not** silence TS1540 (`module` namespace keyword). `"5.0"` is still a valid value but does not silence 6.0 deprecations (TS5101 still reports `baseUrl`); any other value, such as `"7.0"`, is TS5103. 7.0 accepts the option but the deprecated settings are errors there regardless (TS5102/TS5108 "has been removed").
+- `--ignoreConfig` is new in 6.0 (5.9: TS5023 "Unknown compiler option").
 - Running `tsc file.ts` in a directory with a `tsconfig.json` used to ignore the config silently; 6.0 reports `TS5112: tsconfig.json is present but will not be loaded if files are specified on commandline. Use '--ignoreConfig' to skip this error.` Scripts and lint-staged hooks that call `tsc --noEmit $FILES` break on upgrade — use `tsc -p .` or add `--ignoreConfig` deliberately (and accept that the project's options are not applied).
 
 ***
@@ -957,12 +959,12 @@ TypeScript infers type arguments first from arguments that are not "context sens
 declare function callIt<T>(obj: { produce: (x: number) => T; consume: (y: T) => void }): void;
 
 callIt({
-  consume(y) { return y.toFixed(); }, // 5.9 rejected this (TS18046: 'y' is of type 'unknown'); 6.0: y is number
+  consume(y) { return y.toFixed(); }, // 5.9: TS2339 Property 'toFixed' does not exist on type 'unknown'; 6.0: y is number
   produce(x: number) { return x * 2; },
 });
 ```
 
-Verified: 5.9.3 reports TS18046, 6.0.3 and 7.0.2 compile it. The change can also *alter* inferred types in existing code. If an upgrade produces new errors in generic calls (the 6.0 announcement also mentions an adjustment for function expressions in generic calls, including generic JSX), add an explicit type argument or annotate the callback parameter. 5.9 had already changed inference to fix type-variable "leaks"; both changes show up as new errors far from the edited code.
+Verified: 5.9.3 reports TS2339 (`y` is `unknown`), 6.0.3 and 7.0.2 compile it. The change can also *alter* inferred types in existing code. If an upgrade produces new errors in generic calls (the 6.0 announcement also mentions an adjustment for function expressions in generic calls, including generic JSX), add an explicit type argument or annotate the callback parameter. 5.9 had already changed inference to fix type-variable "leaks"; both changes show up as new errors far from the edited code.
 
 ##### Variance annotations (`in`/`out`, 4.7+)
 
@@ -1791,7 +1793,7 @@ export const mixed = (n: number) => (n ? { b: 1 } : n > 2 ? "s" : 3);
 | 5.9.3 and 6.0.3 (default) | `"beta" \| "zeta" \| "alpha"` | `3 \| "s" \| { b: number; }` |
 | 6.0.3 `--stableTypeOrdering`, 7.0.2 | `"alpha" \| "beta" \| "zeta"` | `"s" \| 3 \| { b: number; }` |
 
-(The release notes' own `100 | 500` example no longer shows a difference on 6.0.3 — both orderings print `100 | 500`.) The flag is a **diagnostic aid**, not a production setting: it can slow checking by up to 25 %, and new errors that appear with it point to inference that only worked because of declaration order — fix those with explicit type arguments or annotations.[^1]
+(The release notes' own `100 | 500` example shows the instability only on 5.9.3, which emits `500 | 100`; 6.0.3 prints `100 | 500` with and without the flag.) The flag is a **diagnostic aid**, not a production setting: it can slow checking by up to 25 %, and new errors that appear with it point to inference that only worked because of declaration order — fix those with explicit type arguments or annotations.[^1]
 
 ##### Differences that appear only on 7.0 (not applicable to 6.0 builds)
 
