@@ -182,6 +182,21 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"go", []string{"1.27-alpine"}, "styleguides/go-1.27.md"},
 		{"go", []string{"1.27", "1.26"}, "styleguides/go-1.26.md"},
 		{"go", []string{"1.28"}, "styleguides/go.md"},
+		{"javascript", nil, "styleguides/javascript.md"},
+		{"javascript", []string{"14.21.3"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"16"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"17.9.1"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"v18.20.8"}, "styleguides/javascript-node-18.md"},
+		{"javascript", []string{"19"}, "styleguides/javascript-node-18.md"},
+		{"javascript", []string{"20-alpine"}, "styleguides/javascript-node-20.md"},
+		{"javascript", []string{"21.7.3"}, "styleguides/javascript-node-20.md"},
+		{"javascript", []string{"22"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"23.11"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"24.22.1"}, "styleguides/javascript-node-24.md"},
+		{"javascript", []string{"25"}, "styleguides/javascript-node-24.md"},
+		{"javascript", []string{"26.12.1"}, "styleguides/javascript-node-26.md"},
+		{"javascript", []string{"26", "22"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"27"}, "styleguides/javascript.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)

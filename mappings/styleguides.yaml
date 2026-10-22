@@ -75,7 +75,17 @@ style_guides:
       ">=3.13 <3.14": styleguides/python-3.13.md
       ">=3.14 <3.15": styleguides/python-3.14.md
       ">=3.15 <3.16": styleguides/python-3.15.md
-  javascript: styleguides/javascript.md
+  javascript:
+    default: styleguides/javascript.md
+    versions:
+      # Keyed by Node.js major; odd (Current-only) lines use the previous
+      # LTS guide so the reviewer never assumes a newer line's backports.
+      "<18": styleguides/javascript-node-16.md
+      ">=18 <20": styleguides/javascript-node-18.md
+      ">=20 <22": styleguides/javascript-node-20.md
+      ">=22 <24": styleguides/javascript-node-22.md
+      ">=24 <26": styleguides/javascript-node-24.md
+      ">=26 <27": styleguides/javascript-node-26.md
   typescript: styleguides/typescript.md
   html: styleguides/html-css.md
   css: styleguides/html-css.md
