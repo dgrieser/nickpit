@@ -2985,9 +2985,12 @@ func agentCommonSystemPromptSnippetsForTools(agentRole string, outputSchemaSnipp
 }
 
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
-	languages := changedLanguages(ctx)
-	changed := make(map[string]struct{}, len(languages))
-	for _, language := range languages {
+	base := changedLanguages(ctx)
+	languages := withToolchainCompanions(ctx, base)
+	// Gating sees both the changed languages and their companions, so a guide
+	// gated on sql still applies when the PostgreSQL guide replaced sql.md.
+	changed := make(map[string]struct{}, len(base)+len(languages))
+	for _, language := range append(base, languages...) {
 		changed[language] = struct{}{}
 	}
 	guides := make([]model.StyleGuide, 0, len(languages)+len(e.additionalStyleGuides))
@@ -3015,6 +3018,43 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	}
 	guides = append(guides, e.gatedAdditionalStyleGuides(ctx, changed)...)
 	return guides, nil
+}
+
+// withToolchainCompanions swaps a base language for its toolchain companions
+// (mappings.ToolchainCompanions): when a SQL change lands in a project whose
+// toolchain pins postgres:16, the PostgreSQL 16 guide replaces the generic SQL
+// guide. A companion already selected by its own detector replaces the base
+// too. Companions keep the base language's position; order is otherwise kept.
+func withToolchainCompanions(ctx *model.ReviewContext, languages []string) []string {
+	selected := make(map[string]struct{}, len(languages))
+	for _, language := range languages {
+		selected[language] = struct{}{}
+	}
+	out := make([]string, 0, len(languages))
+	added := make(map[string]struct{}, len(languages))
+	add := func(language string) {
+		if _, ok := added[language]; !ok {
+			added[language] = struct{}{}
+			out = append(out, language)
+		}
+	}
+	for _, language := range languages {
+		var replacements []string
+		for _, companion := range mappings.ToolchainCompanions(language) {
+			_, isSelected := selected[companion]
+			if isSelected || len(detectedVersionsFor(ctx, companion)) > 0 {
+				replacements = append(replacements, companion)
+			}
+		}
+		if len(replacements) == 0 {
+			add(language)
+			continue
+		}
+		for _, companion := range replacements {
+			add(companion)
+		}
+	}
+	return out
 }
 
 // gatedAdditionalStyleGuides selects which user-supplied guides apply to this

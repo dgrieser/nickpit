@@ -33,7 +33,7 @@ func TestRelevantLanguagesOnlyForChangedFiles(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := relevantLanguages(ctxWithChangedFiles(tc.paths...))
+			got, _ := relevantLanguages(nil, ctxWithChangedFiles(tc.paths...))
 			sort.Strings(got)
 			want := append([]string(nil), tc.want...)
 			sort.Strings(want)

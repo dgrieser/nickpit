@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,7 +27,15 @@ const (
 	langPython     = "python"
 	langJavaScript = "javascript"
 	langTypeScript = "typescript"
+	langCSharp     = "csharp"
+	langHelm       = "helm"
+	langKubernetes = "kubernetes"
+	langPostgreSQL = "postgresql"
+	langMySQL      = "mysql"
 )
+
+// languageOrder is the stable output order of toolchain entries.
+var languageOrder = []string{langGo, langPython, langJavaScript, langTypeScript, langCSharp, langHelm, langKubernetes, langPostgreSQL, langMySQL}
 
 // Capture reads manifest files from repoRoot and returns toolchain entries for
 // every language touched by reviewCtx. Best-effort: file open errors are
@@ -44,17 +53,23 @@ func ScanFS(fsys fs.FS, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 	if fsys == nil {
 		return nil
 	}
-	relevant := relevantLanguages(reviewCtx)
-	if len(relevant) == 0 {
+	relevant, companions := relevantLanguages(fsys, reviewCtx)
+	if len(relevant) == 0 && len(companions) == 0 {
 		return nil
 	}
 	relevantSet := map[string]bool{}
 	for _, language := range relevant {
 		relevantSet[language] = true
 	}
+	for _, language := range companions {
+		relevantSet[language] = true
+	}
 	var hits []model.ToolchainVersion
 	for _, scan := range scanners {
 		hits = append(hits, scan(fsys)...)
+	}
+	if relevantSet[langCSharp] {
+		hits = append(hits, scanDotnetProjects(fsys, changedPaths(reviewCtx))...)
 	}
 	out := make([]model.ToolchainVersion, 0, len(hits))
 	seen := map[string]bool{}
@@ -92,6 +107,9 @@ var scanners = []func(fs.FS) []model.ToolchainVersion{
 	scanDockerfile,
 	scanGitlabCI,
 	scanGithubWorkflows,
+	scanGoModKubernetes,
+	scanMakefileEnvtest,
+	scanDatabaseImages,
 }
 
 func readFile(fsys fs.FS, path string) ([]byte, error) {
@@ -146,6 +164,20 @@ func scanToolVersions(fsys fs.FS) []model.ToolchainVersion {
 			language = langPython
 		case "nodejs", "node":
 			language = langJavaScript
+		case "helm":
+			language = langHelm
+		case "kubectl":
+			language = langKubernetes
+		case "postgres", "postgresql":
+			language = langPostgreSQL
+		case "mysql":
+			language = langMySQL
+		case "dotnet", "dotnet-core":
+			// The SDK version (8.0.100) maps to its default C# version.
+			if version := csharpForDotnetImageTag(parts[1]); version != "" {
+				out = append(out, model.ToolchainVersion{Language: langCSharp, Source: ".tool-versions", Field: plugin + " " + parts[1], Version: version})
+			}
+			continue
 		default:
 			continue
 		}
@@ -369,8 +401,8 @@ func scanDockerfile(fsys fs.FS) []model.ToolchainVersion {
 	}
 	var out []model.ToolchainVersion
 	for _, match := range dockerfileFromRe.FindAllStringSubmatch(string(data), -1) {
-		image, version := splitImageToken(match[1])
-		language := imageLanguage(image)
+		image, tag := splitImageToken(match[1])
+		language, version := imageLanguage(image, tag)
 		if language == "" {
 			continue
 		}
@@ -390,12 +422,15 @@ func scanGitlabCI(fsys fs.FS) []model.ToolchainVersion {
 	}
 	var out []model.ToolchainVersion
 	for _, match := range gitlabImageRe.FindAllStringSubmatch(string(data), -1) {
-		image, version := splitImageToken(match[1])
-		language := imageLanguage(image)
+		image, tag := splitImageToken(match[1])
+		language, version := imageLanguage(image, tag)
 		if language == "" {
 			continue
 		}
 		out = append(out, model.ToolchainVersion{Language: language, Source: ".gitlab-ci.yml", Field: "image " + image, Version: version})
+	}
+	for _, match := range kindNodeImageRe.FindAllStringSubmatch(string(data), -1) {
+		out = append(out, model.ToolchainVersion{Language: langKubernetes, Source: ".gitlab-ci.yml", Field: "image kindest/node", Version: match[1]})
 	}
 	return out
 }
@@ -417,15 +452,12 @@ var (
 	workflowGoVerRe     = regexp.MustCompile(`(?m)^\s*go-version:\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#|$)`)
 	workflowPythonVerRe = regexp.MustCompile(`(?m)^\s*python-version:\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#|$)`)
 	workflowNodeVerRe   = regexp.MustCompile(`(?m)^\s*node-version:\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#|$)`)
+	workflowDotnetVerRe = regexp.MustCompile(`(?m)^\s*dotnet-version:\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#|$)`)
 )
 
 func scanGithubWorkflows(fsys fs.FS) []model.ToolchainVersion {
-	ymlPaths, _ := fs.Glob(fsys, ".github/workflows/*.yml")
-	yamlPaths, _ := fs.Glob(fsys, ".github/workflows/*.yaml")
-	paths := append(ymlPaths, yamlPaths...)
-	sort.Strings(paths)
 	var out []model.ToolchainVersion
-	for _, path := range paths {
+	for _, path := range workflowPaths(fsys) {
 		data, err := readFile(fsys, path)
 		if err != nil {
 			continue
@@ -434,6 +466,20 @@ func scanGithubWorkflows(fsys fs.FS) []model.ToolchainVersion {
 		out = append(out, workflowMatches(content, path, workflowGoVerRe, langGo, "go-version")...)
 		out = append(out, workflowMatches(content, path, workflowPythonVerRe, langPython, "python-version")...)
 		out = append(out, workflowMatches(content, path, workflowNodeVerRe, langJavaScript, "node-version")...)
+		for _, entry := range workflowMatches(content, path, workflowDotnetVerRe, langCSharp, "dotnet-version") {
+			// actions/setup-dotnet installs an SDK (8.0.x); report its default C# version.
+			if version := csharpForDotnetImageTag(entry.Version); version != "" {
+				entry.Field += " " + entry.Version
+				entry.Version = version
+				out = append(out, entry)
+			}
+		}
+		for _, version := range setupHelmVersions(content) {
+			out = append(out, model.ToolchainVersion{Language: langHelm, Source: path, Field: "azure/setup-helm version", Version: version})
+		}
+		for _, match := range kindNodeImageRe.FindAllStringSubmatch(content, -1) {
+			out = append(out, model.ToolchainVersion{Language: langKubernetes, Source: path, Field: "kindest/node", Version: match[1]})
+		}
 	}
 	return out
 }
@@ -453,16 +499,25 @@ func workflowMatches(content, source string, re *regexp.Regexp, language, field 
 	return out
 }
 
-func imageLanguage(image string) string {
+// imageLanguage maps an exact image name to its language and the version the
+// tag stands for. .NET images carry the runtime version, which is reported as
+// that runtime's default C# version.
+func imageLanguage(image, tag string) (language, version string) {
 	switch image {
 	case "golang":
-		return langGo
+		return langGo, tag
 	case "python":
-		return langPython
+		return langPython, tag
 	case "node", "nodejs":
-		return langJavaScript
+		return langJavaScript, tag
+	case "alpine/helm", "dtzar/helm-kubectl":
+		return langHelm, tag
+	case "mcr.microsoft.com/dotnet/sdk", "mcr.microsoft.com/dotnet/aspnet", "mcr.microsoft.com/dotnet/runtime", "mcr.microsoft.com/dotnet/runtime-deps":
+		if version := csharpForDotnetImageTag(tag); version != "" {
+			return langCSharp, version
+		}
 	}
-	return ""
+	return "", ""
 }
 
 func sortEntries(out []model.ToolchainVersion) {
@@ -478,43 +533,87 @@ func sortEntries(out []model.ToolchainVersion) {
 }
 
 func langOrder(language string) int {
-	switch language {
-	case langGo:
-		return 0
-	case langPython:
-		return 1
-	case langJavaScript:
-		return 2
-	case langTypeScript:
-		return 3
+	for i, candidate := range languageOrder {
+		if candidate == language {
+			return i
+		}
 	}
-	return 4
+	return len(languageOrder)
 }
 
-func relevantLanguages(reviewCtx *model.ReviewContext) []string {
+// relevantLanguages returns the languages whose toolchain versions matter for
+// the review: languages of the changed files plus languages the styleguide
+// detectors find in their paths or content (Kubernetes manifests, SQL, ...).
+// companions are languages that only refine another one's guide (a SQL change
+// in a project pinning postgres:16 gets the PostgreSQL 16 guide); they are
+// scanned but never reported as unavailable.
+func relevantLanguages(fsys fs.FS, reviewCtx *model.ReviewContext) (relevant, companions []string) {
 	if reviewCtx == nil {
-		return nil
+		return nil, nil
 	}
 	seen := map[string]struct{}{}
-	consider := func(path, hint string) {
+	detected := map[string]struct{}{}
+	consider := func(path, hint, content string) {
 		for _, language := range languagesForPath(path, hint) {
 			seen[language] = struct{}{}
 		}
+		for _, language := range mappings.StyleGuideDetectorLanguages(path, content) {
+			detected[language] = struct{}{}
+		}
 	}
 	for _, file := range reviewCtx.DiffFiles {
-		consider(file.FilePath, file.Language)
+		consider(file.FilePath, file.Language, file.Content)
 	}
 	for _, hunk := range reviewCtx.DiffHunks {
-		consider(hunk.FilePath, hunk.Language)
+		consider(hunk.FilePath, hunk.Language, hunk.Content)
 	}
 	for _, file := range reviewCtx.ChangedFiles {
-		consider(file.Path, "")
+		content := ""
+		if fsys != nil && file.Status != model.FileDeleted && mappings.StyleGuideDetectorProbePath(file.Path) {
+			if data, err := readFile(fsys, file.Path); err == nil {
+				content = string(data)
+			}
+		}
+		consider(file.Path, "", content)
 	}
-	order := []string{langGo, langPython, langJavaScript, langTypeScript}
-	out := make([]string, 0, len(seen))
-	for _, language := range order {
+	companionSet := map[string]struct{}{}
+	for language := range detected {
+		if slices.Contains(languageOrder, language) {
+			seen[language] = struct{}{}
+		}
+		for _, companion := range mappings.ToolchainCompanions(language) {
+			companionSet[companion] = struct{}{}
+		}
+	}
+	for _, language := range languageOrder {
 		if _, ok := seen[language]; ok {
-			out = append(out, language)
+			relevant = append(relevant, language)
+		} else if _, ok := companionSet[language]; ok {
+			companions = append(companions, language)
+		}
+	}
+	return relevant, companions
+}
+
+// changedPaths lists every changed path of the review once.
+func changedPaths(reviewCtx *model.ReviewContext) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(path string) {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	for _, file := range reviewCtx.DiffFiles {
+		add(file.FilePath)
+	}
+	for _, hunk := range reviewCtx.DiffHunks {
+		add(hunk.FilePath)
+	}
+	for _, file := range reviewCtx.ChangedFiles {
+		if file.Status != model.FileDeleted {
+			add(file.Path)
 		}
 	}
 	return out
@@ -539,10 +638,11 @@ func languagesForPath(path, hint string) []string {
 		styleLang = mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
 	}
 	switch styleLang {
-	case langJavaScript:
-		return []string{langJavaScript}
-	case langTypeScript:
-		return []string{langTypeScript}
+	case langJavaScript, langTypeScript, langCSharp, langHelm:
+		return []string{styleLang}
+	}
+	if ext == ".csproj" || strings.EqualFold(filepath.Base(path), "Directory.Build.props") {
+		return []string{langCSharp}
 	}
 	switch strings.ToLower(hint) {
 	case langGo:
@@ -553,6 +653,8 @@ func languagesForPath(path, hint string) []string {
 		return []string{langJavaScript}
 	case langTypeScript, "ts":
 		return []string{langTypeScript}
+	case langCSharp, langHelm:
+		return []string{strings.ToLower(hint)}
 	case "nodejs":
 		switch ext {
 		case ".ts", ".tsx", ".mts", ".cts":
