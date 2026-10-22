@@ -137,7 +137,7 @@ class Legacy
 }
 ```
 
-  Upgrading a project to C# 14 must treat CS9258 as an error: rename the member or write `this.field`/`@field`. A local variable named `field` in an accessor is now error CS9272.[^7]
+  Upgrading a project to C# 14 must treat CS9258 as an error: rename the member or write `this.field`/`@field`. A local variable (or a lambda/local-function parameter) named `field` in an accessor is now an error: Roslyn 5.9 (SDK 10.0.402) reports it as **CS9273** (the breaking-changes document still says CS9272).[^7]
 - The property initializer (`= ""`) assigns the backing field directly and bypasses the `set` logic, so the initializer value itself must already be valid. Object initializers, `with { Name = … }` and serializers go through the accessor; members not named in a `with` expression are copied field-by-field.
 - `field ??= …` lazy initialization is not thread-safe; use `Lazy<T>` or `LazyInitializer.EnsureInitialized` for shared instances.
 - `[field: JsonIgnore]`-style attribute targets apply to the synthesized field as before.
@@ -205,7 +205,7 @@ static class C
 ```
 
   Library authors should offer `ReadOnlySpan<T>` (preferred by the new rules) rather than `Span<T>` overloads, or use `[OverloadResolutionPriority]`. Callers can force the old binding with `o.AsEnumerable()`.[^7]
-- **Expression trees.** `array.Contains(x)` inside an `Expression<…>` now binds to `MemoryExtensions.Contains(ReadOnlySpan<T>, T)` instead of `Enumerable.Contains`. Verified: the tree contains an `op_Implicit` to `ReadOnlySpan<int>`; `Compile()` works, but `Compile(preferInterpretation: true)` throws `ArgumentException`/`TypeLoadException`, and LINQ providers that do not recognize `MemoryExtensions` fail to translate it. EF Core 10 (and patched EF Core 9.0.x) translate it; for other providers (OData, older Cosmos/Mongo providers, custom visitors) write `Enumerable.Contains(ids, x)` or `ids.AsEnumerable().Contains(x)`.
+- **Expression trees.** `array.Contains(x)` inside an `Expression<…>` now binds to `MemoryExtensions.Contains(ReadOnlySpan<T>, T)` instead of `Enumerable.Contains`. Verified: the tree contains an `op_Implicit` to `ReadOnlySpan<int>`; `Compile()` works, but `Compile(preferInterpretation: true)` throws `ArgumentException` (the interpreter cannot handle the `ReadOnlySpan<int>` generic argument), and LINQ providers that do not recognize `MemoryExtensions` fail to translate it. EF Core 10 (and patched EF Core 9.0.x) translate it; for other providers (OData, older Cosmos/Mongo providers, custom visitors) write `Enumerable.Contains(ids, x)` or `ids.AsEnumerable().Contains(x)`.
 
 ```csharp
 using System.Linq.Expressions;
@@ -305,21 +305,21 @@ The default value is baked into the tree at compile time; changing the default i
 
 ##### 10. File-based apps and `#:` directives [New in .NET 10 SDK]
 
-`dotnet run app.cs` runs a single C# file without a project. `#:package Name@Version`, `#:sdk Microsoft.NET.Sdk.Web`, `#:property Name=Value` and `#:project ../Lib/Lib.csproj` configure the implicit project; a `#!/usr/bin/env dotnet` shebang makes the file executable. File-based apps **default to `PublishAot=true`**; `dotnet publish app.cs` produces a native executable.[^16] Directives with double quotes are rejected in .NET 10 GA.[^9]
+`dotnet run app.cs` runs a single C# file without a project. `#:package Name@Version`, `#:sdk Microsoft.NET.Sdk.Web`, `#:property Name=Value` and `#:project ../Lib/Lib.csproj` configure the implicit project; a `#!/usr/bin/env dotnet` shebang makes the file executable. File-based apps **default to `PublishAot=true`** (and `PackAsTool=true`; verified with `dotnet project convert app.cs` on SDK 10.0.402); `dotnet publish app.cs` produces a native executable.[^16] Directives containing double quotes are rejected by the .NET 10 SDK (`error: Directives currently cannot contain double quotes (")`); quoted directive values arrive only with the .NET 11 SDK.[^9][^5] `dnx`/`dotnet tool exec` and file-based apps do not replace a project for production code.
 
 Review notes: a `#:package` directive without a version, or with a floating version, is not reproducible; pin versions. These files are scripts, not libraries — production services still need a project, central package management and the analyzers configured below.
 
 ##### 11. Other compiler changes that surface in review
 
 - **Redundant `or` pattern warning (CS9336).** `o is not null or 42` is parsed as `(not null) or 42`; C# 14 warns "The pattern is redundant". The author almost always meant `is not (null or 42)`. Verified: the two expressions return `True` and `False` for `o = 42`; C# 13 gives no warning.[^7]
-- **Disposed iterators stop.** `MoveNext()` on a disposed compiler-generated enumerator now returns `false` instead of resuming user code.[^7]
+- **Disposed iterators stop.** `MoveNext()` on a disposed compiler-generated enumerator now returns `false` instead of resuming user code.[^7] This and the partial interface member change (section 7) come from the newer compiler and apply even with `LangVersion` 13 (verified on SDK 10.0.402).
 - **`[Obsolete]` on pattern-based `DisposeAsync`/`Dispose` is now reported in `foreach`/`await foreach`.**[^7]
 
 ##### Breaking changes in C# 14 (must know for upgrades)
 
 | Change | Effect | Fix |
 | --- | --- | --- |
-| `field` in accessors binds to the backing field | Existing member named `field` silently stops being read (warning CS9258); local named `field` → error CS9272 | `this.field` / `@field`, or rename |
+| `field` in accessors binds to the backing field | Existing member named `field` silently stops being read (warning CS9258); local/parameter named `field` → error CS9273 | `this.field` / `@field`, or rename |
 | First-class span conversions | Different overload chosen; `ArrayTypeMismatchException` with covariant arrays; ambiguity errors; expression trees contain `MemoryExtensions` calls | `AsEnumerable()`, `Enumerable.X(...)`, prefer `ReadOnlySpan<T>` overloads, `[OverloadResolutionPriority]` |
 | `extension` is a contextual keyword | Types/aliases/type parameters named `extension` fail to compile | `@extension` |
 | `partial` return type | `partial F()` no longer parses as a method returning type `partial` | `@partial` |
@@ -376,6 +376,11 @@ catch (OperationCanceledException)
 - OpenSSL 1.1.1 or later is required on Unix; the override variables are renamed to `DOTNET_OPENSSL_VERSION_OVERRIDE`/`DOTNET_ICU_VERSION_OVERRIDE`.
 - `XmlSerializer` no longer ignores `[Obsolete]` properties.
 - Default container images are based on Ubuntu (previously Debian).
+- `BufferedStream.WriteByte` no longer flushes implicitly when the internal buffer is full; data reaches the underlying stream only on `Flush`/`FlushAsync` or dispose. Code that reads the underlying stream while still writing must flush explicitly.
+- Shifts through generic math (`IShiftOperators<TSelf, TOther, TResult>`) now mask the shift amount consistently for all built-in integer types ("overshifting" a `byte` by 8 no longer differs by type).
+- `[InlineArray]` structs with an explicit `StructLayout(Size = …)` throw `TypeLoadException` when instantiated.
+- Crypto API changes since the .NET 10 previews: `MLDsa`/`SlhDsa` `*SecretKey*` members are renamed to `*PrivateKey*` (e.g. `ExportMLDsaPrivateKey`), `CompositeMLDsa` follows draft-08, `CoseSigner.Key`, `X509Certificate`/`PublicKey` key parameters can be `null`, `X500DistinguishedName` parsing is stricter, and OpenSSL-backed primitives are not supported on macOS.
+- `FilePatternMatch.Stem` is non-nullable; `ProviderAliasAttribute` moved to `Microsoft.Extensions.Logging.Abstractions`.
 
 ##### New BCL APIs worth recommending [New in .NET 10]
 
@@ -387,7 +392,7 @@ Verified to exist on `net10.0` and to be absent on `net9.0`:[^8]
 | Strings/globalization | `CompareOptions.NumericOrdering` (`"v9" < "v10"`), span-based normalization (`IsNormalized`/`TryNormalize`/`GetNormalizedLength` on `ReadOnlySpan<char>`), `Convert.FromHexString(ReadOnlySpan<byte>)` and UTF-8 hex conversions, `ISOWeek` overloads for `DateOnly` |
 | Collections | `OrderedDictionary<TKey,TValue>.TryAdd(key, value, out int index)` and `TryGetValue(key, out value, out int index)` |
 | JSON | `JsonSerializerOptions.AllowDuplicateProperties`, `JsonSerializerOptions.Strict`, `JsonDocumentOptions.AllowDuplicateProperties`, `ReferenceHandler` in `[JsonSourceGenerationOptions]`, `PipeReader` overloads of `DeserializeAsync` |
-| Crypto | `MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa` (the last three `[Experimental]`, SYSLIB5006), `X509Certificate2Collection.FindByThumbprint(HashAlgorithmName, string)`, `PemEncoding.FindUtf8`, `X509Certificate.ExportPkcs12(Pkcs12ExportPbeParameters, string)`, AES key wrap with padding (`Aes.EncryptKeyWrapPadded`/`DecryptKeyWrapPadded`) |
+| Crypto | `MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa` (`SlhDsa` and `CompositeMLDsa` are `[Experimental]` types, SYSLIB5006; `MLKem`/`MLDsa` are not, but some of their PKCS#8/SubjectPublicKeyInfo/PEM import/export members are), `X509Certificate2Collection.FindByThumbprint(HashAlgorithmName, string)`, `PemEncoding.FindUtf8`, `X509Certificate.ExportPkcs12(Pkcs12ExportPbeParameters, string)`, AES key wrap with padding (`Aes.EncryptKeyWrapPadded`/`DecryptKeyWrapPadded`) |
 | I/O | Async ZIP APIs (`ZipFile.OpenReadAsync`, `ZipFile.ExtractToDirectoryAsync`, `ZipArchiveEntry.OpenAsync`, …), `WebSocketStream` |
 | Diagnostics | `ActivitySourceOptions`, telemetry schema URLs on `ActivitySource`/`Meter` |
 | Misc | `TimeSpan.FromMilliseconds(long)` single-argument overload (usable in expression trees), `ValidationContext(object, string, IServiceProvider?, IDictionary<object,object?>?)` (AOT-safe) |
@@ -431,6 +436,8 @@ Console.WriteLine(string.Join(",", Enumerable.Sequence(0, 10, 5)));           //
 - Noun-first aliases: `dotnet package add|list|remove`, `dotnet reference add|list|remove`.
 - Console apps can `dotnet publish /t:PublishContainer` without `EnableSdkContainerSupport`; `<ContainerImageFormat>` selects Docker or OCI.
 - `--interactive` defaults to true in interactive terminals; CLI diagnostics go to stderr.
+- `dnx` scripts bypass `global.json` SDK selection; `dotnet tool install --local` creates a tool manifest if none exists; NuGet audit sources reject plain HTTP; .NET tool packages can be RuntimeIdentifier-specific.[^9]
+- `PackageReference` without a version fails restore with **NU1015**, and a direct reference to a package the framework already provides is pruned with **NU1510** (both verified on SDK 10.0.402).
 
 ##### ASP.NET Core 10 highlights [New in .NET 10]
 
@@ -442,6 +449,11 @@ Console.WriteLine(string.Join(",", Enumerable.Sequence(0, 10, 5)));           //
 - Form binding: empty strings bind to `null` for nullable value types.
 - JSON request bodies are read through `PipeReader`; custom `JsonConverter`s that ignore `Utf8JsonReader.HasValueSequence` can now fail.[^10]
 - Passkeys (WebAuthn) in ASP.NET Core Identity; `*.localhost` binds to loopback.
+- The validation APIs live in the `Microsoft.Extensions.Validation` package/namespace (usable outside HTTP); the resolver extensibility APIs are `[Experimental]`.
+- JSON Patch has a System.Text.Json implementation (`Microsoft.AspNetCore.JsonPatch.SystemTextJson`) that is not a drop-in replacement for the Newtonsoft one (no `dynamic`/`ExpandoObject`); JSON Patch documents from clients must still be authorization-checked per path.[^10]
+- A source generator emits `public partial class Program` for top-level-statement apps, so `WebApplicationFactory<Program>` works without the hand-written declaration (an analyzer flags the now-redundant one).
+- The temporary escape hatch for converters broken by `PipeReader`-based parsing is the AppContext switch `Microsoft.AspNetCore.UseStreamBasedJsonParsing`; fix the converter instead.
+- Deprecated: `IncludeOpenAPIAnalyzers` and the MVC API analyzers, the `Microsoft.Extensions.ApiDescription.Client` package.
 - Obsoleted: `WebHostBuilder`/`IWebHost`/`WebHost`, `IActionContextAccessor`, `IPNetwork` and `ForwardedHeadersOptions.KnownNetworks` (use `KnownIPNetworks` with `System.Net.IPNetwork`), Razor runtime compilation, `WithOpenApi`.[^22]
 
 ##### EF Core 10 highlights [New in .NET 10]
@@ -453,12 +465,13 @@ Console.WriteLine(string.Join(",", Enumerable.Sequence(0, 10, 5)));           //
 - SQL Server: the `json` data type is used for JSON columns with `UseAzureSql` or compatibility level ≥ 170 (an upgrade generates an `ALTER COLUMN` migration); complex types map to columns and JSON (`ComplexProperty(...).ToJson()`); named query filters; vector search.[^23][^24]
 - Microsoft.Data.Sqlite 10: `GetDateTimeOffset` without offset assumes **UTC**; `GetDateTime` with an offset returns UTC; `DateTimeOffset` written to REAL columns is converted to UTC.[^23]
 - `dotnet ef` requires `--framework` for multi-targeted projects.
+- EF Core 10 injects an `Application Name` into SQL Server connection strings that lack one (can split connection pools or break login triggers keyed on it), and Microsoft.Data.SqlClient 6.1 pulls in `Microsoft.Identity.Client.Broker` (larger publish output).[^23]
 
 ---
 
 #### Do Not Use or Recommend (C# 15 / .NET 11)
 
-C# 15 and .NET 11 are **release candidates** (RC2, October 13, 2026); GA is planned for November 2026. A project on C# 14 / `net10.0` does not have any of the following, and the reviewer must never suggest them:[^5][^25][^26]
+C# 15 and .NET 11 are **release candidates** (RC2, October 13, 2026); GA is expected in November 2026 under the annual release cadence (the RC2 announcement itself gives no date). A project on C# 14 / `net10.0` does not have any of the following, and the reviewer must never suggest them:[^5][^25][^26]
 
 **C# 15 language features (not available in C# 14):**
 
@@ -474,14 +487,14 @@ C# 15 and .NET 11 are **release candidates** (RC2, October 13, 2026); GA is plan
 
 **.NET 11 APIs (absent from the `net10.0` reference assemblies, verified):**
 
-- `Enumerable.FullJoin` (only `LeftJoin`/`RightJoin` exist in .NET 10).
+- `Enumerable.FullJoin`/`Queryable.FullJoin` (only `LeftJoin`/`RightJoin` exist in .NET 10), and the .NET 11 `LeftJoin`/`RightJoin` overloads **without** a result selector that return `(TOuter, TInner)` tuples — on .NET 10 a result selector is required.
 - `JsonNamingPolicy.PascalCase`, `JsonSerializer.SerializeAsyncEnumerable`, `JsonUnionAttribute`, `JsonSerializerOptions.InferClosedTypePolymorphism`.
 - `Process.Run`/`RunAsync`/`RunAndCaptureText`, `ProcessStartInfo.KillOnParentExit`, `SafeProcessHandle.Start`.
 - `System.IO.ReadOnlyMemoryStream`, `WritableMemoryStream`, `StringStream`.
 - `string.Contains(Rune)` and the other `Rune` overloads on `string`; `RegexOptions.AnyNewLine`.
 - `System.Numerics.Decimal32`/`Decimal64`/`Decimal128`, `BitArray.PopCount()`, `Type.GetNullableUnderlyingType()`.
 - `Dns.ResolveSrv`/`ResolveMx`/`ResolveTxt`/`ResolveCName`.
-- `X25519DiffieHellman`, `CompositeMLKem`, HPKE APIs.
+- `X25519DiffieHellman`, `CompositeMLKem` (experimental), the HPKE types (`Hpke`, `HpkeSender`, `HpkeRecipient`, `HpkeSuite`, …).
 - `Microsoft.Extensions.*` 11.x features such as `ConfigurationIgnoreAttribute`, async DataAnnotations validation (`AsyncValidationAttribute`, `Validator.ValidateObjectAsync`), `IAsyncStartupValidator`.
 
 Also do **not** tell a .NET 10 project that it can stay on .NET 8 or .NET 9 for long: both leave support on November 10, 2026.
@@ -1192,6 +1205,8 @@ sealed class ReportCache(IUnitOfWork uow);
 using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Options;
 
+// Worker SDK implicit usings (Microsoft.Extensions.Configuration/Hosting); ValidateDataAnnotations needs
+// the Microsoft.Extensions.Options.DataAnnotations package (not part of Microsoft.Extensions.Hosting).
 var builder = Host.CreateApplicationBuilder();
 builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Email:Port"] = "70000" });
 builder.Services.AddOptions<EmailOptions>()
@@ -1382,7 +1397,7 @@ record Person(string Name);
 - `JsonSerializerOptions.Strict` (new in .NET 10) = `UnmappedMemberHandling.Disallow` + `AllowDuplicateProperties = false` + case-sensitive + `RespectNullableAnnotations = true` + `RespectRequiredConstructorParameters = true`. Use it (or the individual options) for **security-relevant input**: duplicate keys are a classic parser-differential attack (one component validates the first `"role"`, another uses the last).[^8]
 - `JsonSerializerOptions.Web` (and ASP.NET Core) use camelCase, case-insensitive matching and `JsonNumberHandling.AllowReadingFromString`.
 - **Cache `JsonSerializerOptions` instances** (static readonly or DI). Creating new options per call rebuilds metadata caches — a severe performance bug (CA1869).
-- **Metadata name conflicts throw in .NET 10**: a polymorphic type whose own property is named like the discriminator (`"Type"`, `$type`, `$id`, `$ref`) throws `InvalidOperationException` on first use; .NET 9 silently wrote invalid JSON (`{"Type":"dog","Type":"Dog"}`). Rename or `[JsonIgnore]` the property.[^31]
+- **Metadata name conflicts throw in .NET 10**: a polymorphic type whose own property is named like the discriminator (`"Type"`, `$type`, `$id`, `$ref`) throws `InvalidOperationException` on first use; .NET 9 silently wrote invalid JSON with a duplicate key (verified: `{"Type":"Dog","Type":"dog"}` — discriminator first, then the property). Rename or `[JsonIgnore]` the property.[^31]
 - Polymorphism needs `[JsonPolymorphic]`/`[JsonDerivedType]`; only listed derived types are (de)serialized — never enable type names from the payload.
 - Use `JsonSerializer.DeserializeAsync`/`SerializeAsync` with streams; avoid `ReadAsStringAsync` + `Deserialize` for large bodies.
 - Set `MaxDepth` (default 64) consciously; never raise it for untrusted input without reason.
@@ -1452,7 +1467,7 @@ public interface IProductStore
 internal partial class ApiJson : System.Text.Json.Serialization.JsonSerializerContext;
 ```
 
-Verified behavior of this shape on ASP.NET Core 10.0.13: an invalid body (`{"sku":"","quantity":0}`) returns `400` with `application/problem+json` listing both field errors; an unauthenticated request to a JSON/`TypedResults` endpoint returns `401` (no login redirect); an HTML endpoint still redirects (`302`).
+Verified behavior of this shape on ASP.NET Core 10.0.13: for an authenticated caller, an invalid body (`{"sku":"","quantity":0}`) returns `400` with `application/problem+json` listing both field errors; an unauthenticated request to a JSON/`TypedResults` endpoint returns `401` (no login redirect); an HTML endpoint still redirects (`302`).
 
 Review points:
 
@@ -1643,7 +1658,7 @@ Console.WriteLine(MLKem.IsSupported ? "ML-KEM available" : "ML-KEM unavailable (
 - Asymmetric: RSA ≥ 2048 bits with OAEP-SHA256 / PSS; ECDSA P-256+. Dispose key objects.
 - `X509Certificate2` loading: use `X509CertificateLoader` (.NET 9+; the `X509Certificate2(byte[])`/`(string)` constructors are obsolete, SYSLIB0057). Find certificates by SHA-256 thumbprint with `FindByThumbprint(HashAlgorithmName.SHA256, …)` (.NET 10).
 - Data Protection: persist keys to durable shared storage in multi-instance deployments and protect them at rest; patch to ≥ 10.0.7 (CVE-2026-40372) and rotate keys if 10.0.0–10.0.6 was deployed.[^29]
-- PQC types (`MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa`) depend on OS crypto (OpenSSL 3.5+ / Windows CNG with PQC); `MLDsa`/`SlhDsa`/`CompositeMLDsa` are `[Experimental]` (SYSLIB5006) and their APIs may change.
+- PQC types (`MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa`) depend on OS crypto (OpenSSL 3.5+ / Windows CNG with PQC); `SlhDsa` and `CompositeMLDsa` are `[Experimental]` types (SYSLIB5006), and several `MLKem`/`MLDsa` key import/export members (PKCS#8, SPKI, PEM) are `[Experimental]` too (verified by reflection on 10.0.13) — their APIs may change.
 
 ##### Other injection and parsing risks
 
@@ -1748,7 +1763,7 @@ public static class PriceCalculator
 
 Upgrading from .NET 8/9 (C# 12/13) to .NET 10 (C# 14):
 
-1. **Language**: compile, then fix CS9258 (`field`), CS9272, CS9336 (redundant `or` patterns), new ambiguity errors from span conversions, identifiers named `extension`/`partial`/`scoped`. Check expression trees that call `Contains`/`SequenceEqual`/`StartsWith` on arrays when using LINQ providers other than EF Core.
+1. **Language**: compile, then fix CS9258 (`field`), CS9273 (variables named `field` in accessors), CS9336 (redundant `or` patterns), new ambiguity errors from span conversions, identifiers named `extension`/`partial`/`scoped`. Check expression trees that call `Contains`/`SequenceEqual`/`StartsWith` on arrays when using LINQ providers other than EF Core.
 2. **Hosting**: plain console/worker apps without the Generic Host must register SIGTERM handling. `BackgroundService` code that relied on running synchronously before startup completes must move to `StartAsync`/`IHostedLifecycleService`.
 3. **Configuration**: review options for `null` handling and empty arrays.
 4. **Packages**: remove/upgrade `System.Linq.Async`; align all `Microsoft.Extensions.*`, `Microsoft.AspNetCore.*`, `Microsoft.EntityFrameworkCore.*` packages to 10.x; react to NU1510 (pruned references) and transitive NuGet Audit warnings.
