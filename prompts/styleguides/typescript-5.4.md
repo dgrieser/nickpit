@@ -1,7 +1,7 @@
 ### TypeScript 5.4: The Complete Production Developer Guide
 
 > **Version**: TypeScript 5.4.2 (the first stable 5.4 release) was published on **March 6, 2024**; the latest and final patch is **5.4.5 (April 10, 2024)**.[^1][^2]
-> **Support status (October 2026)**: unmaintained. The TypeScript team ships patches only for the newest minor line; 5.4 received none after 5.4.5. Newer lines are 5.5–5.9 (5.9.3, September 30, 2025), 6.0 (6.0.3, April 16, 2026, the last JavaScript-based compiler) and 7.0 (7.0.2, July 8, 2026, the native Go port, now `latest` on npm).[^2] DefinitelyTyped tests `@types/*` packages only against TypeScript versions younger than two years, so 5.4 dropped out of that window in March 2026 and current `@types` releases may no longer compile with it (see Tooling).[^3]
+> **Support status (October 2026)**: unmaintained. The TypeScript team ships patches only for the newest minor line; 5.4 received none after 5.4.5. Newer lines are 5.5–5.9 (5.9.3, September 30, 2025), 6.0 (6.0.3, April 16, 2026, the last JavaScript-based compiler) and 7.0 (7.0.2, July 8, 2026, the native Go port, now `latest` on npm); 7.1 is in beta (7.1.0-beta, October 20, 2026).[^2] DefinitelyTyped tests `@types/*` packages only against TypeScript versions younger than two years, so 5.4 dropped out of that window in March 2026 and current `@types` releases may no longer compile with it (see Tooling).[^3]
 > **Scope**: the whole TypeScript language and type system as usable in 5.4, every 5.4 change against 5.3, `tsconfig` and module resolution, runtime/Node.js interplay, async, errors, security, performance, testing, tooling and declaration publishing — with examples that were all compiled with `tsc` 5.4.5 (and boundary examples also with 5.3.3 and 5.5.4).
 > **Note**: this document is self-contained. Everything from earlier releases that still applies is carried forward. Sections covering 5.4-specific behaviour are marked **New in 5.4**.
 
@@ -231,7 +231,7 @@ Without such a declaration, any attribute object is accepted. The attribute does
 JSON imports under `--module nodenext` (verified with 5.4.5 and Node.js 18.20/20.20/22.23/24.22):
 
 - `import cfg from "./config.json" with { type: "json" };` — compiles and runs on all four Node.js lines. Requires `resolveJsonModule`.
-- `import cfg from "./config.json";` — **compiles in 5.4**, but Node.js throws `ERR_IMPORT_ATTRIBUTE_MISSING` (20: `ERR_IMPORT_ASSERTION_TYPE_MISSING`) at load time. 5.7 made this a compile error (TS1543); in 5.4 the reviewer must catch it.
+- `import cfg from "./config.json";` — **compiles in 5.4**, but Node.js throws `ERR_IMPORT_ATTRIBUTE_MISSING` (18 and 20: `ERR_IMPORT_ASSERTION_TYPE_MISSING`) at load time. 5.7 made this a compile error (TS1543); in 5.4 the reviewer must catch it.
 - `import cfg from "./config.json" assert { type: "json" };` — compiles in 5.4, works on Node.js 18/20, but is a `SyntaxError: Unexpected identifier 'assert'` on Node.js 22 and 24.
 
 ***
@@ -1210,7 +1210,7 @@ class Greeter {
 console.log(new Greeter().greet("Ann"));
 ```
 
-Decorator metadata (`context.metadata`, `Symbol.metadata`, 5.2+) needs a runtime `Symbol.metadata`. No Node.js release up to 24 provides it (verified: `Symbol.metadata` is `undefined` on Node.js 18–24), so `context.metadata` is `undefined` at runtime and writing to it throws `TypeError: Cannot set properties of undefined`. With `--lib esnext` (`esnext.decorators`) the type even claims it is always present. Polyfill it before any decorated class is evaluated:
+Decorator metadata (`context.metadata`, `Symbol.metadata`, 5.2+) needs a runtime `Symbol.metadata`. No Node.js release provides it (verified: `Symbol.metadata` is `undefined` on Node.js 18 through 26.12), so `context.metadata` is `undefined` at runtime and writing to it throws `TypeError: Cannot set properties of undefined`. With `--lib esnext` (`esnext.decorators`) the type even claims it is always present. Polyfill it before any decorated class is evaluated:
 
 ```ts
 // tsc: --lib es2022,esnext.decorators
@@ -1451,7 +1451,7 @@ export { loadBad, loadGood };
 declare function fetchJson(url: string, signal: AbortSignal): Promise<unknown>;
 async function fetchAll(urls: string[]): Promise<unknown[]> {
   const controller = new AbortController();
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]); // Node.js 20.3+
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]); // Node.js 18.17+/20.3+
   try {
     return await Promise.all(urls.map((u) => fetchJson(u, signal)));
   } catch (e) {
@@ -1572,7 +1572,7 @@ function handle(body: unknown): CreateUser {
 export { handle };
 ```
 
-(Zod is a dependency, not part of TypeScript; the example was compiled against Zod 3. Check that the chosen library version still supports TypeScript 5.4 — current Zod documentation states it is tested against TypeScript 5.5 and later only.[^18])
+(Zod is a dependency, not part of TypeScript; the example compiles with TypeScript 5.4.5 against both Zod 3.25 and Zod 4.6. Check that the chosen library version still supports TypeScript 5.4 — current Zod documentation states it is tested against TypeScript 5.5 and later only.[^18])
 
 Environment variables are `string | undefined` under `@types/node`'s `process.env` (index signature): validate and convert once at startup.
 
@@ -1644,7 +1644,7 @@ export { safeJoin };
 #### Testing
 
 - Run `tsc --noEmit` (or `tsc -b`) in CI in addition to tests: Vitest, Jest with `ts-jest` `isolatedModules`/`babel-jest`/`@swc/jest`, `tsx` and `node --test` with type stripping all transpile without type checking.
-- Pin test-runner versions compatible with TypeScript 5.4 and the project's Node.js version (current Vitest requires Node.js 22.12+, for example).
+- Pin test-runner versions compatible with TypeScript 5.4 and the project's Node.js version (current Vitest 5.x declares `engines: node ^22.12.0 || ^24.0.0 || >=26.0.0`, for example).
 - Type-level tests: use `// @ts-expect-error` (fails if the line has *no* error, unlike `@ts-ignore`) and helper assertions.
 
 ```ts
@@ -1686,7 +1686,7 @@ DefinitelyTyped publishes each `@types` package with `typesVersions` and a minim
 
 - Current `@types/node` (26.x) declares `"typeScriptVersion": "5.6"` and uses `IteratorObject`/`BuiltinIteratorReturn`, types that do not exist in 5.4. With 5.4 it produces errors such as TS2304 "Cannot find name 'BuiltinIteratorReturn'" in `node_modules/@types/node`; `skipLibCheck` hides those but user code still breaks (`for await (const d of await opendir("."))` → TS2504 "Type 'Dir' must have a '[Symbol.asyncIterator]()' method").
 - npm dist-tags name the last version tested with each compiler: `npm install -D @types/node@ts5.4` installs `@types/node` 25.9.3 (which declares `typeScriptVersion` 5.3) — the right choice for a 5.4 project. The same `tsX.Y` tags exist for every `@types` package.
-- Transitive `@types/node` is not pinned by those tags: `@types/express` (and many other `@types` packages) depend on `@types/node: "*"`, so `npm install -D @types/express@ts5.4` alone still installs the newest `@types/node` and reproduces the errors above (verified). Add `@types/node` as a direct, pinned dev dependency (or an npm `overrides`/pnpm `overrides`/Yarn `resolutions` entry) so the whole tree uses one compatible version.
+- Transitive `@types/node` is not pinned by those tags: `@types/express` pulls in `@types/express-serve-static-core`, `@types/send` and others that depend on `@types/node: "*"` (as do many other `@types` packages), so `npm install -D @types/express@ts5.4` alone still installs the newest `@types/node` and reproduces the errors above (verified). Add `@types/node` as a direct, pinned dev dependency (or an npm `overrides`/pnpm `overrides`/Yarn `resolutions` entry) so the whole tree uses one compatible version.
 - Keep `@types/node`'s major version at or below the Node.js version the code runs on, or the types advertise APIs the runtime lacks.
 
 Flag dependency bumps that pull in `@types/*` (or libraries with bundled types) requiring a newer compiler; the usual symptom is errors inside `node_modules/**/*.d.ts` or the sudden need for `skipLibCheck`.
@@ -1816,7 +1816,7 @@ declare module "express-serve-static-core" {
 - [ ] No CommonJS `import` of ESM-only packages (TS1479) — dynamic `import()` instead
 - [ ] `paths` aliases also resolved by the runtime/bundler, or replaced with `package.json` `"imports"`
 - [ ] Library `exports` map: `types` first, separate `.d.ts`/`.d.cts` per format, checked with `attw`
-- [ ] Runtime support verified for `Object.groupBy` (Node.js 21+), `Promise.withResolvers` (22+), `Symbol.metadata` (not in Node.js ≤ 24; polyfill), `DisposableStack` (24+), `Symbol.dispose` (current 18/20/22 releases)
+- [ ] Runtime support verified for `Object.groupBy` (Node.js 21+), `Promise.withResolvers` (22+), `Symbol.metadata` (not in any Node.js release up to 26; polyfill), `DisposableStack` (24+), `Symbol.dispose` (current 18/20/22 releases)
 
 ##### Async
 
