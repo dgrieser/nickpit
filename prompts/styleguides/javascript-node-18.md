@@ -60,7 +60,8 @@ Node 19 is an odd-numbered, never-LTS line (October 18, 2022 – June 1, 2023; f
 | `fs.writeFileSync(path, objWithToString)` | DEP0162 warning | `ERR_INVALID_ARG_TYPE` |
 | `--experimental-specifier-resolution` | works | removed (ignored) |
 | Import attributes `with` | yes (18.20) | **SyntaxError** (only `assert`) |
-| `AbortSignal.any`, `module.register`, `events.addAbortListener`, `Symbol.dispose`, `MockTimers` | yes (18.17–18.19) | **no** |
+| `AbortSignal.any`, `module.register`, `events.addAbortListener`, `Symbol.dispose`, `MockTimers`, `dns.getDefaultResultOrder()`, `test.skip/todo/only` shorthands | yes (18.17–18.19) | **no** |
+| `require('node:wasi')` without a flag | yes (18.17) | needs `--experimental-wasi-unstable-preview1` |
 | `--import` | yes (18.18) | yes (19.0) |
 | Non-registered symbols as `WeakMap` keys | accepted (18.20) | `TypeError` |
 
@@ -91,7 +92,7 @@ Node 17 was a short-lived odd line; most projects jump from 16 to 18, so the 17.
 | `util.parseArgs()` | 18.3.0 | also 16.17 | |
 | Loader chaining (`--experimental-loader` many times) | 18.6.0 | also 16.17 | |
 | `CustomEvent` (global only with `--experimental-global-customevent`) | 18.7.0 | also 16.17 | unflagged global in 19 |
-| `--build-snapshot` / `--snapshot-blob` (run-time user-land snapshots) | 18.8.0 | no (16.20.2 has the `v8.startupSnapshot` object, not the flags) | experimental |
+| `--build-snapshot` / `--snapshot-blob` (run-time user-land snapshots) | 18.8.0 | no (16.20.2 accepts `--build-snapshot` but exits with *"not yet supported in the node binary"*) | experimental |
 | `os.machine()` | 18.9.0 | also 16.18 | |
 | `--watch` / `--watch-path` (experimental) | 18.11.0 | also 16.19 | `--watch-path` unsupported on Linux in 18 |
 | `FileHandle.readLines()` | 18.11.0 | no | |
@@ -135,11 +136,11 @@ The project's runtime does not have these. Never suggest them as a fix or modern
 
 - `require()` of ES modules (`require(esm)`) — 22.0 flagged, unflagged in 22.12 / 20.19; `process.features.require_module`. On 18 it throws `ERR_REQUIRE_ESM`.
 - `import.meta.dirname` / `import.meta.filename` — 20.11 / 21.2.
-- `--env-file`, `process.loadEnvFile()`, `util.parseEnv()` — 20.6 / 21.7 / 20.12. Use `dotenv` on 18.
+- `--env-file` — 20.6; `process.loadEnvFile()` and `util.parseEnv()` — 21.7 / 20.12. Use `dotenv` on 18.
 - `node --run` — 22.0. `fs.glob()`/`fsPromises.glob()` — 22.0. `path.matchesGlob()` — 22.5 / 20.17.
 - `fs.openAsBlob()` — **19.8**. `fs.watch(dir, { recursive: true })` on **Linux** — 19.1.
 - `util.styleText()` — 21.7 / 20.12. `util.getCallSites()` — 22.9. `util.diff()` — 23.11 / 22.15.
-- `crypto.hash()` — 21.7 / 20.12. `URL.parse()` — 22.1. `module.findPackageJSON()` — 23.2 / 22.14. `module.registerHooks()` (synchronous hooks) — 23.5 / 22.15. `module.enableCompileCache()` — 22.8.
+- `crypto.hash()` — 21.7 / 20.12. `URL.parse()` — 22.1 (also backported to late 20.x; present in 20.20.2). `module.findPackageJSON()` — 23.2 / 22.14. `module.registerHooks()` (synchronous hooks) — 23.5 / 22.15. `module.enableCompileCache()` — 22.8.
 - `stream.duplexPair()` — 22.6 / 20.17. `process.availableMemory()` — 22.0 / 20.13. zlib Zstandard (`createZstdCompress`) — 23.8 / 22.15. `node:sqlite` — 22.5. `node:sea` module and `--experimental-sea-config` — 20.0.
 - Permission model (`--permission` / `--experimental-permission`, `process.permission`) — 20.0. TypeScript type stripping (`--experimental-strip-types`) — 22.6.
 - `--experimental-detect-module` — 21.1 / 20.10; `--experimental-require-module` — 22.0 / 20.17.
@@ -147,7 +148,7 @@ The project's runtime does not have these. Never suggest them as a fix or modern
 
 **Test runner (`node:test`):** module mocking (`mock.module()`, 22.3 / 20.18), snapshot testing (`t.assert.snapshot`, 22.3), `assert.partialDeepStrictEqual()` (23.4 / 22.13), `--test-timeout` (21.2 / 20.11), `--test-force-exit` (22.0 / 20.14), `--test-skip-pattern` (22.1), glob patterns as `node --test` arguments (21), `MockTimers` with `Date` and the object form `enable({ apis, now })` (21.2 / 20.11) — on 18.19+ `enable()` takes only an array of timer names. Since 18.13.0, `node --test --watch` reruns tests on changes.
 
-**Tooling majors that no longer support Node 18** (from their published `engines` fields):[^26] ESLint 10 (needs ^20.19 / ^22.13 / ≥ 24; ESLint 9 supports ^18.18), Mocha 12 (^20.19 / ≥ 22.12; Mocha 11 supports ^18.18), Vitest 5 (^22.12 / ^24 / ≥ 26; Vitest 3 supports ^18), undici 7+ (≥ 20.18.1; undici 6 supports ≥ 18.17), npm 11 (^20.17 / ≥ 22.9; Node 18 ships npm 10.8.2). Recommending one of these on Node 18 is a breaking change, not a cleanup.
+**Tooling majors that no longer support Node 18** (from their published `engines` fields):[^26] ESLint 10 (needs ^20.19 / ^22.13 / ≥ 24; ESLint 9 supports ^18.18), Mocha 12 (^20.19 / ≥ 22.12; Mocha 11 supports ^18.18), Vitest 4 (^20 / ^22 / ≥ 24) and Vitest 5 (^22.12 / ^24 / ≥ 26; Vitest 3 supports ^18), undici 7+ (≥ 20.18.1; undici 6 supports ≥ 18.17), npm 11 (^20.17 / ≥ 22.9; Node 18 ships npm 10.8.2). Recommending one of these on Node 18 is a breaking change, not a cleanup.
 
 ##### Deprecated or Removed by Node 18
 
@@ -637,7 +638,7 @@ console.log(signal.reason.name); // TimeoutError
 - `--experimental-loader` (alias `--loader`) still works on 18 but prints an `ExperimentalWarning` recommending `register()`.
 - **18.19.0+**: `module.register(specifier, parentURL, { data, transferList })` plus the `initialize` hook; run it from a preload file with `--import` (18.18.0+). Hooks run on a **separate thread** (backported from Node 20): `console.log` inside a hook may never appear — use `fs.writeSync(2, …)` for debugging, and communicate with the main thread via `data`/`MessagePort`.
 - `globalPreload` is replaced by `initialize`.[^13][^14]
-- In Node 25.9+/26 `module.register()` is deprecated in favor of `module.registerHooks()` — that newer API does not exist on 18, so `register()` is correct for Node 18 code.
+- In Node 25.9+/26 `module.register()` is deprecated in favor of `module.registerHooks()` (DEP0205; 26.12.1 prints a runtime `DeprecationWarning`, 25.9.0 does not) — that newer API does not exist on 18, so `register()` is correct for Node 18 code.
 
 ```js
 // file: hooks.mjs
@@ -863,7 +864,7 @@ Review rules for `fetch` on Node 18:
 - **Streaming request bodies require `duplex: 'half'`**, otherwise `TypeError: RequestInit: duplex option is required when sending a body`.
 - `res.body` is a **web** `ReadableStream`; convert with `Readable.fromWeb(res.body)` for Node stream APIs.
 - `Headers#getSetCookie()` is available in 18.20.8 (bundled undici 5.29.0); `headers.get('set-cookie')` joins values with `, `, which is ambiguous for cookies.
-- `FormData` file parts: append a `Blob` with a filename (`form.append('file', blob, 'report.txt')`). The global `File` is Node 20+; `require('node:buffer').File` (18.13+) prints an `ExperimentalWarning`.
+- `FormData` file parts: append a `Blob` with a filename (`form.append('file', blob, 'report.txt')`). On 18.20.8 this internally creates a `buffer.File` and prints *"ExperimentalWarning: buffer.File is an experimental feature"* once (verified) — harmless, but it shows up in logs. The global `File` is Node 20+; `require('node:buffer').File` (18.13+) prints the same warning.
 - Security fixes to the bundled undici landed in 18.14.1, 18.18.2, 18.19.1 (`fetch()` brotli DoS), 18.20.1 and 18.20.6 (insufficiently random multipart boundary, CVE-2025-22150); anything before 18.20.6 has known `fetch` vulnerabilities, and later undici CVEs are not fixed in any 18.x.[^1][^32]
 
 ```js
@@ -1215,7 +1216,7 @@ Use a pool (piscina or a hand-written queue) sized by `os.availableParallelism()
 
 ##### Node 18 Is End-of-Life — Treat It as a Finding
 
-- No security fixes since 18.20.8 (March 27, 2025); CVEs published since then are assumed to affect 18.x.[^6] Examples of fixes that exist only in supported lines: the January 13, 2026 release (CVE-2025-55131 non-zero-filled `Buffer.alloc`/`Uint8Array` under timeout races, CVE-2025-59465 HTTP/2 server crash on malformed HEADERS, CVE-2025-59466 uncatchable stack overflow via `async_hooks`, CVE-2026-21637 TLS callback exceptions bypassing error handlers).[^7]
+- No security fixes since 18.20.8 (March 27, 2025); CVEs published since then are assumed to affect 18.x.[^6] Examples of fixes that exist only in supported lines: the January 13, 2026 release (CVE-2025-55131 non-zero-filled `Buffer.alloc`/`Uint8Array` when allocations are interrupted by a `vm` `timeout`, CVE-2025-59465 HTTP/2 server crash on malformed HEADERS, CVE-2025-59466 uncatchable stack overflow via `async_hooks`, CVE-2026-21637 TLS callback exceptions bypassing error handlers).[^7]
 - OpenSSL 3.0 (bundled 3.0.16) is out of upstream support; certificate store updates stopped at NSS 3.108.[^1][^24]
 - Running 18 on the public internet requires compensating controls (patched reverse proxy terminating TLS and HTTP/2, WAF) or a commercial extended-support build; the recommendation is to upgrade.
 
@@ -1414,7 +1415,7 @@ Node 18 test-runner pitfalls (verified on 18.20.8):
 - Default discovery: files named `*.test.{js,cjs,mjs}`, `*-test.*`, `*_test.*`, `test-*.*`, `test.*`, and every `.js/.cjs/.mjs` under `test/` directories (`node_modules` excluded).[^16]
 - Use `node:assert/strict` (or `assert.strictEqual`/`deepStrictEqual`); loose `assert.equal`/`deepEqual` coerce types. Since 18.0, deep-equality also compares `RegExp` `lastIndex`.
 
-**Third-party runners**: Jest 29/30 (30 requires ≥ 18.14), Vitest ≤ 3, Mocha ≤ 11 support Node 18; current Vitest 5 and Mocha 12 do not. Jest 30's `--experimental-vm-modules` ESM support relies on `vm` APIs that are experimental on 18.
+**Third-party runners**: Jest 29/30 (30 requires ≥ 18.14), Vitest ≤ 3, Mocha ≤ 11 support Node 18; Vitest 4/5 and Mocha 12 do not. Jest 30's `--experimental-vm-modules` ESM support relies on `vm` APIs that are experimental on 18.
 
 ***
 
