@@ -52,7 +52,7 @@ Many APIs that debuted in Node 23 or 24 were backported to a later 22.x minor (`
 import { getBuiltinModule } from 'node:process';
 
 const hasRequireEsm = process.features.require_module === true;   // 22.10+ getter, true from 22.12
-const hasTypeStripping = process.features.typescript !== false;   // 'strip' by default from 22.18
+const hasTypeStripping = typeof process.features.typescript === 'string'; // 22.10+ getter; 'strip' by default from 22.18
 const zlib = getBuiltinModule('node:zlib');                         // process.getBuiltinModule: 22.3+
 const hasZstd = typeof zlib.zstdCompress === 'function';            // 22.15+
 console.log({ hasRequireEsm, hasTypeStripping, hasZstd });
@@ -72,6 +72,7 @@ Node 21 (October 2023) was the odd-numbered line between the two LTS releases; e
 |---|---|---|
 | `Object.groupBy()`, `Map.groupBy()` | Node 21 (V8 11.8) | Result object has a `null` prototype |
 | `ArrayBuffer.prototype.transfer()`, `.transferToFixedLength()`, `.detached` | Node 21 | |
+| `JSON.rawJSON()`, `JSON.isRawJSON()` (JSON.parse source text access) | Node 21 | Lossless big-number serialisation: `JSON.stringify({ id: JSON.rawJSON('12345678901234567890') })` |
 | `Promise.withResolvers()` | **New in 22** (V8 12.4) | |
 | `Array.fromAsync()` | **New in 22** | |
 | Set methods: `union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom` | **New in 22** | Argument must be set-like (`size`, `has`, `keys`) |
@@ -126,13 +127,13 @@ These features exist in newer Node.js or V8 releases. On 22.23.4 they are a `Syn
 ##### Node.js APIs missing from 22.x
 
 - **Node 23**: `URLPattern` as an export of `node:url` (23.8; global from 24); the `'module.exports'` export name on the namespace of an `import`ed CommonJS module; global `CloseEvent`; `TimeoutNegativeWarning` for negative timer delays; `spec` as the default test reporter in non-TTY output.
-- **Node 24**: global **`URLPattern`**; `crypto.randomUUIDv7()`; `crypto.argon2()`; `crypto.parsePKCS12()`; Web Crypto `SubtleCrypto.supports()`, ML-KEM/ML-DSA, SHA-3, AES-OCB, ChaCha20-Poly1305 algorithms; `AsyncLocalStorage.prototype.withScope()` and the `name`/`defaultValue` constructor options; `AsyncLocalStorage` backed by `AsyncContextFrame` by default (opt-in on 22 via `--experimental-async-context-frame`); `http.setGlobalProxyFromEnv()`; `IncomingMessage.prototype.signal` (`req.signal`); `fs.Utf8Stream`; `fs.mkdtempDisposableSync()`; `stream/consumers` `bytes()`; `Blob.prototype.textStream()`; `util.debounce()`/`util.throttle()`, `util.markPromiseAsHandled()`, `util.convertProcessSignalToExitCode()`, `MIMEType.parse()`; `navigator.locks`; `node:sqlite` tagged templates (`createTagStore`), `StatementSync.prototype.close()`, `limits`, authorizer; test runner auto-awaits subtests (on 22 an un-awaited `t.test()` is **cancelled**); `--test-randomize`; global test setup/teardown; `Buffer.poolSize` default 64 KiB (22: 8 KiB); `import text from './x.txt' with { type: 'text' }` (`--experimental-import-text`).
+- **Node 24** (several items arrived only in late 24.x minors as backports from 26: `crypto.randomUUIDv7()` and `req.signal` 24.16, `Buffer.poolSize` 64 KiB 24.18, `Blob.prototype.textStream()` and `--experimental-import-text` 24.19, `als.withScope()` 24.20, `MIMEType.parse()` 24.21, `crypto.parsePKCS12()`, `util.debounce()`/`throttle()`/`markPromiseAsHandled()` 24.22): global **`URLPattern`**; `crypto.randomUUIDv7()`; `crypto.argon2()`; `crypto.parsePKCS12()`; Web Crypto `SubtleCrypto.supports()`, ML-KEM/ML-DSA, SHA-3, AES-OCB, ChaCha20-Poly1305 algorithms; `AsyncLocalStorage.prototype.withScope()` and the `name`/`defaultValue` constructor options; `AsyncLocalStorage` backed by `AsyncContextFrame` by default (opt-in on 22 via `--experimental-async-context-frame`); `http.setGlobalProxyFromEnv()`; `IncomingMessage.prototype.signal` (`req.signal`); `fs.Utf8Stream`; `fs.mkdtempDisposableSync()`; `stream/consumers` `bytes()`; `Blob.prototype.textStream()`; `util.debounce()`/`util.throttle()`, `util.markPromiseAsHandled()`, `util.convertProcessSignalToExitCode()`, `MIMEType.parse()`; `navigator.locks`; `node:sqlite` tagged templates (`createTagStore`), `StatementSync.prototype.close()`, `limits`, authorizer; test runner auto-awaits subtests (on 22 an un-awaited `t.test()` is **cancelled**); `--test-randomize`; global test setup/teardown; `Buffer.poolSize` default 64 KiB (22: 8 KiB); `import text from './x.txt' with { type: 'text' }` (`--experimental-import-text`).
 - **Node 25**: `--allow-net` (the Node 22 permission model does **not** restrict network access); `localStorage` enabled by default; global `ErrorEvent`; `--build-sea`; ESM entry points in SEA.
-- **Node 26**: `node:ffi`, `node:vfs`, `node:bench`; `fs.openAsBlobSync()`; `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`; `sqlite` binding `undefined` as `NULL` (on 22 it throws `ERR_INVALID_ARG_TYPE`).[^15][^16][^17][^18]
+- **Node 26**: `node:ffi`, and `node:vfs`/`node:bench` behind `--experimental-vfs`/`--experimental-bench`; `fs.openAsBlobSync()`; `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`; `sqlite` binding `undefined` as `NULL` (on 22 it throws `ERR_INVALID_ARG_TYPE`).[^15][^16][^17][^18]
 
 ##### Flags that do not exist on Node 22
 
-`--test-isolation` (22 spells it `--experimental-test-isolation=none`), `--allow-net`, `--allow-inspector`, `--permission-audit`, `--build-sea`, `--experimental-import-text`, `--test-randomize`, `--localstorage-file` without `--experimental-webstorage`. `--experimental-permission` still works on 22 as an alias of `--permission`.
+`--test-isolation` (22 spells it `--experimental-test-isolation=none`), `--allow-net`, `--allow-inspector`, `--permission-audit`, `--build-sea`, `--experimental-import-text`, `--test-randomize` — all rejected with `bad option` on 22.23.4. `--localstorage-file` is accepted on 22 but does nothing without `--experimental-webstorage` (`localStorage` stays `undefined`). `--experimental-permission` still works on 22 as an alias of `--permission`.
 
 ##### Older APIs: removed or deprecated in 22
 
@@ -154,6 +155,7 @@ These features exist in newer Node.js or V8 releases. On 22.23.4 they are a `Syn
 | `require('node:_http_*')`, `_stream_*`, `_tls_*` | Doc-deprecated | Public modules |
 | `options.shell = ''` in `child_process`, `args` with `shell: true` | Doc-deprecated (DEP0196, DEP0190) | Pass a shell path explicitly, or avoid `shell` |
 | `util.getCallSite()` | Renamed (ExperimentalWarning); removed in 24 | `util.getCallSites()` |
+| `crypto.createHash('shake128' / 'shake256')` without `outputLength` | Doc-deprecated (DEP0198, 22.18; warns under `--pending-deprecation`) | Pass `{ outputLength }` explicitly |
 
 All of these were verified on 22.23.4: removed APIs throw, runtime-deprecated ones print a `DeprecationWarning` with the DEP code on first use.[^14]
 
@@ -574,7 +576,7 @@ Syntax detection costs a second parse, and when the nearest `package.json` lacks
 ```
 
 - `"exports"` encapsulates the package: deep imports not listed there fail with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Adding `"exports"` to an existing library is a breaking change.
-- `"imports"` (`#name` specifiers) replaces fragile `../../..` relative paths and works in both module systems. Patterns must start with `#`; the `#/` prefix form is Node 24+ only.
+- `"imports"` (`#name` specifiers) replaces fragile `../../..` relative paths and works in both module systems. Patterns must start with `#`; the `#/` prefix form (`"#/*"`) is Node 24.14+/25.4+ only — on 22 it fails with `ERR_INVALID_MODULE_SPECIFIER`.
 - ESM import specifiers need **full file extensions** (`./util.js`, not `./util`) and cannot import directories; this differs from CommonJS resolution and from bundlers.
 
 ##### ESM essentials
@@ -1281,7 +1283,7 @@ server.close();
 - A network failure rejects with `TypeError: fetch failed`; the real reason (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_CONNECT_TIMEOUT`) is on `err.cause`. Log `err.cause`, not just `err.message`.
 - There is **no overall request timeout**; undici's defaults are 10 s to connect and 300 s each for headers and body.[^19] Always pass `signal`.
 - Always consume or cancel the body (`await res.text()`, `res.body?.cancel()`): undici does not release the connection of an unread body promptly, which reduces connection reuse and can stall the pool.[^19]
-- `fetch` ignores `HTTP_PROXY`/`HTTPS_PROXY` **unless** `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` is set (22.21+; undici prints an `EnvHttpProxyAgent is experimental` warning on 22). Verified: without the variable the request goes direct even when `HTTP_PROXY` is set.
+- `fetch` ignores `HTTP_PROXY`/`HTTPS_PROXY` **unless** `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` is set (22.21+; undici prints an `EnvHttpProxyAgent is experimental` warning on 22). Verified: without the variable the request goes direct even when `HTTP_PROXY` is set; with it, undici 6 tunnels even plain `http://` requests through `CONNECT host:80` (whereas `http.request` with `proxyEnv` sends an absolute-form `GET`), and a proxy that refuses `CONNECT` makes `fetch` retry until its signal aborts — another reason every `fetch` needs a deadline.
 - Undici is a separate HTTP stack from `node:http`: `http.globalAgent`/`http.Agent` options and the `diagnostics_channel` `http.client.*` events do not apply to `fetch` (it publishes its own `undici:*` channels). Configure pooling with an undici `Dispatcher` instead.
 
 ##### `node:http` server defaults and hardening
@@ -1414,7 +1416,7 @@ console.log('exit code', code);                  // 3
 ```javascript
 import { DatabaseSync } from 'node:sqlite';
 
-const db = new DatabaseSync(':memory:', { timeout: 1_000 });   // busy timeout in ms
+const db = new DatabaseSync(':memory:', { timeout: 1_000 });   // busy timeout in ms (option added in 22.16)
 try {
   db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, quota INTEGER) STRICT`);
 
@@ -1463,7 +1465,7 @@ try {
 
 ##### Keep the runtime patched
 
-Node 22 is in maintenance: fixes arrive only as patch releases, frequently as coordinated security releases. 2026 security releases for 22.x fixed, among others: TLS server-identity checks and session reuse bound to the wrong host (22.23.0), HTTP/2 memory exhaustion via header accounting and `RST_STREAM` handling (22.23.2), permission-model bypasses (`realpathSync`, `fs/promises`, trace events, report paths, `FileHandle.utimes`), `http.Agent` response-queue poisoning, NUL bytes in DNS/hostnames, `headersDistinct` prototype pollution (22.22.2), hash-collision DoS (22.22.2) and a brotli decoder bug (22.23.4).[^1] A Dockerfile pinned to an old patch (`node:22.11-alpine`) is a finding; prefer `node:22-alpine` plus digest pinning updated by a bot, or an explicit current patch.
+Node 22 is in maintenance: fixes arrive only as patch releases, frequently as coordinated security releases. 2026 security releases for 22.x fixed, among others: TLS server-identity checks and session reuse bound to the wrong host (22.23.0), HTTP/2 memory exhaustion via header accounting and `RST_STREAM` handling (22.23.2), permission-model bypasses (`realpathSync`, `fs/promises`, trace events, report paths, `FileHandle.utimes`), `http.Agent` response-queue poisoning, NUL bytes in DNS/hostnames, `headersDistinct` prototype pollution (22.22.2), hash-collision DoS (22.22.2), a race that could make `Buffer.alloc()`/`Uint8Array` return non-zero-filled memory (CVE-2025-55131, 22.22.0) and a brotli decoder bug (22.23.4).[^1] A Dockerfile pinned to an old patch (`node:22.11-alpine`) is a finding; prefer `node:22-alpine` plus digest pinning updated by a bot, or an explicit current patch.
 
 ##### New in 22: the permission model is stable (22.13)
 
@@ -1615,8 +1617,8 @@ console.log(Buffer.concat([decipher.update(ct), decipher.final()]).toString()); 
 
 - `rejectUnauthorized: false` and `NODE_TLS_REJECT_UNAUTHORIZED=0` disable certificate validation for **every** connection — never in production. Use `ca:` with the private CA, `NODE_EXTRA_CA_CERTS`, or the system store (`--use-system-ca` 22.15, `NODE_USE_SYSTEM_CA=1` 22.19).
 - `tls.getCACertificates('bundled' | 'system' | 'extra' | 'default')` (22.15)[^28] and `tls.setDefaultCACertificates()` (22.19) replace manual `ca` juggling.
-- **New in 22.20: OpenSSL 3.5.** Verified with a Node 24 client against a 22.23.4 server: TLS 1.3 now negotiates the hybrid post-quantum group `X25519MLKEM768` (a 20.x server negotiates `X25519`). The larger ClientHello can trip old middleboxes and TLS-inspecting proxies. `tls.DEFAULT_MIN_VERSION` stays `TLSv1.2`.
-- Since 22.22.0, a `TLSSocket` that is destroyed during initialisation (for example by a malformed HTTP/2 frame) no longer crashes a server that attached no `'error'` handler (CVE-2025-59465, CVSS 7.5). Older 22.x patches are remotely crashable; upgrade, and still attach error handlers.
+- **New in 22.20: OpenSSL 3.5.** Verified with a Node 24 client against a 22.23.4 server: TLS 1.3 now negotiates the hybrid post-quantum group `X25519MLKEM768` (a 20.x server negotiates `X25519`). The larger ClientHello can trip old middleboxes and TLS-inspecting proxies. `tls.DEFAULT_MIN_VERSION` stays `TLSv1.2`. On a 22.x client, `tlsSocket.getEphemeralKeyInfo()` returns `{}` for this hybrid group (Node 24 reports `{ type: 'TLSGroup', name: 'X25519MLKEM768' }`), so monitoring code must not assume `name` is present.
+- Since 22.22.0, `TLSSocket` has a default `'error'` handler, so a malformed HTTP/2 `HEADERS` frame that resets the socket no longer crashes an HTTP/2 server that attached no `'error'` handler (CVE-2025-59465, rated High). Older 22.x patches are remotely crashable; upgrade, and still attach error handlers.
 
 ##### Secrets and configuration
 
@@ -1764,7 +1766,7 @@ test('waitFor (22.14)', async (t) => {
 ##### Running tests
 
 ```bash
-node --test   # default globs: **/*.test.{cjs,mjs,js}, **/*-test.*, **/*_test.*, **/test-*.*, **/test.*, **/test/**/*.*
+node --test   # default globs: **/*.test.{cjs,mjs,js}, **/*-test.{cjs,mjs,js}, **/*_test.{cjs,mjs,js}, **/test-*.{cjs,mjs,js}, **/test.{cjs,mjs,js}, **/test/**/*.{cjs,mjs,js}
 node --test --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=junit --test-reporter-destination=junit.xml
 node --test --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=70
@@ -1943,7 +1945,7 @@ Upgrading from Node 20 (or 18) to 22 — check these first:
 13. **`process.binding()`** still works but is deprecated (DEP0111, documentation-only with `--pending-deprecation` support); Node 24 removed several bindings.
 14. **Native addons**: `NODE_MODULE_VERSION` is 127 for 22.x — prebuilt binaries for 20.x (115) do not load; prefer Node-API addons, which are ABI-stable across majors.
 
-Upgrading from 22 to 24 (what will break later): `url.parse()`, `SlowBuffer`, `fs.F_OK` and friends warn at runtime; `dirent.path`, `tls.createSecurePair`, `process.assert`, `util.isBoolean` & co are gone; un-awaited subtests stop being cancelled; `AsyncLocalStorage` switches to `AsyncContextFrame`; `Buffer.poolSize` becomes 64 KiB; `URLPattern` becomes global.
+Upgrading from 22 to 24 (what will break later): `url.parse()`, `SlowBuffer`, `fs.F_OK` and friends warn at runtime; `dirent.path`, `tls.createSecurePair`, `process.assert`, `util.isBoolean` & co are gone; un-awaited subtests stop being cancelled; `AsyncLocalStorage` switches to `AsyncContextFrame`; `Buffer.poolSize` becomes 64 KiB (from 24.18); `URLPattern` becomes global.
 
 ***
 
