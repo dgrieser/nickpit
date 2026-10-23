@@ -73,7 +73,7 @@ Kubernetes 1.32 contains 44 enhancements: 13 stable, 12 beta and 19 alpha.[^1] T
 | **Structured authorization configuration** (`StructuredAuthorizationConfiguration`) | `--authorization-config` accepts `apiserver.config.k8s.io/v1` `AuthorizationConfiguration` (multiple webhooks, CEL `matchConditions`) | 3221 |
 | **Retry generateName** (`RetryGenerateName`) | The apiserver retries name generation on a collision instead of returning `409 AlreadyExists` for `generateName` creates | 4420 |
 | **LoadBalancer IP mode** (`LoadBalancerIPMode`) | `status.loadBalancer.ingress[].ipMode: VIP \| Proxy` tells kube-proxy whether to short-circuit traffic to the LB IP | 1860 |
-| `status.hostIPs` on Pods (gate `PodHostIPs` removed) | Dual-stack host IPs | 2681 |
+| `status.hostIPs` on Pods | Dual-stack host IPs. Listed as a 1.32 graduation in the release announcement, but the `PodHostIPs` gate was already GA and locked on since 1.30; 1.32 only removes the gate | 2681 |
 | **Custom profile in `kubectl debug`** | `kubectl debug --custom=<json/yaml partial container spec>` | 4292 |
 | CronJob scheduled-timestamp annotation (`CronJobsScheduledAnnotation`) | Jobs created by a CronJob carry `batch.kubernetes.io/cronjob-scheduled-timestamp` (RFC 3339) | 4026 |
 | Pod index label (`PodIndexLabel`) | StatefulSet Pods get `apps.kubernetes.io/pod-index`; Indexed Job Pods get `batch.kubernetes.io/job-completion-index` | 4017 |
@@ -112,7 +112,10 @@ Kubernetes 1.32 contains 44 enhancements: 13 stable, 12 beta and 19 alpha.[^1] T
 - **kube-controller-manager**: legacy in-tree cloud-provider controllers are removed; `--cloud-provider` accepts only `external` or empty; the `--node-monitor-grace-period` default rose from 40 s to 50 s (Nodes are marked `NotReady` later).[^3]
 - **Kubelet**: `--runonce` removed; `singleProcessOOMKill` config option added (cgroup v2); image pull back-off messages now include the pull error in `state.waiting.message`.[^3]
 - **`DisableNodeKubeProxyVersion`** reverted to off: `node.status.nodeInfo.kubeProxyVersion` is still populated in 1.32 (removed in 1.33). Do not read it.[^3]
-- **Strict config decoding**: `--admission-control-config-file`, `--egress-selector-config-file`, `--tracing-config-file` and the kubelet `--image-credential-provider-config` reject unknown or duplicate fields — typos that were ignored on 1.31 now stop the component.[^3]
+- **Strict config decoding**: `--admission-control-config-file` (including its `ResourceQuotaConfiguration` section), `--egress-selector-config-file`, `--tracing-config-file`, kube-controller-manager `--leader-migration-config` and the kubelet `--image-credential-provider-config` reject unknown or duplicate fields — typos that were ignored on 1.31 now stop the component.[^3]
+- **Overlapping volume paths warn**: a `projected`, `configMap`, `secret` or `downwardAPI` volume whose items overlap (`x` and `x/y`) now returns a warning. Verified on 1.32: `Warning: volume "p" (Projected): overlapping paths: "x/y" (Secret "b") with "x" (ConfigMap "a")`; exact duplicates remain an error (`conflicting duplicate paths`). Treat the warning as a bug: one source silently shadows the other.[^3]
+- **Structured authentication configuration** rejects `claimMappings.extra` keys in the `k8s.io` and `kubernetes.io` namespaces; kube-apiserver gains `--requestheader-uid-headers` (alpha `RemoteRequestHeaderUID`) for front proxies that pass a user UID.[^3]
+- **Device plugins / CDI**: the kubelet no longer passes CDI device information through annotations; containerd older than v1.7.2 must be upgraded on nodes that use CDI devices.[^3]
 - **Feature gates removed after GA** (setting them now fails at startup): `ValidatingAdmissionPolicy`, `HPAContainerMetrics`, `ServerSideApply`, `ServerSideFieldValidation`, `KMSv2`, `KMSv2KDF`, `MinDomainsInPodTopologySpread`, `CloudDualStackNodeIPs`, `LegacyServiceAccountTokenCleanUp`, `NewVolumeManagerReconstruction`, `NodeOutOfServiceVolumeDetach`, `StableLoadBalancerNodeSet`, `ZeroLimitedNominalConcurrencyShares`, `PodHostIPs`, `ComponentSLIs`, `AllowServiceLBStatusOnNonLB`.[^3]
 - **`ScalingReplicaSet` event text** changed to `Scaled up replica set <name> from <old> to <new>`; tooling that parses the old wording breaks.[^3]
 
@@ -228,7 +231,7 @@ The cluster is 1.32. Never suggest the following as available; they fail validat
 
 - In-place resize **GA**, Pod generation tracking GA, `PreferSameZone` GA, Job `managedBy` GA, container `restartPolicyRules`, `env[].valueFrom.fileKeyRef`, image volumes on by default (`volumes[].image` is dropped on 1.32, verified), `hostnameOverride`, `pods/exec` WebSocket requests needing `create`, comparable resource versions (`resourceversion.CompareResourceVersion`), controller-runtime **v0.23** generic webhooks (`ctrl.NewWebhookManagedBy(mgr, obj)`, `admission.Validator[T]`) and `mgr.GetEventRecorder` (events.k8s.io), priority queue on by default.
 - 1.36: MutatingAdmissionPolicy **v1**, Service names starting with a digit (verified: rejected on 1.32 with `a DNS-1035 label must ... start with an alphabetic character`), strict IP/CIDR validation, numeric `format` range enforcement in CRDs. 1.37: StorageVersionMigration `v1`, Pod certificates GA, StatefulSet `updateStrategy.type: Recreate`.
-- StatefulSet `rollingUpdate.maxUnavailable` (`MaxUnavailableStatefulSet`) is alpha/off on 1.32: verified, the field is silently dropped. Do not rely on it.
+- StatefulSet `rollingUpdate.maxUnavailable` (`MaxUnavailableStatefulSet`) is alpha/off on 1.32 (and 1.33/1.34): verified, the field is silently dropped (the stored `rollingUpdate` keeps only `partition: 0`). It was beta-on only in v1.35.0–v1.35.3, switched off again in v1.35.4 and 1.36 after a `podManagementPolicy: Parallel` rollout regression, and is on by default from 1.37. Do not rely on it.
 
 **Never recommend** dropping `PreferClose` in favour of `PreferSameZone`, replacing a mutating webhook with a MutatingAdmissionPolicy, or using `kubectl patch --subresource resize` for a 1.32 target — none of these work on a stock 1.32 cluster. Do recommend the **upgrade** itself: 1.32 is out of support.
 
@@ -675,6 +678,8 @@ Observed results on 1.32 for one invalid object:
 | `[3,1].sort()`, `math.abs(-1)`, `self.reverse()` | ❌ | ❌ | ❌ |
 
 Do not paste CEL from newer-version examples (semver checks, list `sort`/`first`) into a 1.32 CRD: the CRD install fails, which in a Helm release means the whole chart fails.
+
+Patch-level CEL fix: before v1.32.4, `cidr(...).containsCIDR(...)` wrongly reported a subnet contained in another CIDR as *not* contained (kubernetes#130773). Rules relying on `containsCIDR` give wrong answers on v1.32.0–v1.32.3.[^3]
 
 ##### CEL review rules (verified pitfalls)
 
@@ -1167,7 +1172,7 @@ Watches(
 
 `findCRsForSecret` must use a **field index** (`mgr.GetFieldIndexer().IndexField(...)` + `client.MatchingFields`) rather than listing every CR in the cluster on each Secret event. Watching all Secrets cluster-wide also caches all Secrets in memory — restrict the cache (`cache.Options.ByObject` with a label selector) or use `builder.OnlyMetadata`.
 
-**[NEW in controller-runtime v0.20]** `cache.Options` gains `DefaultEnableWatchBookmarks` (default true; per type via `ByObject[...].EnableWatchBookmarks`) and an exported `NewInformer` hook; the fake client supports adding indexes at runtime (`WithIndex`) and the `serviceaccounts/token` subresource.[^12]
+**[NEW in controller-runtime v0.20]** `cache.Options` gains `DefaultEnableWatchBookmarks` (default true; per type via `ByObject[...].EnableWatchBookmarks`; the option was also backported to later v0.19.x patches, e.g. v0.19.7, but is absent from v0.19.0) and an exported `NewInformer` hook; the fake client can add indexes at runtime with the package function `fake.AddIndex(c, obj, field, extractValue)` (the builder's `WithIndex` predates v0.20) and supports the `serviceaccounts/token` subresource. `controllerutil.HasOwnerReference` is also new in v0.20.[^12]
 
 ---
 
@@ -1529,7 +1534,7 @@ anonymous:
   - path: /healthz
 ```
 
-This prevents an RBAC mistake (a binding to `system:anonymous` or `system:unauthenticated`) from exposing the API. Flag any RoleBinding/ClusterRoleBinding whose subject is `system:anonymous` or `system:unauthenticated` beyond the default health/discovery bindings.
+Verified on a 1.32.0 apiserver started with this file: anonymous `/livez` returns 200, while `/version` and `/api` (normally readable anonymously through the default `system:public-info-viewer` and discovery bindings) return 401 — clients or probes that call those paths unauthenticated break. This prevents an RBAC mistake (a binding to `system:anonymous` or `system:unauthenticated`) from exposing the API. Flag any RoleBinding/ClusterRoleBinding whose subject is `system:anonymous` or `system:unauthenticated` beyond the default health/discovery bindings.
 
 ##### RBAC Marker Pattern (Kubebuilder)
 
@@ -1685,7 +1690,7 @@ A bare Pod in the same namespace without a security context is rejected: `violat
 
 Review notes on this template:
 
-- **Sidecars** (`initContainers[].restartPolicy: Always`) are beta and on by default since 1.29 and work on 1.32; they become GA in 1.33. A cluster that disabled `SidecarContainers` rejects the field — check cluster config for managed platforms that pin gates.
+- **Sidecars** (`initContainers[].restartPolicy: Always`) are beta and on by default since 1.29 and work on 1.32; they become GA in 1.33. A cluster that disabled `SidecarContainers` does not reject the field but **silently drops** `initContainers[].restartPolicy` (verified on a 1.32.0 apiserver with `--feature-gates=SidecarContainers=false`): the sidecar becomes an ordinary init container that never exits, so the main containers never start. Check cluster config for managed platforms that pin gates.
 - `matchLabelKeys: [pod-template-hash]` spreads each ReplicaSet revision independently. On 1.32 the apiserver does **not** merge `matchLabelKeys` into the topology-spread `labelSelector` (verified: the stored Pod keeps `labelSelector` unchanged; the scheduler applies the keys). For pod (anti-)affinity, 1.32 **does** merge them into `labelSelector.matchExpressions` at creation (verified: `{key: pod-template-hash, operator: In, values: [abc]}` is added). Tools that diff live Pods against templates must expect this.
 - **[GA in 1.32]** Memory-backed `emptyDir` volumes are sized to the Pod's memory limit (or `sizeLimit` when smaller) and their usage counts as container memory — a 64Mi tmpfs inside a 256Mi container leaves 192Mi for the process. Always set `sizeLimit` on `medium: Memory`.
 - `recursiveReadOnly: IfPossible` (beta, on) makes read-only mounts read-only for sub-mounts too where the runtime supports it; `Enabled` fails the Pod when unsupported. Requires `readOnly: true` (and `mountPropagation: None`).
@@ -1704,7 +1709,7 @@ All of the following are accepted with `rc=0` by a default 1.32 apiserver, but t
 | `securityContext.supplementalGroupsPolicy` | alpha | dropped | beta-on 1.33 |
 | `containers[].resizePolicy` | `InPlacePodVerticalScaling` alpha | dropped | beta-on 1.33 |
 | `volumes[].image` | `ImageVolume` alpha | **the volume and the `volumeMount` that references it are both removed** | on by default 1.35 |
-| StatefulSet `updateStrategy.rollingUpdate.maxUnavailable` | `MaxUnavailableStatefulSet` alpha | dropped | partially in 1.35; on in 1.37 |
+| StatefulSet `updateStrategy.rollingUpdate.maxUnavailable` | `MaxUnavailableStatefulSet` alpha | dropped | on only in v1.35.0–v1.35.3 (off again from v1.35.4 and in 1.36); on by default in 1.37 |
 
 The image-volume case is the dangerous one: the container starts without the mount and reads an empty directory path instead of failing. Review rule: a 1.32 manifest must not contain these fields unless the cluster configuration enables the gate; CI must run `kubectl apply --dry-run=server -o yaml` against a 1.32 apiserver and diff the output.
 
@@ -1716,7 +1721,7 @@ The image-volume case is the dangerous one: the container starts without the mou
 
 ##### In-place Pod resize — alpha on 1.32
 
-The `pods/resize` subresource exists in the 1.32 code base, but the gate is alpha/off. Verified on a default 1.32 apiserver: `kubectl patch pod web --subresource resize -p ...` → `Error from server (NotFound): the server could not find the requested resource`. With `--feature-gates=InPlacePodVerticalScaling=true` the same strategic-merge patch updates `requests.cpu`/`limits.cpu` (verified). Never ship autoscaler or operator code that depends on resize to a stock 1.32 cluster; in 1.32 alpha, resize is not supported for Windows Pods, and Guaranteed Pods with integer CPU on static CPU/memory-manager nodes are blocked (`InPlacePodVerticalScalingExclusiveCPUs` off).[^3]
+The `pods/resize` subresource exists in the 1.32 code base, but the gate is alpha/off. Verified on a default 1.32 apiserver: `kubectl patch pod web --subresource resize -p ...` → `Error from server (NotFound): the server could not find the requested resource`. With `--feature-gates=InPlacePodVerticalScaling=true` the same strategic-merge patch updates `requests.cpu`/`limits.cpu` (verified). With the gate on, the 1.32 apiserver also accepts a memory-limit *decrease* with the default `resizePolicy` (verified); 1.33 (beta) rejects such decreases unless the container's memory `resizePolicy` is `RestartContainer`, and 1.34 allows them again (kubernetes#133012). Removing requests or limits through `resize` is rejected on 1.32 (`resource limits cannot be removed`, verified). Never ship autoscaler or operator code that depends on resize to a stock 1.32 cluster; in 1.32 alpha, resize is not supported for Windows Pods, and Guaranteed Pods with integer CPU on static CPU/memory-manager nodes are blocked (`InPlacePodVerticalScalingExclusiveCPUs` off).[^3]
 
 ##### Other Pod rules
 
@@ -2252,7 +2257,7 @@ Verified with the reconciler from this guide on envtest 1.32.0 binaries: an inva
 - `kubectl get -o kyaml` does not exist (verified: `unable to match a printer suitable for the output format "kyaml"`); KYAML is 1.34+.
 - `kubectl exec POD CMD` without `--` is rejected (verified: `exec [POD] [COMMAND] is not supported anymore. Use exec [POD] -- [COMMAND] instead`); scripts must use `kubectl exec POD -- CMD`.
 - `kubectl explain` shows alpha fields that the server will drop (verified for `pod.spec.resources`); use `--dry-run=server -o yaml` to prove a field survives. `kubectl explain -o plaintext-openapiv2` gained the `-o` shorthand in 1.32.
-- `kubectl wait --for=create` waits until an object exists (documented in 1.32).
+- `kubectl wait --for=create` waits until an object exists. It works since kubectl 1.31 (verified: kubectl 1.30 fails with `unrecognized condition: "create"`); 1.32 only adds it to the help text.
 - `kubectl top node` prints percentages as `(%)`; parsers must be updated.
 - YAML coercion is a real manifest bug, not a style issue: verified, `metadata: {name: n}` fails with `json: cannot unmarshal bool into Go struct field ObjectMeta.metadata.name of type string`. Quote values such as `y`, `n`, `yes`, `no`, `on`, `off`, `true`, `false`, version strings (`"1.10"`), and octal-looking numbers in labels, annotations, env values and ConfigMap data.
 - kubectl 1.32 embeds kustomize v5.5.0 (`kubectl kustomize`, `kubectl apply -k`).
