@@ -86,7 +86,24 @@ style_guides:
       ">=22 <24": styleguides/javascript-node-22.md
       ">=24 <26": styleguides/javascript-node-24.md
       ">=26 <27": styleguides/javascript-node-26.md
-  typescript: styleguides/typescript.md
+  typescript:
+    default: styleguides/typescript.md
+    versions:
+      # Keyed by the typescript package version; 4.x shares the 4.9
+      # guide, which tags every feature with the 4.x minor it needs.
+      ">=4.0 <5.0": styleguides/typescript-4.9.md
+      "5.0": styleguides/typescript-5.0.md
+      "5.1": styleguides/typescript-5.1.md
+      "5.2": styleguides/typescript-5.2.md
+      "5.3": styleguides/typescript-5.3.md
+      "5.4": styleguides/typescript-5.4.md
+      "5.5": styleguides/typescript-5.5.md
+      "5.6": styleguides/typescript-5.6.md
+      "5.7": styleguides/typescript-5.7.md
+      "5.8": styleguides/typescript-5.8.md
+      "5.9": styleguides/typescript-5.9.md
+      "6.0": styleguides/typescript-6.0.md
+      "7.0": styleguides/typescript-7.0.md
   html: styleguides/html-css.md
   css: styleguides/html-css.md
   scss: styleguides/html-css.md
