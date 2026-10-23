@@ -118,14 +118,15 @@ Sources: the C# version history and the csharplang language-version history.[^4]
 - **Generic math** interfaces (`INumber<T>`, `INumberBase<T>`, `IBinaryInteger<T>`, `IFloatingPoint<T>`, …) on all numeric types, plus `Int128`/`UInt128`.[^6][^23]
 - **Regular expressions**: `[GeneratedRegex]` source generator, `RegexOptions.NonBacktracking` (linear-time engine), span APIs `Regex.EnumerateMatches`, `Regex.Count`, `IsMatch(ReadOnlySpan<char>)`, analyzer `SYSLIB1045` suggests the generator.[^6][^20]
 - **System.Text.Json**: contract customization (`DefaultJsonTypeInfoResolver` + `Modifiers`), polymorphism (`[JsonPolymorphic]`, `[JsonDerivedType]`), `required` members and `[JsonRequired]`.[^19]
-- **Rate limiting**: `System.Threading.RateLimiting` (`RateLimiter`, `TokenBucketRateLimiter`, `FixedWindowRateLimiter`, `SlidingWindowRateLimiter`, `ConcurrencyLimiter`, `PartitionedRateLimiter`) and the ASP.NET Core middleware.[^6][^21]
+- **Rate limiting**: `System.Threading.RateLimiting` (`RateLimiter`, `TokenBucketRateLimiter`, `FixedWindowRateLimiter`, `SlidingWindowRateLimiter`, `ConcurrencyLimiter`, `PartitionedRateLimiter`) and the ASP.NET Core middleware. The rate-limiting library ships as the `System.Threading.RateLimiting` NuGet package (7.0.x, also part of the ASP.NET Core shared framework), not in `Microsoft.NETCore.App`: a plain console or worker project needs the package reference (verified: the type is absent from the 7.0.20 base runtime).[^6][^21]
 - **TAR archives**: `System.Formats.Tar` (`TarFile`, `TarReader`, `TarWriter`).[^6]
 - **Streams**: `Stream.ReadExactly`/`ReadAtLeast` (+ async).[^6]
 - **Unix file modes**: `UnixFileMode`, `File.GetUnixFileMode`/`SetUnixFileMode`, `Directory.CreateDirectory(path, mode)`, `FileStreamOptions.UnixCreateMode`.[^6]
 - **Microsecond/nanosecond** members on `DateTime`, `DateTimeOffset`, `TimeOnly`, `TimeSpan`.[^6]
 - **`[StringSyntax]`**, **`LibraryImport`** P/Invoke source generator, **`ObjectDisposedException.ThrowIf`**, **`ArgumentException.ThrowIfNullOrEmpty`**, **`UnreachableException`**, **`Enumerable.Order`/`OrderDescending`**, **`Stopwatch.GetElapsedTime`**, **`MemoryCache.GetCurrentStatistics()`**, **`Activity.CurrentChanged`**.[^6]
 - **Native AOT** publishing for console apps (not ASP.NET Core; that arrived in .NET 8); **on-stack replacement** enabled; Dynamic PGO available but **off by default** (`<TieredPGO>true</TieredPGO>`; on by default only from .NET 8).[^6][^28]
-- **SDK**: central package management (`Directory.Packages.props`), `dotnet new` tab completion and template constraints, built-in container publishing.[^6]
+- **SDK**: `dotnet new` tab completion, subcommands without `--` (`dotnet new install`/`list`/`search`), template constraints, built-in container publishing (`dotnet publish` to a container image); the release notes also highlight NuGet central package management (`Directory.Packages.props`), which first shipped with NuGet 6.2 / SDK 6.0.300 — `GlobalPackageReference` needs SDK 7.0.100+ / NuGet 6.4.[^6]
+- **Also new in .NET 7**: type converters for `DateOnly`, `TimeOnly`, `Int128`, `UInt128` and `Half`; `Activity.EnumerateTagObjects()`/`EnumerateLinks()`/`EnumerateEvents()`; `System.Runtime.InteropServices.JavaScript` interop for WebAssembly; ASP.NET Core gRPC JSON transcoding.[^6][^8]
 - **ASP.NET Core 7**: rate limiting middleware, output caching middleware, minimal API endpoint filters, route groups (`MapGroup`), `TypedResults` and `Results<T1,…>` unions, `[AsParameters]`, `IFormFile` binding in minimal APIs (no built-in antiforgery), problem details service (`AddProblemDetails`), request decompression middleware, HTTP/3 fully supported, `dotnet user-jwts`, single authentication scheme becomes the default scheme, API controllers infer `[FromServices]` parameters.[^8][^9]
 - **EF Core 7**: `ExecuteUpdate`/`ExecuteDelete` bulk operations, JSON columns (SQL Server provider only), TPC inheritance mapping, faster `SaveChanges` (SQL Server `OUTPUT`, SQLite `RETURNING`), `FromSql`, `SqlQuery<T>` for scalar types, `ExecuteSql`, interceptors for materialization, stored-procedure mapping for inserts/updates/deletes.[^10]
 
@@ -156,7 +157,7 @@ The compiler of a `net7.0` project rejects these, or the API does not exist in t
 ##### C# 14 (.NET 10, November 2025)[^15]
 
 - `extension` blocks / extension members (properties, static extension members) — use classic `static` extension methods.
-- The `field` keyword in property accessors — `CS8050` on LangVersion 11; declare a backing field.
+- The `field` keyword in property accessors — on LangVersion 11 `field` is an ordinary identifier, so `get => field;` fails with `CS0103: The name 'field' does not exist in the current context` (or silently binds to a member named `field`); declare a backing field.
 - Null-conditional assignment `a?.B = c` — `CS0131`.
 - `nameof(List<>)` with unbound generic types — `CS0305`.
 - Modifiers on simple lambda parameters `(s, out r) => …`, first-class span conversions, partial events/constructors, user-defined compound assignment operators.
@@ -192,7 +193,6 @@ Pre-release only; nothing from it applies to a `net7.0` code base.
 | `ValidateOptionsResultBuilder`, `[OptionsValidator]` source generator, configuration binder source generator | .NET 8 | `IValidateOptions<T>`, `ValidateDataAnnotations()` |
 | `IExceptionHandler`, `WebApplication.CreateSlimBuilder`/`CreateEmptyBuilder`, `ShortCircuit()`, `UseAntiforgery()`/`RequireAntiforgeryToken` for minimal APIs, `MapIdentityApi`, `AddStackExchangeRedisOutputCache`, Native AOT for ASP.NET Core, `ConfigureHttpClientDefaults` | .NET 8 | `UseExceptionHandler(...)`, `CreateBuilder`, `IAntiforgery` manually |
 | `HybridCache`, `MapStaticAssets`, built-in OpenAPI document generation (`AddOpenApi`) | .NET 9 | `IMemoryCache`/`IDistributedCache`, `UseStaticFiles`, Swashbuckle + `Microsoft.AspNetCore.OpenApi` 7.0 (`WithOpenApi`) |
-| `Results<T1,…,T7+>` (7+ type arguments) | later | .NET 7 provides `Results<T1,T2>` up to `Results<T1,…,T6>` |
 | EF Core 8+: complex types (`ComplexProperty`), primitive collections, `SqlQuery<T>` for unmapped types, JSON columns on SQLite, `UseSqlReturningClause`/`UseSqlOutputClause`, `HierarchyId`; EF Core 9+/10+ features (`ExecuteUpdate` with non-expression setters, `LeftJoin`) | EF 8–10 | see the EF Core section |
 
 ##### Deprecated or removed in .NET 7 (do not keep using)
@@ -446,7 +446,7 @@ static class Http
 
 Restrictions (verified):
 
-- A u8 literal is not a constant: `const ReadOnlySpan<byte> X = "a"u8;` fails (`CS0133`), and `ReadOnlySpan<byte>` cannot be a static field (`CS8345`). Use a `static ReadOnlySpan<byte> Name => "…"u8;` property.
+- A u8 literal is not a constant: `const ReadOnlySpan<byte> X = "a"u8;` fails (`CS0283: The type 'ReadOnlySpan<byte>' cannot be declared const`), and `ReadOnlySpan<byte>` cannot be a static field (`CS8345`). Use a `static ReadOnlySpan<byte> Name => "…"u8;` property.
 - `ReadOnlySpan<byte>` locals are not allowed in `async` methods in C# 11 (`CS4012: Parameters or locals of type 'ReadOnlySpan<byte>' cannot be declared in async methods`). Move the span code into a synchronous helper.
 - **Review:** `"…"u8.ToArray()` in a loop allocates every time; a `static readonly byte[]` is better when an array is required.
 
@@ -662,7 +662,7 @@ ref struct RefHolder
 }
 ```
 
-Compiler breaking changes that come with the new ref-safety rules (C# 11 **or** `net7.0`): an `out` parameter can no longer be returned by `ref` (`CS8166`, fix with `[UnscopedRef]` or `ref`), and a `ref struct` instance method is assumed to capture unscoped `ref`/`in` arguments, which turns some formerly accepted span code into errors.[^5] Treat a new `[UnscopedRef]` or `Unsafe.AsRef` in application code as a red flag that needs justification.
+Compiler breaking changes that come with the new ref-safety rules (C# 11 **or** `net7.0`): `out` parameters are implicitly `scoped`, so returning one by `ref` fails (`CS9075: Cannot return a parameter by reference 'x' because it is scoped to the current method`; fix with `[UnscopedRef] out` or a `ref` parameter), and a `ref struct` instance method is assumed to capture unscoped `ref`/`in` arguments, which turns some formerly accepted span code into errors.[^5] Treat a new `[UnscopedRef]` or `Unsafe.AsRef` in application code as a red flag that needs justification.
 
 ***
 
@@ -1591,7 +1591,7 @@ catch (JsonException) { Console.WriteLine("quoted number rejected by default opt
 Console.WriteLine(JsonSerializer.Deserialize<Counter>("""{"Count":"5"}""", web)!.Count);   // 5 with Web defaults
 
 Console.WriteLine(JsonSerializer.Serialize(new { Html = "<script>&'" }));
-// {"Html":"<script>&'"}: HTML-sensitive characters escaped by default
+// {"Html":"\u003Cscript\u003E\u0026\u0027"}: HTML-sensitive characters escaped by default
 
 sealed class Person { public string? FirstName { get; set; } }
 sealed class Counter { public int Count { get; set; } }
@@ -1882,7 +1882,7 @@ Verified behaviour of this pipeline on ASP.NET Core 7.0.20 (Kestrel, real HTTP r
 - `GET /api/todos/2` → `404`; `POST` with a blank title → `400 application/problem+json` with an `errors` dictionary.
 - An unhandled exception → `500` whose body does **not** contain the exception message (Production environment).
 - **The default problem-details writer in .NET 7 only writes JSON when the request's `Accept` header allows `application/json`.** A request without `Accept` (e.g. a bare `HttpClient`) gets an **empty** 500 body from `UseExceptionHandler()` and a `text/plain` body (`Status Code: 404; Not Found`) from `UseStatusCodePages()`. Clients and tests must send `Accept: application/json`.
-- `Results<T1,…>` exists for 2 to 6 type arguments in .NET 7.
+- `Results<T1,…>` exists for 2 to 6 type arguments (unchanged through .NET 10; verified by reflection); an endpoint with more outcomes returns `IResult`.
 
 Other minimal-API facts for .NET 7:[^8]
 
@@ -2044,7 +2044,7 @@ var updated = await db.Products
 
 Console.WriteLine($"updated {updated}; tracked entity still says {tracked.Price}");   // 20: stale
 var fresh = await db.Products.AsNoTracking().Where(p => p.Name == "b").Select(p => p.Price).SingleAsync();
-Console.WriteLine($"database says {fresh}");                                          // 40
+Console.WriteLine($"database says {fresh}");                                          // 40.0
 
 var deleted = await db.Products.Where(p => p.Stock == 0).ExecuteDeleteAsync();
 Console.WriteLine($"deleted {deleted}");
@@ -2117,7 +2117,10 @@ public sealed class UserContext : DbContext
 - **SQL Server tables with triggers** (and some computed columns) fail on `SaveChanges` because EF 7 uses `OUTPUT` without `INTO`: configure `entity.ToTable(tb => tb.HasTrigger("TriggerName"))` (`UseSqlOutputClause(false)` is EF 8).
 - **SQLite**: `RETURNING` is used for saves — tables with `AFTER` triggers or virtual tables need `ReplaceService<IUpdateSqlGenerator, SqliteLegacyUpdateSqlGenerator>()`; without WAL mode, busy/locked errors become more likely.
 - Orphaned dependents of optional relationships are no longer deleted automatically.
-- JSON columns (`OwnsOne(..., b => b.ToJson())`) are implemented only by the **SQL Server** provider in EF 7 (SQLite support is EF 8); verified: the SQLite provider 7.0.20 fails at `EnsureCreated` with a `NullReferenceException`.
+- Some warnings that EF Core 6 only logged on SQL Server throw again (e.g. `RelationalEventId.AmbientTransactionWarning`): an ambient `TransactionScope` that EF ignores now fails loudly.
+- TPT mappings on SQL Server now get cascade deletes from the base table, which can surface "multiple cascade paths"/reference-constraint errors in existing schemas.
+- Calling a provider-specific `FromSqlRaw` from the wrong provider (Cosmos vs. relational, or relational methods on the in-memory provider) throws instead of silently doing nothing — tests that used the in-memory provider with raw SQL break.
+- JSON columns (`OwnsOne(..., b => b.ToJson())`) are implemented only by the **SQL Server** provider in EF 7 (SQLite support is EF 8); verified: with the SQLite provider 7.0.20 the first use of the context fails with a `NullReferenceException` thrown while the relational model is built (`RelationalModel.CreateTableMapping`).
 
 ##### General EF Core rules
 
@@ -2324,9 +2327,9 @@ Review rules:
 </Project>
 ```
 
-- Default analysis (`AnalysisLevel` = `latest`, which is 7.0 on SDK 7, mode `Default`) reports very little: in a test project only `CA2200` fired. With `latest-recommended` the same code additionally reported `CA1304`/`CA1311` (culture-sensitive `ToLower()`), `CA1829` (`Count()` on a list), `CA1848` and `CA2254` (logging); `latest-all` added `CA2000` and `CA2007` (verified on SDK 7.0.410).[^26]
+- Default analysis (`AnalysisLevel` = `latest`, which is 7.0 on SDK 7, mode `Default`) reports very little: in a test project only `CA2200` fired. With `latest-recommended` the same code additionally reported `CA1304`/`CA1311` (culture-sensitive `ToLower()`), `CA1829` (`Count()` on a list), `CA1848` and `CA2254` (logging); `latest-all` additionally reported `CA2007` (`ConfigureAwait`) (verified on SDK 7.0.410; a `CA2000` dispose leak was not reported for an undisposed `MemoryStream` local, so do not rely on it alone).[^26]
 - Sync-over-async (`.Result`, `.Wait()`) is not flagged by the built-in analyzers; `Microsoft.VisualStudio.Threading.Analyzers` (`VSTHRD002`) does.
-- Central package management (`Directory.Packages.props`, **New in .NET 7 SDK**) keeps versions consistent across projects.[^6]
+- Central package management (`Directory.Packages.props` with `ManagePackageVersionsCentrally`; featured in the .NET 7 SDK release notes, available since NuGet 6.2) keeps versions consistent across projects; `CentralPackageTransitivePinningEnabled` pins vulnerable transitive packages.[^6]
 - Vulnerable packages: `dotnet list package --vulnerable --include-transitive` works on SDK 7; automatic NuGet audit during restore (`NuGetAudit`) needs SDK 8+.[^39]
 - `dotnet format` for style; `.editorconfig` for naming and severity configuration; `<WarningsAsErrors>nullable</WarningsAsErrors>` as a minimum.
 - `global.json` pins the SDK; CI images that only contain SDK 8+/10 build `net7.0` with `NETSDK1138` warnings — which `TreatWarningsAsErrors` turns into errors. Do not "fix" that by suppressing NETSDK1138; retarget.
@@ -2349,9 +2352,10 @@ Review rules:
 From .NET 6 / C# 10 to .NET 7 / C# 11 (what a reviewer of a freshly migrated code base should look for):[^5][^7][^9][^11]
 
 - **Language:** `required`, `scoped` and `file` cannot be type names; lowercase type names warn (`CS8981`); `out` parameters cannot be returned by `ref`; stricter `ref struct` escape rules; `nint`/`IntPtr` arithmetic is checked inside `checked` blocks and `UIntPtr + int` is ambiguous on `net7.0`; `struct` constructors no longer must assign all fields (lost safety net).
-- **Libraries:** `BinaryFormatter` APIs are compile errors; new `SYSLIB0036`–`SYSLIB0047` obsoletions; `DateTime.Add*` methods round with higher precision (results can differ in the last ticks); `Equals` for `NaN` changed; `BrotliStream` rejects undefined `CompressionLevel` values; reflection-invoke exceptions changed; the legacy `FileStream` strategy switch is gone; numeric format strings have a maximum precision of 999,999,999.
-- **Extensions:** configuration binding into dictionaries extends values; `AddEnvironmentVariables(prefix)` now works with prefixes containing `__`; with `WebApplicationBuilder`, command-line arguments and `DOTNET_`-prefixed variables now override `ASPNETCORE_`-prefixed variables for host settings (environment name, content root) — `ASPNETCORE_ENVIRONMENT` loses against `DOTNET_ENVIRONMENT`.
-- **ASP.NET Core 7:** API controllers infer `[FromServices]`; Kestrel's default HTTPS binding removed; the libuv transport removed; single authentication scheme becomes the default scheme; output caching API renamed between previews and GA; SignalR hub methods resolve parameters from DI.
+- **Libraries:** `BinaryFormatter` APIs are compile errors; new `SYSLIB0036`–`SYSLIB0047` obsoletions; `DateTime.Add*` methods round with higher precision (results can differ in the last ticks); `Equals` for `NaN` changed; `BrotliStream` rejects undefined `CompressionLevel` values; reflection-invoke exceptions changed; the legacy `FileStream` strategy switch is gone; numeric format strings have a maximum precision of 999,999,999; `MemoryCacheOptions.TrackLinkedCacheEntries` defaults to `false` (linked cache-entry expiration no longer propagates by default); multi-level SDK/runtime lookup is disabled on Windows; `SslClientAuthenticationOptions.AllowRenegotiation` defaults to `false`; a reused `X509ChainPolicy` now validates against `DateTime.Now` at each `X509Chain.Build` call (new `VerificationTimeIgnored` defaults to `true`; assigning `VerificationTime` turns it off).
+- **System.Text.Json:** custom converters registered for `object` are now always used, also for root-level `Serialize<object>` (no hard-coded root polymorphism); serializing with a source-generated context's `Options` no longer falls back to reflection for unregistered types (`InvalidOperationException`; `GetConverter` throws `NotSupportedException`) — add every root and polymorphic type to `[JsonSerializable]`; the `JsonSerializerOptions` copy constructor copies the `JsonSerializerContext`.
+- **Extensions:** configuration binding into dictionaries extends values; `AddEnvironmentVariables(prefix)` now matches prefixes written with `__` (e.g. `MY_PREFIX__`) as well as `:`.
+- **ASP.NET Core 7:** with `WebApplicationBuilder`, command-line arguments and `DOTNET_`-prefixed variables now override `ASPNETCORE_`-prefixed variables for host settings (environment name, content root) — `ASPNETCORE_ENVIRONMENT` loses against `DOTNET_ENVIRONMENT` (other hosts keep the old precedence); API controllers infer `[FromServices]`; MVC detects empty bodies via `CanHaveBody`; middleware no longer defers to an endpoint whose `RequestDelegate` is null; Microsoft.Data.SqlClient updated to 4.0.1; Kestrel's default HTTPS binding removed; the libuv transport removed; single authentication scheme becomes the default scheme; output caching API renamed between previews and GA; SignalR hub methods resolve parameters from DI.
 - **EF Core 7:** SQL Server `Encrypt=True` default; triggers need `HasTrigger`; SQLite `RETURNING`; orphaned optional dependents not deleted; `HasCheckConstraint`/`HasComment` move to the table builder (`ToTable(t => t.HasCheckConstraint(...))`).
 - **SDK:** `dotnet test -a`/`-r` switches changed meaning; automatic RuntimeIdentifier only for publish; `--output` invalid for solution-level commands.
 
