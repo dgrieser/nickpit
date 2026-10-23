@@ -130,7 +130,22 @@ style_guides:
       # alpine/helm images). Helm 2 has no guide of its own.
       "3": styleguides/helm-3.md
       "4": styleguides/helm-4.md
-  kubernetes: styleguides/kubernetes.md
+  kubernetes:
+    default: styleguides/kubernetes.md
+    versions:
+      # Keyed by the Kubernetes minor the code targets: k8s.io/* v0.Y in
+      # go.mod (v0.33.2 -> 1.33), ENVTEST_K8S_VERSION, kindest/node images
+      # and kubectl in .tool-versions. Releases before 1.29 keep the
+      # generic guide.
+      "1.29": styleguides/kubernetes-1.29.md
+      "1.30": styleguides/kubernetes-1.30.md
+      "1.31": styleguides/kubernetes-1.31.md
+      "1.32": styleguides/kubernetes-1.32.md
+      "1.33": styleguides/kubernetes-1.33.md
+      "1.34": styleguides/kubernetes-1.34.md
+      "1.35": styleguides/kubernetes-1.35.md
+      "1.36": styleguides/kubernetes-1.36.md
+      "1.37": styleguides/kubernetes-1.37.md
 
 version_source_priority:
   go:
@@ -170,6 +185,12 @@ version_source_priority:
     - .github/workflows/*
     - .gitlab-ci.yml
     - Dockerfile
+  kubernetes:
+    - go.mod
+    - Makefile
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
   typescript:
     - package-lock.json
     - yarn.lock

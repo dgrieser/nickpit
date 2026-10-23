@@ -97,6 +97,9 @@ func TestVersionSourceRank(t *testing.T) {
 		{"python", "pyproject.toml", 0},
 		{"python", "Dockerfile", 9},
 		{"typescript", "package-lock.json", 0},
+		{"kubernetes", "go.mod", 0},
+		{"kubernetes", "Makefile", 1},
+		{"helm", ".tool-versions", 0},
 		{"typescript", "package.json", 3},
 		{"shell", "Dockerfile", 0}, // no configured priority: everything ties at 0
 		{"shell", "go.mod", 0},
@@ -227,6 +230,14 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"helm", []string{"4.0.1"}, "styleguides/helm-4.md"},
 		{"helm", []string{"4.3.1", "3.16.1"}, "styleguides/helm-3.md"},
 		{"helm", []string{"5.0.0"}, "styleguides/helm.md"},
+		{"kubernetes", nil, "styleguides/kubernetes.md"},
+		{"kubernetes", []string{"1.28.9"}, "styleguides/kubernetes.md"},
+		{"kubernetes", []string{"1.29"}, "styleguides/kubernetes-1.29.md"},
+		{"kubernetes", []string{"1.31.4"}, "styleguides/kubernetes-1.31.md"},
+		{"kubernetes", []string{"v1.33.0"}, "styleguides/kubernetes-1.33.md"},
+		{"kubernetes", []string{"1.37.1"}, "styleguides/kubernetes-1.37.md"},
+		{"kubernetes", []string{"1.36", "1.32"}, "styleguides/kubernetes-1.32.md"},
+		{"kubernetes", []string{"1.38.0"}, "styleguides/kubernetes.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
