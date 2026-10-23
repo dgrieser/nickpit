@@ -2,7 +2,7 @@
 
 > **Version**: Kubernetes v1.35.0 "Timbernetes (The World Tree Release)", released **2025-12-17**.[^1] Latest patch at time of writing: **v1.35.9**, published 2026-09-23 (scheduled for 2026-09-15; the October 2026 patch v1.35.10 is scheduled but not yet out — `https://dl.k8s.io/release/stable-1.35.txt` still reports `v1.35.9`).[^2][^3]
 > **Support**: 1.35 is a supported minor until **2027-02-28** (end of life); it enters maintenance mode on **2026-12-28**. Newer minors exist: **1.36** (released 2026-04-22, latest v1.36.5) and **1.37** (released 2026-08-26, latest v1.37.1). 1.34 reaches end of life on 2026-10-27.[^2]
-> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.35.x** (latest v0.35.9, `go 1.25.0` directive), **controller-runtime v0.23.x** (latest v0.23.3, 2026-03-05), **controller-tools v0.20.x** (latest v0.20.1), Kubebuilder **v4.11.0–v4.13.x** scaffolds controller-runtime v0.23. Go **1.25** is the minimum toolchain for these modules.[^4][^5]
+> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.35.x** (latest v0.35.9, `go 1.25.0` directive), **controller-runtime v0.23.x** (latest v0.23.3, 2026-03-05), **controller-tools v0.20.x** (latest v0.20.1), Kubebuilder **v4.11.0–v4.14.x** scaffolds controller-runtime v0.23 (v4.15 moves to v0.24, v4.16 to v0.25). Go **1.25** is the minimum toolchain for these modules.[^4][^5]
 > **Scope**: Kubernetes manifests (plain YAML, Kustomize output, Helm-rendered YAML), CustomResourceDefinitions with CEL validation, admission policies, and Go operators/controllers built with controller-runtime, client-go or Kubebuilder that target a 1.35 cluster.
 > **Note**: This document is self-contained. House rules for operator design, CRDs, status, finalizers, RBAC, webhooks, observability and testing are carried forward; sections marked **[NEW in 1.35]** cover behaviour specific to this release. Every manifest, CRD and policy example was applied (or `--dry-run=server`-applied) against a real v1.35.0 kube-apiserver; boundary claims were re-checked on v1.34.1 and v1.36.2 apiservers; Go snippets compile against k8s.io/* v0.35.9 + controller-runtime v0.23.3 and the controller was exercised with envtest on the 1.35 binaries. Pod *runtime* behaviour (kubelet, scheduler, controllers) is sourced from the release notes and KEPs, not executed.
 
@@ -93,6 +93,8 @@ Kubernetes 1.35 contains 60 enhancements: 17 stable, 19 beta and 22 alpha.[^1] T
 | Mutable CSINode allocatable count (`MutableCSINodeAllocatableCount`) | **on** | |
 | Kubelet CrashLoopBackOff max (`KubeletCrashLoopBackOffMax`) | **on** | Node config `crashLoopBackOff.maxContainerRestartPeriod` |
 | Opportunistic batching in the scheduler (`OpportunisticBatching`) | **on** | No manifest change |
+| `status.nominatedNodeName` semantics (`NominatedNodeNameForExpectation` in kube-scheduler, `ClearingNominatedNodeNameAfterBinding` in kube-apiserver) | **on** (both alpha/off in 1.34) | The scheduler may set `nominatedNodeName` as an expectation (not only for preemption) and the apiserver clears it on binding; external schedulers/autoscalers that read the field must not treat it as "preemption pending" |
+| kuberc credential plugin policy (`credentialPluginPolicy`, `credentialPluginAllowlist`) | kubectl (kuberc `v1beta1`) | Restricts which `exec` credential plugins a kubeconfig may run; see kubectl section |
 | `WatchListClient` (client-go streaming lists) | **on** | Informers use WatchList when the server supports it |
 | KYAML output (`kubectl get -o kyaml`) | **on** (kubectl) | Disable with `KUBECTL_KYAML=false` |
 | Pod certificates — `PodCertificateRequest` API + `podCertificate` projected volume source | **off** (beta API `certificates.k8s.io/v1beta1` not served by default) | Do not depend on it without cluster opt-in |
@@ -112,7 +114,11 @@ Gang scheduling and the `scheduling.k8s.io/v1alpha1` **Workload** API (`GangSche
 - **kubelet `--pod-infra-container-image` flag removed** (startup fails if still set).[^3]
 - **Comparable resource versions**: all in-tree resource versions are now decimal integers that clients may compare; apimachinery adds `resourceversion.CompareResourceVersion` (KEP-5504).[^1]
 - **DRA**: core Dynamic Resource Allocation (`resource.k8s.io/v1`, GA in 1.34) can no longer be disabled; `resource.k8s.io/v1` is the storage version (downgrade to 1.33 unsupported).[^3]
-- **Pod resize only for CPU and memory** — other resources are rejected with `only cpu and memory resources are mutable`.[^3]
+- **Pod resize only for CPU and memory** — 1.35 forbids resizing every other resource type (`only cpu and memory resources are mutable`). The common case (`ephemeral-storage`) was already rejected with the same message by a v1.34.1 apiserver (verified).[^3]
+- **Kubelet restarts no longer flip Pods to NotReady**: the kubelet restores container state from the runtime on startup, so healthy Pods stay Ready and in Service endpoints across kubelet restarts and upgrades (KEP-4781).[^1]
+- **`UserNamespacesPodSecurityStandards` gate removed** ("the minimum supported Kubernetes version for kubelet is now v1.31, so the gate is no longer needed"); remove it from apiserver `--feature-gates` before upgrading, because unknown gates fail startup.[^3]
+- **DRA alpha changes**: DeviceTaintRule support moved to its own gate `DRADeviceTaintRules` (alpha/off), a new taint effect `None` allows a "dry run" before `NoExecute`; Partitionable Devices changed incompatibly (remove such ResourceSlices before upgrading or downgrading between 1.34 and 1.35).[^1][^3]
+- **Patch-level env-var fixes**: a 1.34 regression starting Pods whose env values contain `$` followed by a multi-byte character is fixed in v1.35.1; the non-UTF-8 Secret value regression is fixed in v1.35.6.[^3]
 - **Feature-gate dependencies are validated** at startup; `AllAlpha=true` alone no longer works without the beta gates it depends on.[^3]
 - **Ingress NGINX** is retired (best-effort maintenance until March 2026, then archived); new ingress work should use the Gateway API.[^1]
 
@@ -145,7 +151,7 @@ No `v1beta1`/`v1alpha1` group version is served by default. In particular, on a 
 | `storage.k8s.io/v1alpha1` VolumeAttributesClass | **removed** in 1.35 (use `storage.k8s.io/v1`, GA since 1.34) | — |
 | `storagemigration.k8s.io/v1alpha1` | **removed** in 1.35 | — |
 
-No GA API version was removed between 1.33 and 1.37; the last removals of served APIs were the flowcontrol `v1beta3` APIs in 1.32.[^7]
+No beta or GA API version has been removed since 1.32 (the Deprecated API Migration Guide lists no removals after the flowcontrol `v1beta3` APIs in 1.32, as of 1.37); 1.35 only removes the two alpha versions above.[^7]
 
 ##### Selected feature gates (kube-apiserver v1.35.0 defaults)
 
@@ -242,6 +248,7 @@ The cluster is 1.35. Never suggest the following as available; they fail validat
 | Ingress NGINX controller | Retired (archived after March 2026) | Gateway API implementations |
 | `gitRepo` volumes | Deprecated since 1.11; still technically usable on 1.35 nodes | init container / git-sync. 1.36 disables the plugin permanently |
 | Service `externalIPs` | Still supported in 1.35; deprecated in 1.36 (removal planned for 1.43), CVE-2020-8554 | LoadBalancer, NodePort, Gateway API |
+| kubeadm config `kubeadm.k8s.io/v1beta3` | Deprecated since 1.31, still accepted by kubeadm 1.35; removed in kubeadm 1.37 | `kubeadm.k8s.io/v1beta4` (`kubeadm config migrate` with a ≤ 1.36 kubeadm) |
 
 ---
 
@@ -291,7 +298,7 @@ The cluster is 1.35. Never suggest the following as available; they fail validat
 | `k8s.io/api`, `apimachinery`, `client-go`, `apiextensions-apiserver` | v0.35.x (keep all on the **same** patch) | Mixed minors cause compile or runtime scheme errors |
 | controller-runtime | v0.23.x | Pinned to `k8s.io/* v0.35.0`; Go MVS raises it to your v0.35.x patch |
 | controller-tools (`controller-gen`) | v0.20.x | Generates CRDs with `selectableFields`, CEL `reason`/`fieldPath`/`messageExpression` |
-| Kubebuilder | v4.11.0+ (scaffolds controller-runtime v0.23.x, controller-tools v0.20.x) | |
+| Kubebuilder | v4.11.0–v4.14.x (scaffold controller-runtime v0.23.x, controller-tools v0.20.x); v4.15.0+ scaffolds controller-runtime v0.24+ (1.36 libraries) | |
 | envtest binaries | 1.35.x (`setup-envtest use 1.35.x`) | Test against the version you ship to |
 
 ```go
@@ -642,6 +649,7 @@ Observed results on 1.35 (all errors are reported together):
 6. **Prefer `fieldPath` + `reason`** (`FieldValueInvalid`, `FieldValueForbidden`, `FieldValueRequired`, `FieldValueDuplicate`) so clients see the right field and status cause.
 7. **Ratcheting** (GA since 1.33): unchanged invalid values in stored objects do not block unrelated updates. You may tighten validation for *new* writes, but still treat it as a breaking change for clients that create objects.
 8. `x-kubernetes-int-or-string` fields are dynamic in CEL; guard with `type(self.x) == string` or use `quantity()` only after a `pattern` restricts the input.
+9. **Guard optional fields with `has()`** in object-level rules. A rule such as `semver(self.version, true).compareTo(semver(oldSelf.version, true)) >= 0` is fine while `version` is `required`; if the field is optional, every update of an object without it fails with `spec: Invalid value: "object": no such key: version evaluating rule: version downgrades are not allowed` — including a controller's own finalizer or metadata patches (verified on 1.35: a merge patch that only adds a finalizer is rejected, and an envtest reconciler looped on this error). Write `!has(self.version) || !has(oldSelf.version) || ...`.
 
 ---
 
@@ -916,6 +924,25 @@ func (r *RedisClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Named("rediscluster").
 		Complete(r)
+}
+
+// fail records a transient failure as Ready=False + Warning Event and returns
+// the error so the request is retried with backoff.
+func (r *RedisClusterReconciler) fail(ctx context.Context, rc *cachev1.RedisCluster, reason string, cause error) (ctrl.Result, error) {
+	before := rc.DeepCopy()
+	if meta.SetStatusCondition(&rc.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            cause.Error(),
+		ObservedGeneration: rc.Generation,
+	}) {
+		r.Recorder.Eventf(rc, nil, corev1.EventTypeWarning, reason, "Reconcile", "%v", cause)
+	}
+	if err := r.Status().Patch(ctx, rc, client.MergeFrom(before)); err != nil {
+		log.FromContext(ctx).Error(err, "status update failed")
+	}
+	return ctrl.Result{}, cause
 }
 ```
 
@@ -1552,9 +1579,11 @@ kubectl patch pod web --subresource resize \
 # BAD — main resource: "pod updates may not change fields other than spec.containers[*].image, ..."
 kubectl patch pod web -p '{"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"350m"}}}]}}'
 
-# BAD — JSON merge patch replaces the whole containers list:
-#   "spec.containers[0].image: Required value" / "resource requests cannot be removed"
-kubectl patch pod web --subresource resize --type=merge -p '{"spec":{"containers":[{"name":"app","resources":{...}}]}}'
+# BAD — JSON merge patch replaces the whole containers list (and each container's
+# resources), so any request/limit not repeated counts as removed:
+#   "spec.containers[0].resources.requests: Forbidden: resource requests cannot be removed"
+#   "spec.containers[0].resources.limits: Forbidden: resource limits cannot be removed"
+kubectl patch pod web --subresource resize --type=merge -p '{"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"350m"}}}]}}'
 
 # BAD — only cpu and memory are resizable:
 #   "spec: Forbidden: only cpu and memory resources are mutable"
@@ -1567,7 +1596,7 @@ Rules (verified where marked, otherwise from the GA announcement and docs):[^12]
 - Requests/limits present at creation cannot be removed by a resize (verified).
 - RBAC: resizing needs `patch`/`update` on `pods/resize`; VPA-like controllers need exactly that, not `pods` `update`.
 - Progress is reported through Pod conditions `PodResizePending` (reasons `Deferred`, `Infeasible`) and `PodResizeInProgress` (reason `Error` on failure); `status.resize` is deprecated. `status.containerStatuses[].resources` shows what is actually applied. Wait for `status.observedGeneration >= metadata.generation` and the absence of both conditions.
-- Memory-limit **decreases are allowed in 1.35** (forbidden in the 1.33/1.34 beta). The kubelet only applies them if current usage is below the new limit (best effort); otherwise the resize stays in progress. Use `resizePolicy` `RestartContainer` for memory when the runtime (JVM, Python) cannot shrink in place.
+- Memory-limit **decreases are allowed in 1.35** (prohibited in the 1.33/1.34 beta). The kubelet only applies them if current usage is below the new limit (best effort); otherwise the resize stays in progress. The apiserver does not police this: both v1.34.1 and v1.35.0 accept a `pods/resize` patch that lowers the memory limit (verified), so a successful patch is not proof that the node applied it — check the resize conditions. Use `resizePolicy` `RestartContainer` for memory when the runtime (JVM, Python) cannot shrink in place.
 - Resize is not supported together with swap, the static CPU manager or static memory manager policies.
 - Pod-level `spec.resources` (`PodLevelResources`, beta-on since 1.34) **cannot** be resized in place on 1.35 (`InPlacePodLevelResourcesVerticalScaling` is alpha).
 - Changing `resources` in a Deployment/StatefulSet **template** still triggers a rollout; in-place resize is for direct Pod updates by autoscalers/operators.
@@ -1637,7 +1666,7 @@ containers:
   - {name: model, mountPath: /models, readOnly: true}
 ```
 
-Accepted by a default 1.35 apiserver; a 1.34 apiserver drops the volume source (gate beta/off). Requires container-runtime support (the release notes name containerd v2.1 or later); on an older runtime the Pod fails at container creation, not at admission. Image volumes are always read-only, honour `imagePullSecrets`, and — with `KubeletEnsureSecretPulledImages` — are subject to the same cached-image credential checks.
+Accepted by a default 1.35 apiserver. A default 1.34 apiserver (gate beta/off) silently drops the **whole volume and every `volumeMount` that references it** (verified on v1.34.1: the Pod is created without the `model` volume and without the `/models` mount), so the container starts without its data instead of failing admission. Requires container-runtime support (the release notes name containerd v2.1 or later); on an older runtime the Pod fails at container creation, not at admission. Image volumes are always read-only, honour `imagePullSecrets`, and — with `KubeletEnsureSecretPulledImages` — are subject to the same cached-image credential checks.
 
 ##### **[NEW in 1.35 — beta, on]** `hostnameOverride`
 
@@ -1703,7 +1732,9 @@ spec:
         image: registry.example.com/kv:3.1
 ```
 
-Verified: v1.35.0 keeps `maxUnavailable: 2`; v1.34.1 and v1.36.2 **drop** it silently (dry-run output has no `maxUnavailable`). The 1.35 behaviour also changed inside the 1.35 line: v1.35.4 "Fixes a 1.35 regression in StatefulSet Parallel pod management by disabling the MaxUnavailableStatefulSet feature by default"; 1.37 turns it back on.[^3][^9] Review rule: on 1.35 treat `rollingUpdate.maxUnavailable` as **unreliable** — it is honoured only on v1.35.0–v1.35.3 or where the gate is explicitly enabled; the effective default is 1 Pod at a time. Never rely on it for correctness (for example to finish an update within a maintenance window).
+Verified by `--dry-run=server -o yaml`: the v1.35.0 and v1.37.0 apiservers keep `maxUnavailable: 2`; v1.34.1 (gate alpha/off) and v1.36.2 (gate beta/off) **drop** it silently (the stored `rollingUpdate` is just `{partition: 0}`). Inside the 1.35 line the default changed: v1.35.4 "Fixes a 1.35 regression in StatefulSet Parallel pod management by disabling the MaxUnavailableStatefulSet feature by default" (kubernetes#137926, the 1.35 backport of #137904 that also ships in 1.36.0). With the gate off, a v1.35.4+ apiserver drops the field exactly like 1.36 does — expect permanent GitOps drift on that field. The actual bug fix (with `Parallel`, unavailable Pods of an *older* revision were counted toward the `maxUnavailable` budget, kubernetes#137666) and the re-enabled default only ship in 1.37; the 1.35 changelog contains neither.[^3][^8][^9] (Only v1.35.0 binaries were available for execution; the v1.35.4+ behaviour is taken from the changelog.)
+
+Review rule: on 1.35 treat `rollingUpdate.maxUnavailable` as **unreliable** — it is honoured only on v1.35.0–v1.35.3 (which carry the Parallel-management regression) or where the gate is explicitly enabled; on v1.35.4+ the field is dropped and updates proceed one Pod at a time. Never rely on it for correctness (for example to finish an update within a maintenance window), and remove it from manifests that target v1.35.4+ unless the cluster enables `MaxUnavailableStatefulSet`.
 
 Other StatefulSet rules:
 
@@ -2212,7 +2243,7 @@ cfg, err := env.Start()
 | `--pod-infra-container-image` removed | kubelet flags / kubeadm `extraArgs` | Remove the flag before upgrading kubelets |
 | kube-proxy ipvs deprecated | `KubeProxyConfiguration.mode: ipvs` | Plan nftables |
 | containerd 1.7 last supported | Nodes on containerd 1.x | Upgrade to containerd 2.x before 1.36 |
-| `MaxUnavailableStatefulSet` off again from v1.35.4 | StatefulSets using `rollingUpdate.maxUnavailable` | Expect one-at-a-time updates on ≥ v1.35.4 |
+| `MaxUnavailableStatefulSet` off again from v1.35.4 | StatefulSets using `rollingUpdate.maxUnavailable` | On ≥ v1.35.4 the apiserver drops the field (verified for the same gate state on 1.36.2); expect one-at-a-time updates and remove the field to avoid GitOps drift |
 | `SchedulerAsyncAPICalls` disabled in v1.35.1 | Scheduler performance regression in v1.35.0 | Run ≥ v1.35.1 |
 | Pod resize limited to CPU/memory | Tools resizing other resources | Recreate Pods for other resource changes |
 | Kubelet credential verification for cached images | Pods relying on images pulled with someone else's secret | Add `imagePullSecrets` to every Pod that uses a private image |
@@ -2288,7 +2319,7 @@ cfg, err := env.Start()
 [^2]: Kubernetes release schedule and patch releases (data/releases/schedule.yaml: 1.35 release date, patch dates, maintenance mode and end-of-life dates); GitHub release v1.35.9. https://kubernetes.io/releases/patch-releases/ , https://github.com/kubernetes/kubernetes/releases/tag/v1.35.9
 [^3]: CHANGELOG-1.35 (v1.35.0 urgent upgrade notes, API changes, features, deprecations; patch notes v1.35.1–v1.35.9). https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.35.md
 [^4]: Go module proxy listings for k8s.io/client-go v0.35.x, sigs.k8s.io/controller-runtime v0.23.x (go.mod requires k8s.io/* v0.35.0, go 1.25.0), sigs.k8s.io/controller-tools v0.20.x. https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3 , https://pkg.go.dev/k8s.io/client-go@v0.35.9
-[^5]: Kubebuilder v4.11–v4.13 scaffold versions (pkg/plugins/golang/v4/scaffolds/init.go: ControllerRuntimeVersion v0.23.x, ControllerToolsVersion v0.20.x). https://github.com/kubernetes-sigs/kubebuilder/releases
+[^5]: Kubebuilder v4.11–v4.16 scaffold versions (pkg/plugins/golang/v4/scaffolds/init.go: ControllerRuntimeVersion v0.23.x, ControllerToolsVersion v0.20.x). https://github.com/kubernetes-sigs/kubebuilder/releases
 [^6]: KEP-3136: Beta APIs Off by Default. https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default
 [^7]: Deprecated API Migration Guide. https://kubernetes.io/docs/reference/using-api/deprecation-guide/
 [^8]: Kubernetes v1.36 release announcement (2026-04-22) and CHANGELOG-1.36. https://kubernetes.io/blog/2026/04/22/kubernetes-v1-36-release/ , https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md
