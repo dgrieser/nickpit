@@ -29,7 +29,7 @@ The project pins PostgreSQL 16 (for example `image: postgres:16`, `postgresql 16
 
 - **Verify before you claim something is unavailable.** A function or syntax that you remember as "new" may already be in 16 (for example `JSON_OBJECT`, `IS JSON`, `any_value()`, `0x1F` literals, `MERGE` from 15). Say "not available in PostgreSQL 16" only for items on the [Do Not Use or Recommend](#do-not-use-or-recommend-postgresql-17-features) list or when the 16 documentation proves it.
 - **Never suggest PostgreSQL 17 or 18 features.** `JSON_TABLE`, `JSON_VALUE`, `JSON_QUERY`, `JSON_EXISTS`, `MERGE ... RETURNING`, `WHEN NOT MATCHED BY SOURCE`, `COPY ... ON_ERROR`, `transaction_timeout`, `random(min, max)`, `GRANT MAINTAIN`, `uuidv7()`, virtual generated columns and `RETURNING old/new` do not exist in 16. Code that uses them fails with a syntax error or "function does not exist".
-- **Flag code that only works on newer servers.** Example: `SELECT JSON_VALUE(doc, '$.a' RETURNING int)` is fine on 17 and fails on 16 with `function json_value(jsonb, unknown) does not exist`.
+- **Flag code that only works on newer servers.** Example: `SELECT JSON_VALUE(doc, '$.a' RETURNING int)` is fine on 17 and fails on 16 with `syntax error at or near "RETURNING"` (without `RETURNING`, the error is `function json_value(jsonb, unknown) does not exist`).
 - **Flag code that assumes older behaviour.** Examples: a provisioning script in which a `CREATEROLE` role alters or grants roles it did not create (worked on 15, fails on 16); monitoring that runs `SHOW lc_collate` (removed in 16).
 - **Flag code that will break on the next upgrade.** 16 still runs maintenance commands with the caller's `search_path` and accepts `'1 day ago 2 hours'`; 17 does not (see [Preparing for PostgreSQL 17](#preparing-for-postgresql-17)). Point these out as forward-compatibility risks, not as bugs on 16.
 - **Many projects run several versions.** If the code also has to run on 15 (a library, an extension, a shared migration set), every **New in 16** feature in this guide is a portability bug there.
@@ -59,6 +59,8 @@ All items below are verified against the official release notes[^1] and, where t
 | Subqueries in `FROM` without an alias | `SELECT * FROM (SELECT 1 AS x)` |
 | `XMLSERIALIZE(... INDENT)` | Pretty-printed XML. |
 | `'+infinity'` datetime input, `pg_size_bytes('10 B')` | |
+| `pg_read_file(path, missing_ok)` / `pg_read_binary_file(path, missing_ok)`, `to_reg*()` accepting numeric OIDs (`to_regclass('1259')`), `pg_split_walfile_name()` | |
+| `fuzzystrmatch`: `daitch_mokotoff()` | Daitch-Mokotoff Soundex codes as an array |
 | Numeric literal syntax (hex, underscores) inside jsonpath | `'$.a ? (@ == 0xFF)'` |
 | `CREATE TABLE ... (col type STORAGE EXTERNAL)` | Previously only `ALTER TABLE`. |
 | `CREATE STATISTICS ON a, b FROM t` | The name is generated when omitted. |
@@ -76,7 +78,8 @@ All items below are verified against the official release notes[^1] and, where t
 | `EXPLAIN (GENERIC_PLAN)` | Explains a statement with `$1` placeholders without values. Cannot be combined with `ANALYZE`. |
 | `REINDEX DATABASE` / `REINDEX SYSTEM` without a name | And `REINDEX DATABASE` no longer touches system catalogs. |
 | `GRANT ... WITH ADMIN TRUE/FALSE`, `WITH INHERIT TRUE/FALSE`, `WITH SET TRUE/FALSE`, `GRANTED BY` | Per-grant role membership options. |
-| psql `\bind`, `\drg`, `\watch` count, `SHELL_ERROR`/`SHELL_EXIT_CODE` | `\bind` sends a query with the extended protocol: `SELECT $1::int + 1 \bind 41 \g`. |
+| `ALTER GROUP g ADD USER u` with `ADMIN OPTION` on `g` | No `CREATEROLE` or superuser needed |
+| psql `\bind`, `\drg`, `\watch` count, `SHELL_ERROR`/`SHELL_EXIT_CODE`, `\pset xheader_width`, `S` modifier for `\dp`/`\z` | `\bind` sends a query with the extended protocol: `SELECT $1::int + 1 \bind 41 \g`. |
 
 ##### Server, performance and operations
 
@@ -86,9 +89,10 @@ All items below are verified against the official release notes[^1] and, where t
 - **Monitoring.** `pg_stat_io` (I/O per backend type, object and context), `pg_stat_*_tables.last_seq_scan`/`last_idx_scan` and `pg_stat_*_indexes.last_idx_scan`, `n_tup_newpage_upd`, speculative insertion locks in `pg_locks`, result types in `pg_prepared_statements`, checkpoint and REDO LSN in `log_checkpoints` messages, `pg_stat_get_backend_subxact()`.
 - **Logical replication.** Logical decoding on standbys (`pg_log_standby_snapshot()`), parallel apply (`streaming = parallel`, `max_parallel_apply_workers_per_subscription`), `origin = none` to avoid replication loops, binary initial table sync, B-tree index use for `REPLICA IDENTITY FULL`, apply as the table owner (`run_as_owner` restores the old behaviour), `password_required = false` (superuser-only), per-subscription `wal_retrieve_retry_interval`.
 - **Privileges.** `pg_create_subscription`, `pg_use_reserved_connections` with `reserved_connections`, `createrole_self_grant`, simpler `LOCK TABLE` permissions, `makeaclitem()` with several privileges.
-- **Authentication and configuration.** Regular expressions (`/pattern`) for databases and users in `pg_hba.conf`, `include`/`include_if_exists`/`include_dir` in `pg_hba.conf` and `pg_ident.conf`, `scram_iterations` (default 4096), Kerberos credential delegation (`gss_accept_delegation`), `send_abort_for_crash`/`send_abort_for_kill`, `debug_io_direct` (developer option), `archive_library` and `archive_command` can no longer both be set.
+- **Authentication and configuration.** Regular expressions (`/pattern`) for databases and users in `pg_hba.conf`, `include`/`include_if_exists`/`include_dir` in `pg_hba.conf` and `pg_ident.conf`, `scram_iterations` (default 4096), Kerberos credential delegation (`gss_accept_delegation`), `send_abort_for_crash`/`send_abort_for_kill`, `debug_io_direct` (developer option), `archive_library` and `archive_command` can no longer both be set, `debug_logical_replication_streaming` (developer option that forces immediate streaming or serialization of logical changes), configuration file nesting is limited to 10 levels, and the bootstrap superuser can no longer lose superuser.
 - **libpq.** `require_auth`, `load_balance_hosts=random`, `sslcertmode`, `sslrootcert=system` (which also forces `sslmode=verify-full`), `gssdelegation`. SCM credential authentication support was removed from libpq.
 - **Tools.** `pg_dump --table-and-children`/`--exclude-table-and-children`/`--exclude-table-data-and-children`, LZ4 and Zstandard compression in `pg_dump` (`--compress=zstd:5`), `vacuumdb --schema`/`--exclude-schema`, `initdb -c name=value`, `pg_upgrade --copy`, `pg_waldump --save-fullpage`, `createuser --member-of` (`--role` is deprecated).
+- **Foreign data.** `COPY` into foreign tables can insert in batches (`batch_size`); truncate triggers on foreign tables; `postgres_fdw` aborts remote transactions in parallel (`parallel_abort`) and ships `reg*` constants only for built-in or shippable-extension objects.
 - **Extensions.** `pg_stat_statements` normalizes constants in utility commands; `auto_explain.log_parameter_max_length` logs bind parameters; `pg_buffercache_summary()` and `pg_buffercache_usage_counts()`; `pg_walinspect` changes; `@extschema:name@` in extension scripts; `ltree` labels up to 1000 characters and may contain hyphens.
 - **Platforms.** Windows 10 or later is required; meson is a new build system.
 
@@ -101,7 +105,7 @@ The server is PostgreSQL 16. Everything in the first table was introduced in **P
 | PostgreSQL 17 feature | What happens on 16 | Use on 16 instead |
 |---|---|---|
 | `JSON_TABLE(...)` | `syntax error at or near "COLUMNS"` | `jsonb_array_elements()` / `jsonb_to_recordset()` in a `LATERAL` join, with explicit casts |
-| `JSON_VALUE()`, `JSON_QUERY()`, `JSON_EXISTS()` | `function json_value(jsonb, unknown) does not exist` | `(doc->>'a')::int`, `doc->'a'`, `jsonb_path_query_first()`, `doc @? '$.a'` / `jsonb_path_exists()` |
+| `JSON_VALUE()`, `JSON_QUERY()`, `JSON_EXISTS()` | `function json_value(jsonb, unknown) does not exist`; with a `RETURNING`/`ON ERROR` clause, `syntax error` | `(doc->>'a')::int`, `doc->'a'`, `jsonb_path_query_first()`, `doc @? '$.a'` / `jsonb_path_exists()` |
 | `JSON(... WITH UNIQUE KEYS)`, `JSON_SCALAR()`, `JSON_SERIALIZE()` | `syntax error at or near "WITH"` / function does not exist (a bare `JSON('...')` parses as a cast to `json` on 16) | `x IS JSON WITH UNIQUE KEYS` (16), `to_json()`, `::text` |
 | jsonpath methods `.integer()`, `.bigint()`, `.decimal()`, `.boolean()`, `.string()`, `.date()`, `.time()`, `.timestamp()`, `.timestamp_tz()` ... | `syntax error at or near "(" of jsonpath input` | Extract with `->>` and cast in SQL |
 | `MERGE ... RETURNING`, `merge_action()` | `syntax error at or near "RETURNING"` | `INSERT ... ON CONFLICT ... RETURNING`, or a data-modifying CTE |
@@ -109,7 +113,7 @@ The server is PostgreSQL 16. Everything in the first table was introduced in **P
 | `MERGE` into a view | `cannot execute MERGE on relation "sv"` | `MERGE` into the base table |
 | `COPY ... (ON_ERROR ignore)`, `LOG_VERBOSITY`, `FORCE_NULL *`/`FORCE_NOT_NULL *` | `option "on_error" not recognized`; `argument to option "force_null" must be a list of column names` | Load into a `text` staging table and validate with `pg_input_is_valid()` (16), list columns explicitly |
 | `transaction_timeout` | `unrecognized configuration parameter "transaction_timeout"` | `statement_timeout` + `idle_in_transaction_session_timeout`, and application-side deadlines |
-| `GRANT MAINTAIN ON TABLE`, `pg_maintain` | `unrecognized privilege type "maintain"`, `role "pg_maintain" does not exist` | Table ownership (or membership in the owning role) for `VACUUM FULL`/`CLUSTER`/`REINDEX`/`REFRESH`; `pg_checkpointer`, `pg_signal_backend`, `pg_monitor` where they fit |
+| `GRANT MAINTAIN ON TABLE`, `pg_maintain` | `unrecognized privilege type "maintain"`, `role "pg_maintain" does not exist` | Table ownership (or membership in the owning role) for `VACUUM FULL`/`CLUSTER`/`REINDEX`/`REFRESH`; `pg_checkpoint`, `pg_signal_backend`, `pg_monitor` where they fit |
 | `random(min, max)` | `function random(integer, integer) does not exist` | `floor(random() * (max - min + 1))::int + min` |
 | `uuid_extract_timestamp()`, `uuid_extract_version()`, `to_bin()`, `to_oct()`, `unicode_version()`, `pg_basetype()`, `to_regtypemod()` | function does not exist | |
 | `ts AT LOCAL` | `syntax error at or near "LOCAL"` | `ts AT TIME ZONE current_setting('TimeZone')` |
@@ -187,7 +191,7 @@ All of these exist on 16 and should be used where they fit.[^8]
 - `regexp_count()`, `regexp_instr()`, `regexp_like()`, `regexp_substr()`.
 - `ON DELETE SET NULL (col, ...)` / `SET DEFAULT (col, ...)` with column lists.
 - `numeric` with negative scale or scale greater than precision.
-- `log_destination = jsonlog`, `GRANT SET/ALTER SYSTEM ON PARAMETER`, the `pg_checkpointer` role.
+- `log_destination = jsonlog`, `GRANT SET/ALTER SYSTEM ON PARAMETER`, the `pg_checkpoint` role.
 - Logical replication row filters and column lists, `ALTER SUBSCRIPTION ... SKIP`.
 - `pg_backup_start()`/`pg_backup_stop()` (non-exclusive backups only).
 
@@ -303,7 +307,7 @@ SELECT 0x;        -- ERROR: invalid hexadecimal integer at or near "0x"
 SELECT 1__000;    -- ERROR: trailing junk after numeric literal at or near "1__000"
 ```
 
-On 15 all of these literals fail with `trailing junk after numeric literal`.
+On 15 all of these literals fail with `trailing junk after numeric literal`. On 14 and older they do **not** fail: `SELECT 1_000, 0x1F` parses as `SELECT 1 AS _000, 0 AS x1F` and silently returns `1 | 0` (15 started rejecting trailing junk after numbers).[^8] Code that must also run on 14 must not use these literals.
 
 **Behaviour change for input strings (found by testing; easy to miss).** The integer types and `numeric` also accept the new forms when converting **text input**:
 
@@ -463,7 +467,7 @@ Measured: with `createrole_self_grant = 'set, inherit'`, creating `child` produc
 
 - **`pg_create_subscription`**: lets a role run `CREATE SUBSCRIPTION`, but only **with `CREATE` privilege on the database** (measured: `permission denied for database postgres` without it). Non-superusers must put a password in the connection string (`ERROR: password is required`), and `password_required = false` is superuser-only.[^11]
 - **`pg_use_reserved_connections`** with **`reserved_connections`** (default 0): when free slots fall to `superuser_reserved_connections + reserved_connections` or fewer, only superusers and members of this role can connect. Give it to monitoring and admin roles so they can still log in when the application exhausts `max_connections`.[^12]
-- **`LOCK TABLE`** permissions are simpler: a role may take any lock mode up to the strongest one its table privileges allow. Measured: a role with only `UPDATE` can now `LOCK TABLE lt IN ACCESS SHARE MODE` (15: `permission denied for table lt`).
+- **`LOCK TABLE`** permissions are simpler: `UPDATE`, `DELETE` or `TRUNCATE` on the table permits every lock mode, `INSERT` permits `ROW EXCLUSIVE` and weaker modes, and `SELECT` permits `ACCESS SHARE`. Measured: a role with only `UPDATE` can now `LOCK TABLE lt IN ACCESS SHARE MODE` and also `IN ACCESS EXCLUSIVE MODE` (15: `permission denied for table lt` for `ACCESS SHARE`); a role with only `SELECT` still cannot take `ROW EXCLUSIVE`.
 - `makeaclitem()` accepts a list (`'SELECT, UPDATE'`).
 
 ***
@@ -1122,13 +1126,13 @@ REVOKE EXECUTE ON FUNCTION app.n_safe() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.n_safe() TO app_role;
 ```
 
-Measured on 16.15: `n_unsafe()` called the attacker's `lower()` as `postgres`; `n_safe()` did not. Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. Use `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` in schemas that hold privileged functions.[^17] Owners should be dedicated, non-superuser roles.
+Measured on 16.15: `n_unsafe()` called the attacker's `lower()` as `postgres`; `n_safe()` did not. Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`. Measured on 16.15: the per-schema form (`ALTER DEFAULT PRIVILEGES IN SCHEMA s REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) stored nothing and had **no effect**, because per-schema default privileges can only add to the global defaults. The global form worked, but only for functions later created by the role it names (or the current role); a function that another role created in the same schema was still executable by `PUBLIC`. Keep the explicit `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC` per function.[^17] Owners should be dedicated, non-superuser roles.
 
 ##### Roles and privileges
 
 - The application connects as a role that **does not own** the schema objects and is not a superuser. Migrations run as a separate owner role.
 - Since 15, new databases do not let `PUBLIC` create objects in `public`. A non-owner role got `permission denied for schema public` on 16.15. Don't "fix" this with `GRANT CREATE ON SCHEMA public TO PUBLIC`. Create an application schema owned by the migration role.
-- Use predefined roles instead of superuser: `pg_read_all_data`/`pg_write_all_data` (14), `pg_monitor`, `pg_signal_backend`, `pg_checkpointer` (15), `pg_create_subscription` and `pg_use_reserved_connections` (16). `pg_maintain` and `GRANT MAINTAIN` are 17.
+- Use predefined roles instead of superuser: `pg_read_all_data`/`pg_write_all_data` (14), `pg_monitor`, `pg_signal_backend`, `pg_checkpoint` (15), `pg_create_subscription` and `pg_use_reserved_connections` (16). `pg_maintain` and `GRANT MAINTAIN` are 17.
 - Review `CREATEROLE` usage against the 16 rules and use membership options (`WITH INHERIT FALSE`, `SET TRUE`) for "break-glass" roles that should be assumed explicitly (see [Roles](#new-in-16-roles-createrole-and-membership-options)).
 - Passwords: `scram-sha-256` (default since 14). `md5` still works on 16; 18 deprecates it, so don't add new `md5` entries. Never put passwords in SQL that gets logged (`ALTER ROLE ... PASSWORD 'x'` appears in the server log when statement logging is on, and in `pg_stat_activity` while it runs). Use psql `\password`, which sends a hashed password.
 - Clients: `require_auth=scram-sha-256` and `sslmode=verify-full` (or `sslrootcert=system`) with libpq 16.
