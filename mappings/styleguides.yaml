@@ -122,6 +122,17 @@ style_guides:
       "14": styleguides/csharp-14.md
       "15": styleguides/csharp-15.md
   sql: styleguides/sql.md
+  mysql:
+    default: styleguides/mysql.md
+    versions:
+      # Keyed by the MySQL server version pinned by container images in
+      # Compose files, CI and the Dockerfile. 8.1-8.3 and 9.0-9.6 were
+      # Innovation releases between the LTS lines; they get the guide of the
+      # LTS line below them. 5.7 and the 26.x Innovation releases keep the
+      # generic guide.
+      "8.0": styleguides/mysql-8.0.md
+      ">=8.1 <9.7": styleguides/mysql-8.4.md
+      "9.7": styleguides/mysql-9.7.md
   shell: styleguides/bash.md
   helm:
     default: styleguides/helm.md
@@ -191,6 +202,14 @@ version_source_priority:
     - .tool-versions
     - .github/workflows/*
     - .gitlab-ci.yml
+  mysql:
+    - compose.yaml
+    - compose.yml
+    - docker-compose.yaml
+    - docker-compose.yml
+    - .gitlab-ci.yml
+    - .github/workflows/*
+    - Dockerfile
   typescript:
     - package-lock.json
     - yarn.lock
@@ -207,6 +226,7 @@ style_guide_order:
   - scss
   - csharp
   - sql
+  - mysql
   - shell
   - helm
   - kubernetes
@@ -240,6 +260,24 @@ detectors:
         - '(?is)\bexplain(?:\s+analyze)?\b'
         - '(?is)\bwith\b.+\bselect\b'
 
+  - language: mysql
+    probe_paths:
+      extensions: [.go, .py, .js, .jsx, .ts, .tsx, .cs, .java, .kt, .rb, .php, .sql]
+      path_segments: [migrations, migration, db, database, queries, schema]
+    match_any:
+      content_contains:
+        - github.com/go-sql-driver/mysql
+        - 'mysql://'
+        - 'mysql+pymysql://'
+        - import pymysql
+        - from 'mysql2
+        - require('mysql2
+        - MySqlConnector
+        - Pomelo.EntityFrameworkCore.MySql
+        - ON DUPLICATE KEY UPDATE
+      content_regex:
+        - '(?i)\bENGINE\s*=\s*InnoDB\b'
+        - '(?i)\b(?:int|bigint)\b[^,\n]*\bAUTO_INCREMENT\b'
   - language: shell
     probe_paths:
       extensions: [.sh, .bash, .zsh, .ksh, .yaml, .yml]
@@ -314,3 +352,9 @@ detectors:
         - metav1.TypeMeta
       content_regex:
         - '(?is)\bapiVersion:\s*[^\n]+\n.*\bkind:\s*[^\n]+'
+
+# Dialect guides replace the generic SQL guide when the project's toolchain
+# pins the database server (a postgres or mysql image) or a dialect detector
+# matched the change.
+toolchain_companions:
+  sql: [mysql]

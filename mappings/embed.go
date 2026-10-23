@@ -513,6 +513,19 @@ func parseStyleGuidesYAML(data []byte) (StyleGuideMappings, error) {
 			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml detectors[%d] missing match rules", i)
 		}
 	}
+	for base, companions := range mappings.ToolchainCompanions {
+		if _, ok := mappings.StyleGuides[base]; !ok {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions references unknown style guide language %q", base)
+		}
+		if len(companions) == 0 {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q has no companions", base)
+		}
+		for _, companion := range companions {
+			if _, ok := mappings.StyleGuides[companion]; !ok || companion == base {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q references invalid companion %q", base, companion)
+			}
+		}
+	}
 	for language, patterns := range mappings.VersionSourcePriority {
 		if _, ok := mappings.StyleGuides[language]; !ok {
 			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml version_source_priority references unknown style guide language %q", language)
@@ -553,19 +566,6 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 	for i, detector := range styleGuides.Detectors {
 		if _, ok := styleGuides.StyleGuides[detector.Language]; !ok {
 			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml detector[%d] references unknown style guide language %q", i, detector.Language)
-		}
-	}
-	for base, companions := range styleGuides.ToolchainCompanions {
-		if _, ok := styleGuides.StyleGuides[base]; !ok {
-			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions references unknown style guide language %q", base)
-		}
-		if len(companions) == 0 {
-			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q has no companions", base)
-		}
-		for _, companion := range companions {
-			if _, ok := styleGuides.StyleGuides[companion]; !ok || companion == base {
-				return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q references invalid companion %q", base, companion)
-			}
 		}
 	}
 	unusedIdentifierDiagnostics, err := buildUnusedIdentifierDiagnostics(languages)

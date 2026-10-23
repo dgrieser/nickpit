@@ -139,3 +139,22 @@ func TestScanDatabaseImages(t *testing.T) {
 		t.Fatalf("scanDatabaseImages =\n%#v\nwant\n%#v", got, want)
 	}
 }
+
+func TestScanFSReportsDatabaseImagesForSQLChanges(t *testing.T) {
+	fsys := fstest.MapFS{
+		"docker-compose.yml":       &fstest.MapFile{Data: []byte("services:\n  db:\n    image: mysql:8.4\n")},
+		"migrations/002_users.sql": &fstest.MapFile{Data: []byte("ALTER TABLE users ADD COLUMN email varchar(255);\n")},
+	}
+	got := ScanFS(fsys, ctxWithChangedFiles("migrations/002_users.sql"))
+	if findVersion(got, "docker-compose.yml", "image mysql") != "8.4" {
+		t.Fatalf("SQL change should report the pinned MySQL image, got %#v", got)
+	}
+	for _, entry := range got {
+		if entry.Unavailable {
+			t.Fatalf("companions must not produce unavailable entries: %#v", got)
+		}
+	}
+	if got := ScanFS(fsys, ctxWithChangedFiles("README.md")); len(got) != 0 {
+		t.Fatalf("non-SQL change must not report database images, got %#v", got)
+	}
+}

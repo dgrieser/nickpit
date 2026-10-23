@@ -100,6 +100,9 @@ func TestVersionSourceRank(t *testing.T) {
 		{"kubernetes", "go.mod", 0},
 		{"kubernetes", "Makefile", 1},
 		{"helm", ".tool-versions", 0},
+		{"mysql", "docker-compose.yml", 3},
+		{"mysql", "services/db/compose.yaml", 0},
+		{"mysql", "Dockerfile", 6},
 		{"typescript", "package.json", 3},
 		{"shell", "Dockerfile", 0}, // no configured priority: everything ties at 0
 		{"shell", "go.mod", 0},
@@ -238,6 +241,15 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"kubernetes", []string{"1.37.1"}, "styleguides/kubernetes-1.37.md"},
 		{"kubernetes", []string{"1.36", "1.32"}, "styleguides/kubernetes-1.32.md"},
 		{"kubernetes", []string{"1.38.0"}, "styleguides/kubernetes.md"},
+		{"mysql", nil, "styleguides/mysql.md"},
+		{"mysql", []string{"5.7"}, "styleguides/mysql.md"},
+		{"mysql", []string{"8.0"}, "styleguides/mysql-8.0.md"},
+		{"mysql", []string{"8.0.46"}, "styleguides/mysql-8.0.md"},
+		{"mysql", []string{"8.3.0"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"8.4-oracle"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"9.6.0"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"9.7.4"}, "styleguides/mysql-9.7.md"},
+		{"mysql", []string{"26.10.0"}, "styleguides/mysql.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
@@ -483,5 +495,45 @@ func TestConfigDrivenStyleGuideDetectorLanguages(t *testing.T) {
 	languages := StyleGuideDetectorLanguages("pkg/example.go", "+const q = `SELECT id FROM users`\n")
 	if len(languages) != 1 || languages[0] != "sql" {
 		t.Fatalf("detector languages = %#v", languages)
+	}
+}
+
+func TestMySQLDetectorAndCompanions(t *testing.T) {
+	tests := []struct {
+		path, content string
+		want          bool
+	}{
+		{"internal/db/db.go", "import _ \"github.com/go-sql-driver/mysql\"\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\n", true},
+		{"repo/upsert.py", "cur.execute(\"INSERT INTO t (k, v) VALUES (%s, %s) ON DUPLICATE KEY UPDATE v = VALUES(v)\")\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);\n", false},
+	}
+	for _, tt := range tests {
+		got := slices.Contains(StyleGuideDetectorLanguages(tt.path, tt.content), "mysql")
+		if got != tt.want {
+			t.Errorf("mysql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
+		}
+	}
+	if got := ToolchainCompanions("sql"); !slices.Equal(got, []string{"mysql"}) {
+		t.Fatalf("ToolchainCompanions(sql) = %v", got)
+	}
+	if got := ToolchainCompanions("go"); got != nil {
+		t.Fatalf("ToolchainCompanions(go) = %v, want none", got)
+	}
+}
+
+func TestToolchainCompanionsValidation(t *testing.T) {
+	base := "style_guides:\n  sql: styleguides/sql.md\n  mysql: styleguides/mysql.md\nstyle_guide_order: [sql, mysql]\n"
+	unknown := base + "toolchain_companions:\n  sql: [oracle]\n"
+	if _, err := parseStyleGuidesYAML([]byte(unknown)); err == nil || !strings.Contains(err.Error(), "invalid companion") {
+		t.Fatalf("unknown companion validation err = %v", err)
+	}
+	self := base + "toolchain_companions:\n  sql: [sql]\n"
+	if _, err := parseStyleGuidesYAML([]byte(self)); err == nil || !strings.Contains(err.Error(), "invalid companion") {
+		t.Fatalf("self companion validation err = %v", err)
+	}
+	empty := base + "toolchain_companions:\n  sql: []\n"
+	if _, err := parseStyleGuidesYAML([]byte(empty)); err == nil || !strings.Contains(err.Error(), "no companions") {
+		t.Fatalf("empty companion validation err = %v", err)
 	}
 }

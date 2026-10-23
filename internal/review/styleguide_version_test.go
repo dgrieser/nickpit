@@ -221,3 +221,31 @@ func assertContainsNone(t *testing.T, haystack string, notWants ...string) {
 		}
 	}
 }
+
+func TestStyleGuidesForReplacesSQLWithPinnedMySQLGuide(t *testing.T) {
+	e := &Engine{}
+	ctx := &model.ReviewContext{
+		ChangedFiles:      []model.ChangedFile{{Path: "migrations/002_users.sql", Status: model.FileModified}},
+		ToolchainVersions: []model.ToolchainVersion{{Language: "mysql", Source: "docker-compose.yml", Field: "image mysql", Version: "8.4"}},
+	}
+	guides, err := e.styleGuidesFor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := styleGuideContents(guides)
+	if !strings.Contains(all, "### MySQL 8.4") {
+		t.Fatalf("expected the MySQL 8.4 guide, got: %.160q", all)
+	}
+	if strings.Contains(all, "### SQL Optimization Patterns") {
+		t.Fatalf("generic SQL guide must be replaced by the MySQL guide: %.160q", all)
+	}
+
+	ctx.ToolchainVersions = nil
+	guides, err = e.styleGuidesFor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all := styleGuideContents(guides); !strings.Contains(all, "### SQL Optimization Patterns") {
+		t.Fatalf("without a pinned server the generic SQL guide applies: %.160q", all)
+	}
+}
