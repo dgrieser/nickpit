@@ -1,7 +1,7 @@
 ### JavaScript Style Guide
 
 > **Version / scope**: Version-agnostic JavaScript — ECMAScript 2015 through **ECMAScript 2026** (ECMA-262 17th edition, approved by the Ecma General Assembly on **2026-06-30**) plus the Stage 4 proposals already scheduled for ES2027. This guide applies when the runtime is unknown or not pinned: browser code, code that runs in several runtimes (isomorphic libraries, edge/worker code, Deno, Bun), and Node.js projects whose pinned version is newer than 26 (the Node.js 27 alpha channel).[^1][^2]
-> **Status (as of October 2026)**: Newest Node.js release is **26.12.1** (2026-10-21, "Current", scheduled for promotion to Active LTS on 2026-10-28). Node.js 24 "Krypton" (24.22.1) and 22 "Jod" (22.23.4) are in Maintenance LTS; Node.js 25, 20 and 18 are end-of-life. Node.js 27 has **no release yet**: its alpha channel is scheduled to start on 2026-10-28 and 27.0.0 is planned for 2027-04-22.[^3][^4] Browser availability is quoted as **Baseline** status from the `web-features` npm package **3.44.0** (published 2026-10-22).[^5]
+> **Status (as of October 2026)**: Newest Node.js release is **26.12.1** (2026-10-21, "Current", scheduled for promotion to Active LTS on 2026-10-28). Node.js 24 "Krypton" (24.22.1) and 22 "Jod" (22.23.4) are in Maintenance LTS; Node.js 25, 20 and 18 are end-of-life. Node.js 27 has **no release yet** (only untested nightly builds `v27.0.0-nightly…`): its alpha channel is scheduled to start on 2026-10-28 and 27.0.0 is planned for 2027-04-22.[^3][^4] Browser availability is quoted as **Baseline** status from the `web-features` npm package **3.44.0** (published 2026-10-22).[^5]
 > **Note**: This document is self-contained. Every version boundary it states ("ES2024, Node 22") was executed on Node.js 14.21.3, 16.20.2, 18.20.8, 20.20.2, 22.23.4, 24.22.1, 25.9.0 and 26.12.1; browser-only behaviour was executed in Chromium 141. Examples run unchanged as ES modules (`.mjs`) on Node.js 24 unless they say otherwise.
 
 ***
@@ -72,13 +72,13 @@ console.log(Object.keys(byKind), Object.getPrototypeOf(byKind)); // [ 'a', 'b' ]
 | ES2018 | async iteration (`for await`), object rest/spread, `Promise.prototype.finally`, RegExp named groups, lookbehind, `s` flag, `\p{…}` | ≤ 14 | Widely available |
 | ES2019 | `flat`/`flatMap`, `Object.fromEntries`, `trimStart`/`trimEnd`, optional `catch` binding, stable `Array.prototype.sort` | ≤ 14 | Widely available |
 | ES2020 | `?.`, `??`, `BigInt`, `Promise.allSettled`, `globalThis`, `matchAll`, dynamic `import()`, `import.meta` | 14 | Widely available |
-| ES2021 | `replaceAll`, `Promise.any`/`AggregateError`, `&&=`/`\|\|=`/`??=`, numeric separators, `WeakRef`/`FinalizationRegistry` | 16 (absent on 14.21.3) | Widely available |
+| ES2021 | `replaceAll`, `Promise.any`/`AggregateError`, `&&=`/`\|\|=`/`??=`, numeric separators, `WeakRef`/`FinalizationRegistry` | 15 (absent on 14.21.3, present on 16.20.2) | Widely available |
 | ES2022 | class fields, `#private` methods/accessors, `static {}` blocks, `#x in obj`, top-level `await`, `.at()`, `Object.hasOwn`, `Error` `cause`, RegExp `d` flag | 16.11 | Widely available (top-level `await`: Newly available, see table below) |
-| ES2023 | `findLast`/`findLastIndex`, `toSorted`/`toReversed`/`toSpliced`/`with`, hashbang grammar, symbols as `WeakMap` keys | 20 | Widely available |
+| ES2023 | `findLast`/`findLastIndex`, `toSorted`/`toReversed`/`toSpliced`/`with`, hashbang grammar, symbols as `WeakMap` keys | 20 | Widely available except symbols as `WeakMap` keys (Newly 2025-12-09, Firefox 146) |
 | ES2024 | `Object.groupBy`/`Map.groupBy`, `Promise.withResolvers`, `isWellFormed`/`toWellFormed`, RegExp `v` flag, resizable `ArrayBuffer`, `ArrayBuffer.prototype.transfer`, `Atomics.waitAsync` | 22 | Widely available except resizable buffers (Newly 2024-07-09) and `Atomics.waitAsync` (Newly 2025-11-11) |
 | ES2025 | `Iterator` helpers, `Set` methods, import attributes + JSON modules, RegExp modifiers, duplicate named groups, `Promise.try`, `Float16Array`/`Math.f16round`, `RegExp.escape` | 24 | Newly available (2024-06 … 2025-09) |
 | ES2026 | `Error.isError`, `Array.fromAsync`, `JSON.parse` source text + `JSON.rawJSON`, `Uint8Array` base64/hex, `Map`/`WeakMap` `getOrInsert`/`getOrInsertComputed`, `Iterator.concat`, `Math.sumPrecise` | **none** (Node 26 lacks `Math.sumPrecise`) | Mixed: `Error.isError` Limited (no Safari); the rest Newly or Widely available |
-| ES2027 (expected; Stage 4) | `Temporal`, `using`/`await using` + `DisposableStack`, `Atomics.pause`, `Iterator.zip`/`zipKeyed`, iterator `chunks`/`windows`, `Iterator.prototype.includes`/`join` | partial (Node 24: `using`, `Atomics.pause`; Node 26: `Temporal`) | `Temporal` and `using` Limited (no Safari) |
+| ES2027 (expected; Stage 4) | `Temporal`, `using`/`await using` + `DisposableStack`, `Atomics.pause`, `Iterator.zip`/`zipKeyed`, iterator `chunks`/`windows`, `Iterator.prototype.includes`/`join` | partial (Node 24: `using`, `Atomics.pause`; Node 26: `Temporal`; the iterator additions are in no Node release) | `Atomics.pause` Newly; everything else Limited (no Safari; the iterator additions only in recent Chrome/Firefox) |
 
 ##### Version-tied features — exact boundaries
 
@@ -90,7 +90,7 @@ console.log(Object.keys(byKind), Object.getPrototypeOf(byKind)); // [ 'a', 'b' ]
 | Top-level `await` (modules) | ES2022 | 14.8 | 89 / 89 / 27 | Newly (2026-09-14) — web-features records Safari support only from Safari 27 |
 | `structuredClone()` (HTML, not ECMAScript) | — | **17** (16 ✗, 18 ✓) | 98 / 94 / 15.4 | Widely (2022-03-14) |
 | `findLast`, `findLastIndex` | ES2023 | 18 (16 ✗, 18 ✓) | 97 / 104 / 15.4 | Widely (2022-08-23) |
-| Symbols as `WeakMap` keys (non-registered only) | ES2023 | 18 (16 ✗, 18 ✓) | — | (part of `WeakMap`) |
+| Symbols as `WeakMap` keys (non-registered only) | ES2023 | **20** (19.9 ✗; 18.20.x also accepts them through an undocumented V8 backport — do not rely on it on 18) | 109 / 146 / 16.4 | Newly (2025-12-09) |
 | `toSorted`, `toReversed`, `toSpliced`, `with` | ES2023 | 20 (18 ✗, 20 ✓) | 110 / 115 / 16 | Widely (2023-07-04) |
 | `isWellFormed`, `toWellFormed`; RegExp `v` flag | ES2024 | 20 (18 ✗, 20 ✓) | 111–112 / 116–119 / 16.4–17 | Widely |
 | Resizable `ArrayBuffer` | ES2024 | 20 (18 ✗, 20 ✓) | 111 / 128 / 16.4 | Newly (2024-07-09) |
@@ -115,14 +115,17 @@ console.log(Object.keys(byKind), Object.getPrototypeOf(byKind)); // [ 'a', 'b' ]
 | `Iterator.concat` | ES2026 | **26** (25 ✗, 26 ✓) | 146 / 147 / 26.4 | Newly (2026-03-24) |
 | `Temporal` | ES2027 (expected) | **26** (25 ✗, 26 ✓) | 144 / 139 / — | **Limited** (no Safari) |
 | `Math.sumPrecise` | ES2026 | **not in any Node release** (absent on 26.12.1) | 147 / 137 / 26.2 | Newly (2026-04-10) |
-| `Iterator.zip`, `chunks`, `windows`, `includes`, `join` | ES2027 (expected) | not shipped | — / — / — | Limited |
-| Decorators (`@dec`) | Stage 3 | not shipped (`SyntaxError`) | — | not in any core browser |
+| `Iterator.zip`/`zipKeyed`, `Iterator.prototype.join` | ES2027 (expected) | **not in any Node release** (absent on 26.12.1) | 153 / 148 (`zip`, `zipKeyed`), 154 (`join`) / — | **Limited** (no Safari) |
+| `Iterator.prototype.includes`, `chunks`, `windows` | ES2027 (expected) | **not in any Node release** | `includes` 154 / 154 / —; `chunks`/`windows` — / 154 / — | **Limited** |
+| Decorators (`@dec`) | Stage 2.7 (since May 2026) | not shipped (`SyntaxError`) | — | not in any core browser |
 
 Notes on the table:
 
 - "16.6" for `.at()`, "16.9" for `Object.hasOwn`/`cause` and "16.11" for ES2022 completeness come from the Node 16 changelog (V8 9.2/9.3/9.4 upgrades); only 16.20.2 is installed, so the verified pair is 14 ✗ / 16.20 ✓.[^7]
 - `Math.sumPrecise` is the rare case where every core browser is ahead of Node.js: Node 26 (V8 14.6) only has it behind `--js-sum-precise`.
 - `Error.isError`, `using` and `Temporal` exist on Node ≥ 24/26 and in Chromium and Firefox, but **not in Safari**: browser code must polyfill or avoid them.
+- The ES2027 iterator additions (`Iterator.zip`, `join`, `includes`, `chunks`, `windows`) already ship in current Chrome and/or Firefox but in no Node.js release and no Safari release: they are not usable in Node code or cross-browser code without a polyfill.[^10]
+- Dates in the Baseline column are the "Newly available" (low) date; "Widely available" status follows 30 months later (for example `Object.groupBy`: Newly 2024-03-05, Widely 2026-09-05).
 
 ***
 
@@ -146,11 +149,12 @@ Notes on the table:
 
 #### Do Not Use or Recommend
 
-##### Not available in any shipping runtime (as of October 2026)
+##### Not available in Node.js or across browsers (as of October 2026)
 
-- **Decorators** (`@decorator class …`): a `SyntaxError` in every Node release and every core browser. TypeScript `experimentalDecorators` or Babel decorators are compile-time features; the reviewed code must go through that compiler.
-- `Iterator.zip()`/`zipKeyed()`, `Iterator.prototype.chunks()`/`windows()`/`includes()`/`join()` (Stage 4 for ES2027, not shipped).
-- `import defer`, source-phase imports for JavaScript modules, `ShadowRealm`, `Promise.allKeyed`, `String.dedent`, `Math.clamp`, immutable `ArrayBuffer`, the pipeline operator `|>`, records and tuples (`#{}`/`#[]`, withdrawn), `Array.prototype.group` (the shipped name is `Object.groupBy`).
+- **Decorators** (`@decorator class …`, TC39 Stage 2.7 since May 2026): a `SyntaxError` in every Node release and every core browser. TypeScript `experimentalDecorators` or Babel decorators are compile-time features; the reviewed code must go through that compiler.
+- `Iterator.zip()`/`zipKeyed()`, `Iterator.prototype.chunks()`/`windows()`/`includes()`/`join()` (Stage 4 for ES2027): in **no Node.js release** (absent on 26.12.1) and no Safari release; only recent Chrome (153/154: `zip`, `zipKeyed`, `join`, `includes`) and Firefox (148/154) ship them. Server code and cross-browser code must not use them without a polyfill.
+- `Promise.allKeyed` (Stage 3 since July 2026): Firefox 155 only; not in Node.js, Chrome or Safari.[^10][^11]
+- `import defer`, source-phase imports for JavaScript modules, `ShadowRealm`, `String.dedent`, `Math.clamp`, immutable `ArrayBuffer`, the pipeline operator `|>`, records and tuples (`#{}`/`#[]`, withdrawn), `Array.prototype.group` (the shipped name is `Object.groupBy`).
 - Import **assertions** (`import x from './a.json' assert { type: 'json' }`): replaced by import attributes (`with`). `assert` is a `SyntaxError` on Node ≥ 22 and current Chromium.
 - `Math.sumPrecise` on **Node.js** (ships in browsers, not in Node 26).
 
@@ -509,7 +513,7 @@ console.log(structuredClone(new Point(1)) instanceof Point);  // false — proto
 ```
 
 - `structuredClone` copies `Date`, `Map`, `Set`, `RegExp`, typed arrays, `Error` and cyclic graphs; it throws `DataCloneError` for functions, DOM nodes and symbols, and drops class prototypes and `#private` fields. `JSON.parse(JSON.stringify(x))` is worse: it turns `Date` into strings, drops `undefined`, `Map`, `Set`, and throws on `BigInt` and cycles.
-- **In-place array methods** mutate: `sort`, `reverse`, `splice`, `fill`, `copyWithin`, `push`/`pop`/`shift`/`unshift`. Sorting a prop, a shared cache entry or a function argument in place is a bug. Use the ES2023 copying versions — `toSorted()`, `toReversed()`, `toSpliced()`, `with(index, value)` (Node 20, Widely available since 2023-07-04) — or copy first (`[...arr].sort(cmp)`) on older targets.
+- **In-place array methods** mutate: `sort`, `reverse`, `splice`, `fill`, `copyWithin`, `push`/`pop`/`shift`/`unshift`. Sorting a prop, a shared cache entry or a function argument in place is a bug. Use the ES2023 copying versions — `toSorted()`, `toReversed()`, `toSpliced()`, `with(index, value)` (Node 20; Baseline Newly 2023-07-04, Widely since 2026-01-04) — or copy first (`[...arr].sort(cmp)`) on older targets.
 - Freeze configuration objects and enum-like constants (`Object.freeze`), and deep-freeze only when the object is small and created once.
 
 ```js
@@ -641,7 +645,7 @@ console.log(new ValidationError('too short', 'password').field); // password
 - **Wrap with `{ cause }`** instead of concatenating messages; the original stack survives. Node and browser consoles print the cause chain.
 - **Branch on `err.code` or class, never on `err.message`** — messages are not API and differ across engines.
 - `this.name = new.target.name` keeps subclass names correct without repeating them. Set `name` — otherwise logs show `Error` for every subclass.
-- `Error.captureStackTrace` and `Error.stackTraceLimit` are V8-only; guard them (`Error.captureStackTrace?.(this, new.target)`) in cross-engine code. Subclassing `Error` with `class … extends Error` already captures the stack.
+- `Error.captureStackTrace` and `Error.stackTraceLimit` are not ECMAScript (`captureStackTrace` is a Stage 2 proposal): V8 has both, Firefox has `captureStackTrace` since 138 and `stackTraceLimit` since 153, Safari has `captureStackTrace` since 17.2 and `stackTraceLimit` since 11.1. Guard them (`Error.captureStackTrace?.(this, new.target)`) in cross-engine code. Subclassing `Error` with `class … extends Error` already captures the stack.
 - **Catch narrowly.** A `catch` that swallows every error (`catch {}` or `catch (e) { return null }`) hides bugs; catch, check the type/code you expect, and rethrow everything else.
 - **Handle once, at a boundary** (request handler, job runner, UI error boundary). Logging and rethrowing at every layer duplicates logs.
 - In a `catch (e)` the value can be anything (`unknown` in TypeScript) — code that reads `e.message` must tolerate non-errors: `Error.isError(e) ? e.message : String(e)` (ES2026; on Safari or Node < 24 use `e instanceof Error`).
@@ -869,7 +873,7 @@ try {
 ```
 
 - Accept an optional `signal` in long-running async APIs and pass it down (`fetch(url, { signal })`, timers, streams, event listeners).
-- `AbortSignal.timeout(ms)` (Node 16.14/17.3, Widely available since 2024-04-18) rejects with a `TimeoutError` `DOMException`; `controller.abort()` uses `AbortError`. `AbortSignal.any()` (Node 20.3 and 18.17, Widely available since 2024-03-19) combines signals.
+- `AbortSignal.timeout(ms)` (Node 16.14/17.3; Baseline Newly 2024-04-18, Widely since 2026-10-18) rejects with a `TimeoutError` `DOMException`; `controller.abort()` uses `AbortError`. `AbortSignal.any()` (Node 20.3 and 18.17; Newly 2024-03-19, Widely since 2026-09-19) combines signals.
 - Call `signal.throwIfAborted()` at loop boundaries; remove `abort` listeners from long-lived signals (`{ once: true }` or explicit removal), otherwise they accumulate.
 - A `fetch` **timeout must cover the body**: the signal passed to `fetch` also aborts `response.json()`; a `setTimeout` + `Promise.race` around `fetch()` alone does not stop the download.
 
@@ -1022,7 +1026,7 @@ const counts = new Map();
 for (const w of ['a', 'b', 'a']) counts.set(w, (counts.get(w) ?? 0) + 1);
 console.log([...counts]); // [ [ 'a', 2 ], [ 'b', 1 ] ]
 
-// Object.groupBy / Map.groupBy (ES2024, Node 21+, Widely available since 2024-03-05)
+// Object.groupBy / Map.groupBy (ES2024, Node 21+; Baseline Newly 2024-03-05, Widely since 2026-09-05)
 const people = [{ team: 'x', n: 1 }, { team: 'y', n: 2 }, { team: 'x', n: 3 }];
 const byTeam = Object.groupBy(people, (p) => p.team);
 console.log(Object.keys(byTeam), Object.getPrototypeOf(byTeam)); // [ 'x', 'y' ] null
@@ -1039,7 +1043,7 @@ console.log([...admins.intersection(online)], [...admins.union(online)], admins.
 - `Object.groupBy` returns a **null-prototype** object: `byTeam.hasOwnProperty` is `undefined`; use `Object.hasOwn`.
 - `Map`/`Set` compare object keys by identity: `map.get({ id: 1 })` never finds a previously stored `{ id: 1 }`. Use primitive keys.
 - `JSON.stringify(new Map(...))` is `{}`; convert with `Object.fromEntries(map)` or `[...map]`.
-- `WeakMap`/`WeakSet` for metadata keyed by objects you do not own (no leaks, not iterable). Symbols can be `WeakMap` keys since ES2023 (Node 18) — except registered symbols from `Symbol.for()`, which throw `TypeError`.
+- `WeakMap`/`WeakSet` for metadata keyed by objects you do not own (no leaks, not iterable). Symbols can be `WeakMap` keys since ES2023 (Node 20, Chrome 109, Firefox 146, Safari 16.4; Baseline Newly 2025-12-09) — except registered symbols from `Symbol.for()`, which throw `TypeError`.
 - **Upsert** (`map.getOrInsert(key, value)`, `map.getOrInsertComputed(key, fn)`, ES2026) needs Node 26, Chrome 145, Firefox 144, Safari 26.2 (Newly available since 2026-02-14). On older targets keep the `get`/`?? `/`set` pattern above.
 
 ##### Iterators and generators
@@ -1061,7 +1065,7 @@ console.log(await Array.fromAsync(pages())); // [ 1, 2 ]
 ```
 
 - Iterator helpers return iterators, not arrays: call `.toArray()` or spread. `toArray()` on an infinite iterator never returns — `take(n)` first.
-- `Iterator.concat(a, b)` (ES2026) needs Node 26 / Chrome 146 / Firefox 147 / Safari 26.4. `Iterator.zip`, `chunks`, `windows`, `includes`, `join` are not shipped anywhere.
+- `Iterator.concat(a, b)` (ES2026) needs Node 26 / Chrome 146 / Firefox 147 / Safari 26.4. `Iterator.zip`, `chunks`, `windows`, `includes`, `join` (ES2027) are in no Node.js or Safari release — only in recent Chrome/Firefox.
 - Generators are lazy and stateful; returning early from `for...of` calls the generator's `return()` (its `finally` runs).
 - `for await (const x of stream)` consumes async iterables (Node streams, `ReadableStream` in browsers with async iteration support — `ReadableStream` async iteration is Newly available only since 2026-09-14).
 
@@ -1187,7 +1191,7 @@ console.log('İ'.toLowerCase().length, 'I'.toLocaleLowerCase('tr'), 'ß'.toUpper
 console.log(['b', 'a', 'Ä'].sort(), ['b', 'a', 'Ä'].sort(new Intl.Collator('de').compare)); // [ 'a', 'b', 'Ä' ] [ 'a', 'Ä', 'b' ]
 ```
 
-- `length`, `slice`, `substring` and indexing work on UTF-16 code units. For user-visible length, truncation and cursor movement use `Intl.Segmenter` (Node 16, Widely available since 2024-04-16); `[...str]` splits by code point, which still breaks emoji sequences and combining marks.
+- `length`, `slice`, `substring` and indexing work on UTF-16 code units. For user-visible length, truncation and cursor movement use `Intl.Segmenter` (Node 16; Baseline Newly 2024-04-16, Widely since 2026-10-16); `[...str]` splits by code point, which still breaks emoji sequences and combining marks.
 - Compare user-entered text after `normalize('NFC')`; usernames and identifiers additionally need case folding and a confusables policy.
 - `toLowerCase()`/`toUpperCase()` are locale-independent but not length-preserving (`'ß'.toUpperCase()` is `'SS'`); use `toLocaleLowerCase(locale)` for user-visible text and plain `toLowerCase()` for protocol identifiers.
 - Sort user-visible strings with `Intl.Collator`/`localeCompare`, not the default code-unit sort.
@@ -1267,7 +1271,7 @@ const safe = /^a+$/;                          // same language, no nested quanti
 t = performance.now();
 safe.test(input);
 const fastMs = performance.now() - t;
-console.log(slowMs > 50 * fastMs, slowMs > 20);  // true true — ~0.2 s for 23 characters; each extra 'a' doubles it
+console.log(slowMs > 50 * fastMs, slowMs > 20);  // true true — tens of ms for 23 characters; each extra 'a' roughly doubles it
 ```
 
 Review rules:
@@ -1616,7 +1620,7 @@ Additional patterns to flag:
 - [ ] Runtime target identified (`engines`, `.nvmrc`, Docker image, CI matrix, `browserslist`, transpiler target, `tsconfig` `lib`).
 - [ ] Every built-in used exists on the **oldest** target (edition/Node/Baseline tables above) or has a conditional polyfill/fallback.
 - [ ] Node.js version is a maintained line (22, 24, 26) on its latest patch; no Node 18/20/25 in production; no Node 27 alpha in production.
-- [ ] No unshipped or removed features (decorators, `Iterator.zip`, import `assert`, `Math.sumPrecise` on Node, `Temporal`/`Error.isError`/`using` in Safari-targeted code without polyfill).
+- [ ] No unshipped or removed features (decorators, import `assert`, `Iterator.zip`/`join`/`includes`/`chunks`/`windows` in Node or Safari-targeted code, `Math.sumPrecise` on Node, `Temporal`/`Error.isError`/`using` in Safari-targeted code without polyfill).
 
 ##### Correctness
 
@@ -1662,3 +1666,5 @@ Additional patterns to flag:
 [^7]: Node.js 16 changelog (V8 9.2 in 16.6.0, 9.3 in 16.9.0, 9.4 in 16.11.0). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V16.md
 [^8]: Temporal proposal documentation. https://tc39.es/proposal-temporal/docs/
 [^9]: ESLint v10.0.0 released (eslintrc removed). https://eslint.org/blog/2026/02/eslint-v10.0.0-released/
+[^10]: MDN browser-compat-data (npm `@mdn/browser-compat-data` 8.1.7: `Iterator.zip`/`join`/`includes`/`chunks`, `Promise.allKeyed`, `Error.captureStackTrace`, symbols as `WeakMap` keys). https://github.com/mdn/browser-compat-data
+[^11]: TC39 active proposals (stages of decorators, Await Dictionary, `import defer`, `ShadowRealm`, `Error.captureStackTrace`). https://github.com/tc39/proposals/blob/main/README.md
