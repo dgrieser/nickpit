@@ -4,7 +4,7 @@
 
 > **Version**: MySQL 8.0. The first GA release, 8.0.11, shipped on **April 19, 2018**.[^1] The final release is **8.0.46 (April 21, 2026)**.[^2]
 > **Support status: END OF LIFE.** "As of April 2026, with version 8.0.46, MySQL 8.0 reaches End of Life (EoL)."[^2] Premier Support ended in April 2025 and Extended Support in April 2026;[^3] no further bug or security fixes are published for 8.0. **MySQL 5.7** reached End of Life in **October 2023**; its last release is 5.7.44 (October 25, 2023).[^3][^4]
-> **Landscape as of October 2026**: the supported LTS series are **8.4** (latest 8.4.13, October 20, 2026; Premier Support until April 2029) and **9.7** (latest 9.7.4, October 20, 2026).[^5][^6] An LTS series cannot be skipped when upgrading: the supported path is **8.0 → 8.4 LTS → 9.7 LTS**.[^7] Recommend planning the move to 8.4 in every review of an 8.0 or 5.7 project, while still judging the code against the version it actually runs on.
+> **Landscape as of October 2026**: the supported LTS series are **8.4** (latest 8.4.13, October 20, 2026; Premier Support until April 2029) and **9.7** (latest 9.7.4, October 20, 2026; Premier Support until April 2031).[^5][^6] Innovation releases after 9.7 use calendar versions; the newest is **26.10.0** (October 20, 2026). An LTS (or bugfix) series cannot be skipped when upgrading: the supported path is **8.0 → 8.4 LTS → 9.7 LTS**, and 5.7 must go through 8.0 first (**5.7 → 8.0 → 8.4**).[^7][^51] Recommend planning the move to 8.4 in every review of an 8.0 or 5.7 project, while still judging the code against the version it actually runs on.
 > **Scope**: SQL that runs on MySQL 8.0 (and, where marked, 5.7) with InnoDB: schema and index design, migrations and online DDL, queries and DML in application code, transactions and locking, stored programs, security, and the differences to 5.7 and 8.4. Every example was executed on **MySQL 8.0.46** (Community, official `mysql:8.0` image). Boundary claims were checked on **5.7.44** (official `mysql:5.7` image) and **8.4.13**.
 > **Note**: This document is self-contained. Features that 5.7 lacks are marked **8.0+** (with the 8.0.x release that introduced them, e.g. **8.0.16+**), so the guide also serves projects pinned to MySQL 5.7 or to an early 8.0 patch release.
 
@@ -81,10 +81,10 @@ These are the 5.7 habits that fail or change meaning on 8.0 (all verified on 5.7
 | `GROUP BY a DESC` / `GROUP BY a ASC` | `ERROR 1064` (removed in 8.0.13; 5.7 warns 1287) |
 | Relying on `GROUP BY` sorting its output | `GROUP BY` no longer sorts implicitly; add `ORDER BY` |
 | `GRANT ... TO new_user IDENTIFIED BY 'x'` creating users | `ERROR 1410 You are not allowed to create a user with GRANT`; use `CREATE USER` then `GRANT` |
-| `PASSWORD('x')`, `ENCODE()`, `DECODE()`, `ENCRYPT()`, `DES_ENCRYPT()` | `ERROR 1064` / removed |
+| `PASSWORD('x')`, `ENCODE()`, `DECODE()`, `ENCRYPT()`, `DES_ENCRYPT()` | removed: `PASSWORD('x')` is `ERROR 1064`, the others `ERROR 1305 FUNCTION ... does not exist` |
 | `SET sql_mode = '...,NO_AUTO_CREATE_USER,...'` (common in old dumps and ORMs) | `ERROR 1231 Variable 'sql_mode' can't be set to the value of 'NO_AUTO_CREATE_USER'` |
 | Query cache (`SQL_CACHE`, `query_cache_*` variables) | removed; `SQL_NO_CACHE` accepted with a deprecation warning |
-| Unquoted new reserved words as identifiers: `CUME_DIST`, `DENSE_RANK`, `EMPTY`, `EXCEPT`, `FIRST_VALUE`, `GROUPING`, `GROUPS`, `INTERSECT`, `JSON_TABLE`, `LAG`, `LAST_VALUE`, `LATERAL`, `LEAD`, `NTH_VALUE`, `NTILE`, `OF`, `OVER`, `PERCENT_RANK`, `RANK`, `RECURSIVE`, `ROW_NUMBER`, `SYSTEM`, `WINDOW`[^10] | `ERROR 1064`; quote them (`` `rank` ``) |
+| Unquoted new reserved words as identifiers: `CUME_DIST`, `DENSE_RANK`, `EMPTY`, `EXCEPT`, `FIRST_VALUE`, `GROUPING`, `GROUPS`, `INTERSECT`, `JSON_TABLE`, `LAG`, `LAST_VALUE`, `LATERAL`, `LEAD`, `NTH_VALUE`, `NTILE`, `OF`, `OVER`, `PERCENT_RANK`, `RANK`, `RECURSIVE`, `ROW_NUMBER`, `SYSTEM`, `WINDOW`, and `CUBE` (reserved since 8.0.1; `CREATE TABLE cube (...)` fails on 8.0.46)[^10] | `ERROR 1064`; quote them (`` `rank` ``) |
 | `information_schema.innodb_locks` / `innodb_lock_waits` | removed; use `performance_schema.data_locks` / `data_lock_waits` |
 | `EXPLAIN EXTENDED`, `EXPLAIN PARTITIONS` | removed (the information is always shown) |
 | `\N` as `NULL` in SQL, `PROCEDURE ANALYSE()`, `JSON_APPEND()` | removed |
@@ -124,9 +124,10 @@ GRANT SELECT ON t.* TO nosuchuser@'%';         -- ERROR 1410 (42000): You are no
 | 8.0.30 | GIPK mode; `innodb_redo_log_capacity` replaces `innodb_log_file_size`/`innodb_log_files_in_group` (deprecated); `--skip-host-cache` deprecated[^8] |
 | 8.0.31 | `INTERSECT`/`EXCEPT`[^8] |
 | 8.0.32 | `$` as the first character of unquoted identifiers deprecated (warning 1681); unquoted `FULL` as an identifier deprecated (warning 4119); `explain_format` added[^18] |
-| 8.0.34 | `mysql_native_password` deprecated (logged in the error log, not as an SQL warning); `binlog_format`, `log_bin_trust_function_creators` deprecated (warning 1287 on every read or `SET`); `mysqlpump`, `mysql_ssl_rsa_setup`, `keyring_file` deprecated; version comments must be followed by whitespace (`/*!80034 KEY_BLOCK_SIZE=1024*/`)[^19] |
+| 8.0.34 | `mysql_native_password` deprecated (logged in the error log, not as an SQL warning); `binlog_format`, `log_bin_trust_function_creators` deprecated (warning 1287 on every read or `SET`); `mysqlpump`, `mysql_ssl_rsa_setup`, `keyring_file` deprecated; a version comment whose number is not followed by whitespace (`/*!80034KEY_BLOCK_SIZE=1024*/`) is deprecated (warning 4164; write `/*!80034 KEY_BLOCK_SIZE=1024*/`)[^19] |
 | 8.0.35 | `INFORMATION_SCHEMA.PROCESSLIST` deprecated (warning 1287); wildcards `%`/`_` in database-level grants and `%` as a synonym for `localhost` deprecated (no warning is raised); `binlog_transaction_dependency_tracking` deprecated; `STR_TO_DATE()` range-checks dates[^20] |
-| 8.0.41 | `ADD COLUMN`/`DROP COLUMN` **without an `ALGORITHM` clause on an empty table** uses `INPLACE` and no longer consumes a row version; incompatible fix for spatial-index corruption (drop and re-create spatial indexes around the upgrade)[^21] |
+| 8.0.38 | **Release withdrawn**: "removed due to a critical issue that could stop the server from restarting following the creation of a very large number of tables (8001 or more). Please upgrade to MySQL 8.0.39 instead"; `mysql_native_password` deprecation warning is written to the error log only once instead of per authentication[^52] |
+| 8.0.41 | `ADD COLUMN`/`DROP COLUMN` **without an `ALGORITHM` clause on an empty table** uses `INPLACE` and no longer consumes a row version (8.0.40 still consumed one: `total_row_versions` 1 after `ADD`, 2 after `DROP`); incompatible fix for spatial-index corruption (drop and re-create spatial indexes around the upgrade)[^21] |
 | 8.0.42 | `--check-table-functions=WARN|ABORT` (default `ABORT`): an upgrade aborts when a constraint, default, partitioning expression or generated column uses a function that now raises an error; `ALTER TABLE ... INPLACE` rejects indexes over 767 bytes on `REDUNDANT`/`COMPACT` tables[^22] |
 | 8.0.46 | Final release: fix for semi-join materialization queries that "may return incorrect results due to a missing condition"; OpenSSL 3.5.5[^2] |
 
@@ -153,9 +154,9 @@ The 8.0 server does not have these. Never suggest them for code that runs on 8.0
 | `EXPLAIN ANALYZE FORMAT=JSON` | 8.1–8.4 (8.4.13 accepts it only with `explain_json_format_version=2`) | `ERROR 1235 ... doesn't yet support 'EXPLAIN ANALYZE with JSON format'` |
 | `GROUP BY ROLLUP (a, b)` | 8.4 (documented in 8.4.3) | `ERROR 1064`; use `GROUP BY a, b WITH ROLLUP` |
 | `ANALYZE TABLE ... UPDATE HISTOGRAM ... AUTO UPDATE` | 8.4.0[^23] | `ERROR 1064` |
-| `restrict_fk_on_non_standard_key`, privileges `SET_ANY_DEFINER`, `ALLOW_NONEXISTENT_DEFINER`, `FLUSH_PRIVILEGES`, `OPTIMIZE_LOCAL_TABLE`, `TRANSACTION_GTID_TAG`; tagged GTIDs | 8.2.0–8.4.0[^23] | `ERROR 1193` / unknown privilege (8.0 uses `SET_USER_ID`) |
+| `restrict_fk_on_non_standard_key`, privileges `SET_ANY_DEFINER`, `ALLOW_NONEXISTENT_DEFINER`, `FLUSH_PRIVILEGES`, `OPTIMIZE_LOCAL_TABLE`, `TRANSACTION_GTID_TAG`; tagged GTIDs | 8.2.0–8.4.0[^23] | `ERROR 1193` for the variable; `GRANT SET_ANY_DEFINER ...` is `ERROR 1149` (syntax error: unknown privilege; 8.0 uses `SET_USER_ID`) |
 | Hash-based `INTERSECT`/`EXCEPT` (`hash_set_operations`) | 8.1–8.4[^23] | not in `optimizer_switch` |
-| `VERSION_WITH_UPDATE()` | 8.4.13 | `ERROR 1305` |
+| `VERSION_WITH_UPDATE()`, `@@version_with_update` | 8.4.13 / 9.7.4 | `ERROR 1305` |
 | `VECTOR(n)`, `STRING_TO_VECTOR()`, `VECTOR_DIM()` | 9.0.0[^24] | `ERROR 1064` / `ERROR 1305` |
 | `CREATE VIEW IF NOT EXISTS` | 9.1.0 | `ERROR 1064`; use `CREATE OR REPLACE VIEW` |
 | JavaScript stored programs, `CREATE LIBRARY`, JSON duality views | 9.0–9.7 | not available |
@@ -172,15 +173,15 @@ These print a warning on 8.0.46 (unless noted) and are removed or disabled in 8.
 - `&&`, `||` as `OR`, `!` as `NOT` (warning 1287) → `AND`, `OR`, `NOT`.
 - Assigning user variables inside expressions (`SELECT @y := 2`, warning 1287) → `SET` or `SELECT ... INTO`, window functions for running counters.
 - Integer display width (`INT(11)`), `ZEROFILL`, `FLOAT(M,D)`/`DOUBLE(M,D)` (warning 1681); `AUTO_INCREMENT` on `FLOAT`/`DOUBLE` (warning 3856, an error on 8.4).
-- `utf8` / `utf8mb3` (warning 3719) → `utf8mb4`.
+- `utf8` (warning 3719) / `utf8mb3` (warning 1287), `ucs2` and the `ASCII`/`UNICODE` column-charset shorthands (warning 1287, 8.0.28) → `utf8mb4`.
 - `$` as the first character of an unquoted identifier (warning 1681, 8.0.32; `$a$b` is a syntax error on 8.4); unquoted `FULL` as an identifier (warning 4119).
 - `MASTER`/`SLAVE` replication statements and options (warning 1287) → `REPLICA`/`SOURCE` forms (8.0.22/8.0.23). `SHOW MASTER STATUS`, `SHOW MASTER LOGS`, `RESET MASTER`, `PURGE MASTER LOGS` and `DISABLE ON SLAVE` print **no** warning on 8.0 but are syntax errors on 8.4.
 - `FLUSH HOSTS` (warning 1287) → `TRUNCATE TABLE performance_schema.host_cache`; `LOCK TABLES ... LOW_PRIORITY WRITE` (warning 1287).
-- `INFORMATION_SCHEMA.PROCESSLIST` (warning 1287, 8.0.35) → `performance_schema.processlist`; `INFORMATION_SCHEMA.TABLESPACES` (warning 1681).
+- `INFORMATION_SCHEMA.PROCESSLIST` (warning 1287, 8.0.35) → `performance_schema.processlist`. With the default `performance_schema_show_processlist=OFF`, a plain `SHOW PROCESSLIST` uses that implementation and prints the same warning 1287 on 8.0.46. `INFORMATION_SCHEMA.TABLESPACES` (warning 1681).
 - `binlog_format`, `log_bin_trust_function_creators`, `binlog_transaction_dependency_tracking`, `expire_logs_days` (warning 1287 on read or `SET`) → row-based logging only, `binlog_expire_logs_seconds`.
 - `JSON_MERGE()` (warning 1287) → `JSON_MERGE_PRESERVE()` or `JSON_MERGE_PATCH()`.
-- `mysql_native_password` (8.0.34; no SQL warning, an error-log entry per authentication), `default_authentication_plugin` (8.0.27), `sha256_password`.
-- `innodb_log_file_size`, `innodb_log_files_in_group` (8.0.30) → `innodb_redo_log_capacity`.
+- `mysql_native_password` (8.0.34; no SQL warning, only an error-log entry, written once since 8.0.38), `default_authentication_plugin` (8.0.27; warning 1287 on read), `sha256_password` (8.0.16; `CREATE USER ... IDENTIFIED WITH sha256_password` prints no warning).
+- `innodb_log_file_size`, `innodb_log_files_in_group` (8.0.30; reading them prints no warning) → `innodb_redo_log_capacity`.
 - Wildcards `%`/`_` in database-level `GRANT` and `%` matching `localhost` (8.0.35; no warning).
 - `mysql_upgrade`, `mysqlpump`, `mysql_ssl_rsa_setup` (all removed in 8.4).
 
@@ -1444,7 +1445,7 @@ SELECT object_name, lock_type, lock_status FROM performance_schema.metadata_lock
 -- acct | SHARED_READ       | PENDING
 ```
 
-`information_schema.processlist` works too but raises deprecation warning 1287 on 8.0.35+. On 5.7 the `wait/lock/metadata/sql/mdl` instrument is disabled by default (`performance_schema.metadata_locks` stays empty until it is enabled in `setup_instruments`); use `SHOW PROCESSLIST` there.
+`information_schema.processlist` works too but raises deprecation warning 1287 on 8.0.35+. On 5.7 the `wait/lock/metadata/sql/mdl` instrument is disabled by default (`performance_schema.metadata_locks` stays empty until it is enabled in `setup_instruments`); use `SHOW PROCESSLIST` there. On 8.0.35+ a plain `SHOW PROCESSLIST` also prints warning 1287, because by default it is implemented on top of `INFORMATION_SCHEMA.PROCESSLIST`; query `performance_schema.processlist` instead.
 
 `lock_wait_timeout` (which governs MDL waits) defaults to **31,536,000 seconds (one year)** on 8.0 and 5.7. Every migration session should set a short value and retry:
 
@@ -1617,7 +1618,7 @@ The default escape character is `\` (unless `NO_BACKSLASH_ESCAPES` is set; then 
 
 ##### Authentication: caching_sha2_password vs mysql_native_password
 
-8.0 creates new accounts with `caching_sha2_password` (`default_authentication_plugin`, deprecated since 8.0.27 in favour of `authentication_policy`, default `*,,`). `mysql_native_password` still works on 8.0 — `CREATE USER ... IDENTIFIED WITH mysql_native_password` succeeds without an SQL warning; since 8.0.34 each authentication with it writes a deprecation warning to the error log — but it is **disabled by default on 8.4** and removed in 9.0.[^42]
+8.0 creates new accounts with `caching_sha2_password` (`default_authentication_plugin`, deprecated since 8.0.27 in favour of `authentication_policy`, default `*,,`). `mysql_native_password` still works on 8.0 — `CREATE USER ... IDENTIFIED WITH mysql_native_password` succeeds without an SQL warning; since 8.0.34 authenticating with it writes a deprecation warning to the error log (since 8.0.38 only once, not per login: three logins on 8.0.46 produced one entry) — but it is **disabled by default on 8.4** and removed in 9.0.[^42]
 
 - The first login of a `caching_sha2_password` account after a server restart or `FLUSH PRIVILEGES` (cache empty) needs either a **TLS connection** or RSA public-key exchange; over plain TCP without either, the login fails (verified on 8.0.46):
 
@@ -1701,7 +1702,7 @@ db, err := sql.Open("mysql", cfg.FormatDSN())
 - Without `parseTime=true`, scanning a `DATETIME` into `time.Time` fails: `unsupported Scan, storing driver.Value type []uint8 into type *time.Time`.
 - `loc` and `time_zone` must agree with how the data is written; a mismatch shifts every `TIMESTAMP` by the zone offset.
 - `multiStatements=false` (default) — keep it.
-- `interpolateParams=true` makes the driver substitute parameters client-side to save a round trip; the driver rejects it with the multibyte encodings BIG5, CP932, GB2312, GBK and SJIS because escaping is unsafe there. Leave it off unless measured.
+- `interpolateParams=true` makes the driver substitute parameters client-side to save a round trip; escaping is unsafe with multibyte encodings whose trailing bytes can be `0x5c` (BIG5, CP932, GBK, GB18030, SJIS). v1.10.1 only rejects the combination when the DSN's `collation` is one of those (`invalid DSN: interpolateParams can not be used with unsafe collations`); `charset=sjis&interpolateParams=true` is accepted without error, so flag `interpolateParams` together with any such charset. Leave it off unless measured.
 - Pool settings: `SetConnMaxLifetime` below the server's `wait_timeout` (28,800 s default) and any proxy/load-balancer idle timeout; `SetMaxOpenConns` below `max_connections` (151 default) divided by the number of application instances.
 - Classify errors by number, not message text:
 
@@ -1781,7 +1782,7 @@ SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;       
 6. **Privileges**: `SET_USER_ID` is replaced by `SET_ANY_DEFINER` and `ALLOW_NONEXISTENT_DEFINER`; `FLUSH PRIVILEGES` gets its own `FLUSH_PRIVILEGES` privilege.
 7. **Changed defaults** (observed on 8.0.46 → 8.4.13 in the same container): `innodb_adaptive_hash_index` `ON` → `OFF`, `innodb_change_buffering` `all` → `none`, `innodb_io_capacity` 200 → 10000, `innodb_log_buffer_size` 16 → 64 MiB, `innodb_flush_method` `fsync` → `O_DIRECT`, `temptable_max_mmap` 1 GiB → 0. Re-measure instead of copying the 8.0 `my.cnf`.
 8. **Keep deprecated features out of new 8.0 code** so the upgrade is mechanical: `VALUES()` in upserts, `SQL_CALC_FOUND_ROWS`, `utf8mb3`, `&&`/`||`, display widths, `ZEROFILL`, user-variable assignment in expressions, wildcard database grants, inline column `REFERENCES` (still ignored on 8.4, enforced on 9.x).
-9. **Upgrade mechanics**: run the MySQL Shell upgrade checker (`util.checkForServerUpgrade()`) against the 8.0 server; take a logical or physical backup; upgrade in place (8.0.46 → 8.4.x is supported) or via a replica on 8.4. 8.0 → 9.7 directly is not supported.[^7]
+9. **Upgrade mechanics**: run the MySQL Shell upgrade checker (`util.checkForServerUpgrade()`) against the 8.0 server; take a logical or physical backup; upgrade in place (8.0.46 → 8.4.x is supported) or via a replica on 8.4. 8.0 → 9.7 directly is not supported, because an LTS series cannot be skipped.[^7][^51]
 
 **Coming from 5.7 (to 8.0, then 8.4)**: 5.7 → 8.0 is an in-place upgrade with a data-dictionary conversion that cannot be downgraded. Before it: remove `NO_AUTO_CREATE_USER` from all `sql_mode` settings, quote new reserved words, replace `GRANT ... IDENTIFIED BY` user creation, drop or fix `CHECK` clauses whose data violates them, convert non-InnoDB partitioned tables, set explicit character sets/collations so new tables match old ones, add `ORDER BY` wherever `GROUP BY` order was relied upon, and decide whether to keep `explicit_defaults_for_timestamp`-dependent DDL. The upgrade checker reports most of these.[^9]
 
@@ -1791,7 +1792,7 @@ SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;       
 
 ##### Version and support
 
-- [ ] The project knows it runs an **end-of-life** server (8.0 since April 2026, 5.7 since October 2023) and has a dated plan to move to 8.4 LTS; until then it pins 8.0.46 (not 8.0.29, which was withdrawn)
+- [ ] The project knows it runs an **end-of-life** server (8.0 since April 2026, 5.7 since October 2023) and has a dated plan to move to 8.4 LTS; until then it pins 8.0.46 (never 8.0.29 or 8.0.38, which were withdrawn)
 - [ ] No feature newer than the pinned version (8.1+/8.4/9.x, see "Do not use"); on 5.7 no **8.0+** feature
 - [ ] No new usage of features that 8.4 removes (`mysql_native_password`, `MASTER`/`SLAVE` statements, FKs to non-unique keys, `AUTO_INCREMENT` on floats)
 
@@ -1898,3 +1899,5 @@ SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;       
 [^48]: Changes in MySQL 8.0.27 (2021-10-19) — replica_parallel_workers=4 and replica_preserve_commit_order=ON defaults, authentication_policy, default_authentication_plugin deprecated. https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-27.html
 [^49]: Changes in MySQL 8.0.18 (2019-10-14) — EXPLAIN ANALYZE, hash joins for inner equi-joins. https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-18.html
 [^50]: InfoQ — MySQL Introduces Innovation and Long-Term Support Releases (quoting Oracle: "8.0.34+ will transition to only bug fixes until 8.0 End-Of-Life (EOL) scheduled for April-2026"); Oracle announcement: https://blogs.oracle.com/mysql/post/introducing-mysql-innovation-and-longterm-support-lts-versions . https://www.infoq.com/news/2023/08/mysql-innovation-release/
+[^51]: MySQL 8.4 Reference Manual — Upgrade Paths ("a bugfix or LTS series cannot be skipped"; 5.7 → 8.0 → 8.4). https://dev.mysql.com/doc/refman/8.4/en/upgrade-paths.html
+[^52]: Changes in MySQL 8.0.38 (2024-07-01; release withdrawn, upgrade to 8.0.39) and Changes in MySQL 8.0.39 (2024-07-23). https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-38.html , https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-39.html
