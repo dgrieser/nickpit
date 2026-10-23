@@ -60,7 +60,7 @@ Default language version per target framework (verified with SDK 11.0.100-rc.2 a
 
 | Target framework | Default C# |
 | --- | --- |
-| .NET Framework (all), `netstandard2.0`, `netstandard1.x`, `netcoreapp2.x` | 7.3 |
+| .NET Framework (all, including `net35`), `netstandard2.0`, `netstandard1.x`, `netcoreapp2.x` | 7.3 |
 | `netstandard2.1`, `netcoreapp3.0`, `netcoreapp3.1` | 8.0 |
 | `net5.0` | 9.0 |
 | `net6.0` | 10.0 |
@@ -68,14 +68,14 @@ Default language version per target framework (verified with SDK 11.0.100-rc.2 a
 | `net8.0` | 12.0 |
 | `net9.0` | 13.0 |
 | `net10.0` | 14.0 |
-| `net11.0` (RC) | 15.0 |
+| `net11.0` (RC) | 15.0 (SDK 11 only; SDK 10.0.402 evaluates `net11.0` to 14.0) |
 
 ##### Rules for version-aware review
 
 - **Label every version-specific suggestion.** Write "use file-scoped namespaces (C# 10)" or "`ArgumentNullException.ThrowIfNull` (.NET 6+)", never an unqualified "use X".
 - **When the version is unknown, prefer the portable form** and mention the modern alternative with its version: `if (x is null) throw new ArgumentNullException(nameof(x));` works everywhere (`is null` needs C# 7.0); `ArgumentNullException.ThrowIfNull(x)` needs .NET 6.
-- **Language features and APIs are independent.** `<LangVersion>12</LangVersion>` on `netstandard2.0` enables collection expressions and primary constructors (pure syntax) but not `required` members, `init` accessors or `record` types without polyfill types (`IsExternalInit`, `RequiredMemberAttribute`, `CompilerFeatureRequiredAttribute`, `SetsRequiredMembersAttribute`), and never features that need runtime support: default interface methods (C# 8), static abstract interface members (C# 11), `ref` fields (C# 11) and inline arrays (C# 12) require .NET Core 3.0+, .NET 7+, .NET 7+ and .NET 8+ respectively.
-- **A newer C# version than the target framework's default is unsupported by Microsoft**, even though it often compiles. It can change overload resolution: C# 14's first-class span conversions bind `array.Reverse()` to the `void`-returning `MemoryExtensions.Reverse(Span<T>)` on targets older than `net10.0`.[^5][^6]
+- **Language features and APIs are independent.** `<LangVersion>12</LangVersion>` on `netstandard2.0` enables collection expressions, primary constructors, type aliases and default lambda parameters (pure syntax, verified) but not `required` members, `init` accessors or positional `record` types without polyfill types (CS0518/CS0656; a non-positional `record` with `set` accessors compiles) (`IsExternalInit`, `RequiredMemberAttribute`, `CompilerFeatureRequiredAttribute`, `SetsRequiredMembersAttribute`), and never features that need runtime support: default interface methods (C# 8), static abstract interface members (C# 11), `ref` fields (C# 11) and inline arrays (C# 12) require .NET Core 3.0+, .NET 7+, .NET 7+ and .NET 8+ respectively.
+- **A newer C# version than the target framework's default is unsupported by Microsoft**, even though it often compiles. It can change overload resolution: C# 14's first-class span conversions bind `array.Reverse()` to the `void`-returning, in-place `MemoryExtensions.Reverse(Span<T>)` on `netcoreapp2.1`–`net9.0` (and on any target that references `System.Memory`); `net10.0` adds an `Enumerable.Reverse(T[])` overload that restores the old binding.[^5][^6]
 - **`<LangVersion>latest</LangVersion>` or `preview` makes the language version depend on whichever SDK builds the code.** Microsoft's own documentation warns against `latest`; flag `preview` in production code.[^5]
 - **Verify an API exists in the pinned target framework before recommending it, and before calling it "unavailable".** Say "not available in .NET X" only when the target framework's reference assemblies prove it (the tables below were verified that way). Many APIs reach older targets through NuGet packages (`System.Text.Json`, `Microsoft.Bcl.AsyncInterfaces`, `System.Threading.Channels`, `Microsoft.Bcl.TimeProvider`, `System.Collections.Immutable`).
 - **`#if` guards in multi-targeted libraries**: `#if NET6_0_OR_GREATER` / `NET8_0_OR_GREATER` / `NETSTANDARD2_0` / `NETFRAMEWORK` are SDK-defined symbols; code using a new API in a multi-targeted project must be guarded or the older target fails to build.
@@ -93,7 +93,7 @@ Status as of October 22, 2026 (dates from Microsoft's release metadata and lifec
 | .NET Framework 4.7–4.8 | 7.3 | 2017–2019 | (Windows Update servicing) | Supported, follows the OS lifecycle |
 | .NET Framework 4.6.2 | 7.3 | Aug 2, 2016 | — | Ends **January 12, 2027** |
 | .NET Framework 4.5.2, 4.6, 4.6.1 | 7.3 | 2014–2015 | — | **Out of support** since April 26, 2022 |
-| .NET Framework 3.5 SP1 | 3.0 | Nov 19, 2007 | — | Ends January 9, 2029 |
+| .NET Framework 3.5 SP1 | 7.3 | Nov 19, 2007 | — | Ends January 9, 2029 |
 | .NET Core 3.1 (LTS) | 8.0 | Dec 3, 2019 | 3.1.32 (Dec 13, 2022) | **Out of support** since December 13, 2022 |
 | .NET 5 (STS) | 9.0 | Nov 10, 2020 | 5.0.17 (May 10, 2022) | **Out of support** since May 10, 2022 |
 | .NET 6 (LTS) | 10.0 | Nov 8, 2021 | 6.0.36 (Nov 12, 2024) | **Out of support** since November 12, 2024 |
@@ -127,13 +127,13 @@ Every row was checked by compiling a probe with the listed `LangVersion` (succee
 | **C# 12** (Nov 2023) | **primary constructors** for classes and structs, **collection expressions** (`[1, 2, .. xs]`), inline arrays, default lambda parameters, alias any type (`using Point = (int X, int Y);`), `ref readonly` parameters, `[Experimental]` | inline arrays need .NET 8+ |
 | **C# 13** (Nov 2024) | `params` collections (`params ReadOnlySpan<T>`), `System.Threading.Lock` support in `lock`, `\e` escape, implicit `^` index in object initializers, `ref` locals and `unsafe` in async methods/iterators, `ref struct` interfaces, `allows ref struct`, partial properties and indexers, `[OverloadResolutionPriority]` | `Lock` and `OverloadResolutionPriorityAttribute` are .NET 9 types |
 | **C# 14** (Nov 2025) | **extension members** (`extension(T x) { ... }` blocks with properties, static members, operators), **`field` keyword**, null-conditional assignment (`a?.B = x`), `nameof(List<>)`, first-class span conversions, modifiers on simple lambda parameters (`(s, out r) => ...`), partial constructors and events, user-defined compound assignment operators (`operator +=`) | first-class spans change overload resolution on older targets |
-| **C# 15** (RC, not released) | union types (`union Pet(Cat, Dog);`), `closed` classes, collection expression arguments (`[with(capacity: n), ..xs]`), extension indexers, labeled `break`/`continue` | unions and `closed` need .NET 11 runtime types |
+| **C# 15** (RC, not released) | union types (`union Pet(Cat, Dog);`), `closed` classes, collection expression arguments (`[with(capacity: n), ..xs]`), extension indexers, labeled `break`/`continue`, non-virtual static members and constants in interfaces on targets without default-interface-method support (`netstandard2.0`) | unions and `closed` need .NET 11 runtime types |
 
 Version-boundary details verified on the compilers:
 
 - `ImplicitUsings=enable` with `LangVersion` 9 fails with CS8773 "Feature 'global using directive' is not available in C# 9.0" in the generated `GlobalUsings.g.cs`. This happens in multi-targeted libraries where the `netstandard2.0` leg defaults to C# 7.3.
 - Using an inline array (`b[0]`) at C# 11 fails with CS9058; declaring the `[InlineArray]` struct alone compiles.
-- `[CallerArgumentExpression]` is honoured by the C# 14 compiler even at `LangVersion` 9 (verified). Do not rely on it to prove a language version.
+- `[CallerArgumentExpression]` is honoured by the C# 14 compiler even at `LangVersion` 7.3 and 9 (verified: the parameter receives `"1 + 2"`), and `nameof(parameter)` inside a method attribute (extended `nameof` scope, C# 11) compiles with the SDK 10 compiler at `LangVersion` 7.3–10, while the .NET 6 SDK compiler rejects it (CS0103). Neither proves a language version; they are the two exceptions to the N−1 rule above.
 - C# 15 features fail under `LangVersion` 14 with CS9327 on SDK 11.0.100-rc.2; union declarations produce parse errors instead.
 - Not part of any released C# version: dictionary expressions, null-conditional `await`, extension constants, chained comparisons. Never suggest them.
 
@@ -146,7 +146,7 @@ Verified by compiling against the reference assemblies of each target framework.
 | API | First in | Notes |
 | --- | --- | --- |
 | `HashCode.Combine`, `string.Create`, `ProcessStartInfo.ArgumentList`, `CryptographicOperations.FixedTimeEquals`, `Dictionary.TryAdd`, `IReadOnlyDictionary.GetValueOrDefault`, `string.Contains(string, StringComparison)`, `SocketsHttpHandler` | .NET Core 2.x (not .NET Framework) | all available in .NET Core 3.1 |
-| `System.Text.Json`, `IAsyncEnumerable<T>`, `IAsyncDisposable`, `System.Index`/`Range`, `Path.Join`, `RandomNumberGenerator.GetInt32`, `System.Threading.Channels`, `[NotNullWhen]`, `CallerArgumentExpressionAttribute` | .NET Core 3.0 | packages for .NET Framework/`netstandard2.0` |
+| `System.Text.Json`, `IAsyncEnumerable<T>`, `IAsyncDisposable`, `System.Index`/`Range`, `Path.Join(string, string)` (span overloads: .NET Core 2.1), `RandomNumberGenerator.GetInt32`, `System.Threading.Channels`, `[NotNullWhen]`, `CallerArgumentExpressionAttribute` | .NET Core 3.0 | packages for .NET Framework/`netstandard2.0` |
 | `[MemberNotNull]`, `IsExternalInit`, `[ModuleInitializer]`, `SHA256.HashData`, `Convert.ToHexString`, `Enum.GetValues<T>()`, `Environment.ProcessId`, `OperatingSystem.IsWindows()`, `Interlocked.Or/And`, `CollectionsMarshal.AsSpan`, `System.Net.Http.Json` in-box | .NET 5 | |
 | `ArgumentNullException.ThrowIfNull`, `DateOnly`/`TimeOnly`, `PeriodicTimer`, `Parallel.ForEachAsync`, `Task.WaitAsync`, `MaxBy`/`MinBy`/`DistinctBy`/`Chunk`, `TryGetNonEnumeratedCount`, `Random.Shared`, `RandomNumberGenerator.GetBytes(int)`, `Rfc2898DeriveBytes.Pbkdf2`, `CollectionsMarshal.GetValueRefOrAddDefault`, `string.ReplaceLineEndings`, `System.Diagnostics.Metrics.Meter`, `[LoggerMessage]` generator, minimal APIs | .NET 6 | |
 | `ArgumentException.ThrowIfNullOrEmpty`, `ObjectDisposedException.ThrowIf`, `Enumerable.Order`, `Stream.ReadExactly`/`ReadAtLeast`, `UnreachableException`, `[GeneratedRegex]`, `RegexOptions.NonBacktracking`, `required` attributes, `TypedResults`, rate-limiting middleware, EF Core `ExecuteUpdate`/`ExecuteDelete`/`FromSql` | .NET 7 / EF Core 7 | |
@@ -180,19 +180,21 @@ These apply to every modern .NET version; flag them regardless of the detected v
 | API | Status | Replacement |
 | --- | --- | --- |
 | `BinaryFormatter`, `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter` | `Serialize`/`Deserialize` obsolete (SYSLIB0011) since .NET 5, the whole type since .NET 8; **removed** in .NET 9 (always throws `PlatformNotSupportedException`); insecure on .NET Framework | System.Text.Json, protobuf, `DataContractSerializer` with known types; `System.Formats.Nrbf` to read legacy payloads |
-| `WebRequest`, `HttpWebRequest`, `WebClient`, `ServicePointManager` | Obsolete (SYSLIB0014) since .NET 6 | `HttpClient` |
+| `WebRequest`, `HttpWebRequest`, `WebClient`, `ServicePoint` | Obsolete (SYSLIB0014) since .NET 6; `ServicePointManager` only since .NET 9 (same ID) | `HttpClient` (`SocketsHttpHandler` settings) |
 | `Thread.Abort`, `Thread.Suspend`, CAS, `AppDomain.CreateDomain` | `Thread.Abort` throws `PlatformNotSupportedException` on .NET Core/.NET 5+ (SYSLIB0006) | cooperative cancellation (`CancellationToken`) |
-| `RNGCryptoServiceProvider`, `SHA1Managed`/`SHA256Managed`, `*CryptoServiceProvider` constructors, `HashAlgorithm.Create(string)` | Obsolete (SYSLIB0021/0023/0045) since .NET 6–8 | `RandomNumberGenerator`, `SHA256.Create()`/`SHA256.HashData` |
-| `Rfc2898DeriveBytes` constructors | Obsolete (SYSLIB0060) in .NET 10; the SHA-1 default constructors were obsolete earlier (SYSLIB0041, .NET 8) | `Rfc2898DeriveBytes.Pbkdf2(...)` (.NET 6+) |
-| `X509Certificate2(byte[])`/`(string)` constructors | Obsolete (SYSLIB0057) in .NET 9 | `X509CertificateLoader` (.NET 9+) |
+| `RNGCryptoServiceProvider`, `SHA1Managed`/`SHA256Managed`, `*CryptoServiceProvider` constructors, `HashAlgorithm.Create(string)` | Obsolete: SYSLIB0023 (`RNGCryptoServiceProvider`) and SYSLIB0021 (derived `*Managed`/`*CryptoServiceProvider` types) since .NET 6; SYSLIB0045 (name-based `Create(string)` factories) since .NET 7 | `RandomNumberGenerator`, `SHA256.Create()`/`SHA256.HashData` |
+| `Rfc2898DeriveBytes` constructors | Obsolete (SYSLIB0060) in .NET 10; the constructors without a hash algorithm (SHA-1, 1,000 iterations) were obsolete earlier (SYSLIB0041, .NET 7) | `Rfc2898DeriveBytes.Pbkdf2(...)` (.NET 6+) |
+| `X509Certificate2(byte[])`/`(string)` constructors | Obsolete (SYSLIB0057) in .NET 9 | `X509CertificateLoader` (.NET 9+; `Microsoft.Bcl.Cryptography` package for .NET Framework 4.6.2+, `netstandard2.0` and .NET 8) |
 | `AesGcm(byte[] key)` without tag size | Obsolete (SYSLIB0053) in .NET 8 | `new AesGcm(key, tagSizeInBytes)` |
+| `XsltSettings.EnableScript` | Obsolete (SYSLIB0062) in .NET 10; XSLT scripts are not supported on .NET Core at all | no script blocks; extension objects |
+| `Exception(SerializationInfo, StreamingContext)` serialization constructors | Obsolete (SYSLIB0051) in .NET 8 | omit them in new exception types |
 | `JavaScriptSerializer`, `DataContractJsonSerializer` | .NET Framework era | System.Text.Json |
-| `WebHostBuilder`, `IWebHost`, `WebHost` | Obsolete in ASP.NET Core 10 | `WebApplication.CreateBuilder` / `Host.CreateApplicationBuilder` |
-| `ForwardedHeadersOptions.KnownNetworks`, `Microsoft.AspNetCore.HttpOverrides.IPNetwork` | Obsolete in ASP.NET Core 10 | `KnownIPNetworks` with `System.Net.IPNetwork` |
+| `WebHostBuilder`, `IWebHost`, `WebHost` | Obsolete in ASP.NET Core 10 (ASPDEPR004, ASPDEPR008) | `WebApplication.CreateBuilder` / `Host.CreateApplicationBuilder` |
+| `ForwardedHeadersOptions.KnownNetworks`, `Microsoft.AspNetCore.HttpOverrides.IPNetwork` | Obsolete in ASP.NET Core 10 (ASPDEPR005) | `KnownIPNetworks` with `System.Net.IPNetwork` |
 | `Microsoft.Extensions.Http.Polly` (`AddPolicyHandler`) | Superseded in .NET 8 | `Microsoft.Extensions.Http.Resilience` |
 | `System.Data.SqlClient` | Deprecated NuGet package | `Microsoft.Data.SqlClient` |
 
-SYSLIB IDs are separate diagnostic IDs: suppressing CS0618 does not suppress them, and `TreatWarningsAsErrors` turns them into build errors after an SDK upgrade.
+SYSLIB (and ASP.NET Core's ASPDEPR) IDs are separate diagnostic IDs: suppressing CS0618 does not suppress them (verified with `-nowarn:CS0618`), and `TreatWarningsAsErrors` turns them into build errors after an SDK upgrade.
 
 ---
 
@@ -494,11 +496,11 @@ record Order(decimal Total, bool IsPriority);
 
 Review points:
 
-- **Precedence of `not`/`and`/`or`**: `x is not null or ""` means `(not null) or ""`, which is true for every non-null `x`. Write `x is not (null or "")`. The C# 14 compiler warns (CS9336 "The pattern is redundant") for simple cases; older compilers say nothing.
+- **Precedence of `not`/`and`/`or`**: `x is not null or ""` means `(not null) or ""`, which is true for every non-null `x`. Write `x is not (null or "")`. The compiler warns (CS9336 "The pattern is redundant") for simple cases only under `LangVersion` 14 or later; at 13 and below, even the SDK 10 compiler says nothing (verified).
 
 ```csharp
 object o = 42;
-Console.WriteLine(o is not null or 42);    // True  — probably not what the author meant (CS9336 in C# 14)
+Console.WriteLine(o is not null or 42);    // True  — probably not what the author meant (CS9336 from C# 14)
 Console.WriteLine(o is not (null or 42));  // False
 ```
 
@@ -646,7 +648,7 @@ sealed class SlowReader : IDisposable
 ```
 
 - **`ConfigureAwait(false)`** belongs in general-purpose libraries that may run under a UI or classic ASP.NET `SynchronizationContext`. ASP.NET Core and console apps have no `SynchronizationContext`, so application code there does not need it. Once a library uses it, use it on every `await` (including `await using` and `await foreach` via `.ConfigureAwait(false)`). `ConfigureAwaitOptions` (`SuppressThrowing`, `ForceYielding`) is .NET 8+.
-- **`ValueTask`/`ValueTask<T>`** (.NET Core 2.0, package for .NET Framework): await exactly once; never await twice, never call `.Result` before completion, never pass to `Task.WhenAll` without `.AsTask()`. Return `Task` unless profiling shows allocation pressure on a mostly-synchronous path.
+- **`ValueTask`/`ValueTask<T>`** (`ValueTask<T>` .NET Core 2.0, non-generic `ValueTask` .NET Core 2.1; `System.Threading.Tasks.Extensions` package for .NET Framework/`netstandard2.0`): await exactly once; never await twice, never call `.Result` before completion, never pass to `Task.WhenAll` without `.AsTask()`. Return `Task` unless profiling shows allocation pressure on a mostly-synchronous path.
 - `Task.Run` in ASP.NET Core request code only moves work to another pool thread. Use it for CPU-bound work off a UI thread, not to "make code async".
 - `Thread.Sleep` in async code blocks a pool thread; use `await Task.Delay(delay, ct)`.
 - `TaskCompletionSource` should be created with `TaskCreationOptions.RunContinuationsAsynchronously`; otherwise continuations run inline on the thread that calls `SetResult`, which can deadlock or reorder code.
@@ -682,7 +684,7 @@ static async IAsyncEnumerable<int> CountAsync([EnumeratorCancellation] Cancellat
 }
 ```
 
-Without `[EnumeratorCancellation]`, `WithCancellation(token)` never reaches the iterator body (warning CS8425). LINQ over `IAsyncEnumerable<T>` is built in from .NET 10 (`System.Linq.AsyncEnumerable`); on earlier versions it comes from the community `System.Linq.Async` package, which conflicts with the in-box version on .NET 10 (remove it or move to 7.x).[^15]
+Without `[EnumeratorCancellation]`, `WithCancellation(token)` never reaches the iterator body (warning CS8425). LINQ over `IAsyncEnumerable<T>` is built in from .NET 10 (`System.Linq.AsyncEnumerable` class); earlier targets get the same API from Microsoft's `System.Linq.AsyncEnumerable` NuGet package or the older community `System.Linq.Async` package. `System.Linq.Async` 6.x conflicts with the in-box class on .NET 10: remove it or upgrade to 7.0.0, and use `<ExcludeAssets>compile</ExcludeAssets>` when it arrives transitively.[^15]
 
 ---
 
@@ -854,7 +856,7 @@ Console.WriteLine(string.Join(",", list));   // 1,3
 - Use `TryGetValue` instead of `ContainsKey` + indexer (two lookups); `TryAdd` (.NET Core 2.0) instead of `ContainsKey` + `Add`.
 - Presize collections when the size is known (`new List<T>(n)`, `new Dictionary<K,V>(n)`).
 - `HashSet<T>` for membership tests instead of `List<T>.Contains` in loops (O(1) vs O(n)).
-- Immutable collections (`System.Collections.Immutable`, in-box from .NET Core 3.0/.NET 5 and a package for older targets) for shared, rarely changing state; frozen collections (`FrozenDictionary`, `FrozenSet`, .NET 8) for lookup tables built once at startup.
+- Immutable collections (`System.Collections.Immutable`, in-box in .NET Core 2.x and later, a package for .NET Framework/`netstandard2.0`) for shared, rarely changing state; frozen collections (`FrozenDictionary`, `FrozenSet`, .NET 8) for lookup tables built once at startup.
 - `ReadOnlyCollection<T>`/`AsReadOnly()` is a **view**: the owner can still change the underlying list.
 - Collection expressions (C# 12): `int[] a = [1, 2, 3]; List<int> l = [.. a, 4];` The target type decides the concrete type; `IEnumerable<T> x = [1, 2]` creates a compiler-synthesized read-only type — do not cast it to `List<T>`.
 - `params ReadOnlySpan<T>` (C# 13) avoids the array allocation of `params T[]` for new APIs.
@@ -936,7 +938,7 @@ Rules:
 - Case-insensitive equality: `string.Equals(a, b, StringComparison.OrdinalIgnoreCase)`, not `a.ToLower() == b.ToLower()` (allocates and is culture-dependent — the Turkish-I bug).
 - **Formatting and parsing for machines** (logs, files, APIs, invariant storage): `CultureInfo.InvariantCulture` (CA1305). `double.Parse("1,5")` returns `1.5` on a German server and `15` on an English one. `DateTime.Parse` without a culture and format is equally fragile — use `ParseExact`/`TryParseExact` with `InvariantCulture` or ISO 8601 (`"O"`).
 - String interpolation (`$"{price}"`) uses the current culture. Use `FormattableString.Invariant($"...")`, `string.Create(CultureInfo.InvariantCulture, $"...")` (.NET 6) or explicit `ToString(CultureInfo.InvariantCulture)` for machine-readable output.
-- `<InvariantGlobalization>true</InvariantGlobalization>` (common in containers and Native AOT) makes every culture behave like the invariant culture; culture-specific formatting then silently disappears. Creating a specific culture throws `CultureNotFoundException` in that mode on .NET 8+ unless `PredefinedCulturesOnly` is set to `false`.
+- `<InvariantGlobalization>true</InvariantGlobalization>` (common in containers and Native AOT) makes every culture behave like the invariant culture; culture-specific formatting then silently disappears. Creating a specific culture (`new CultureInfo("de-DE")`) throws `CultureNotFoundException` in that mode on .NET 6+ (verified on 6.0.36 and 8.0.32) unless `PredefinedCulturesOnly` is set to `false`.
 - Build strings in loops with `StringBuilder` (or `string.Join`/`string.Concat`), not `+=`.
 - `string.IsNullOrWhiteSpace` for user input checks; `Trim()` does not remove every Unicode separator you might expect from user input — normalize (`Normalize(NormalizationForm.FormC)`) before comparing user-visible identifiers.
 - Encoding: `Encoding.UTF8.GetBytes` (no BOM); `new UTF8Encoding(false)` when writing files that must not start with a BOM (`Encoding.UTF8` passed to a `StreamWriter` writes one). `Encoding.Default` is the ANSI code page on .NET Framework but UTF-8 on .NET Core/.NET 5+ — code that relies on it changes behaviour after a port.
@@ -1025,7 +1027,10 @@ sealed class ReportCache
 
 ```csharp
 using System.ComponentModel.DataAnnotations;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;   // ValidateDataAnnotations: Microsoft.Extensions.Options.DataAnnotations package
 
 var builder = Host.CreateApplicationBuilder();
 builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Email:Port"] = "70000" });
@@ -1060,6 +1065,10 @@ public sealed class EmailOptions
 ##### Hosted and background services
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
 var builder = Host.CreateApplicationBuilder();
 builder.Services.AddHostedService<QueueWorker>();
 using var host = builder.Build();
@@ -1343,8 +1352,8 @@ Query pitfalls:
 
 Raw SQL:
 
-- `FromSql($"...")`, `FromSqlInterpolated`, `ExecuteSql($"...")`, `SqlQuery<T>($"...")` turn interpolation holes into `DbParameter`s. `FromSqlRaw`/`ExecuteSqlRaw` with concatenated or `string.Format`-ed input are SQL injection; EF Core's analyzer reports EF1003 for concatenation.
-- Building the interpolated string in a variable first (`var sql = $"...{x}"; db.Blogs.FromSqlRaw(sql)`) loses parameterization — pass the `FormattableString` directly.
+- `FromSql($"...")`, `FromSqlInterpolated`, `ExecuteSql($"...")`, `SqlQuery<T>($"...")` turn interpolation holes into `DbParameter`s. `FromSqlRaw`/`ExecuteSqlRaw` with concatenated or `string.Format`-ed input are SQL injection; EF Core's analyzer reports EF1003 for concatenation and EF1002 for an interpolated string passed to a `*Raw` method (verified with EF Core 10.0.13).
+- Building the interpolated string in a variable first (`var sql = $"...{x}"; db.Blogs.FromSqlRaw(sql)`) loses parameterization — pass the `FormattableString` directly. The analyzer does **not** flag this variable form (verified), so reviewers must.
 - Identifiers (table/column names, `ORDER BY` columns) cannot be parameters; map user input through an allow-list.
 - ADO.NET/Dapper: `command.Parameters.Add(...)` or Dapper parameter objects; CA2100 flags concatenated `CommandText`.
 
@@ -1526,11 +1535,11 @@ Behaviour that changes silently when a project moves between versions. Check the
 
 1. **.NET Framework → .NET Core/.NET 5+**: no `AppDomain`s, remoting, WCF server, Web Forms or CAS; `BinaryFormatter` disabled/removed; `Encoding.Default` becomes UTF-8; code pages need `CodePagesEncodingProvider`; `HttpWebRequest` is a wrapper over `HttpClient`; `System.Drawing.Common` is Windows-only from .NET 6; configuration moves from `web.config`/`ConfigurationManager` to `Microsoft.Extensions.Configuration`; `Dictionary` allows `Remove` during enumeration.
 2. **.NET Core 3.1 → .NET 5+ on Windows**: ICU replaces NLS — culture-sensitive `IndexOf`/`StartsWith`/`Compare` results change (Microsoft's documented example: `"\r\n".IndexOf("\n")` returned -1). Base-image updates that bring a new ICU version can change such results again; ordinal comparison is immune.[^16]
-3. **.NET 5 → 6**: unhandled `BackgroundService` exceptions stop the host; `ImplicitUsings` and the minimal hosting model in templates; default shutdown timeout 30 s; `WebRequest` obsolete (SYSLIB0014).
-4. **.NET 6 → 7/8**: container images listen on port 8080 by default and ship a non-root `app` user from .NET 8; `AesGcm` constructor without tag size obsolete (.NET 8); `InvariantGlobalization` with predefined cultures only.
-5. **.NET 8 → 9**: `BinaryFormatter` removed; `X509Certificate2` constructors obsolete; `System.Threading.Lock` available; STS support extended to 24 months.
+3. **.NET 5 → 6**: unhandled `BackgroundService` exceptions stop the host; `ImplicitUsings` and the minimal hosting model in templates; default shutdown timeout 30 s; `WebRequest` obsolete (SYSLIB0014); with `InvariantGlobalization`, creating a non-invariant culture throws (predefined cultures only).
+4. **.NET 6 → 7/8**: `Rfc2898DeriveBytes` constructors without a hash algorithm obsolete (SYSLIB0041) and `HashAlgorithm.Create(string)` obsolete (SYSLIB0045) in .NET 7; from .NET 8, container images listen on port 8080 instead of 80 and ship a non-root `app` user, the `AesGcm` constructor without tag size is obsolete (SYSLIB0053) and the whole `BinaryFormatter` type is obsolete.
+5. **.NET 8 → 9**: `BinaryFormatter` removed; `X509Certificate2` constructors obsolete (SYSLIB0057); `ServicePointManager` obsolete (SYSLIB0014); `System.Threading.Lock` available; STS support extended to 24 months.
 6. **.NET 9 → 10 / C# 13 → 14**: `field` inside accessors rebinds (CS9258); first-class span conversions change overload resolution (covariant arrays can throw `ArrayTypeMismatchException`; expression trees contain `MemoryExtensions.Contains`); `extension` becomes a contextual keyword; configuration binding preserves `null`; no default SIGTERM handler for non-host apps; `BackgroundService.ExecuteAsync` fully on a background thread; `System.Linq.Async` conflicts with in-box `AsyncEnumerable`; cookie auth returns 401/403 for API endpoints; `Rfc2898DeriveBytes` constructors obsolete (SYSLIB0060).[^6][^17]
-7. **Raising `LangVersion` without changing the target framework** is unsupported; C# 14 with `net8.0`/`net9.0` binds `array.Reverse()` to the in-place `MemoryExtensions.Reverse` (CS0815 `var y = x.Reverse();`).[^6]
+7. **Raising `LangVersion` without changing the target framework** is unsupported; C# 14 with `net8.0`/`net9.0` binds `array.Reverse()` to the in-place `MemoryExtensions.Reverse`. `var y = x.Reverse();` and `foreach (var i in x.Reverse())` stop compiling (CS0815/CS1579), but a bare statement `x.Reverse();` — a no-op with `Enumerable.Reverse` — now silently reverses the array in place (verified on `net8.0`: C# 12 prints `1,2,3`, C# 14 prints `3,2,1`).[^6]
 8. **EF Core major upgrades**: 3.0 stopped client evaluation; 5 introduced split queries (opt-in); 7 changed SQL Server `Encrypt` default to `true` (Microsoft.Data.SqlClient 4); 8 changed `Contains` translation to JSON parameters; 10 changed it to multiple parameters and simplified parameter names. Read the breaking-changes page of every major version.[^21]
 9. **Test framework majors** (xUnit v2 → v3, NUnit 4 → 5, MSTest 3 → 4) have their own breaking changes; un-awaited async assertions are the most dangerous.
 
