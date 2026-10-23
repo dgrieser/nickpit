@@ -177,7 +177,7 @@ All of these exist on 17 and should be used where they fit.[^22] The version mar
 - `regexp_count()`, `regexp_instr()`, `regexp_like()`, `regexp_substr()`.
 - `ON DELETE SET NULL (col, ...)` / `SET DEFAULT (col, ...)` with column lists.
 - `numeric` with negative scale or scale greater than precision.
-- `log_destination = jsonlog`, `GRANT SET/ALTER SYSTEM ON PARAMETER`, the `pg_checkpointer` role.
+- `log_destination = jsonlog`, `GRANT SET/ALTER SYSTEM ON PARAMETER`, the `pg_checkpoint` role.
 - Logical replication row filters and column lists.
 
 ##### Since 16
@@ -980,13 +980,13 @@ REVOKE EXECUTE ON FUNCTION app.n_safe() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.n_safe() TO app_role;
 ```
 
-Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. Use `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` in schemas that hold privileged functions.[^9] Owners should be dedicated, non-superuser roles.
+Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`: per-schema default privileges can only add to the global defaults, so the `IN SCHEMA` form of this revoke has no effect. It applies only to functions later created by that role.[^9] Owners should be dedicated, non-superuser roles.
 
 ##### Roles and privileges
 
 - The application connects as a role that **does not own** the schema objects and is not a superuser. Migrations run as a separate owner role.
 - Since 15, new databases do not let `PUBLIC` create objects in `public`. A non-owner role got `permission denied for schema public`. Don't "fix" this with `GRANT CREATE ON SCHEMA public TO PUBLIC`. Create an application schema owned by the migration role.
-- Use predefined roles instead of superuser: `pg_read_all_data`/`pg_write_all_data` (14), `pg_monitor`, `pg_signal_backend`, `pg_checkpointer` (15), `pg_create_subscription` (16), `pg_maintain` (17), and `GRANT MAINTAIN ON TABLE` (17).
+- Use predefined roles instead of superuser: `pg_read_all_data`/`pg_write_all_data` (14), `pg_monitor`, `pg_signal_backend`, `pg_checkpoint` (15), `pg_create_subscription` (16), `pg_maintain` (17), and `GRANT MAINTAIN ON TABLE` (17).
 - Role membership options (16): `GRANT app TO bob WITH INHERIT FALSE, SET FALSE` makes bob a member without inheriting privileges (`pg_has_role('bob','app','USAGE')` is false).
 - Passwords: `scram-sha-256` (default since 14). `md5` still works on 17. 18 deprecates it, so don't add new `md5` entries. Never put passwords in SQL that gets logged (`ALTER ROLE ... PASSWORD 'x'` appears in the server log when statement logging is on, and in `pg_stat_activity` while it runs). Use `\password` or `PQchangePassword()` (libpq 17), which send a hashed password.
 
