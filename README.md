@@ -66,7 +66,7 @@ NickPit takes the opposite bet, it carries **dense, opinionated coding guides**:
 - Kubernetes
 - Python
 - Bash
-- SQL
+- SQL, PostgreSQL, MySQL
 - JavaScript
 - TypeScript
 - C#
@@ -75,11 +75,20 @@ NickPit takes the opposite bet, it carries **dense, opinionated coding guides**:
 [These guides](https://github.com/dgrieser/nickpit/tree/main/prompts/styleguides) are automatically injected based on your diff as **hard rules** into every agent.  
 
 The guides are even **version-aware**:
-- the Go guide tracks `1.19`–`1.26`
-- Bash `3.2`–`5.2`
+- Go `1.19`–`1.27`
+- Python `2.7` and `3.0`–`3.15`
+- Node.js `16`–`26`
+- TypeScript `4.9`–`7.0`, one guide per minor
+- C# `9`–`15`
+- Kubernetes `1.29`–`1.37`
+- Helm `3` and `4`
+- PostgreSQL `14`–`19`
+- MySQL `8.0`, `8.4`, `9.7`
+- Bash `3.2`–`5.3`, version boundaries marked in one guide
 
 So NickPit picks the correct guide for the toolchain version it detects.  
-When sources disagree, the most authoritative one per language decides — `go.mod` for Go, manifests like `pyproject.toml` for Python, lockfiles for TypeScript — so a stale `Dockerfile` or CI config can't drag the guide below the version the code is actually built against.  
+When sources disagree, the most authoritative one per language decides — `go.mod` for Go, manifests like `pyproject.toml` for Python, lockfiles for TypeScript, the owning `*.csproj` for C#, the `k8s.io/*` modules for Kubernetes controllers — so a stale `Dockerfile` or CI config can't drag the guide below the version the code is actually built against.  
+SQL follows the database the project pins: a `postgres:16` or `mysql:8.4` image in Compose, CI or the Dockerfile swaps the generic SQL guide for that server's guide.  
 
 Selection isn't done by the LLM, nor is it just file extensions.  
 
