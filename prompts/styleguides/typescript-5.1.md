@@ -1036,7 +1036,7 @@ export type { Producer, Consumer, A, B };
 ##### `Omit`/`Pick` on unions are not distributive
 
 ```ts
-type UiEvent =   // not `Event`: in a script file with lib "dom" that collides with the global Event (TS2300)
+type UiEvent =   // not `Event`: in a non-module file with lib "dom" that name collides with the DOM's global Event (TS2300)
   | { type: "click"; x: number; at: Date }
   | { type: "key"; key: string; at: Date };
 
