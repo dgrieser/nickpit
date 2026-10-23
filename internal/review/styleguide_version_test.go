@@ -268,3 +268,25 @@ func TestStyleGuidesForReplacesSQLWithPinnedPostgreSQLGuide(t *testing.T) {
 		t.Fatalf("only the pinned dialect guide may apply: %.160q", all)
 	}
 }
+
+func TestStyleGuidesForSelectsRustEditionGuide(t *testing.T) {
+	e := &Engine{}
+	ctx := &model.ReviewContext{
+		ChangedFiles: []model.ChangedFile{{Path: "src/lib.rs", Status: model.FileModified}},
+		ToolchainVersions: []model.ToolchainVersion{
+			{Language: "rust", Source: "Cargo.toml", Field: "edition", Version: "2021"},
+			{Language: "rustc", Source: "Cargo.toml", Field: "rust-version", Version: "1.75"},
+		},
+	}
+	guides, err := e.styleGuidesFor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := styleGuideContents(guides)
+	if !strings.Contains(all, "### Rust Edition 2021") {
+		t.Fatalf("expected the edition 2021 guide, got: %.160q", all)
+	}
+	if strings.Contains(all, "### Rust Style Guide") {
+		t.Fatalf("the generic Rust guide must not apply when the edition is known: %.160q", all)
+	}
+}

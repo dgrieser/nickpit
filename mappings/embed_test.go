@@ -101,6 +101,7 @@ func TestVersionSourceRank(t *testing.T) {
 		{"kubernetes", "Makefile", 1},
 		{"helm", ".tool-versions", 0},
 		{"mysql", "docker-compose.yml", 3},
+		{"rust", "crates/api/Cargo.toml", 0},
 		{"mysql", "services/db/compose.yaml", 0},
 		{"mysql", "Dockerfile", 6},
 		{"typescript", "package.json", 3},
@@ -241,6 +242,13 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"kubernetes", []string{"1.37.1"}, "styleguides/kubernetes-1.37.md"},
 		{"kubernetes", []string{"1.36", "1.32"}, "styleguides/kubernetes-1.32.md"},
 		{"kubernetes", []string{"1.38.0"}, "styleguides/kubernetes.md"},
+		{"rust", nil, "styleguides/rust.md"},
+		{"rust", []string{"2015"}, "styleguides/rust-2018.md"},
+		{"rust", []string{"2018"}, "styleguides/rust-2018.md"},
+		{"rust", []string{"2021"}, "styleguides/rust-2021.md"},
+		{"rust", []string{"2024"}, "styleguides/rust-2024.md"},
+		{"rust", []string{"2024", "2021"}, "styleguides/rust-2021.md"},
+		{"rust", []string{"2027"}, "styleguides/rust.md"},
 		{"postgresql", nil, "styleguides/postgresql.md"},
 		{"postgresql", []string{"12"}, "styleguides/postgresql-14.md"},
 		{"postgresql", []string{"14.24"}, "styleguides/postgresql-14.md"},
@@ -564,5 +572,16 @@ func TestPostgreSQLDetector(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("postgresql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
 		}
+	}
+}
+
+func TestRustManifestDetector(t *testing.T) {
+	for _, path := range []string{"Cargo.toml", "crates/core/Cargo.toml", "Cargo.lock", "rust-toolchain.toml"} {
+		if !slices.Contains(StyleGuideDetectorLanguages(path, ""), "rust") {
+			t.Errorf("%s should select the rust guide", path)
+		}
+	}
+	if slices.Contains(StyleGuideDetectorLanguages("pyproject.toml", ""), "rust") {
+		t.Errorf("pyproject.toml must not select the rust guide")
 	}
 }

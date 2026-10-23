@@ -32,10 +32,14 @@ const (
 	langKubernetes = "kubernetes"
 	langPostgreSQL = "postgresql"
 	langMySQL      = "mysql"
+	langRust       = "rust"
+	// langRustc carries Rust compiler pins (rust-version, rust-toolchain,
+	// images); the rust entries are editions, which select the styleguide.
+	langRustc = "rustc"
 )
 
 // languageOrder is the stable output order of toolchain entries.
-var languageOrder = []string{langGo, langPython, langJavaScript, langTypeScript, langCSharp, langHelm, langKubernetes, langPostgreSQL, langMySQL}
+var languageOrder = []string{langGo, langPython, langJavaScript, langTypeScript, langCSharp, langHelm, langKubernetes, langPostgreSQL, langMySQL, langRust, langRustc}
 
 // Capture reads manifest files from repoRoot and returns toolchain entries for
 // every language touched by reviewCtx. Best-effort: file open errors are
@@ -70,6 +74,10 @@ func ScanFS(fsys fs.FS, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 	}
 	if relevantSet[langCSharp] {
 		hits = append(hits, scanDotnetProjects(fsys, changedPaths(reviewCtx))...)
+	}
+	if relevantSet[langRust] {
+		relevantSet[langRustc] = true
+		hits = append(hits, scanRustProjects(fsys, changedPaths(reviewCtx))...)
 	}
 	out := make([]model.ToolchainVersion, 0, len(hits))
 	seen := map[string]bool{}
@@ -110,6 +118,7 @@ var scanners = []func(fs.FS) []model.ToolchainVersion{
 	scanGoModKubernetes,
 	scanMakefileEnvtest,
 	scanDatabaseImages,
+	scanRustToolchainFiles,
 }
 
 func readFile(fsys fs.FS, path string) ([]byte, error) {
@@ -172,6 +181,8 @@ func scanToolVersions(fsys fs.FS) []model.ToolchainVersion {
 			language = langPostgreSQL
 		case "mysql":
 			language = langMySQL
+		case "rust":
+			language = langRustc
 		case "dotnet", "dotnet-core":
 			// The SDK version (8.0.100) maps to its default C# version.
 			if version := csharpForDotnetImageTag(parts[1]); version != "" {
@@ -510,6 +521,8 @@ func imageLanguage(image, tag string) (language, version string) {
 		return langPython, tag
 	case "node", "nodejs":
 		return langJavaScript, tag
+	case "rust":
+		return langRustc, tag
 	case "alpine/helm", "dtzar/helm-kubectl":
 		return langHelm, tag
 	case "mcr.microsoft.com/dotnet/sdk", "mcr.microsoft.com/dotnet/aspnet", "mcr.microsoft.com/dotnet/runtime", "mcr.microsoft.com/dotnet/runtime-deps":
@@ -638,8 +651,12 @@ func languagesForPath(path, hint string) []string {
 		styleLang = mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
 	}
 	switch styleLang {
-	case langJavaScript, langTypeScript, langCSharp, langHelm:
+	case langJavaScript, langTypeScript, langCSharp, langHelm, langRust:
 		return []string{styleLang}
+	}
+	switch filepath.Base(path) {
+	case "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml":
+		return []string{langRust}
 	}
 	if ext == ".csproj" || strings.EqualFold(filepath.Base(path), "Directory.Build.props") {
 		return []string{langCSharp}
