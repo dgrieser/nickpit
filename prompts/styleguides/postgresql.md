@@ -62,7 +62,7 @@ SELECT current_setting('server_version_num')::int >= 150000 AS has_merge;   -- t
 - **If the version is unknown, recommend only features available on 14** (the oldest supported major) and label every newer suggestion explicitly: "requires PostgreSQL 15+", "requires 18". For a library or extension that claims support for older servers, use its documented minimum.
 - **Say "not available in PostgreSQL X" only when the table below or the documentation of that version proves it.** Many features are older than reviewers remember: `ON CONFLICT` and `SKIP LOCKED` are 9.5, identity columns 10, `INCLUDE` indexes 11, `REINDEX CONCURRENTLY` and stored generated columns 12, `gen_random_uuid()` in core 13.
 - **Flag code that only runs on a newer server than the project pins** (for example `MERGE` on 14, `JSON_TABLE` on 16, `uuidv7()` on 17) and **code that relies on behaviour that changed** (table "Removed and changed behaviour across versions").
-- **Same text, different meaning.** A few statements are valid on several versions but behave differently: `GENERATED ALWAYS AS (expr)` without `STORED` is a syntax error before 18 and a *virtual* (unindexable) column on 18; `SELECT 1_000` returns `1` aliased as `_000` on 14 and 1000 on 16+; an expression index on a function with unqualified table names builds on 16 and fails on 17. These deserve a comment even when the code "works".
+- **Same text, different meaning.** A few statements are valid on several versions but behave differently: `GENERATED ALWAYS AS (expr)` without `STORED` is a syntax error before 18 and a *virtual* (unindexable) column on 18; `SELECT 1_000` returns `1` aliased as `_000` on 14, fails on 15 (`trailing junk after numeric literal`) and returns 1000 on 16+; an expression index on a function with unqualified table names builds on 16 and fails on 17. These deserve a comment even when the code "works".
 
 ##### Feature availability by version
 
@@ -79,7 +79,7 @@ Use this table to decide whether a suggestion is allowed. Each row lists what a 
 | 14 | Multirange types and `range_agg()`, SQL-standard function bodies (`RETURN expr`, `BEGIN ATOMIC ... END`), `jsonb` subscripting (`doc['a']`), `date_bin()`, `string_to_table()`, `SEARCH`/`CYCLE` in recursive CTEs, `GROUP BY DISTINCT`, `ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`, `REINDEX` of partitioned tables, `CREATE OR REPLACE TRIGGER`, `idle_session_timeout`, `pg_read_all_data`/`pg_write_all_data`/`pg_database_owner`, `password_encryption` default `scram-sha-256`, LZ4 TOAST compression |
 | 15 | `MERGE`, `UNIQUE NULLS NOT DISTINCT`, views `WITH (security_invoker = true)`, `PUBLIC` loses `CREATE` on schema `public` in new databases, `regexp_count()`/`regexp_instr()`/`regexp_like()`/`regexp_substr()`, `ON DELETE SET NULL (col, ...)`, `GRANT SET ON PARAMETER`, `pg_checkpoint` role, `log_destination = jsonlog`, publication row filters and column lists |
 | 16 | SQL/JSON constructors `JSON_OBJECT()`, `JSON_ARRAY()`, `JSON_OBJECTAGG()`, `JSON_ARRAYAGG()` and `IS JSON`, `any_value()`, numeric literals with underscores and `0x`/`0o`/`0b` integers, `pg_input_is_valid()`, `EXPLAIN (GENERIC_PLAN)`, `pg_stat_io`, `last_seq_scan`/`last_idx_scan` in `pg_stat_*_tables`, role membership options (`WITH INHERIT / SET / ADMIN`), restricted `CREATEROLE`, `date_add()`/`date_subtract()`, subqueries in `FROM` without an alias |
-| 17 | `JSON_TABLE()`, `JSON_VALUE()`/`JSON_QUERY()`/`JSON_EXISTS()`, `MERGE ... RETURNING` with `merge_action()`, `WHEN NOT MATCHED BY SOURCE`, `MERGE` into views, `COPY ... (ON_ERROR ignore)`, `transaction_timeout`, `MAINTAIN` privilege and `pg_maintain` role, identity columns and exclusion constraints on partitioned tables, `ALTER COLUMN ... SET EXPRESSION`, `random(min, max)`, `uuid_extract_timestamp()`, builtin collation provider (`C.UTF-8`), `EXPLAIN (SERIALIZE, MEMORY)`, `pg_stat_checkpointer`, incremental backups (`pg_basebackup --incremental`) |
+| 17 | `JSON_TABLE()`, `JSON_VALUE()`/`JSON_QUERY()`/`JSON_EXISTS()`, `MERGE ... RETURNING` with `merge_action()`, `WHEN NOT MATCHED BY SOURCE`, `MERGE` into views, `COPY ... (ON_ERROR ignore)`, `transaction_timeout`, `MAINTAIN` privilege and `pg_maintain` role, identity columns shared by partitions (before 17 a partitioned parent accepts an identity column, but inserts made directly into a partition fail with a not-null violation), exclusion constraints on partitioned tables, `ALTER COLUMN ... SET EXPRESSION`, `random(min, max)`, `uuid_extract_timestamp()`, builtin collation provider (`C.UTF-8`), `EXPLAIN (SERIALIZE, MEMORY)`, `pg_stat_checkpointer`, incremental backups (`pg_basebackup --incremental`) |
 | 18 | `uuidv7()`/`uuidv4()`, **virtual generated columns (now the default kind)**, `RETURNING old.* / new.*`, temporal keys (`PRIMARY KEY (id, valid WITHOUT OVERLAPS)`, `FOREIGN KEY (..., PERIOD ...)`), `ADD CONSTRAINT ... NOT NULL ... NOT VALID`, `NOT ENFORCED` check/foreign-key constraints, B-tree skip scan, `EXPLAIN ANALYZE` includes `BUFFERS` by default, asynchronous I/O (`io_method`), `casefold()`, `array_sort()`, `COPY ... REJECT_LIMIT`, `VACUUM ONLY`/`ANALYZE ONLY`, OAuth authentication, data checksums on by default in `initdb` |
 
 ##### Not available in any released version
@@ -96,7 +96,7 @@ PostgreSQL 19 is at RC 1. The following work on 19rc1 and fail on 18.6 (verified
 | `error_on_null()`, `random(date, date)` | function does not exist |
 | `EXPLAIN (ANALYZE, IO)` | unrecognized `EXPLAIN` option |
 
-These are not in any version, including 19rc1 (verified): `ALTER TABLE ... MERGE PARTITIONS`/`SPLIT PARTITION`, `UPDATE/DELETE ... FOR PORTION OF`, `GROUP BY ALL`, `DELETE ... LIMIT`, `UPDATE ... LIMIT`, `CREATE INDEX CONCURRENTLY` on a partitioned table, unique constraints on a partitioned table that omit the partition key (global indexes), and query hints (only the third-party `pg_hint_plan` extension provides them).
+These are not in any version, including 19rc1 (verified): `ALTER TABLE ... MERGE PARTITIONS`/`SPLIT PARTITION`, `UPDATE/DELETE ... FOR PORTION OF`, `GROUP BY ALL`, `DELETE ... LIMIT`, `UPDATE ... LIMIT`, `CREATE INDEX CONCURRENTLY` on a partitioned table, unique constraints on a partitioned table that omit the partition key (global indexes), and query hints in SQL syntax (the third-party `pg_hint_plan` extension provides comment hints; 19 adds the contrib module `pg_plan_advice`).
 
 ##### Removed and changed behaviour across versions
 
@@ -693,7 +693,7 @@ With `plan_cache_mode = auto` (the default; the setting exists since 12), a prep
 
 ##### Planner settings in application code
 
-`SET enable_nestloop = off` (or any `enable_*`) affects every later query in the session, and behind a pooler other clients' queries too. Fix statistics instead: `ANALYZE`, `ALTER TABLE ... ALTER COLUMN ... SET STATISTICS 1000` for skewed columns, and `CREATE STATISTICS ... (dependencies, ndistinct, mcv)` (10+; `mcv` 12+) for correlated columns. PostgreSQL has no query hints in core.
+`SET enable_nestloop = off` (or any `enable_*`) affects every later query in the session, and behind a pooler other clients' queries too. Fix statistics instead: `ANALYZE`, `ALTER TABLE ... ALTER COLUMN ... SET STATISTICS 1000` for skewed columns, and `CREATE STATISTICS ... (dependencies, ndistinct, mcv)` (10+; `mcv` 12+) for correlated columns. Released versions (up to 18) have no query hints; `pg_hint_plan` is a third-party extension, and the plan-advice module `pg_plan_advice` arrives only with 19.
 
 ##### Batch writes
 
@@ -949,7 +949,7 @@ Declarative partitioning (10+; hash partitioning, default partitions and partiti
 
 ```sql
 CREATE TABLE m (
-    id         bigint GENERATED ALWAYS AS IDENTITY,   -- identity on a partitioned table: 17+
+    id         bigint GENERATED ALWAYS AS IDENTITY,   -- shared by all partitions: 17+ (see below)
     created_at timestamptz NOT NULL,
     v          int,
     PRIMARY KEY (id, created_at)                      -- must include the partition key
@@ -974,6 +974,7 @@ Rules verified on 18.6:
 - **Attach without a long scan**: add and validate a `CHECK` constraint matching the partition bounds on the staging table first; `ATTACH PARTITION` (12+: `SHARE UPDATE EXCLUSIVE` on the parent) then skips the scan.
 - **Retention**: `ALTER TABLE m DETACH PARTITION m_2026_01 CONCURRENTLY; DROP TABLE m_2026_01;` instead of a large `DELETE`: no bloat, no long transaction. (`DETACH ... CONCURRENTLY` cannot run in a transaction block.)
 - **Statistics**: autovacuum analyzes partitions but never the partitioned parent. Queries that need parent-level statistics need a scheduled `ANALYZE parent`.
+- **Identity columns**: before 17, PostgreSQL accepts an identity column on the partitioned parent, but the partitions do not get it. Inserts through the parent receive ids; an `INSERT` or `COPY` directly into a partition fails with `null value in column "id" of relation "m_2026_01" violates not-null constraint` (verified on 14.24, 15.19 and 16.15; it works on 18.6, and the 17 release notes add identity support for partitions). On 16 and older, code that writes directly into partitions needs explicit ids or a shared sequence default.
 - Foreign keys referencing a partitioned table need 12+; exclusion constraints on partitioned tables need 17+ and must compare the partition key with `=`; unlogged partitioned tables are rejected on 18+.
 - `MERGE PARTITIONS`/`SPLIT PARTITION` do not exist in any release; repartitioning means creating new partitions and moving rows.
 
@@ -1335,7 +1336,7 @@ FROM pg_statio_user_tables ORDER BY heap_blks_read DESC LIMIT 10;
 - Logical replication slots survive `pg_upgrade` only when the *old* cluster is 17+.
 - `initdb` on 18 enables data checksums by default; `pg_upgrade` from a cluster without checksums needs the new cluster initialized with `--no-data-checksums`.
 - **Collations**: an OS upgrade that changes glibc (for example to 2.28) can silently change text sort order and corrupt indexes on text columns. Check with `amcheck`/`pg_amcheck` or reindex after such an upgrade; `ALTER DATABASE ... REFRESH COLLATION VERSION` (15+) only updates the recorded version.
-- **Minor releases** are drop-in binary updates, but some ask for actions (a `REINDEX` of certain index types, re-creating constraints). Read the release notes of every skipped minor. The August 13, 2026 releases (18.6, 17.11, 16.15, 15.19, 14.24) require logical decoding output plugins other than `pgoutput`/`test_decoding` to be listed in the new `output_plugin_libraries` setting (third-party plugins such as `wal2json` stop working otherwise) and recommend reindexing `btree_gist` indexes on `float4`/`float8` columns that may contain `NaN` (and, on 18, B-tree indexes over `ltree` values with very many labels).[^4]
+- **Minor releases** are drop-in binary updates, but some ask for actions (a `REINDEX` of certain index types, re-creating constraints). Read the release notes of every skipped minor. The August 13, 2026 releases (18.6, 17.11, 16.15, 15.19, 14.24) require logical decoding output plugins other than `pgoutput`/`test_decoding` to be listed in the new `output_plugin_libraries` setting (third-party plugins such as `wal2json` stop working otherwise) and recommend reindexing `btree_gist` indexes on `float4`/`float8` columns that may contain `NaN` (and on `bit`/`bit varying` columns) and B-tree indexes over `ltree` values with very many labels. 18.6 also asks to check `pg_class.reltuples` of tables with GIN indexes: a bogus `NaN`/`Infinity` value (left by a parallel GIN index build) stops autovacuum and autoanalyze on that table until an `ANALYZE` resets it.[^4]
 
 ***
 
