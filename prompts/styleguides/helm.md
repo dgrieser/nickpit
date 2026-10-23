@@ -102,7 +102,7 @@ Helm 4 keeps the chart format: `apiVersion: v2` charts render unchanged. It chan
 | **Values files** | Only the **first** YAML document of a values file is used | All `---`-separated documents are merged in order (also the chart's own `values.yaml`) |
 | **`--set-json`** | `key=<json>` only (3.10) | Also a whole JSON object: `--set-json '{"a":{"b":1}}'` |
 | **Template functions** | Sprig + Helm functions | Adds `mustToYaml` (4.0), `mustToToml` (4.2), `durationSeconds`, `mustToDuration` and other `duration*` helpers (4.3) |
-| **Template errors** | One line `Error: template: file:line:col: executing …` | Engine execution errors are multi-line (`Error: file:line:col` then details); `required`/`fail`/parse errors unchanged |
+| **Template errors** | One line `Error: template: file:line:col: executing …` | Most engine execution errors (wrong argument type, `can't evaluate field`) are multi-line (`Error: file:line:col` then details); function-call errors (`error calling dig: …`), `required`/`fail` and parse errors keep the one-line form |
 | **`helm lint`** | Path optional (defaults to `.`); unknown `Chart.yaml` fields ignored | **Path required**; unknown `Chart.yaml` fields and non-SemVer-2 versions produce warnings (fail with `--strict`) |
 | **`helm list`** | `deployed` and `failed` only; `-a/--all` for everything | Every status by default; `-a` is removed (`unknown shorthand flag: 'a'`) |
 | **`helm registry login`** | Host or host/path | Host only |
