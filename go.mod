@@ -3,6 +3,7 @@ module github.com/dgrieser/nickpit
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/google/uuid v1.6.0
