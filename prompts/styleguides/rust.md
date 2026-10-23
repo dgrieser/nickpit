@@ -1,9 +1,9 @@
 ### Rust Style Guide
 
-> **Version**: This is the **edition- and version-independent** Rust guide. It applies when a Rust change is reviewed but the project's edition or compiler version cannot be determined. It covers Rust 1.31 (the first release with edition 2018) through Rust 1.99 and the editions 2015, 2018, 2021 and 2024. The newest stable release is **Rust 1.99.0 (October 1, 2026)**; its latest patch is **1.99.1 (October 15, 2026)**. Rust **1.100.0 is in beta** and is scheduled for November 12, 2026. The newest stable edition is **Rust 2024** (stabilised in 1.85.0, February 20, 2025); no later edition is stable.[^1][^2][^3]
+> **Version**: This is the **edition- and version-independent** Rust guide. It applies when a Rust change is reviewed but the project's edition or compiler version cannot be determined. It covers Rust 1.31 (the first release with edition 2018) through Rust 1.99 and the editions 2015, 2018, 2021 and 2024. The newest stable release is **Rust 1.99.0 (October 1, 2026)**; its latest patch is **1.99.1 (October 15, 2026)**. Rust **1.100.0 is in beta** (1.100.0-beta.7, October 2026) and is scheduled for November 12, 2026. The newest stable edition is **Rust 2024** (stabilised in 1.85.0, February 20, 2025); no later edition is stable.[^1][^2][^3][^18]
 > **Scope**: Version-independent review rules for production Rust: ownership, borrowing and lifetimes, error handling, panics, `unsafe` and soundness, FFI, threads and atomics, async (Tokio), traits and generics, iterators, collections, strings and paths, integer arithmetic and casts, allocation and performance, public API design and semver, Cargo (features, resolver, workspaces, lockfiles, build scripts), testing (unit, integration, doc tests, property tests, Miri, loom), Clippy, rustfmt, and supply-chain security.
 > **Version rule**: Every feature tied to an edition or a compiler release is labelled with it, for example "`let`-`else` (1.65)", "let chains (1.88, edition 2024 only)", "`LazyLock` (1.80)", "C-string literals `c"..."` (1.77, edition 2021+)". Before suggesting such a feature, check `edition` and `rust-version` in `Cargo.toml` (and the workspace root) and the channel in `rust-toolchain.toml` (see [Determine the Version First](#determine-the-version-first)). Never recommend a feature the project's edition or minimum supported Rust version (MSRV) does not have.
-> **Note**: This document is self-contained. Every example was compiled (and, where it has a `main`, run) with **rustc 1.99.1** and checked with **Clippy 0.1.99** on x86_64 Linux, edition 2024 unless the block says otherwise. Edition boundaries were checked with `--edition` flags on 1.99.1 and with the toolchains that introduced each edition (1.31.0, 1.56.0, 1.85.0); release boundaries come from the official release notes and were bracketed by compiling probes on 1.56.0, 1.85.0 and 1.99.1. Blocks marked `compile_fail` are expected to be rejected; blocks marked `ignore` need external crates (`tokio` 1.54, `thiserror` 2.0, `anyhow` 1.0, `proptest` 1.12) and were built in a Cargo project.
+> **Note**: This document is self-contained. Every example was compiled (and, where it has a `main`, run) with **rustc 1.99.1** and checked with **Clippy 0.1.99** on x86_64 Linux, edition 2024 unless the block says otherwise. Edition boundaries were checked with `--edition` flags on 1.99.1 and with the toolchains that introduced each edition (1.31.0, 1.56.0, 1.85.0); release boundaries come from the official release notes and were bracketed by compiling probes on 1.56.0, 1.85.0, 1.98.0 and 1.99.1. Blocks marked `compile_fail` are expected to be rejected; blocks marked `ignore` need external crates (`tokio` 1.54, `thiserror` 2.0, `anyhow` 1.0, `proptest` 1.12) and were built in a Cargo project.
 
 ---
 
@@ -53,7 +53,7 @@ Two independent numbers decide what code is valid: the **edition** (a per-crate 
 | `[package] rust-version = "1.75"` | The MSRV the crate declares (Cargo 1.56). Cargo refuses to build the crate with an older toolchain; the MSRV-aware resolver (1.84) prefers dependency versions compatible with it. |
 | `rust-toolchain.toml` (`[toolchain] channel = "1.88.0"`) or legacy `rust-toolchain` | The toolchain rustup selects in that directory. Pins the compiler used in development and CI, not the MSRV. |
 | CI files (`dtolnay/rust-toolchain@1.80`, `rustup toolchain install …`), `Dockerfile` (`FROM rust:1.85`) | The compiler actually used to build and test. |
-| `Cargo.lock` `version = 4` | Lockfile v4 is the default since Cargo 1.78; versions before 1.78 cannot read it. |
+| `Cargo.lock` `version = 4` | Lockfile v4 was stabilised in Cargo 1.78 and is written by default since Cargo 1.83 only when `rust-version` is unset or at least 1.83 (Cargo 1.99.1 writes v3 for `rust-version` 1.77–1.82, verified); Cargo before 1.78 cannot read it. |
 | `rustfmt.toml` `style_edition = "2024"` | Formatting style edition (rustfmt in 1.85+); independent of the crate edition. |
 
 ```toml
@@ -79,7 +79,7 @@ components = ["clippy", "rustfmt"]
 - Say "not available in X" only when the pinned edition/version proves it. Check the release tables below or the item's documentation (the "since" marker next to every stable std item).
 - An edition is per crate. Workspace members can be on different editions; macros from a dependency expand with the edition of the crate that defined them.
 - Do not "modernise" code in an unrelated change: replacing `once_cell::sync::Lazy` with `std::sync::LazyLock` raises the MSRV to 1.80 and is a breaking change for libraries with a lower declared MSRV.
-- Clippy respects the MSRV: it reads `rust-version` (or `msrv` in `clippy.toml`) and does not suggest APIs that are newer. For example, `manual_is_multiple_of` suggests `n.is_multiple_of(2)` (1.87) for `n % 2 != 0` only when no older `rust-version` is declared. A Clippy suggestion that ignores the MSRV usually means `rust-version` is missing.
+- Clippy respects the MSRV: it reads `rust-version` (or `msrv` in `clippy.toml`) and does not suggest APIs that are newer. For example, `manual_is_multiple_of` suggests `!n.is_multiple_of(2)` (1.87) for `n % 2 != 0` when `rust-version` is 1.87 or later or missing, and stays silent for `rust-version = "1.86"`. A Clippy suggestion that ignores the MSRV usually means `rust-version` is missing.
 
 ***
 
@@ -92,7 +92,7 @@ components = ["clippy", "rustfmt"]
 | Channel | Version | Date |
 |---|---|---|
 | Stable | **1.99.1** | 2026-10-15 (1.99.0 on 2026-10-01) |
-| Beta | 1.100.0 | stable release scheduled for 2026-11-12 |
+| Beta | 1.100.0 (1.100.0-beta.7) | stable release scheduled for 2026-11-12 |
 | Previous stable | 1.98.1 | 2026-09-03 (1.98.0 on 2026-08-20) |
 
 Recent point releases fix miscompilations: 1.99.1 fixes an x86_64 miscompilation of FFI `bool` return values (upper bits of the return register were left unspecified), 1.98.1 a vtable miscompilation, 1.97.1 an LLVM miscompilation, 1.96.1 a MIR-optimisation miscompilation plus libssh2 CVEs in Cargo.[^1][^3] CI pinned to an `x.y.0` release should move to the latest patch.
@@ -142,28 +142,28 @@ Release dates and items come from the official release notes.[^1] An item works 
 | 1.75 (2023-12-28) | **`async fn` and return-position `impl Trait` in traits** | `Option::as_slice`; `ptr` byte-offset methods (`byte_add`, …) |
 | 1.76 (2024-02-08) | Rust ABI compatibility documented | `ptr::from_ref`/`from_mut`, `Result::inspect`/`inspect_err`, `Option::inspect`, `Arc/Rc::unwrap_or_clone`, `any::type_name_of_val` |
 | 1.77 (2024-03-21) | **C-string literals `c"…"`** (edition 2021+); async recursion with indirection; `static_mut_refs` lint (warn) | `mem::offset_of!`, `slice::first_chunk`/`split_first_chunk`, `Mutex::clear_poison` |
-| 1.78 (2024-05-02) | `#[diagnostic::on_unimplemented]`; unsafe-precondition checks run in debug builds of user code; lockfile v4 | `impl Read for &Stdin` |
+| 1.78 (2024-05-02) | `#[diagnostic::on_unimplemented]`; unsafe-precondition checks run in debug builds of user code; lockfile v4 stabilised (written by default from 1.83) | `impl Read for &Stdin` |
 | 1.79 (2024-06-13) | **Inline `const { … }` blocks**; associated type bounds (`T: Trait<Assoc: Bound>`); temporary lifetime extension through `if`/`match` | `NonZero<T>` (generic), `{integer}::unchecked_add/sub/mul`, `CStr::count_bytes` |
-| 1.80 (2024-07-25) | Exclusive range patterns (`0..10 =>`); `--check-cfg` always on (`unexpected_cfgs` lint) | **`LazyCell`, `LazyLock`**, `Option::take_if`, `Vec<[T; N]>::into_flattened`, `IntoIterator for Box<[T]>` |
+| 1.80 (2024-07-25) | Exclusive range patterns (`0..10 =>`); `--check-cfg` always on (`unexpected_cfgs` lint) | **`LazyCell`, `LazyLock`**, `Option::take_if`, `Vec<[T; N]>::into_flattened`, `IntoIterator for Box<[T]>`, `slice/str::split_at_checked` |
 | 1.81 (2024-09-05) | **`#[expect(lint)]`**; panics escaping `extern "C"` functions abort; new sort implementations (may panic on a non-total `Ord`) | `core::error::Error`, `hint::assert_unchecked`, `fs::exists`, `PanicHookInfo` |
 | 1.82 (2024-10-17) | **`&raw const`/`&raw mut`**; **`unsafe extern` blocks**; **unsafe attributes `#[unsafe(no_mangle)]`**; **precise capturing `+ use<'a, T>`**; omitting patterns of empty types; `cargo info` | `Option::is_none_or`, `iter::repeat_n`, `slice::is_sorted`, `Box::new_uninit` |
-| 1.83 (2024-11-28) | `&mut`, `*mut`, `&Cell` in `const`; raw lifetimes `'r#a` (2021+) | `ControlFlow` API, `Option::get_or_insert_default`, `Waker::data`, many `const fn`s |
+| 1.83 (2024-11-28) | `&mut`, `*mut`, `&Cell` in `const`; raw lifetimes `'r#a` (2021+); `expr_2021` fragment; Cargo writes lockfile v4 by default | `ControlFlow` API, `Option::get_or_insert_default`, `Waker::data`, many `const fn`s |
 | 1.84 (2025-01-09) | **Cargo resolver v3 / MSRV-aware resolution** (`resolver = "3"` or `resolver.incompatible-rust-versions = "fallback"`) | Strict-provenance pointer APIs (`ptr::without_provenance`, `addr`, `with_addr`, `expose_provenance`), `Ipv6Addr::is_unique_local` |
 | 1.85 (2025-02-20) | **Edition 2024**; **async closures** (`async \|\| {}`, `AsyncFn*` traits, in the prelude of all editions); `#[diagnostic::do_not_recommend]` | `{float}::midpoint`, unsigned `midpoint`, `Waker::noop`, tuple `FromIterator`/`Extend` up to 12 |
-| 1.86 (2025-04-03) | **Trait-object upcasting** (`&dyn Sub` → `&dyn Super`); `#[target_feature]` on safe functions; debug null-pointer checks on dereference | `slice::get_disjoint_mut`, `HashMap::get_disjoint_mut`, `Vec::pop_if`, `OnceLock::wait`, `str::split_at_checked` |
+| 1.86 (2025-04-03) | **Trait-object upcasting** (`&dyn Sub` → `&dyn Super`); `#[target_feature]` on safe functions; debug null-pointer checks on dereference | `slice::get_disjoint_mut`, `HashMap::get_disjoint_mut`, `Vec::pop_if`, `OnceLock::wait`, `{float}::next_up/next_down` |
 | 1.87 (2025-05-15) | `use<..>` in trait RPITs; `asm_goto` | **`std::io::pipe`**, `Vec::extract_if`, `LinkedList::extract_if`, `slice::split_off*`, `{integer}::is_multiple_of`, `unbounded_shl/shr`, `cast_signed/cast_unsigned`, signed `midpoint` |
 | 1.88 (2025-06-26) | **Let chains (edition 2024 only)**; naked functions (`#[unsafe(naked)]`); `cfg(true)`/`cfg(false)`; Cargo automatic cache garbage collection | `HashMap/HashSet::extract_if`, `slice::as_chunks`, `Cell::update`, `hint::select_unpredictable` |
 | 1.89 (2025-08-07) | `_` as an inferred const argument (`f::<_>()`, `[0; _]`); `mismatched_lifetime_syntaxes` lint; `#[repr(u128)]`; doctests run when cross-compiling | **`File::lock`/`lock_shared`/`try_lock`/`unlock`**, `NonNull::from_ref`, `Result::flatten` |
 | 1.90 (2025-09-18) | **`lld` is the default linker on `x86_64-unknown-linux-gnu`**; `cargo publish --workspace` | `u{n}::checked_sub_signed` and friends; `CStr`/`CString` comparisons |
 | 1.91 (2025-10-30) | Cargo `build.build-dir`; `--target host-tuple`; `semicolon_in_expressions_from_macros` deny; `dangling_pointers_from_locals` lint | `{integer}::strict_*` (panicking arithmetic in all profiles), `Path::file_prefix`, `PathBuf::add_extension`, `str::floor_char_boundary`/`ceil_char_boundary`, `BTreeMap::extract_if`, `Duration::from_mins/from_hours`, `carrying_add`/`borrowing_sub` |
-| 1.92 (2025-12-11) | Never-type fallback lints deny-by-default; `-C panic=abort` builds have unwind tables (backtraces) | `RwLockWriteGuard::downgrade`, `Box/Rc/Arc::new_zeroed`, `btree_map::Entry::insert_entry` |
+| 1.92 (2025-12-11) | Never-type fallback lints deny-by-default; `-C panic=abort` builds on Linux have unwind tables (backtraces); `iter::repeat(x).last()`/`count()` panic instead of looping | `RwLockWriteGuard::downgrade`, `Box/Rc/Arc::new_zeroed`, `btree_map::Entry::insert_entry` |
 | 1.93 (2026-01-22) | `deref_nullptr` deny-by-default; `const_item_interior_mutations` lint; bundled musl 1.2.5 | `Vec/String::into_raw_parts`, `slice::as_array`, `VecDeque::pop_front_if/pop_back_if`, `fmt::from_fn`, `[MaybeUninit<T>]::write_copy_of_slice` |
 | 1.94 (2026-03-05) | Unicode 17; Cargo config `include`; TOML 1.1 in manifests | `slice::array_windows`, `LazyLock/LazyCell::get/get_mut/force_mut`, `Peekable::next_if_map` |
-| 1.95 (2026-04-16) | **`if let` guards on match arms**; `cfg_select!` | `AtomicXxx::update/try_update`, `Vec::push_mut`/`insert_mut`, `core::range` (new `Copy` range types), `hint::cold_path`, `bool: TryFrom<{integer}>` |
-| 1.96 (2026-05-28) | `cfg` accepts `expr` metavariables | **`assert_matches!`/`debug_assert_matches!`**, `From<T>` for `LazyLock`/`LazyCell`, `core::range::Range*` |
+| 1.95 (2026-04-16) | **`if let` guards on match arms**; `cfg_select!` | `AtomicXxx::update/try_update`, `Vec::push_mut`/`insert_mut`, `core::range` module with `core::range::RangeInclusive` (new `Copy` range type), `hint::cold_path`, `bool: TryFrom<{integer}>` |
+| 1.96 (2026-05-28) | `cfg` accepts `expr` metavariables | **`assert_matches!`/`debug_assert_matches!`**, `From<T>` for `LazyLock`/`LazyCell`, `core::range::{Range, RangeFrom, RangeToInclusive}` |
 | 1.97 (2026-07-09) | v0 symbol mangling by default; Cargo `build.warnings`; `resolver.lockfile-path`; `pin!` no longer deref-coerces | `{integer}::bit_width`, `highest_one`, `lowest_one`, `isolate_*_one` |
-| 1.98 (2026-08-20) | `invalid_runtime_symbol_definitions` (deny) lint | `str::substr_range`, `{integer}::format_into` + `fmt::NumBuffer`, `String::from_utf16le/be`, `bool::ok_or`/`ok_or_else`, `str::strip_circumfix`, `NonZero::from_str_radix` |
-| 1.99 (2026-10-01) | **C-variadic function definitions** (`unsafe extern "C" fn f(args: ...)`); `#[my_attr] mod foo;`; Cargo `debug` profile; edition-2024 members can override inherited `default-features` | `Vec::from_parts/into_parts`, `Box::into_non_null/from_non_null`, `String::from_utf8_lossy_owned`, `fs::set_times`, `mem::size_of_val_raw`, `VecDeque::retain_back` |
+| 1.98 (2026-08-20) | `invalid_runtime_symbol_definitions` (deny) lint; `derive(PartialOrd)` + `derive(Ord)` compares via `Ord::cmp` (see [Trait design](#trait-design)); more ambiguous glob imports are errors | `str::substr_range`, `{integer}::format_into` + `fmt::NumBuffer`, `String::from_utf16le/be`, `bool::ok_or`/`ok_or_else`, `str::strip_circumfix`, `NonZero::from_str_radix` |
+| 1.99 (2026-10-01) | **C-variadic function definitions** (`unsafe extern "C" fn f(args: ...)`); `#[my_attr] mod foo;`; `unconditional_panic` covers zero const-generic chunk/window sizes; legacy numeric modules (`std::i32::MAX`) deprecated; Cargo `debug` profile; edition-2024 members can override inherited `default-features` | `Vec::from_parts/into_parts`, `Box::into_non_null/from_non_null`, `String::from_utf8_lossy_owned`, `fs::set_times`, `mem::size_of_val_raw`, `VecDeque::retain_back`, `core::ffi::VaList`, `IntoIterator for Box<[T; N]>` |
 
 ***
 
@@ -219,7 +219,7 @@ Nightly-only features must never be recommended for stable code: `#![feature(...
 |---|---|---|
 | `std::i32::MAX`, `std::u64::MIN`, `std::f64::EPSILON` (legacy numeric modules) | Fully deprecated in 1.99 (warns) | `i32::MAX`, `f64::EPSILON` |
 | `std::char` constants and functions (`std::char::from_u32`, `std::char::MAX`) | Marked for deprecation in 1.97 (warns only under `#![warn(deprecated_in_future)]` in 1.99) | `char::from_u32`, `char::MAX` |
-| `mem::uninitialized` | Deprecated since 1.39; UB for almost every type. Current std fills the memory with `0x01` bytes and panics for types where that is still invalid (references, uninhabited types) — a `bool` silently becomes `true` | `MaybeUninit` |
+| `mem::uninitialized` | Deprecated since 1.39; UB for almost every type. Current std fills the memory with `0x01` bytes and aborts the process (non-unwinding panic) for types where that is still invalid (references, uninhabited types) — a `bool` silently becomes `true` | `MaybeUninit` |
 | `try!` macro | Deprecated since 1.39; `try` is a keyword from 2018 | `?` |
 | `description()`/`cause()` on `Error` | Deprecated | `Display`, `source()` |
 | `#[bench]` | Removed from stable (deny-by-default FCW, fully destabilised in 1.88) | `criterion`, `divan` |
@@ -235,7 +235,10 @@ Behaviour changes that break code silently:
 - **1.81**: a panic escaping an `extern "C"` function **aborts** the process (previously UB). Use `extern "C-unwind"` (1.71) when unwinding across the boundary is intended.
 - **1.90**: `lld` is the default linker on `x86_64-unknown-linux-gnu`; custom linker scripts or `-C link-arg` flags written for GNU `ld`/`gold` may need adjusting (`-C linker-features=-lld` opts out).
 - **1.90**: `UnixStream` sets `MSG_NOSIGNAL`: writing to a closed socket returns `EPIPE` instead of killing the process with `SIGPIPE`.
+- **1.94**: closure captures around patterns were made consistent; a non-`move` closure can now capture only part of a variable by move, which can move a `Drop` to a different point or add a borrow error.
+- **1.96**: `BTreeMap::append` may panic when the key type's `Ord` is inconsistent (like the 1.81 sorts).
 - **1.97**: v0 symbol mangling is the default; old profilers/debuggers may not demangle.
+- **1.98**: a type deriving both `PartialOrd` and `Ord` answers `<`, `>`, `partial_cmp` through `Ord::cmp`; if a field type's `PartialOrd` disagrees with its `Ord`, the outer comparison changes silently (see [Trait design](#trait-design)).
 - **1.99**: the observable state of an exhausted `RangeInclusive` iterator (`start()`, `end()`, slicing with it) changed; never rely on it.
 - **1.99**: Cargo disables incremental compilation by default when the `CI` environment variable is set.
 - Edition 2021 disjoint captures and edition 2024 temporary-scope changes alter **drop order** (see [Edition Migration Notes](#edition-migration-notes)).
@@ -258,8 +261,8 @@ Behaviour changes that break code silently:
 | Getters | no `get_` prefix | `fn name(&self) -> &str` |
 | Iterators | `iter`, `iter_mut`, `into_iter` | |
 
-- Crate names on crates.io use `-`; in code they become `_` (Cargo normalises `lib.name` dashes to underscores since 1.79).
-- Prefer `use` of the item's module for functions (`fs::read_to_string`) and the item itself for types (`HashMap`). Avoid glob imports outside preludes and `use super::*` in test modules; glob-imported names can become ambiguous when a dependency adds an item (1.94 turned several of these ambiguities into errors).
+- Crate names on crates.io may use `-`; in code they become `_` (Cargo derives the library's crate name from the package name with `-` replaced by `_`).
+- Prefer `use` of the item's module for functions (`fs::read_to_string`) and the item itself for types (`HashMap`). Avoid glob imports outside preludes and `use super::*` in test modules; glob-imported names can become ambiguous when a dependency adds an item (1.94 and 1.98 turned several of these ambiguities into errors).
 - Doc comments: `///` on every public item, `//!` for the crate/module. Public functions that can fail or panic document it under `# Errors` and `# Panics`; `unsafe fn` documents its contract under `# Safety` (Clippy `missing_errors_doc`, `missing_panics_doc`, `missing_safety_doc`).
 
 ***
@@ -531,7 +534,7 @@ fn main() {
 
 - A panic is for **bugs** (violated invariants, impossible states), not for invalid input, I/O failure, or anything a caller can trigger. Library code that panics on input needs a `# Panics` doc section and usually a fallible alternative.
 - `unwrap()` is acceptable in tests, in examples, after a check that proves success, and for compile-time-known values (`"127.0.0.1".parse::<IpAddr>().unwrap()`). Elsewhere prefer `expect("why this cannot fail")` that states the invariant, or propagate. Clippy `unwrap_used`/`expect_used` (restriction) can enforce this per crate.
-- Hidden panics a reviewer must spot: indexing `v[i]`, slicing `s[a..b]` (out of bounds **or** not on a UTF-8 char boundary), integer division/remainder by zero, `RefCell` double borrow, `.unwrap()` on `Mutex::lock()` when poisoned, `Duration` subtraction underflow (`d1 - d2`; `Instant - Instant` saturates to zero since 1.60, but `Instant - Duration` can still panic), `Vec::with_capacity` overflow, `chunks(0)`/`windows(0)` (since 1.99 the deny-by-default `unconditional_panic` lint rejects a zero **const-generic** size such as `array_windows::<0>()` or `as_chunks::<0>()`, but not a runtime `chunks(0)`), `Iterator::step_by(0)`, `str::repeat` overflow, arithmetic overflow in debug builds, and `iter::repeat(x).last()`/`count()` which panic since 1.92.
+- Hidden panics a reviewer must spot: indexing `v[i]`, slicing `s[a..b]` (out of bounds **or** not on a UTF-8 char boundary), integer division/remainder by zero, `RefCell` double borrow, `.unwrap()` on `Mutex::lock()` when poisoned, `Duration` subtraction underflow (`d1 - d2`; `Instant - Instant` saturates to zero since 1.60, but `Instant - Duration` can still panic), `Vec::with_capacity` overflow, `chunks(0)`/`windows(0)` (since 1.99 the deny-by-default `unconditional_panic` lint rejects a zero **const-generic** size such as `array_windows::<0>()` or `as_chunks::<0>()`; 1.98 accepts both. `chunks(0)` and `windows(0)` still compile even with a literal `0` and panic at run time), `Iterator::step_by(0)`, `str::repeat` overflow, arithmetic overflow in debug builds, and `iter::repeat(x).last()`/`count()` which panic since 1.92.
 - `panic = "abort"` in `[profile.release]` turns every panic into an abort: destructors do not run, `catch_unwind` stops working, and tests (which always unwind) behave differently from release. Use it deliberately (embedded, size-sensitive binaries).
 - Panics in `Drop` while already unwinding abort the process. Destructors must not panic.
 - A panic in a spawned thread is returned by `JoinHandle::join()` as `Err`; a panic in a Tokio task is returned as `JoinError::is_panic()`. Ignoring the join result hides the crash.
@@ -590,14 +593,14 @@ fn main() {
 ```
 
 - Prefer generics in hot code and public APIs that callers use with one type; prefer `dyn Trait` for plugin-style heterogeneity, to cut compile time/binary size, or when generic parameters would leak through many layers.
-- `dyn Trait` requires a **dyn-compatible** (formerly "object-safe") trait: no generic methods without `where Self: Sized`, no `Self` by value in arguments/returns, no associated consts. `async fn` in traits (1.75) makes a trait not dyn-compatible; use the `async-trait` crate or return `Pin<Box<dyn Future<Output = T> + Send + '_>>` when `dyn` is needed.
+- `dyn Trait` requires a **dyn-compatible** (formerly "object-safe") trait: no generic methods and no methods that mention `Self` outside the receiver (e.g. `fn dup(&self) -> Self`) unless they have `where Self: Sized`, no associated consts, no `Self: Sized` supertrait. `async fn` in traits (1.75) makes a trait not dyn-compatible; use the `async-trait` crate or return `Pin<Box<dyn Future<Output = T> + Send + '_>>` when `dyn` is needed.
 - `Box<dyn Trait>` defaults to `Box<dyn Trait + 'static>`; `&'a dyn Trait` defaults to `+ 'a`. Add `+ Send + Sync` when the object crosses threads.
 - Trait-object upcasting (`&dyn Sub` → `&dyn Super`) is stable since 1.86. Before 1.86, add an `as_super()` method.
 
 ##### Trait design
 
 - Implement standard traits eagerly on public types: `Debug` (always), `Clone`, `Copy` (small plain data), `PartialEq`/`Eq`, `Hash`, `PartialOrd`/`Ord`, `Default`, `Display` (user-facing types), `From`/`TryFrom`, `AsRef`, `Send`/`Sync` (auto). Missing `Debug` on a public type is a finding (`missing_debug_implementations`).
-- `Hash` must agree with `Eq`: `a == b` implies `hash(a) == hash(b)`. `Ord` must agree with `PartialOrd` and `Eq`. Since 1.98 a type that derives both `PartialOrd` and `Ord` implements `partial_cmp` through `Ord::cmp`, so a field type whose `PartialOrd` and `Ord` disagree changes the result of `<` on the outer type (verified: `W(K(1)) < W(K(2))` is `true` on 1.85 and `false` on 1.99 when `K` has a derived `PartialOrd` and a reversed manual `Ord`). Since 1.81 sorting may panic on a non-total `Ord`.
+- `Hash` must agree with `Eq`: `a == b` implies `hash(a) == hash(b)`. `Ord` must agree with `PartialOrd` and `Eq`. Since 1.98 the derived `partial_cmp` of a type that derives **both** `PartialOrd` and `Ord` is `Some(Ord::cmp(self, other))`, so its fields are compared with their `Ord::cmp`; before 1.98 the derived `partial_cmp` compared fields with their `partial_cmp`. A field type whose `PartialOrd` and `Ord` disagree therefore changes the result of `<` on the outer type (verified: with `K` deriving `PartialOrd` and implementing a reversed `Ord` by hand, and `W(K)` deriving `PartialOrd + Ord`, `W(K(1)) < W(K(2))` is `true` on 1.85.0 and `false` on 1.98.0 and 1.99.1; a wrapper that derives only `PartialOrd` is unchanged). Clippy's `derive_ord_xor_partial_ord` (correctness, deny) flags the inconsistent `K`. Since 1.81 sorting may panic on a non-total `Ord`.
 - Implement `From`, not `Into` (the blanket impl provides `Into`). Implement `TryFrom` for fallible conversions; `FromStr` for parsing.
 - Sealed traits (a public trait with a private supertrait) prevent downstream implementations so methods can be added without a breaking change.
 - Use associated types when there is exactly one natural choice per implementing type (`Iterator::Item`); generic parameters when a type can implement the trait several times (`From<T>`).
@@ -673,7 +676,7 @@ fn main() {
 Review points:
 
 - `max_by_key`/`max_by` return the **last** maximal element, `min_by_key` the **first** minimal one.
-- `.collect::<Vec<_>>()` followed by `.len()`, `.is_empty()`, `.iter()` or a single `for` loop is a needless allocation (Clippy `needless_collect`).
+- `.collect::<Vec<_>>()` followed by `.len()`, `.is_empty()`, `.iter()` or a single `for` loop is a needless allocation (Clippy `needless_collect`, nursery group, so not reported by default).
 - `.iter().count()` on a slice or `Vec` → `.len()`.
 - `zip` silently stops at the shorter iterator; assert lengths when they must match.
 - `.chars().rev()` reverses code points, not grapheme clusters.
@@ -787,7 +790,7 @@ fn main() {
 - File names, environment variables and command-line arguments are **not** guaranteed UTF-8. Use `OsStr`/`OsString`, `Path`/`PathBuf`, `std::env::args_os()`, `std::env::var_os()`.
 - `std::env::args()` **panics** on a non-UTF-8 argument; `env::var()` returns `Err(NotUnicode)`.
 - `path.display()` and `to_string_lossy()` are for **display only**; converting a path to `String` and back corrupts non-UTF-8 names.
-- Join with `Path::join`, not `format!("{dir}/{file}")`. `join` with an **absolute** second argument replaces the base: `Path::new("/srv/data").join("/etc/passwd") == "/etc/passwd"` — a path-traversal hole when the argument is user input.
+- Join with `Path::join`, not `format!("{dir}/{file}")`. `join` with an **absolute** second argument replaces the base: `Path::new("/srv/data").join("/etc/passwd") == "/etc/passwd"` — a path-traversal hole when the argument is user input (Clippy `join_absolute_paths`, suspicious, flags literal cases).
 - `Path::starts_with` compares components, not strings, and does not resolve `..`. Canonicalise (`fs::canonicalize`) or reject `..`/absolute components before checking containment.
 
 ```rust
@@ -980,6 +983,7 @@ fn main() {}
 - Raw pointers obtained from a reference keep that reference's permissions: a pointer derived from `&x` must not be used to write.
 - Pointer-integer round trips: `ptr as usize as *const T` loses provenance under the strict-provenance model; use `ptr.addr()`, `ptr.with_addr()`, `ptr::without_provenance` (1.84), or `expose_provenance`/`with_exposed_provenance` when interacting with integer-address APIs.
 - `#[repr(packed)]` fields: taking a reference to an unaligned field is an error; read with `ptr::read_unaligned(&raw const s.field)`.
+- Hand-written tagged unions: do not match the union field and the tag in **one** pattern (`match (tag, u) { (0, U { a }) => … }`); the compiler may read the union before checking the tag. The Reference stopped recommending this pattern in 1.99 because it can be UB — check the tag first, then read the field.
 - Panics inside unsafe code that leave a data structure half-updated (exception safety): if a user-supplied closure or `Clone`/`Drop` can panic mid-operation, the invariants must hold at every panic point (use guard objects that fix up on drop).
 
 ```rust
@@ -1489,7 +1493,7 @@ serde = { workspace = true, features = ["rc"] }   # features are additive to the
 workspace = true
 ```
 
-- `default-features = false` on a member's `{ workspace = true }` dependency is **ignored** (with a warning) when the workspace entry enables default features — except for members on edition 2024 with Cargo ≥ 1.99, where it now takes effect. Edition 2024 turns an *unused* inherited `default-features` key into an error.
+- `default-features = false` on a member's `{ workspace = true }` dependency while the `[workspace.dependencies]` entry leaves default features on: on editions 2015–2021 it is **ignored** with a warning (every Cargo version, including 1.99); on edition 2024 it is a hard error ("cannot override workspace's `default-features`") with Cargo 1.85–1.98 and **takes effect** (defaults disabled) with Cargo ≥ 1.99. Put `default-features = false` in the workspace entry and let members opt back in with `features = [...]` when older toolchains must build the workspace.
 - A single `Cargo.lock` and `target/` exist at the workspace root.
 - Lint groups need `priority = -1` so that individual lints in the same table can override them (Clippy's `lint_groups_priority` lint flags the mistake).
 
@@ -1498,7 +1502,7 @@ workspace = true
 - `cargo new` creates projects with `Cargo.lock` tracked; the Cargo FAQ (since 2023) recommends deciding per project rather than "binaries commit, libraries don't". Applications and anything deployed **must** commit `Cargo.lock`. Libraries usually commit it too and add a CI job that tests the latest compatible versions (`cargo update` then test) and one that tests minimal versions.[^12]
 - `Cargo.lock` does not affect downstream users of a library; only the version requirements in `Cargo.toml` do.
 - CI and release builds use `--locked` (fail if the lockfile would change); `cargo install --locked` for tools. Review `Cargo.lock` diffs: a PR that changes many unrelated versions or adds unknown crates deserves scrutiny.
-- Lockfile v4 (default since 1.78) cannot be read by Cargo < 1.78; with a lower MSRV, CI on the MSRV toolchain fails unless `rust-version` makes Cargo write an older format.
+- Lockfile v4 (stabilised in 1.78, written by default since 1.83) cannot be read by Cargo < 1.78; Cargo keeps writing v3 while `rust-version` is below 1.83, so declaring the real MSRV keeps the lockfile readable by old toolchains; without `rust-version`, CI on a pre-1.78 MSRV toolchain fails on a v4 lockfile.
 
 ##### Build scripts and proc macros
 
@@ -1517,7 +1521,7 @@ workspace = true
 - Avoid repeated allocation in loops: reuse buffers (`buf.clear()`), use `write!` into an existing `String`, pass `&str`/`&[T]`.
 - **Buffer I/O**: `File` and `TcpStream` are unbuffered; wrap in `BufReader`/`BufWriter`. `BufWriter` **ignores errors when dropped** — call `flush()` (or `into_inner()`) and handle the result. `println!` locks stdout for each call; for heavy output lock once (`io::stdout().lock()`) and wrap in `BufWriter`.
 - `Box<dyn Trait>` and `Arc` clones are cheap but not free; `Rc` is cheaper than `Arc` in single-threaded code.
-- `#[inline]` matters for small non-generic functions called across crates without LTO; generic functions are already inlinable. `#[inline(always)]` needs a measurement.
+- `#[inline]` matters for non-generic functions called across crates without LTO; generic functions are already inlinable, and since 1.75 rustc makes very small functions cross-crate inlinable automatically. `#[inline(always)]` needs a measurement.
 - Release profile knobs: `lto = "thin"` or `"fat"`, `codegen-units = 1`, `panic = "abort"` (behaviour change, see Panics), `opt-level = 3`, PGO via `cargo-pgo`. Each trades compile time.
 - Use `std::hint::black_box` (1.66) in benchmarks so the optimiser does not delete the measured work; `#[bench]` is not available on stable — use `criterion` (0.8) or `divan`.
 - Large values on the stack (`[u8; 1 << 20]` locals, big structs moved by value) risk stack overflow (the main thread typically gets 8 MiB on Linux via `ulimit -s`; spawned threads get 2 MiB unless `thread::Builder::stack_size` or `RUST_MIN_STACK` says otherwise); box them or use `Vec`.
@@ -1630,7 +1634,7 @@ Property tests (`proptest` 1.12, `quickcheck`) suit parsers, encoders, and anyth
 
 ##### rustc lints
 
-- Treat warnings as errors in CI, not in `lib.rs`: `#![deny(warnings)]` in source breaks the crate for downstream users whenever a new compiler adds a warning. Use `RUSTFLAGS="-D warnings"` in CI or Cargo's `build.warnings = "deny"` config (1.97).
+- Treat warnings as errors in CI, not in `lib.rs`: `#![deny(warnings)]` in source breaks the build of the crate itself (contributors, packagers, path and workspace dependents) whenever a new compiler adds a warning; Cargo caps lints only for registry and git dependencies. Use `RUSTFLAGS="-D warnings"` in CI or Cargo's `build.warnings = "deny"` config (1.97).
 - Useful opt-in rustc lints: `unsafe_code`, `unsafe_op_in_unsafe_fn` (default warn in 2024), `missing_docs`, `missing_debug_implementations`, `unreachable_pub`, `unused_qualifications`, `rust_2018_idioms` (group; flags elided lifetimes in paths such as `Formatter` without `<'_>`, and `extern crate`), `let_underscore_drop`, `single_use_lifetimes`.
 - `#[expect(lint, reason = "…")]` (1.81) instead of `#[allow]`: it warns (`unfulfilled_lint_expectations`) when the suppression is no longer needed. Before 1.81 use `#[allow(lint)]` with a comment.
 - Deny-by-default lints that indicate real bugs: `invalid_reference_casting`, `let_underscore_lock`, `deref_nullptr` (deny since 1.93), `invalid_from_utf8_unchecked`, `unconditional_panic`, `arithmetic_overflow`, `invalid_runtime_symbol_definitions` (1.98), `never_type_fallback_flowing_into_unsafe` (deny since 1.92). Never `allow` them without a detailed reason.
@@ -1694,7 +1698,7 @@ fn main() {
 
 ##### Dependencies
 
-- **`cargo audit`** (cargo-audit 0.22, RustSec advisory database) or **`cargo deny check`** (cargo-deny 0.20: advisories, licenses, banned crates, duplicate versions, allowed registries/git sources) in CI on every PR and on a schedule; new advisories appear for unchanged lockfiles.[^16]
+- **`cargo audit`** (cargo-audit 0.22.2, RustSec advisory database) or **`cargo deny check`** (cargo-deny 0.20.2: advisories, licenses, banned crates, duplicate versions, allowed registries/git sources) in CI on every PR and on a schedule; new advisories appear for unchanged lockfiles.[^16]
 - New dependencies deserve review: maintenance status, download count, owners, `unsafe` usage (`cargo geiger`), build scripts and proc macros, transitive tree size (`cargo tree -e normal --duplicates`). Prefer well-known crates for crypto, TLS, parsing.
 - Typosquats and compromised accounts are real: the August 20, 2026 incident republished `arrayref` 0.3.10 (and `internment` 0.8.7, `append-only-vec` 0.1.9) depending on a malicious `proc-macro1` crate whose build script downloaded a payload; the versions were online for 86–107 minutes.[^13] `cargo vet`/`cargo crev`, pinning via `Cargo.lock`, and delaying adoption of brand-new versions reduce exposure.
 - Publish from CI with crates.io **Trusted Publishing** (OIDC from GitHub Actions; GitLab.com since January 2026) instead of long-lived API tokens; owners can enforce trusted-publishing-only.[^17] Never pass the token as a `cargo login <token>` argument (deprecated since 1.86; it ends up in shell history) — use `cargo login` from stdin or `CARGO_REGISTRY_TOKEN`.
@@ -1708,7 +1712,7 @@ fn main() {
 - **Deserialisation**: `serde` is memory-safe, but untrusted input still needs size limits (body size, string/collection lengths, recursion depth). `#[serde(deny_unknown_fields)]` for strict configs. Formats such as `bincode` with untrusted length prefixes can allocate huge buffers — configure limits.
 - **Regex**: the `regex` crate guarantees linear-time matching (no catastrophic backtracking); `fancy-regex` (backreferences/lookaround) does not — avoid it on untrusted patterns or input. Compile regexes once (`LazyLock<Regex>`), not per call; untrusted patterns need `RegexBuilder::size_limit`.
 - **Secrets**: do not derive `Debug` on structs holding passwords/tokens (they leak into logs and panic messages); implement a redacting `Debug` or use `secrecy::SecretString`. Zero sensitive buffers with `zeroize`. Compare secrets in constant time (`subtle::ConstantTimeEq`, or the comparison function of the crypto library), not with `==`.
-- **Randomness**: use `getrandom`, `rand::rngs::SysRng` (rand 0.10; named `OsRng` in rand 0.8/0.9), `rand::rng()`/`thread_rng()` (a CSPRNG seeded from the OS) or the crypto library's RNG for keys, tokens and nonces; never seed a PRNG from time, and never use `SmallRng`/`StdRng::seed_from_u64` for secrets.
+- **Randomness**: use `getrandom`, `rand::rngs::SysRng` (rand 0.10; named `OsRng` in rand 0.8/0.9), `rand::rng()` (rand 0.9+; `thread_rng()` in 0.8; a CSPRNG seeded from the OS) or the crypto library's RNG for keys, tokens and nonces; never seed a PRNG from time, and never use `SmallRng`/`StdRng::seed_from_u64` for secrets.
 - **Crypto and TLS**: use maintained libraries (`rustls`, `ring`, `aws-lc-rs`, RustCrypto crates, `argon2` for passwords); never disable certificate verification (`danger_accept_invalid_certs(true)`) outside tests.
 - **Integer handling** in parsers: lengths from input must be checked (`checked_*`, `try_from`) before allocation and slicing; see [Integers](#integers-overflow-casts-and-floats).
 - **DoS**: bounded channels, request/body size limits, timeouts on every network call (`tokio::time::timeout`, client timeouts), limits on concurrent tasks, and no `unwrap` on input-derived values in servers (a panic in a request handler may take down the task or the process with `panic = "abort"`).
@@ -1723,7 +1727,7 @@ fn main() {
 - Do not hold a span guard from `span.enter()` across `.await` (it attaches the wrong span to other tasks); use `.instrument(span)` on the future or `#[instrument]`.
 - Log errors once, at the layer that handles them, with the full chain (`{err:#}` for `anyhow`, or iterate `source()`); do not log-and-return the same error at every layer.
 - `eprintln!`/`println!`/`dbg!` in library or service code is a finding (Clippy `print_stdout`, `print_stderr`, `dbg_macro`).
-- Panics: install a panic hook (or rely on `tracing-panic`) so panics reach the structured log; set `RUST_BACKTRACE=1` (or capture `std::backtrace::Backtrace`, 1.65) for diagnostics. Release builds need `debug = "line-tables-only"` or split debuginfo for readable backtraces; `-C panic=abort` builds get unwind tables (and therefore backtraces) by default since 1.92.
+- Panics: install a panic hook (or rely on `tracing-panic`) so panics reach the structured log; set `RUST_BACKTRACE=1` (or capture `std::backtrace::Backtrace`, 1.65) for diagnostics. Release builds need `debug = "line-tables-only"` or split debuginfo for readable backtraces; `-C panic=abort` builds on Linux get unwind tables (and therefore backtraces) by default since 1.92.
 - Metrics (`metrics`, `prometheus`, OpenTelemetry) for rates, latencies and queue depths; label cardinality must be bounded (no user IDs as labels).
 
 ***
@@ -1884,3 +1888,4 @@ fn main() {
 [^15]: Clippy README — lint categories. https://github.com/rust-lang/rust-clippy#clippy ; Clippy lint list. https://rust-lang.github.io/rust-clippy/stable/index.html
 [^16]: RustSec advisory database and cargo-audit. https://rustsec.org/ ; cargo-deny. https://embarkstudios.github.io/cargo-deny/
 [^17]: crates.io development updates: Trusted Publishing (July 2025) and GitLab support/enforcement (January 2026). https://blog.rust-lang.org/2025/07/11/crates-io-development-update-2025-07/ , https://blog.rust-lang.org/2026/01/21/crates-io-development-update/
+[^18]: Cargo changelog (Cargo 1.100, 2026-11-12; lockfile v4 default in Cargo 1.83). https://doc.rust-lang.org/nightly/cargo/CHANGELOG.html ; beta channel manifest (rustc 1.100.0-beta.7). https://static.rust-lang.org/dist/channel-rust-beta.toml
