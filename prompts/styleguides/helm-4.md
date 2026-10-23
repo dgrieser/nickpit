@@ -57,7 +57,7 @@ Helm 4 keeps the chart format (charts with `apiVersion: v2` render unchanged) bu
 | **Plugins** | `plugin.yaml` without `apiVersion` | New `apiVersion: v1` plugin format with `type` (`cli/v1`, `getter/v1`, `postrenderer/v1`) and `runtime` (`subprocess` or `extism/v1` WebAssembly). Legacy plugins still load. Tarball installs require a `.prov` signature by default. |
 | **Values files** | Only the first YAML document of a values file is used | **Multi-document values**: all `---`-separated documents are merged in order (both `-f` files and the chart's `values.yaml`) |
 | **`--set-json`** | `key=json` only | Also a whole JSON object: `--set-json '{"a":{"b":1}}'` |
-| **Template functions** | — | `mustToYaml`, `mustToJson` (4.0); `mustToToml` (4.2); duration helpers (4.3) |
+| **Template functions** | — | `mustToYaml` (4.0); `mustToToml` (4.2); duration helpers (4.3) — `mustToJson`/`mustToPrettyJson`/`mustToRawJson` come from Sprig and already work in Helm 3 |
 | **`helm lint`** | Path optional (defaults to `.`) | **Path required**; non-SemVer-2 `version` is a warning; unknown `Chart.yaml` fields are reported (warning) |
 | **`helm list`** | Shows deployed+failed; `-a/--all` for everything | **Shows every status by default**; `-a/--all` is removed |
 | **Registry login** | `helm registry login host/path` accepted | Host only; a path is rejected |
@@ -184,7 +184,7 @@ Also never recommend:
 - **Find the pinned version first**: `.tool-versions` (`helm 4.3.1`), `mise.toml`, `azure/setup-helm` `with: version:`, container images (`alpine/helm:4.3.1`), `HELM_VERSION` in Makefiles or Dockerfiles, Renovate/Dependabot config. A guide claim like "not available" is only valid against the pinned minor.
 - **Pin an exact version in CI.** `azure/setup-helm` defaults to `latest` when `version` is omitted, so an unpinned job can switch between major versions without a code change.[^16] Flag `version: latest` or a missing `version`.
 - **Say "not available in 4.x" only when the pinned version proves it** (unknown flag, `function "…" not defined`). Do not infer from Helm 3 docs: several Helm 3 docs pages describe behaviour (implicit `helm lint .`, `helm list -a`, executable post-renderers) that Helm 4 removed.
-- **Charts are usually shared between Helm 3 and Helm 4 users.** A chart published for others must render on both unless it declares otherwise. Helm 4-only template functions (`mustToYaml`, `mustToJson`, `mustToToml`, `duration*`) make the chart fail on Helm 3 with `function "…" not defined`; multi-document `values.yaml` is silently truncated to the first document by Helm 3. Treat both as breaking for a chart consumed by Helm 3 users; acceptable when the chart is internal and every consumer runs Helm ≥ the required minor (document it in the README or enforce it with a `fail` on `.Capabilities.HelmVersion`).
+- **Charts are usually shared between Helm 3 and Helm 4 users.** A chart published for others must render on both unless it declares otherwise. Helm 4-only template functions (`mustToYaml`, `mustToToml`, `duration*`; `mustToJson` is Sprig and also works on Helm 3) make the chart fail on Helm 3 with `function "…" not defined`; multi-document `values.yaml` is silently truncated to the first document by Helm 3. Treat both as breaking for a chart consumed by Helm 3 users; acceptable when the chart is internal and every consumer runs Helm ≥ the required minor (document it in the README or enforce it with a `fail` on `.Capabilities.HelmVersion`).
 - **`.Capabilities.HelmVersion.Version`** reports the running Helm (`v4.3.1`). A chart can guard a Helm 4-only feature:
 
 ```yaml
@@ -750,7 +750,7 @@ Helm templates are Go `text/template` plus the Sprig v3.3.0 function library (wi
 
 | Function | Since | Notes |
 |---|---|---|
-| `mustToYaml`, `mustToJson` | 4.0 | Like `toYaml`/`toJson` but fail rendering on marshal errors instead of returning `""` |
+| `mustToYaml` | 4.0 | Like `toYaml` but fails rendering on marshal errors instead of returning `""` (`mustToJson` is a Sprig function that Helm 3 already has) |
 | `mustToToml` | 4.2 | Failing variant of `toToml` |
 | `mustToDuration` | 4.3 | Parses Go durations (`"1m30s"`), plain numbers (seconds) and numeric strings; fails on invalid input |
 | `durationSeconds`, `durationMilliseconds`, `durationMicroseconds`, `durationNanoseconds`, `durationMinutes`, `durationHours`, `durationDays`, `durationWeeks` | 4.3 | Return a number; **return 0 on invalid input** |
