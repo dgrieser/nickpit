@@ -74,7 +74,7 @@ Global truths for a C# 10 / .NET 6 code base:
 
 1. **Verify before claiming something is unavailable.** Say "not available in C# 10 / .NET 6" only when the pinned language version or framework proves it. Many APIs that feel new are older: `ArgumentNullException.ThrowIfNull`, `Random.Shared`, `MaxBy`, `Chunk`, `DateOnly`, `PriorityQueue`, `Parallel.ForEachAsync` and `Task.WaitAsync` all exist in .NET 6.
 2. **Never suggest C# 11+ syntax or .NET 7+ APIs** (see the next section). For example, do not "simplify" a guard to `ArgumentException.ThrowIfNullOrEmpty` (.NET 7) or a disposal check to `ObjectDisposedException.ThrowIf` (.NET 7). Do not replace a constructor with a primary constructor (C# 12) or a `new List<int> { … }` with a collection expression (C# 12).
-3. **Treat `<LangVersion>preview</LangVersion>` or `latest` + `EnablePreviewFeatures` on `net6.0` as a finding.** On SDK 6.0.428, `preview` compiles raw string literals, list patterns, UTF-8 literals and `>>>`. These are pre-release C# 11 implementations that are unsupported in production. Generic math additionally needs the `System.Runtime.Experimental` package.
+3. **Treat `<LangVersion>preview</LangVersion>` or `latest` + `EnablePreviewFeatures` on `net6.0` as a finding.** On SDK 6.0.428 (Roslyn 4.3.1), `preview` compiles most of C# 11 in pre-release form: raw string literals, list patterns, UTF-8 literals, `>>>`, generic attributes, newlines in interpolation holes, auto-default structs, `ref` fields, `Span<char>` constant patterns, extended `nameof` scope, checked operators and `static abstract` interface members. These implementations are unsupported in production (the compiler itself reports them as "in Preview and *unsupported*"). Generic math additionally needs `EnablePreviewFeatures` and the `System.Runtime.Experimental` package.
 4. **Flag the platform itself.** A pull request that adds features to a `net6.0` service should at least carry a ticket for the `net10.0` migration. A pull request that *creates* a `net6.0` project is a defect.
 5. **Package versions matter.** Many 2025–2026 packages no longer support `net6.0`. Microsoft.Extensions.* 10.0 and System.Text.Json 9.0 restore on `net6.0` through their `netstandard2.0` assets. They print `warning : Microsoft.Extensions.Logging.Abstractions 10.0.0 doesn't support net6.0 and has not been tested with it. Consider upgrading your TargetFramework to net8.0 or later.` Setting `<SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>` hides that warning. Flag the suppression: the combination is untested.
 
@@ -129,7 +129,7 @@ The project's compiler and runtime do not have these features. Each item below w
 | Null-conditional assignment | `c?.X = 1;` | C# 14 | CS0131 |
 | Extension members, implicit span conversions, `nameof(List<>)`, partial constructors/events, compound-assignment operators | — | C# 14 | — |
 
-Four of these compile on SDK 6.0.428 when `LangVersion=preview` is set (rule 3 above): raw strings, list patterns, `u8` and `>>>`. Compiled with the .NET 7 SDK at `LangVersion 11`, raw strings, list patterns, `u8`, file-local types and newline holes work. Required members additionally need `RequiredMemberAttribute`/`CompilerFeatureRequiredAttribute`, which `net6.0` lacks. Generic math needs `net7.0`.
+Every C# 11 row except file-local types and required members (which still lacks its attributes on `net6.0`) compiles on SDK 6.0.428 when `LangVersion=preview` is set (rule 3 above). The C# 12+ rows fail even there. Compiled with the .NET 7 SDK at `LangVersion 11`, raw strings, list patterns, `u8`, file-local types and newline holes work. Required members additionally need `RequiredMemberAttribute`/`CompilerFeatureRequiredAttribute`, which `net6.0` lacks. Generic math needs `net7.0`.
 
 The C# 10 replacements:
 
@@ -295,7 +295,7 @@ public sealed class OrderNumber
 
 - A file can contain **only one** file-scoped namespace, and it cannot be mixed with block namespaces (CS8954/CS8955).
 - Prefer file-scoped namespaces in all new C# 10 code. Enforce them with `.editorconfig`: `csharp_style_namespace_declarations = file_scoped:warning`.
-- Top-level statements cannot be combined with a namespace declaration that precedes them. Keep `Program.cs` without a namespace.
+- A file with top-level statements cannot use a file-scoped namespace: statements after `namespace X;` are syntax errors, and `namespace X;` after statements is CS8956. Keep `Program.cs` without a namespace.
 
 ***
 
@@ -303,63 +303,13 @@ public sealed class OrderNumber
 
 ##### General rules
 
-```csharp
-// PascalCase for public members, types, namespaces
-public class UserService
-{
-    // Constants: PascalCase (not SCREAMING_CASE)
-    public const int MaxRetryCount = 3;
-    public const string DefaultCurrency = "USD";
-
-    // Private fields: underscore prefix + camelCase
-    private readonly IUserRepository _repository;
-    private int _itemCount;
-
-    public UserService(IUserRepository repository) => _repository = repository;
-
-    // camelCase for parameters and locals
-    public void DoWork(string inputValue) { var trimmed = inputValue.Trim(); _itemCount += trimmed.Length; }
-
-    // Suffix async methods with Async
-    public Task<User?> GetUserAsync(int id, CancellationToken ct = default) => _repository.FindAsync(id, ct);
-}
-
-// Prefix interfaces with I
-public interface IUserRepository { Task<User?> FindAsync(int id, CancellationToken ct); }
-
-public class User
-{
-    // Public properties: PascalCase; Boolean properties: Is/Has/Can prefix
-    public int Id { get; init; }
-    public string Name { get; init; } = "";
-    public DateTime CreatedAt { get; init; }
-    public bool IsActive { get; set; }
-    public bool HasDiscount { get; set; }
-    public bool CanEdit => IsActive;
-}
-```
-
+- **PascalCase** for types, namespaces, methods, properties, events and constants (`MaxRetryCount`, not `MAX_RETRY_COUNT`). **camelCase** for parameters and locals. **`_camelCase`** for private fields (`private readonly IUserRepository _repository;`).
+- Interfaces start with `I` (`IUserRepository`). Async methods end with `Async` and take a `CancellationToken ct = default` last. Boolean members read as predicates (`IsActive`, `HasDiscount`, `CanEdit`).
 - **Type parameters**: `T`, or `TKey`/`TValue`/`TResult` with a `T` prefix.
-- **Do not name types in all-lowercase ASCII.** C# 11 (warning wave 7, CS8981) warns about such names because future keywords are lowercase. The C# 10 compiler does not warn yet, but `record`, `required`, `scoped` and `file` show the risk.
+- **Do not name types in all-lowercase ASCII.** C# 11 (warning wave 7, CS8981) warns about such names because future keywords are lowercase. The C# 10 compiler does not warn yet (verified), but `record`, `required`, `scoped` and `file` show the risk.
 - **Local functions and lambdas**: PascalCase for local functions, camelCase for delegate variables.
 - **Member order** within a type: constants, static fields, instance fields, constructors, properties, public methods, private methods. One top-level type per file, and the file name matches the type name.
-
-##### Project structure
-
-```text
-Solution/
-├── src/
-│   ├── MyApp.Api/              # Web API project (minimal APIs or controllers)
-│   ├── MyApp.Core/             # Domain/business logic, no infrastructure references
-│   ├── MyApp.Infrastructure/   # EF Core, HTTP clients, external services
-│   └── MyApp.Shared/           # Shared utilities
-├── tests/
-│   ├── MyApp.UnitTests/
-│   └── MyApp.IntegrationTests/
-├── Directory.Build.props
-├── global.json
-└── MyApp.sln
-```
+- Keep the domain project free of infrastructure references (EF Core, HTTP clients). Put a `Directory.Build.props` and `global.json` at the repository root.
 
 ##### Expression style
 
@@ -1356,7 +1306,7 @@ public sealed class ExpensiveClient
 }
 ```
 
-- `GetOrAdd(key, factory)` runs the factory outside the lock. In a test with 8 contending threads, the plain factory ran **5 times** for one key. Wrap expensive or side-effecting creations in `Lazy<T>`.
+- `GetOrAdd(key, factory)` runs the factory outside the lock. In one run with 8 contending threads, the plain factory ran **5 times** for one key. Wrap expensive or side-effecting creations in `Lazy<T>`.
 - `ConcurrentDictionary` enumeration is not a snapshot, and `Count`/`IsEmpty` take all locks. Avoid them on hot paths.
 - `Dictionary<,>`, `List<>` and `HashSet<>` are not thread-safe even for "mostly reads" with occasional writes. Concurrent writes can corrupt them, including infinite loops in `Dictionary`.
 - **`new Random()` shared across threads** can return 0 forever after concurrent use corrupts it.[^20] Use `Random.Shared` (.NET 6) for non-security randomness and `RandomNumberGenerator` for security.
@@ -1394,26 +1344,7 @@ Prefer `CreateBounded` for anything fed by external input. `CreateUnbounded` is 
 
 ##### Query syntax vs method syntax
 
-```csharp
-var users = new[] { new User(1, "Cy", true), new User(2, "Ann", true), new User(3, "Bob", false) };
-var orders = new[] { new Order(1, 150m), new Order(1, 20m), new Order(2, 300m) };
-
-// Method syntax: preferred for simple queries
-var activeUsers = users.Where(u => u.IsActive).OrderBy(u => u.Name).ToList();
-Console.WriteLine(string.Join(",", activeUsers.Select(u => u.Name)));    // Ann,Cy
-
-// Query syntax: readable for joins and grouping
-var summary =
-    from order in orders
-    join user in users on order.UserId equals user.Id
-    where order.Total > 100
-    group order by user.Name into g
-    select new { Customer = g.Key, Total = g.Sum(o => o.Total) };
-foreach (var s in summary) Console.WriteLine($"{s.Customer}: {s.Total}");   // Cy: 150, Ann: 300
-
-public sealed record User(int Id, string Name, bool IsActive);
-public sealed record Order(int UserId, decimal Total);
-```
+Prefer method syntax (`users.Where(u => u.IsActive).OrderBy(u => u.Name)`). Query syntax (`from … join … group … into g select …`) is acceptable where it reads better, typically for joins and grouping. Both compile to the same calls.
 
 ##### LINQ best practices
 
@@ -1698,84 +1629,12 @@ Console.WriteLine(total);                                       // 200000
 
 ##### Service registration and lifetimes
 
-```csharp
-using System.Data;
-using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-
-var builder = WebApplication.CreateBuilder(args);
-var services = builder.Services;
-
-services.AddTransient<IEmailService, EmailService>();       // new instance per resolution
-services.AddScoped<IUserRepository, UserRepository>();      // one per request/scope
-services.AddSingleton<ICacheService, MemoryCacheService>(); // one for the app lifetime (must be thread-safe)
-
-// Factory registration
-services.AddScoped<IDbConnection>(sp =>
-{
-    var config = sp.GetRequiredService<IConfiguration>();
-    return new SqliteConnection(config.GetConnectionString("Default") ?? "Data Source=:memory:");
-});
-
-var app = builder.Build();
-using (var scope = app.Services.CreateScope())
-{
-    var conn = scope.ServiceProvider.GetRequiredService<IDbConnection>();
-    Console.WriteLine(conn.GetType().Name);                 // SqliteConnection — disposed with the scope
-}
-
-public interface IEmailService { }
-public sealed class EmailService : IEmailService { }
-public interface IUserRepository { }
-public sealed class UserRepository : IUserRepository { }
-public interface ICacheService { }
-public sealed class MemoryCacheService : ICacheService { }
-```
+- `AddTransient`: a new instance per resolution. `AddScoped`: one per request or `CreateScope()`. `AddSingleton`: one for the application lifetime, so it must be thread-safe.
+- Factory registrations (`services.AddScoped<IDbConnection>(sp => new SqliteConnection(...))`) are fine. The container owns and disposes `IDisposable` instances it creates, including factory results, when their scope ends. Code that resolves them should not dispose them.
 
 ##### Constructor injection
 
-```csharp
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-
-var service = new OrderService(new InMemoryOrderRepository(), NullLogger<OrderService>.Instance, new NoopEmailService());
-var order = await service.CreateOrderAsync(new OrderRequest(42), CancellationToken.None);
-Console.WriteLine(order.CustomerId);   // 42
-
-public sealed class OrderService
-{
-    private readonly IOrderRepository _repository;
-    private readonly ILogger<OrderService> _logger;
-    private readonly IEmailService _emailService;
-
-    public OrderService(IOrderRepository repository, ILogger<OrderService> logger, IEmailService emailService)
-    {
-        _repository = repository ?? throw new ArgumentNullException(nameof(repository));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _emailService = emailService ?? throw new ArgumentNullException(nameof(emailService));
-    }
-
-    public async Task<Order> CreateOrderAsync(OrderRequest request, CancellationToken ct)
-    {
-        _logger.LogInformation("Creating order for customer {CustomerId}", request.CustomerId);
-        var order = new Order(request.CustomerId);
-        await _repository.SaveAsync(order, ct);
-        await _emailService.SendOrderConfirmationAsync(order, ct);
-        return order;
-    }
-}
-
-public sealed record OrderRequest(int CustomerId);
-public sealed record Order(int CustomerId);
-public interface IOrderRepository { Task SaveAsync(Order order, CancellationToken ct); }
-public interface IEmailService { Task SendOrderConfirmationAsync(Order order, CancellationToken ct); }
-public sealed class InMemoryOrderRepository : IOrderRepository { public Task SaveAsync(Order o, CancellationToken ct) => Task.CompletedTask; }
-public sealed class NoopEmailService : IEmailService { public Task SendOrderConfirmationAsync(Order o, CancellationToken ct) => Task.CompletedTask; }
-```
-
-Primary constructors (`class OrderService(IOrderRepository repository)`) are C# 12. In C# 10, write the constructor and `private readonly` fields.
+Inject dependencies through the constructor into `private readonly` fields, guard them with `?? throw new ArgumentNullException(nameof(x))` or `ArgumentNullException.ThrowIfNull`, and inject `ILogger<T>` rather than `ILoggerFactory`. Primary constructors (`class OrderService(IOrderRepository repository)`) are C# 12. In C# 10, write the constructor and the fields. A constructor with many parameters signals a class with too many responsibilities.
 
 ##### Lifetime bugs a reviewer must catch
 
@@ -2059,7 +1918,7 @@ Console.WriteLine(JsonSerializer.Serialize<object>(a));                         
 
 // 5. Fields are ignored; non-ASCII and HTML-sensitive characters are escaped
 Console.WriteLine(JsonSerializer.Serialize(new WithField()));                        // {"Prop":2}
-Console.WriteLine(JsonSerializer.Serialize("äö<>"));                                 // "äö<>"
+Console.WriteLine(JsonSerializer.Serialize("äö<>"));                                 // "\u00E4\u00F6\u003C\u003E" (escaped by default)
 
 // 6. Cycles throw unless you opt in (.NET 6 adds IgnoreCycles)
 var node = new Node(); node.Next = node;
@@ -2677,44 +2536,9 @@ Console.WriteLine(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("ab
 
 #### Testing
 
-##### xUnit basics
+##### xUnit and Moq
 
-```csharp
-using Xunit;
-
-public sealed class Calculator { public int Add(int a, int b) => checked(a + b); }
-
-public class CalculatorTests
-{
-    [Fact]
-    public void Add_TwoPositiveNumbers_ReturnsSum()
-    {
-        // Arrange
-        var calculator = new Calculator();
-
-        // Act
-        var result = calculator.Add(2, 3);
-
-        // Assert
-        Assert.Equal(5, result);
-    }
-
-    [Theory]
-    [InlineData(1, 1, 2)]
-    [InlineData(0, 0, 0)]
-    [InlineData(-1, 1, 0)]
-    public void Add_VariousNumbers_ReturnsCorrectSum(int a, int b, int expected)
-    {
-        Assert.Equal(expected, new Calculator().Add(a, b));
-    }
-
-    [Fact]
-    public void Add_Overflow_Throws() =>
-        Assert.Throws<OverflowException>(() => new Calculator().Add(int.MaxValue, 1));
-}
-```
-
-##### Mocking with Moq
+Use `[Fact]` for single cases and `[Theory]` + `[InlineData]` for tables of inputs, Arrange/Act/Assert structure, and a fresh mock per test class instance:
 
 ```csharp
 using Moq;
@@ -2870,7 +2694,7 @@ The following behaviour changes matter when you review code that moved to `net6.
 - **`System.Drawing.Common` is Windows-only.** On Linux, `new Bitmap(1, 1)` threw `TypeInitializationException` → `PlatformNotSupportedException: System.Drawing.Common is not supported on non-Windows platforms` (verified with package 6.0.0). Use ImageSharp, SkiaSharp or similar for cross-platform imaging.[^13]
 - **Unhandled exceptions in a `BackgroundService` stop the host** (`BackgroundServiceExceptionBehavior.StopHost`). In .NET 5 they were swallowed.[^14]
 - **Resolving from a disposed `ServiceProvider`** throws `ObjectDisposedException` (verified).
-- **`TimeSpan` JSON**: System.Text.Json 6 serializes `TimeSpan` as `"01:30:00"` (constant "c" format). Earlier versions threw `NotSupportedException` or needed converters.
+- **`TimeSpan` JSON**: System.Text.Json 6 serializes `TimeSpan` as `"01:30:00"` (constant "c" format, verified). Earlier versions wrote it as an object of all its public properties (`{"Ticks":…,"Days":…}`), which does not round-trip. The source generator matched the reflection format only from 6.0.2, so services pinned to an early 6.0.x runtime can still emit the object form.
 - **Nullable annotations** across the BCL were refined, so new CS86xx warnings after retargeting point to real assumptions. Fix them; do not suppress them.
 - **Obsoletions with new SYSLIB diagnostic IDs**: the `net6.0` reference assemblies add SYSLIB0013–SYSLIB0033 (the `net5.0` ones stop at SYSLIB0012). Among them: SYSLIB0013 (`Uri.EscapeUriString`), SYSLIB0014 (`WebRequest`/`WebClient`/`ServicePoint`), SYSLIB0020 (`JsonSerializerOptions.IgnoreNullValues`, use `DefaultIgnoreCondition`), SYSLIB0021 (derived crypto types such as `SHA256Managed`), SYSLIB0022 (`Rijndael*`), SYSLIB0023 (`RNGCryptoServiceProvider`), SYSLIB0024 (`AppDomain.CreateDomain`/`Unload`), SYSLIB0026–SYSLIB0028 (mutable X509 APIs, `PublicKey.Key`, `X509Certificate2.PrivateKey`), and SYSLIB0032 (`HandleProcessCorruptedStateExceptions`). Older ones from .NET 5 include SYSLIB0011 (`BinaryFormatter`), SYSLIB0006 (`Thread.Abort`) and SYSLIB0012 (`Assembly.CodeBase`).[^15]
 
@@ -2879,12 +2703,21 @@ The following behaviour changes matter when you review code that moved to `net6.
 - New templates use top-level statements, minimal hosting, `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>`.
 - `.editorconfig` files are passed to the compiler automatically, so analyzer severities in `.editorconfig` apply to builds.
 - `dotnet run -p` is deprecated. Use `--project`.
+- `-r <rid>` without `--self-contained`/`--no-self-contained` warns NETSDK1179 (verified on SDK 6.0.428), because the .NET 6 SDK still makes a RID-specific build self-contained by default. CI scripts should state the choice explicitly; .NET 8 changed the default to framework-dependent.
+
+##### EF Core 6 breaking changes worth checking[^24]
+
+- **SQLite connections are pooled** (Microsoft.Data.Sqlite 6.0). The database file stays open after `Close()`/`Dispose()` (verified: one handle remains until `SqliteConnection.ClearAllPools()`). Tests that delete or replace the file must clear the pool or use `Pooling=False`.
+- **Unknown enum strings throw.** With `HasConversion<string>()`, a column value that matches no enum member throws `InvalidOperationException: Cannot convert string value 'Bogus' from the database to any value in the mapped 'St' enum` (verified). EF Core 5 silently returned the default member.
+- **Nested optional owned dependents that share a table and have no required property** now fail model validation instead of losing data.
+- **Pre-initialized reference navigations** (`public Bar Bar { get; set; } = new();`) are overwritten by query results in tracking queries too. Do not initialize reference navigations.
+- **`DbSet<T>` no longer implements `IAsyncEnumerable<T>`.** Use `AsAsyncEnumerable()`.
 
 ##### C# 10 compiler breaking changes[^9]
 
 - Lambdas and method groups with a natural type can change overload resolution (`Delegate`/`object`/`Expression` overloads, instance versus extension methods). See Lambdas.
 - `!` is no longer allowed in patterns (`o is null!` is an error).
-- A struct with field initializers must declare a constructor (CS8983). A `record struct` constructor chaining to `this()` must call the primary constructor.
+- A struct with field initializers must declare a constructor (CS8983), and that constructor must assign every field without an initializer (CS0171). In a `record struct` with a parameter list, every other constructor must chain to the primary constructor (or to an explicitly declared one): `: this()` is error CS8982.
 
 ***
 
@@ -3002,4 +2835,5 @@ Reviewers should support the migration and not block it. Key steps and the most 
 [^21]: HttpClient guidelines for .NET (lifetime, DNS, IHttpClientFactory). https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient-guidelines
 [^22]: DbContext lifetime, configuration, and initialization — avoiding DbContext threading issues. https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/
 [^23]: What's New in EF Core 8.0 (DateOnly/TimeOnly on SQL Server). https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/whatsnew
+[^24]: Breaking changes in EF Core 6.0. https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-6.0/breaking-changes
 
