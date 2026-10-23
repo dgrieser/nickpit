@@ -75,16 +75,100 @@ style_guides:
       ">=3.13 <3.14": styleguides/python-3.13.md
       ">=3.14 <3.15": styleguides/python-3.14.md
       ">=3.15 <3.16": styleguides/python-3.15.md
-  javascript: styleguides/javascript.md
-  typescript: styleguides/typescript.md
+  javascript:
+    default: styleguides/javascript.md
+    versions:
+      # Keyed by Node.js major; odd (Current-only) lines use the previous
+      # LTS guide so the reviewer never assumes a newer line's backports.
+      "<18": styleguides/javascript-node-16.md
+      ">=18 <20": styleguides/javascript-node-18.md
+      ">=20 <22": styleguides/javascript-node-20.md
+      ">=22 <24": styleguides/javascript-node-22.md
+      ">=24 <26": styleguides/javascript-node-24.md
+      ">=26 <27": styleguides/javascript-node-26.md
+  typescript:
+    default: styleguides/typescript.md
+    versions:
+      # Keyed by the typescript package version; 4.x shares the 4.9
+      # guide, which tags every feature with the 4.x minor it needs.
+      ">=4.0 <5.0": styleguides/typescript-4.9.md
+      "5.0": styleguides/typescript-5.0.md
+      "5.1": styleguides/typescript-5.1.md
+      "5.2": styleguides/typescript-5.2.md
+      "5.3": styleguides/typescript-5.3.md
+      "5.4": styleguides/typescript-5.4.md
+      "5.5": styleguides/typescript-5.5.md
+      "5.6": styleguides/typescript-5.6.md
+      "5.7": styleguides/typescript-5.7.md
+      "5.8": styleguides/typescript-5.8.md
+      "5.9": styleguides/typescript-5.9.md
+      "6.0": styleguides/typescript-6.0.md
+      "7.0": styleguides/typescript-7.0.md
   html: styleguides/html-css.md
   css: styleguides/html-css.md
   scss: styleguides/html-css.md
-  csharp: styleguides/csharp.md
+  csharp:
+    default: styleguides/csharp.md
+    versions:
+      # Keyed by C# language version (LangVersion, or the target
+      # framework's default: net8.0 -> 12.0). C# 8 and older share the
+      # C# 9 guide, which marks every C# 9 feature and its down-level
+      # requirements.
+      "<10": styleguides/csharp-9.md
+      "10": styleguides/csharp-10.md
+      "11": styleguides/csharp-11.md
+      "12": styleguides/csharp-12.md
+      "13": styleguides/csharp-13.md
+      "14": styleguides/csharp-14.md
+      "15": styleguides/csharp-15.md
   sql: styleguides/sql.md
+  postgresql:
+    default: styleguides/postgresql.md
+    versions:
+      # Keyed by the PostgreSQL server major pinned by container images in
+      # Compose files, CI and the Dockerfile. 13 and older share the 14
+      # guide, which marks every 14 feature and its 13 boundary.
+      "<15": styleguides/postgresql-14.md
+      "15": styleguides/postgresql-15.md
+      "16": styleguides/postgresql-16.md
+      "17": styleguides/postgresql-17.md
+      "18": styleguides/postgresql-18.md
+      "19": styleguides/postgresql-19.md
+  mysql:
+    default: styleguides/mysql.md
+    versions:
+      # Keyed by the MySQL server version pinned by container images in
+      # Compose files, CI and the Dockerfile. 8.1-8.3 and 9.0-9.6 were
+      # Innovation releases between the LTS lines; they get the guide of the
+      # LTS line below them. 5.7 and the 26.x Innovation releases keep the
+      # generic guide.
+      "8.0": styleguides/mysql-8.0.md
+      ">=8.1 <9.7": styleguides/mysql-8.4.md
+      "9.7": styleguides/mysql-9.7.md
   shell: styleguides/bash.md
-  helm: styleguides/helm.md
-  kubernetes: styleguides/kubernetes.md
+  helm:
+    default: styleguides/helm.md
+    versions:
+      # Keyed by the Helm CLI version (.tool-versions, azure/setup-helm,
+      # alpine/helm images). Helm 2 has no guide of its own.
+      "3": styleguides/helm-3.md
+      "4": styleguides/helm-4.md
+  kubernetes:
+    default: styleguides/kubernetes.md
+    versions:
+      # Keyed by the Kubernetes minor the code targets: k8s.io/* v0.Y in
+      # go.mod (v0.33.2 -> 1.33), ENVTEST_K8S_VERSION, kindest/node images
+      # and kubectl in .tool-versions. Releases before 1.29 keep the
+      # generic guide.
+      "1.29": styleguides/kubernetes-1.29.md
+      "1.30": styleguides/kubernetes-1.30.md
+      "1.31": styleguides/kubernetes-1.31.md
+      "1.32": styleguides/kubernetes-1.32.md
+      "1.33": styleguides/kubernetes-1.33.md
+      "1.34": styleguides/kubernetes-1.34.md
+      "1.35": styleguides/kubernetes-1.35.md
+      "1.36": styleguides/kubernetes-1.36.md
+      "1.37": styleguides/kubernetes-1.37.md
 
 version_source_priority:
   go:
@@ -112,6 +196,40 @@ version_source_priority:
     - .github/workflows/*
     - .gitlab-ci.yml
     - Dockerfile
+  csharp:
+    - "*.csproj"
+    - Directory.Build.props
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  helm:
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  kubernetes:
+    - go.mod
+    - Makefile
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+  postgresql:
+    - compose.yaml
+    - compose.yml
+    - docker-compose.yaml
+    - docker-compose.yml
+    - .gitlab-ci.yml
+    - .github/workflows/*
+    - Dockerfile
+  mysql:
+    - compose.yaml
+    - compose.yml
+    - docker-compose.yaml
+    - docker-compose.yml
+    - .gitlab-ci.yml
+    - .github/workflows/*
+    - Dockerfile
   typescript:
     - package-lock.json
     - yarn.lock
@@ -128,6 +246,8 @@ style_guide_order:
   - scss
   - csharp
   - sql
+  - postgresql
+  - mysql
   - shell
   - helm
   - kubernetes
@@ -161,6 +281,45 @@ detectors:
         - '(?is)\bexplain(?:\s+analyze)?\b'
         - '(?is)\bwith\b.+\bselect\b'
 
+  - language: postgresql
+    probe_paths:
+      extensions: [.go, .py, .js, .jsx, .ts, .tsx, .cs, .java, .kt, .rb, .php, .sql]
+      path_segments: [migrations, migration, db, database, queries, schema]
+    match_any:
+      content_contains:
+        - github.com/jackc/pgx
+        - github.com/lib/pq
+        - 'postgres://'
+        - 'postgresql://'
+        - import psycopg
+        - import asyncpg
+        - from 'pg'
+        - require('pg')
+        - Npgsql
+        - CREATE INDEX CONCURRENTLY
+        - pg_catalog.
+      content_regex:
+        - '(?i)::(?:jsonb|timestamptz|regclass|text\[\])\b'
+        - '(?i)\bGENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY\b'
+
+  - language: mysql
+    probe_paths:
+      extensions: [.go, .py, .js, .jsx, .ts, .tsx, .cs, .java, .kt, .rb, .php, .sql]
+      path_segments: [migrations, migration, db, database, queries, schema]
+    match_any:
+      content_contains:
+        - github.com/go-sql-driver/mysql
+        - 'mysql://'
+        - 'mysql+pymysql://'
+        - import pymysql
+        - from 'mysql2
+        - require('mysql2
+        - MySqlConnector
+        - Pomelo.EntityFrameworkCore.MySql
+        - ON DUPLICATE KEY UPDATE
+      content_regex:
+        - '(?i)\bENGINE\s*=\s*InnoDB\b'
+        - '(?i)\b(?:int|bigint)\b[^,\n]*\bAUTO_INCREMENT\b'
   - language: shell
     probe_paths:
       extensions: [.sh, .bash, .zsh, .ksh, .yaml, .yml]
@@ -235,3 +394,9 @@ detectors:
         - metav1.TypeMeta
       content_regex:
         - '(?is)\bapiVersion:\s*[^\n]+\n.*\bkind:\s*[^\n]+'
+
+# Dialect guides replace the generic SQL guide when the project's toolchain
+# pins the database server (a postgres or mysql image) or a dialect detector
+# matched the change.
+toolchain_companions:
+  sql: [postgresql, mysql]

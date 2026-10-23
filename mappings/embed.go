@@ -62,6 +62,10 @@ type StyleGuideMappings struct {
 	StyleGuideOrder              []string                   `yaml:"style_guide_order"`
 	StyleGuideExtensionOverrides map[string][]string        `yaml:"extension_overrides"`
 	Detectors                    []StyleGuideDetector       `yaml:"detectors"`
+	// ToolchainCompanions maps a base styleguide language to languages whose
+	// guide replaces it when the project's toolchain pins them (sql →
+	// postgresql, mysql): the dialect comes from the project, not the file.
+	ToolchainCompanions map[string][]string `yaml:"toolchain_companions"`
 }
 
 // StyleGuideEntry is the styleguide selection for one language. In YAML it is
@@ -310,6 +314,14 @@ func VersionSourceRank(language, source string) int {
 	return len(patterns)
 }
 
+// ToolchainCompanions returns the languages whose guide replaces language's
+// guide when the project's toolchain pins a version for them, in configured
+// order.
+func ToolchainCompanions(language string) []string {
+	m := mustLoadMappings()
+	return append([]string(nil), m.styleGuides.ToolchainCompanions[language]...)
+}
+
 // HasStyleGuide reports whether a language has any built-in styleguide.
 func HasStyleGuide(language string) bool {
 	m := mustLoadMappings()
@@ -499,6 +511,19 @@ func parseStyleGuidesYAML(data []byte) (StyleGuideMappings, error) {
 		}
 		if detector.MatchAny.empty() && detector.MatchAll.empty() {
 			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml detectors[%d] missing match rules", i)
+		}
+	}
+	for base, companions := range mappings.ToolchainCompanions {
+		if _, ok := mappings.StyleGuides[base]; !ok {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions references unknown style guide language %q", base)
+		}
+		if len(companions) == 0 {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q has no companions", base)
+		}
+		for _, companion := range companions {
+			if _, ok := mappings.StyleGuides[companion]; !ok || companion == base {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml toolchain_companions %q references invalid companion %q", base, companion)
+			}
 		}
 	}
 	for language, patterns := range mappings.VersionSourcePriority {

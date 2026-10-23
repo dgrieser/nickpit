@@ -97,6 +97,12 @@ func TestVersionSourceRank(t *testing.T) {
 		{"python", "pyproject.toml", 0},
 		{"python", "Dockerfile", 9},
 		{"typescript", "package-lock.json", 0},
+		{"kubernetes", "go.mod", 0},
+		{"kubernetes", "Makefile", 1},
+		{"helm", ".tool-versions", 0},
+		{"mysql", "docker-compose.yml", 3},
+		{"mysql", "services/db/compose.yaml", 0},
+		{"mysql", "Dockerfile", 6},
 		{"typescript", "package.json", 3},
 		{"shell", "Dockerfile", 0}, // no configured priority: everything ties at 0
 		{"shell", "go.mod", 0},
@@ -182,6 +188,78 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"go", []string{"1.27-alpine"}, "styleguides/go-1.27.md"},
 		{"go", []string{"1.27", "1.26"}, "styleguides/go-1.26.md"},
 		{"go", []string{"1.28"}, "styleguides/go.md"},
+		{"javascript", nil, "styleguides/javascript.md"},
+		{"javascript", []string{"14.21.3"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"16"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"17.9.1"}, "styleguides/javascript-node-16.md"},
+		{"javascript", []string{"v18.20.8"}, "styleguides/javascript-node-18.md"},
+		{"javascript", []string{"19"}, "styleguides/javascript-node-18.md"},
+		{"javascript", []string{"20-alpine"}, "styleguides/javascript-node-20.md"},
+		{"javascript", []string{"21.7.3"}, "styleguides/javascript-node-20.md"},
+		{"javascript", []string{"22"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"23.11"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"24.22.1"}, "styleguides/javascript-node-24.md"},
+		{"javascript", []string{"25"}, "styleguides/javascript-node-24.md"},
+		{"javascript", []string{"26.12.1"}, "styleguides/javascript-node-26.md"},
+		{"javascript", []string{"26", "22"}, "styleguides/javascript-node-22.md"},
+		{"javascript", []string{"27"}, "styleguides/javascript.md"},
+		{"typescript", nil, "styleguides/typescript.md"},
+		{"typescript", []string{"3.9.10"}, "styleguides/typescript.md"},
+		{"typescript", []string{"4.2.4"}, "styleguides/typescript-4.9.md"},
+		{"typescript", []string{"4.9.5"}, "styleguides/typescript-4.9.md"},
+		{"typescript", []string{"5.0.4"}, "styleguides/typescript-5.0.md"},
+		{"typescript", []string{"5.4.5"}, "styleguides/typescript-5.4.md"},
+		{"typescript", []string{"5.9.3"}, "styleguides/typescript-5.9.md"},
+		{"typescript", []string{"6.0.3"}, "styleguides/typescript-6.0.md"},
+		{"typescript", []string{"7.0.2"}, "styleguides/typescript-7.0.md"},
+		{"typescript", []string{"7.0.2", "5.8.3"}, "styleguides/typescript-5.8.md"},
+		{"typescript", []string{"7.1.0"}, "styleguides/typescript.md"},
+		{"csharp", nil, "styleguides/csharp.md"},
+		{"csharp", []string{"7.3"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"8.0"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"9"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"10.0"}, "styleguides/csharp-10.md"},
+		{"csharp", []string{"11"}, "styleguides/csharp-11.md"},
+		{"csharp", []string{"12.0"}, "styleguides/csharp-12.md"},
+		{"csharp", []string{"13.0"}, "styleguides/csharp-13.md"},
+		{"csharp", []string{"14.0"}, "styleguides/csharp-14.md"},
+		{"csharp", []string{"15.0"}, "styleguides/csharp-15.md"},
+		{"csharp", []string{"14.0", "12.0"}, "styleguides/csharp-12.md"},
+		{"csharp", []string{"16.0"}, "styleguides/csharp.md"},
+		{"helm", nil, "styleguides/helm.md"},
+		{"helm", []string{"2.17.0"}, "styleguides/helm.md"},
+		{"helm", []string{"3.15.2"}, "styleguides/helm-3.md"},
+		{"helm", []string{"v3.22.1"}, "styleguides/helm-3.md"},
+		{"helm", []string{"4.0.1"}, "styleguides/helm-4.md"},
+		{"helm", []string{"4.3.1", "3.16.1"}, "styleguides/helm-3.md"},
+		{"helm", []string{"5.0.0"}, "styleguides/helm.md"},
+		{"kubernetes", nil, "styleguides/kubernetes.md"},
+		{"kubernetes", []string{"1.28.9"}, "styleguides/kubernetes.md"},
+		{"kubernetes", []string{"1.29"}, "styleguides/kubernetes-1.29.md"},
+		{"kubernetes", []string{"1.31.4"}, "styleguides/kubernetes-1.31.md"},
+		{"kubernetes", []string{"v1.33.0"}, "styleguides/kubernetes-1.33.md"},
+		{"kubernetes", []string{"1.37.1"}, "styleguides/kubernetes-1.37.md"},
+		{"kubernetes", []string{"1.36", "1.32"}, "styleguides/kubernetes-1.32.md"},
+		{"kubernetes", []string{"1.38.0"}, "styleguides/kubernetes.md"},
+		{"postgresql", nil, "styleguides/postgresql.md"},
+		{"postgresql", []string{"12"}, "styleguides/postgresql-14.md"},
+		{"postgresql", []string{"14.24"}, "styleguides/postgresql-14.md"},
+		{"postgresql", []string{"15.4.0"}, "styleguides/postgresql-15.md"},
+		{"postgresql", []string{"16-alpine"}, "styleguides/postgresql-16.md"},
+		{"postgresql", []string{"17-3.5"}, "styleguides/postgresql-17.md"},
+		{"postgresql", []string{"18.6"}, "styleguides/postgresql-18.md"},
+		{"postgresql", []string{"19rc1"}, "styleguides/postgresql-19.md"},
+		{"postgresql", []string{"18", "16"}, "styleguides/postgresql-16.md"},
+		{"postgresql", []string{"20"}, "styleguides/postgresql.md"},
+		{"mysql", nil, "styleguides/mysql.md"},
+		{"mysql", []string{"5.7"}, "styleguides/mysql.md"},
+		{"mysql", []string{"8.0"}, "styleguides/mysql-8.0.md"},
+		{"mysql", []string{"8.0.46"}, "styleguides/mysql-8.0.md"},
+		{"mysql", []string{"8.3.0"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"8.4-oracle"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"9.6.0"}, "styleguides/mysql-8.4.md"},
+		{"mysql", []string{"9.7.4"}, "styleguides/mysql-9.7.md"},
+		{"mysql", []string{"26.10.0"}, "styleguides/mysql.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
@@ -427,5 +505,64 @@ func TestConfigDrivenStyleGuideDetectorLanguages(t *testing.T) {
 	languages := StyleGuideDetectorLanguages("pkg/example.go", "+const q = `SELECT id FROM users`\n")
 	if len(languages) != 1 || languages[0] != "sql" {
 		t.Fatalf("detector languages = %#v", languages)
+	}
+}
+
+func TestMySQLDetectorAndCompanions(t *testing.T) {
+	tests := []struct {
+		path, content string
+		want          bool
+	}{
+		{"internal/db/db.go", "import _ \"github.com/go-sql-driver/mysql\"\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\n", true},
+		{"repo/upsert.py", "cur.execute(\"INSERT INTO t (k, v) VALUES (%s, %s) ON DUPLICATE KEY UPDATE v = VALUES(v)\")\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);\n", false},
+	}
+	for _, tt := range tests {
+		got := slices.Contains(StyleGuideDetectorLanguages(tt.path, tt.content), "mysql")
+		if got != tt.want {
+			t.Errorf("mysql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
+		}
+	}
+	if got := ToolchainCompanions("sql"); !slices.Equal(got, []string{"postgresql", "mysql"}) {
+		t.Fatalf("ToolchainCompanions(sql) = %v", got)
+	}
+	if got := ToolchainCompanions("go"); got != nil {
+		t.Fatalf("ToolchainCompanions(go) = %v, want none", got)
+	}
+}
+
+func TestToolchainCompanionsValidation(t *testing.T) {
+	base := "style_guides:\n  sql: styleguides/sql.md\n  mysql: styleguides/mysql.md\nstyle_guide_order: [sql, mysql]\n"
+	unknown := base + "toolchain_companions:\n  sql: [oracle]\n"
+	if _, err := parseStyleGuidesYAML([]byte(unknown)); err == nil || !strings.Contains(err.Error(), "invalid companion") {
+		t.Fatalf("unknown companion validation err = %v", err)
+	}
+	self := base + "toolchain_companions:\n  sql: [sql]\n"
+	if _, err := parseStyleGuidesYAML([]byte(self)); err == nil || !strings.Contains(err.Error(), "invalid companion") {
+		t.Fatalf("self companion validation err = %v", err)
+	}
+	empty := base + "toolchain_companions:\n  sql: []\n"
+	if _, err := parseStyleGuidesYAML([]byte(empty)); err == nil || !strings.Contains(err.Error(), "no companions") {
+		t.Fatalf("empty companion validation err = %v", err)
+	}
+}
+
+func TestPostgreSQLDetector(t *testing.T) {
+	tests := []struct {
+		path, content string
+		want          bool
+	}{
+		{"internal/store/store.go", "import \"github.com/jackc/pgx/v5/pgxpool\"\n", true},
+		{"migrations/003_orders.sql", "CREATE TABLE orders (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);\n", true},
+		{"migrations/004_idx.sql", "CREATE INDEX CONCURRENTLY orders_created_idx ON orders (created_at);\n", true},
+		{"repo/query.py", "cur.execute(\"SELECT payload::jsonb FROM events\")\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\n", false},
+	}
+	for _, tt := range tests {
+		got := slices.Contains(StyleGuideDetectorLanguages(tt.path, tt.content), "postgresql")
+		if got != tt.want {
+			t.Errorf("postgresql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
+		}
 	}
 }
