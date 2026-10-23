@@ -90,7 +90,20 @@ style_guides:
   html: styleguides/html-css.md
   css: styleguides/html-css.md
   scss: styleguides/html-css.md
-  csharp: styleguides/csharp.md
+  csharp:
+    default: styleguides/csharp.md
+    versions:
+      # Keyed by C# language version (LangVersion, or the target
+      # framework's default: net8.0 -> 12.0). C# 8 and older share the
+      # C# 9 guide, which marks every C# 9 feature and its down-level
+      # requirements.
+      "<10": styleguides/csharp-9.md
+      "10": styleguides/csharp-10.md
+      "11": styleguides/csharp-11.md
+      "12": styleguides/csharp-12.md
+      "13": styleguides/csharp-13.md
+      "14": styleguides/csharp-14.md
+      "15": styleguides/csharp-15.md
   sql: styleguides/sql.md
   shell: styleguides/bash.md
   helm: styleguides/helm.md
@@ -118,6 +131,13 @@ version_source_priority:
     - package.json
     - .nvmrc
     - .node-version
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  csharp:
+    - "*.csproj"
+    - Directory.Build.props
     - .tool-versions
     - .github/workflows/*
     - .gitlab-ci.yml

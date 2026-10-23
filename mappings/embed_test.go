@@ -197,6 +197,18 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"javascript", []string{"26.12.1"}, "styleguides/javascript-node-26.md"},
 		{"javascript", []string{"26", "22"}, "styleguides/javascript-node-22.md"},
 		{"javascript", []string{"27"}, "styleguides/javascript.md"},
+		{"csharp", nil, "styleguides/csharp.md"},
+		{"csharp", []string{"7.3"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"8.0"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"9"}, "styleguides/csharp-9.md"},
+		{"csharp", []string{"10.0"}, "styleguides/csharp-10.md"},
+		{"csharp", []string{"11"}, "styleguides/csharp-11.md"},
+		{"csharp", []string{"12.0"}, "styleguides/csharp-12.md"},
+		{"csharp", []string{"13.0"}, "styleguides/csharp-13.md"},
+		{"csharp", []string{"14.0"}, "styleguides/csharp-14.md"},
+		{"csharp", []string{"15.0"}, "styleguides/csharp-15.md"},
+		{"csharp", []string{"14.0", "12.0"}, "styleguides/csharp-12.md"},
+		{"csharp", []string{"16.0"}, "styleguides/csharp.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
