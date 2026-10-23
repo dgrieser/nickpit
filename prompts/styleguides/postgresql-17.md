@@ -382,7 +382,7 @@ CREATE TABLE ev_2024 PARTITION OF ev FOR VALUES FROM ('2024-01-01') TO ('2025-01
 INSERT INTO ev(at) VALUES ('2024-05-01') RETURNING id;   -- 1
 ```
 
-On 16 this needs a sequence default (`bigserial`) instead. In 17, a table that is attached with `ATTACH PARTITION` **must not have its own identity column**. A staging table created with `LIKE parent INCLUDING ALL` copies the identity and then fails: `table "m_2026" being attached contains an identity column "id"`. Use `LIKE parent INCLUDING DEFAULTS INCLUDING CONSTRAINTS` (without `INCLUDING IDENTITY`/`ALL`), or `CREATE TABLE ... PARTITION OF`.
+On 16 the parent accepts an identity column, but its partitions do not inherit it: inserts through the parent work, while a direct `INSERT INTO` a partition fails with a not-null violation. On 16, use a sequence default on every partition if rows are written to partitions directly. In 17, a table that is attached with `ATTACH PARTITION` **must not have its own identity column**. A staging table created with `LIKE parent INCLUDING ALL` copies the identity and then fails: `table "m_2026" being attached contains an identity column "id"`. Use `LIKE parent INCLUDING DEFAULTS INCLUDING CONSTRAINTS` (without `INCLUDING IDENTITY`/`ALL`), or `CREATE TABLE ... PARTITION OF`.
 
 ##### Exclusion constraints on partitioned tables
 
