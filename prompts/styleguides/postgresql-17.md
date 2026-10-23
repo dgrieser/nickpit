@@ -84,7 +84,8 @@ All items below are verified against the official release notes[^1] and, where t
 - **Privileges.** The `MAINTAIN` table privilege and the `pg_maintain` predefined role.
 - **Builtin collation provider.** `provider = builtin` with locales `C` and `C.UTF-8`. It is platform-independent and immutable across OS upgrades.
 - **Event triggers** on login (`ON login`) and for `REINDEX`.
-- **libpq.** `sslnegotiation=direct` (TLS without the `SSLRequest` round trip, using ALPN), `PQchangePassword()`, `PQclosePrepared()`/`PQclosePortal()`, new encrypted cancel APIs, `PQsetChunkedRowsMode()`.
+- **libpq.** `sslnegotiation=direct` (TLS without the `SSLRequest` round trip, using ALPN), `PQchangePassword()`, `PQclosePrepared()`/`PQclosePortal()`, new encrypted cancel APIs (`PQcancelCreate()` and related), `PQsetChunkedRowsMode()`, `PQsocketPoll()`, `PQsendPipelineSync()`.
+- **Other server changes.** `ALTER SYSTEM` (and `GRANT ... ON PARAMETER`) accepts unrecognized custom settings such as `myapp.x`; `pg_stat_reset_shared()` with no argument resets all shared statistics; partition pruning works for `IS [NOT] UNKNOWN` on boolean partition keys; `postgres_fdw` pushes down `EXISTS`/`IN` subqueries; `ltree` supports hash indexes; `pg_buffercache_evict()`; the `unaccent.rules` file syntax changed (rules may contain whitespace and quotes); PL/pgSQL `%TYPE` can reference a column of a composite variable.[^1]
 - **Tools.** `pg_dump --filter`, `pg_dump --exclude-extension`, `pg_restore --transaction-size`, `pg_upgrade --copy-file-range`, `vacuumdb/reindexdb/clusterdb --all` with patterns, `pg_walsummary`.
 
 ***
@@ -119,7 +120,7 @@ The server is PostgreSQL 17. Everything in this list was introduced in **Postgre
 | `initdb` enabling data checksums by default | 17's `initdb` does **not** enable checksums unless you pass `--data-checksums` (`-k`) | |
 | PL/pgSQL `=>` for named cursor arguments | only `:=` | |
 
-Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released), for example `GROUP BY ALL`, is also unavailable. `SELECT ... GROUP BY ALL` is a syntax error on both 17 and 18.
+Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released) is also unavailable, for example the `REPACK` command (`REPACK (CONCURRENTLY)`) and `error_on_null()`. Both work on 19rc1 and fail on 17.11 (`syntax error at or near "REPACK"`, `function error_on_null(integer) does not exist`).[^24] `GROUP BY ALL` is not a feature of any of these versions: it is a syntax error on 17.11, 18.6 and 19rc1.
 
 ##### Deprecated or removed in 17 (do not use)
 
@@ -137,6 +138,13 @@ Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet 
 | `'1 day ago 2 hours'::interval` | `ago` must be last: `'2 hours 1 day ago'` |
 | `wal_sync_method = fsync_writethrough` on Windows | `fsync` |
 | `pgbench -d` meaning "debug" | `-d` is now the database name; debug is `--debug` |
+| `pg_statistic_ext.stxstattarget = -1` for "default" | Now NULL, like `pg_attribute.attstattarget` |
+| `pg_stat_slru` column names, and the names accepted by `pg_stat_reset_slru()` | Renamed in 17; check monitoring queries against the 17 view |
+| `information_schema.element_types.domain_default` | Removed |
+| `pgrowlocks` lock mode labels | Output labels changed; parsers of its output need updating |
+| `pg_walfile_name()` / `pg_walfile_name_offset()` on an exact segment boundary | Now return the current segment, not the previous one (`pg_walfile_name('0/1000000')` is `...0001` on 17, `...0000` on 16). WAL archiving scripts that compensated for the old behaviour are off by one |
+| `SET SESSION AUTHORIZATION` checking superuser status as of connection time | Now checks the session user's superuser status when the command runs |
+| Interval input in which an empty (implicit) unit appears more than once | Rejected |
 
 Already gone before 17, and still common in old code: `lc_collate`/`lc_ctype` as `SHOW`-able settings (removed in 16; use `SELECT datcollate FROM pg_database WHERE datname = current_database()`), exclusive backup mode `pg_start_backup()`/`pg_stop_backup()` (removed in 15; use `pg_backup_start()`/`pg_backup_stop()`), `pg_stat_statements.total_time` (renamed `total_exec_time` in 13), `CREATE` on `public` for all users (revoked by default for new databases since 15), PL/Python 2 (removed in 15).
 
@@ -451,7 +459,7 @@ CREATE FUNCTION f_lookup2(int) RETURNS int LANGUAGE sql IMMUTABLE
 CREATE INDEX ON mt (f_lookup2(a));   -- OK
 ```
 
-`CREATE MATERIALIZED VIEW mv AS SELECT f_lookup(a) FROM mt` fails the same way. Review every function used in an expression index, an index predicate, a check constraint evaluated by maintenance, or a materialized view: it needs `SET search_path = ...` or fully qualified names. Existing indexes from an upgraded cluster fail later, at the next `REINDEX`, `VACUUM` or `REFRESH`. (The example function also lies about being `IMMUTABLE`, because it reads a table. See [Functions](#functions-procedures-and-triggers).)
+`CREATE MATERIALIZED VIEW mv AS SELECT f_lookup(a) FROM mt` fails the same way. Review every function used in an expression index, an index predicate, a check constraint evaluated by maintenance, or a materialized view: it needs `SET search_path = ...` or fully qualified names. Existing indexes and materialized views from an upgraded cluster keep working for ordinary `INSERT`/`UPDATE` and plain `VACUUM`, but fail later: measured on 17.11, `ANALYZE` (including autovacuum's auto-analyze and `VACUUM (ANALYZE)`), `REINDEX`, `VACUUM FULL`/`CLUSTER` and `REFRESH MATERIALIZED VIEW` raise `relation "lookup" does not exist`. On 17 even `CREATE INDEX` on an empty table fails, because the function is inlined at plan time. (The example function also lies about being `IMMUTABLE`, because it reads a table. See [Functions](#functions-procedures-and-triggers).)
 
 ***
 
@@ -507,7 +515,7 @@ SELECT count(*) FROM orders WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,
 -- 16:  Index Only Scan using orders_pkey ... Buffers: shared hit=64
 ```
 
-17 reads a leaf page once for all array keys that fall on it. Large `IN` lists and `= ANY($1::bigint[])` batch lookups are cheaper than on 16. The plan text is the same, and only `BUFFERS` shows the difference. Still prefer `= ANY($1)` with an array parameter over generating `IN ($1, $2, ... $n)`. The array form gives one prepared statement for every list length and also works with an empty list (`= ANY('{}')` matches nothing). An empty `IN ()` is a syntax error.
+17 reads a leaf page once for all array keys that fall on it. Large `IN` lists and `= ANY($1::bigint[])` batch lookups are cheaper than on 16. The node shape does not reveal it (the comparison above used `enable_bitmapscan = off` so that both versions chose the same index-only scan; with default settings 17 picked a bitmap scan on this data), so only `BUFFERS` shows the difference. Still prefer `= ANY($1)` with an array parameter over generating `IN ($1, $2, ... $n)`. The array form gives one prepared statement for every list length and also works with an empty list (`= ANY('{}')` matches nothing). An empty `IN ()` is a syntax error.
 
 ##### NULL tests on NOT NULL columns
 
@@ -676,7 +684,7 @@ Index the referencing column (`orders.customer_id`). PostgreSQL does not do it a
 
 - `int` → `bigint` rewrites the table and its indexes under `ACCESS EXCLUSIVE`. For big tables, add a new `bigint` column, backfill it in batches, keep it in sync with a trigger, then swap in one short transaction. Better: create primary keys as `bigint` from the start.
 - Widening `varchar(n)` or converting `varchar(n)` → `text` is metadata-only. Narrowing, or converting `text` → `varchar(n)`, rewrites the table.
-- `USING` expressions always rewrite.
+- A `USING` clause does not force a rewrite by itself: measured on 17.11, `TYPE text USING v::text` (from `varchar`) and `TYPE int USING n` kept the relfilenode. Any `USING` expression that actually changes the stored value, or a type change that is not binary-coercible, rewrites the table and its indexes.
 
 ##### Indexes in migrations
 
@@ -695,7 +703,7 @@ CREATE INDEX CONCURRENTLY orders_status_idx ON orders(status);
 - It cannot be used on a partitioned parent (`cannot create index on partitioned table "m" concurrently`). Pattern: `CREATE INDEX idx ON ONLY parent (...)` (an invalid shell index), then `CREATE INDEX CONCURRENTLY` on each partition and `ALTER INDEX idx ATTACH PARTITION part_idx`. The parent index becomes valid when all partitions are attached (verified).
 - It waits for all transactions that could use the old snapshot. A long-running transaction stalls it.
 - `DROP INDEX CONCURRENTLY` and `REINDEX ... CONCURRENTLY` (12+) are the non-blocking counterparts.
-- Add a primary key or unique constraint without a long lock by building the unique index concurrently and then attaching it: `ALTER TABLE pkt ADD CONSTRAINT pkt_pkey PRIMARY KEY USING INDEX pkt_id;`. The columns must already be `NOT NULL`. The index is renamed to the constraint name.
+- Add a primary key or unique constraint without a long lock by building the unique index concurrently and then attaching it: `ALTER TABLE pkt ADD CONSTRAINT pkt_pkey PRIMARY KEY USING INDEX pkt_id;`. If a key column is still nullable, the command sets `NOT NULL` itself, which scans the whole table under `ACCESS EXCLUSIVE` (17.11 logs `verifying table`). Make the columns `NOT NULL` first with the `CHECK ... NOT VALID` pattern above. The index is renamed to the constraint name.
 
 ```sql
 -- Find invalid indexes left by failed concurrent builds
@@ -728,7 +736,7 @@ PostgreSQL has no `DELETE ... LIMIT` (`syntax error at or near "LIMIT"`). Use th
 - Renaming or dropping a column or table that running application code still uses causes errors. Use expand/contract: add the new column, deploy code that writes both, backfill, switch reads, and drop later.
 - `DROP COLUMN` is metadata-only, but it still takes `ACCESS EXCLUSIVE`.
 - Avoid `VACUUM FULL`/`CLUSTER` on live tables. They hold `ACCESS EXCLUSIVE` for the whole rewrite. Use `pg_repack` or `pg_squeeze` if bloat really requires it.
-- `CREATE TYPE ... AS ENUM` changes: `ALTER TYPE ... ADD VALUE` cannot be rolled back, and the new value cannot be used in the same transaction (except when the type itself was created in that transaction, 17). Removing or renaming enum values needs a new type. Consider a lookup table or `text` with a `CHECK` constraint for value sets that change often.
+- `CREATE TYPE ... AS ENUM` changes: `ALTER TYPE ... ADD VALUE` is transactional since 12 (a `ROLLBACK` removed the new value on 17.11), but the new value cannot be used in the same transaction (except when the type itself was created in that transaction, 17). Removing or renaming enum values needs a new type. Consider a lookup table or `text` with a `CHECK` constraint for value sets that change often.
 - `REFRESH MATERIALIZED VIEW` holds `ACCESS EXCLUSIVE` and blocks readers. `REFRESH ... CONCURRENTLY` needs a unique index on the view (a plain unique index, without a `WHERE` clause).
 - Changing a function used by an index (`CREATE OR REPLACE FUNCTION`) does not rebuild the index. If the results change, the index is silently wrong until `REINDEX`.
 
@@ -1175,7 +1183,7 @@ CREATE TABLE m_def  PARTITION OF m DEFAULT;
 Rules verified on 17.11:[^18]
 
 - **Unique and primary keys must include all partition key columns**: `PRIMARY KEY (id)` on a table partitioned by `at` fails. Global uniqueness of `id` alone is not enforced, so don't assume it.
-- **Pruning needs the raw partition key.** `WHERE at >= '2025-03-01' AND at < '2025-04-01'` scans only `m_2025`. `WHERE date_trunc('month', at) = '2025-03-01'` scans **every** partition. Stable expressions like `now() - interval '1 day'` are pruned at execution time (`Subplans Removed: 2`).
+- **Pruning needs the raw partition key.** `WHERE at >= '2025-03-01' AND at < '2025-04-01'` scans only `m_2025`. `WHERE date_trunc('month', at) = '2025-03-01'` scans **every** partition. Stable expressions like `now() - interval '1 day'` are pruned at execution time (`EXPLAIN ANALYZE` shows `Subplans Removed: n`).
 - **Default partitions are a trap.** `ATTACH PARTITION` for a new range takes `ACCESS EXCLUSIVE` on the default partition and scans it. If matching rows were already inserted there, the attach fails (`updated partition constraint for default partition "m_def" would be violated by some row`). `DETACH ... CONCURRENTLY` is not allowed while a default partition exists. Prefer creating future partitions ahead of time (cron, `pg_partman`) and alerting when the default partition receives rows.
 - **Attaching without a long scan**: add a `CHECK` constraint on the staging table that matches the partition bounds (validated before attaching). `ATTACH PARTITION` then takes only `SHARE UPDATE EXCLUSIVE` on the parent. The staging table must not have an identity column (17, see above).
 - **Indexes**: create indexes on the parent with `ON ONLY` + per-partition `CREATE INDEX CONCURRENTLY` + `ATTACH PARTITION` (see migrations).
@@ -1383,10 +1391,16 @@ SELECT num_timed, num_requested, write_time, sync_time, buffers_written FROM pg_
 
 Minor releases contain only fixes and need no dump/restore, but some require actions:
 
-- **17.2 (November 21, 2024)** was an out-of-cycle release that restored extension binary compatibility (`ResultRelInfo`) broken by 17.1, and fixed `ALTER ROLE/DATABASE ... SET role` handling.[^12]
-- **17.3 (February 13, 2025)** fixed CVE-2025-1094 in libpq quoting functions.[^13]
+- **17.1 (November 14, 2024)**: four CVEs (CVE-2024-10976 RLS-dependent cached plans, CVE-2024-10977 libpq trusting pre-TLS error messages, CVE-2024-10978 `SET SESSION AUTHORIZATION`/`SET ROLE` interaction, CVE-2024-10979 trusted PL/Perl changing environment variables). A table that was detached from a partitioned table with a foreign key to another partitioned table, and not dropped, can have broken FK catalog state that must be repaired. Databases with `LC_CTYPE = C` but a different `LC_COLLATE` must reindex text indexes.[^25]
+- **17.2 (November 21, 2024)** was an out-of-cycle release that restored extension binary compatibility (`ResultRelInfo`) broken by 17.1, and restored `ALTER ROLE/DATABASE ... SET role`.[^12]
+- **17.3 (February 13, 2025)** fixed CVE-2025-1094 in libpq quoting functions (`PQescapeLiteral()` and friends now validate encoding).[^13]
+- **17.4 (February 20, 2025)** was out of cycle: it fixed a regression in the 17.3 quoting fix (`PQescapeLiteral()`/`PQescapeIdentifier()` ignored their length argument).[^25]
+- **17.5 (May 8, 2025)**: CVE-2025-4207 (GB18030 over-read). Self-referential foreign keys on partitioned tables may need to be recreated; BRIN bloom indexes should be reindexed.[^25]
 - **17.6 (August 14, 2025)** fixed CVE-2025-8713 (statistics leak through views and partitions; permission errors can now appear at planning time), CVE-2025-8714/8715 (`pg_dump` output injection; psql gained `\restrict`). Reindex BRIN `numeric_minmax_multi_ops` indexes.[^10]
-- **17.11 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must now be allow-listed with `output_plugin_libraries` (CVE-2026-6471). pgcrypto PGP decryption fails for data that was never actually encrypted because OpenSSL rejected the cipher (CVE-2026-14663). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing COPY commands. It also recommends reindexing `btree_gist` float and `ltree` indexes, and fixes incremental-backup correctness (VM-clear WAL logging) and a default-partition pruning bug that could drop rows.[^2]
+- **17.7 (November 13, 2025)**: CVE-2025-12817 (`CREATE STATISTICS` now checks `CREATE` on the schema) and CVE-2025-12818 (libpq allocation overflow).[^25]
+- **17.8 (February 12, 2026)**: four CVEs (CVE-2026-2003 to 2006: `oidvector` checks, `intarray` selectivity estimator code execution, pgcrypto PGP buffer overrun, multibyte length validation). Attaching a non-built-in selectivity estimator to an operator now needs superuser, and string functions may now report `invalid byte sequence for encoding` for invalid text already stored. **17.9 (February 26, 2026)** was out of cycle and fixed regressions from 17.8 (multixact WAL replay on standbys, a too-strict `substring()` encoding check).[^25]
+- **17.10 (May 14, 2026)**: ten CVEs, including quoting fixes in `pg_createsubscriber` and `ALTER SUBSCRIPTION ... REFRESH PUBLICATION`, path traversal in `pg_basebackup`/`pg_rewind`, and allocation overflows. libpq's `PQfn()` is now marked unsafe and deprecated.[^25]
+- **17.11 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must now be allow-listed with `output_plugin_libraries` (CVE-2026-6471), and `pg_upgrade --check` fails if the new cluster does not allow the plugins of existing slots. pgcrypto PGP decryption fails for data that was never actually encrypted because OpenSSL rejected the cipher (CVE-2026-14663; the `ignore-cipher-failure=1` option recovers such data). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing COPY commands. `amcheck` now restricts `search_path` before running index expressions (CVE-2026-14673). It also recommends reindexing `btree_gist` float indexes that may contain `NaN` and `ltree` B-tree indexes with very long values, and fixes incremental-backup correctness (visibility-map clears were not WAL-logged) and a default-partition pruning bug that could drop rows.[^2]
 
 Pin `postgres:17` (floating minor) or an exact `postgres:17.11` in containers, and update minors promptly.
 
@@ -1479,3 +1493,5 @@ Pin `postgres:17` (floating minor) or an exact `postgres:17.11` in containers, a
 [^21]: PostgreSQL 17 Documentation: libpq Connection Parameters (sslnegotiation). https://www.postgresql.org/docs/17/libpq-connect.html
 [^22]: PostgreSQL 16, 15 and 14 Release Notes (feature version markers). https://www.postgresql.org/docs/release/16.0/ , https://www.postgresql.org/docs/release/15.0/ , https://www.postgresql.org/docs/release/14.0/
 [^23]: PostgreSQL Wiki: Don't Do This. https://wiki.postgresql.org/wiki/Don't_Do_This
+[^24]: PostgreSQL 19 Release Notes (draft, Release Candidate 1). https://www.postgresql.org/docs/19/release-19.html
+[^25]: PostgreSQL 17.1, 17.4, 17.5, 17.7, 17.8, 17.9 and 17.10 Release Notes. https://www.postgresql.org/docs/release/17.1/ , https://www.postgresql.org/docs/release/17.4/ , https://www.postgresql.org/docs/release/17.5/ , https://www.postgresql.org/docs/release/17.7/ , https://www.postgresql.org/docs/release/17.8/ , https://www.postgresql.org/docs/release/17.9/ , https://www.postgresql.org/docs/release/17.10/
