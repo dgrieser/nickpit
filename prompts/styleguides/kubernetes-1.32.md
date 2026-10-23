@@ -191,7 +191,7 @@ GA gates (for example `CustomResourceFieldSelectors`, `StatefulSetAutoDeletePVC`
 | ValidatingAdmissionPolicy (`admissionregistration.k8s.io/v1`) | GA since 1.30 | In-process policy instead of validating webhooks |
 | Webhook `matchConditions` | GA since 1.30 | Skip webhook calls with CEL pre-filters |
 | Pod scheduling gates (`schedulingGates`) | GA since 1.30 | Hold Pods until an external controller is ready |
-| AppArmor `securityContext.appArmorProfile` | GA since 1.30 | Replaces the `container.apparmor.security.beta.kubernetes.io/*` annotations |
+| AppArmor `securityContext.appArmorProfile` | GA since 1.31 (beta in 1.30) | Replaces the `container.apparmor.security.beta.kubernetes.io/*` annotations |
 | `minDomains` in topology spread | GA since 1.30 | Force spreading across N zones |
 | Job `podFailurePolicy`, Pod disruption conditions | GA since 1.31 | Fail fast / ignore disruptions |
 | StatefulSet `ordinals.start` | GA since 1.31 | Migrations, slicing across clusters |
@@ -250,7 +250,7 @@ The cluster is 1.32. Never suggest the following as available; they fail validat
 | In-tree cloud-provider controllers in kube-controller-manager | **Removed** | External cloud-controller-manager |
 | Kubelet `--runonce` | **Removed** | — |
 | `gitRepo` volumes | Deprecated since 1.11; still works on 1.32 nodes; disabled by default from 1.33 | init container / git-sync |
-| `container.apparmor.security.beta.kubernetes.io/*` annotations | Deprecated (field GA since 1.30); the apiserver still mirrors field ↔ annotation on 1.32 (verified) | `securityContext.appArmorProfile` |
+| `container.apparmor.security.beta.kubernetes.io/*` annotations | Deprecated (field GA since 1.31); the apiserver still mirrors field ↔ annotation on 1.32 (verified) | `securityContext.appArmorProfile` |
 | Service `spec.externalIPs` | Supported, but a known MITM vector (CVE-2020-8554) | LoadBalancer, NodePort, Gateway API; block with `DenyServiceExternalIPs` or a policy |
 | controller-runtime `admission.Defaulter` / `admission.Validator` (object-method interfaces) | **Removed** in v0.20 | `admission.CustomDefaulter` / `admission.CustomValidator` |
 | controller-runtime `cluster.Options.SyncPeriod` (deprecated top-level) | **Removed** in v0.20 | `cache.Options.SyncPeriod` |
@@ -1725,7 +1725,7 @@ The `pods/resize` subresource exists in the 1.32 code base, but the gate is alph
 
 ##### Other Pod rules
 
-- **AppArmor**: use `securityContext.appArmorProfile` (GA 1.30). Verified on 1.32: the apiserver still mirrors the field into the deprecated `container.apparmor.security.beta.kubernetes.io/<container>` annotation; do not write the annotation by hand and do not let tools strip it as drift.
+- **AppArmor**: use `securityContext.appArmorProfile` (GA 1.31). Verified on 1.32: the apiserver still mirrors the field into the deprecated `container.apparmor.security.beta.kubernetes.io/<container>` annotation; do not write the annotation by hand and do not let tools strip it as drift.
 - **User namespaces** (`hostUsers: false`) are beta but **off** by default on 1.32 — the field is dropped. Do not claim the workload runs in a user namespace unless the cluster enables `UserNamespacesSupport`.
 - **DNS**: search domains must be RFC 1123 subdomains on 1.32; `.` and `_srv`-style entries are rejected (relaxed in 1.33).
 - **Sysctls**: under Pod Security `baseline`/`restricted` at `v1.32`, `net.ipv4.tcp_rmem` and `net.ipv4.tcp_wmem` are allowed (namespaced since kernel 4.15). Pin `enforce-version` so a `v1.31` pin keeps rejecting them, as verified.

@@ -50,8 +50,8 @@
 
 The target is a **1.31 control plane** and **k8s.io/\* v0.31.x** client libraries. Before claiming that a field, API version or library function is "not available", check it against the pinned version:
 
-- For manifests: the version comes from the cluster (`kubectl version`), the Helm chart's `kubeVersion`, CI's `kind`/`envtest` image, or a Kustomize/Helm render target. A field that exists in the OpenAPI schema is **not** proof that it works. `kubectl explain` on 1.31 lists alpha-gated fields such as `pod.spec.volumes.image`, `pod.spec.securityContext.supplementalGroupsPolicy`, `pod.spec.containers.resizePolicy` and `job.spec.managedBy`, but a default 1.31 apiserver **silently drops** them on create (verified with `kubectl apply --dry-run=server -o yaml`). Only a server-side dry run against a 1.31 apiserver with the cluster's real feature gates proves a field is honoured.
-- Two different failure modes exist, and both were observed: a field the server's schema does not know at all is **rejected** (`strict decoding error: unknown field "spec.volumes[0].image"` on 1.30, because kubectl ≥ 1.27 requests strict server-side field validation), while a field the schema knows but whose feature gate is off is **accepted and dropped without any warning** (`image` volumes, `hostUsers`, `supplementalGroupsPolicy`, `resizePolicy`, `Job.spec.managedBy` on 1.31).
+- For manifests: the version comes from the cluster (`kubectl version`), the Helm chart's `kubeVersion`, CI's `kind`/`envtest` image, or a Kustomize/Helm render target. A field that exists in the OpenAPI schema is **not** proof that it works. `kubectl explain` on 1.31 lists alpha-gated fields such as `pod.spec.volumes.image`, `pod.spec.securityContext.supplementalGroupsPolicy`, `pod.spec.containers.resizePolicy`, `job.spec.managedBy` and `statefulset.spec.updateStrategy.rollingUpdate.maxUnavailable`, but a default 1.31 apiserver **silently drops** them on create (verified with `kubectl apply --dry-run=server -o yaml`). Only a server-side dry run against a 1.31 apiserver with the cluster's real feature gates proves a field is honoured.
+- Two different failure modes exist, and both were observed: a field the server's schema does not know at all is **rejected** (`strict decoding error: unknown field "spec.volumes[0].image"` on 1.30, because kubectl ≥ 1.27 requests strict server-side field validation), while a field the schema knows but whose feature gate is off is **accepted and dropped without any warning** (`image` volumes, `hostUsers`, `supplementalGroupsPolicy`, `resizePolicy`, `Job.spec.managedBy`, StatefulSet `rollingUpdate.maxUnavailable` on 1.31).
 - For Go code: the version comes from `go.mod` (`k8s.io/api v0.31.x`, `sigs.k8s.io/controller-runtime v0.19.x`). Verify a symbol with `go doc sigs.k8s.io/controller-runtime/pkg/cluster Cluster` (or the relevant package) in the module before flagging it.
 - Say "not available in 1.31" only when the pinned version proves it (unknown field, `Unsupported value`, dropped field, missing package/function). Say "available but off by default" for alpha features and for beta **APIs** (since 1.24, new beta API versions are not served unless `--runtime-config` enables them).[^6]
 - A cluster may enable feature gates. If the repository contains cluster configuration (kubeadm `ClusterConfiguration`, kind config, managed-cluster settings) that enables a gate, review against that configuration, not against the defaults below.
@@ -114,10 +114,11 @@ The `MutatingAdmissionPolicy` gate is listed as alpha in the 1.31 binary, but th
 - **All in-tree cloud-provider integrations are removed** (`DisableCloudProviders` and `DisableKubeletCloudCredentialProviders` are locked on; `k8s.io/legacy-cloud-providers` removed). `--cloud-provider=aws|gce|azure|…` on kube-apiserver/kube-controller-manager/kubelet no longer works — clusters must run an external cloud-controller-manager (`--cloud-provider=external`).[^1]
 - **In-tree volume plugins `cephfs` and `rbd` are removed** — Pods/PVs using `cephfs:` or `rbd:` volume sources become non-functional; use ceph-csi. The `InTreePlugin*Unregister` gates for AWS/Azure/GCE/OpenStack/vSphere were removed.[^1]
 - **`CSIMigrationPortworx` is now on by default**: install the Portworx CSI driver before upgrading if `portworxVolume` sources are in use.[^3]
-- **kubelet `--keep-terminated-pod-volumes` removed**; kube-proxy `--proxy-port-range` removed; kube-controller-manager `--horizontal-pod-autoscaler-upscale-delay`/`-downscale-delay`, `--volume-host-cidr-denylist`, `--volume-host-allow-local-loopback` removed; admission plugin `PersistentVolumeLabel` removed.[^3]
+- **kubelet `--keep-terminated-pod-volumes`, `--iptables-masquerade-bit` and `--iptables-drop-bit` removed**; kube-proxy `--proxy-port-range` removed; kube-controller-manager `--horizontal-pod-autoscaler-upscale-delay`/`-downscale-delay`, `--volume-host-cidr-denylist`, `--volume-host-allow-local-loopback` removed; admission plugin `PersistentVolumeLabel` removed; `kubectl drain --delete-local-data` removed (verified: kubectl 1.31 `unknown flag`, 1.30 prints a deprecation notice) — use `--delete-emptydir-data`.[^3]
+- **Removed feature gates break component startup.** GA gates removed in 1.31 (`APIPriorityAndFairness`, `CSINodeExpandSecret`, `ConsistentHTTPGetHandlers`, `ReadWriteOncePod`, `ServiceNodePortStaticSubrange`, `JobReadyPods`, `DefaultHostNetworkHostPortsInPodTemplates`, `SkipReadOnlyValidationGCE`, the `InTreePlugin*Unregister` gates, `CustomResourceValidationExpressions`) are no longer accepted: verified, `kube-apiserver --feature-gates=APIPriorityAndFairness=true` exits with `unrecognized feature gate: APIPriorityAndFairness` on 1.31, while 1.30 only warns. Remove such entries from kubeadm `extraArgs`, kind configs and component configs before upgrading.[^3]
 - **Node `status.nodeInfo.kubeProxyVersion` deprecated** (KEP-4004): the kubelet never knew the real kube-proxy version. Do not read it in controllers.[^1]
 - **cgroup v1 in maintenance mode**: the kubelet logs a warning and emits an event on cgroup v1 hosts; a new `--fail-cgroupv1` flag/`failCgroupV1` option exists (default `false` in 1.31).[^1][^3]
-- **SHA-1 certificates**: webhooks and aggregated API servers still serving SHA-1-signed certificates only work with `GODEBUG=x509sha1=1`; that escape hatch disappears with Go 1.24, which the late 1.31 patches (v1.31.14 is built with Go 1.24.9) use.[^1][^3]
+- **SHA-1 certificates** (not a 1.31 change, but it bites the final 1.31 patch): since Kubernetes 1.24 (Go 1.18) webhooks and aggregated API servers serving SHA-1-signed certificates only work with `GODEBUG=x509sha1=1`. Go 1.24 removed that escape hatch, and the final patch v1.31.14 is the only 1.31 release built with Go 1.24 (v1.31.13 and earlier use Go 1.22/1.23), so upgrading to v1.31.14 breaks such webhooks.[^3]
 - **CEL environment**: the default CEL compatibility version was raised to 1.30, so libraries introduced in 1.30 (notably the **IP and CIDR library**, `ip()`/`cidr()`/`isIP()`/`isCIDR()`) become usable in *new* CRD rules and policies on 1.31; libraries introduced in 1.31 (the **name formats library**, `format.dns1123Label()` etc.) are only usable for new expressions from 1.32. CEL expressions and `additionalProperties` are now allowed under nested quantifiers, and the CEL optional type is now named `optional_type` in error messages.[^3]
 - **CRD `caBundle` validation**: CRDs created with an invalid non-empty conversion-webhook `caBundle` are not served until it is fixed, and updates may no longer replace a valid `caBundle` with an invalid one.[^3]
 - **kubectl**: `kubectl exec POD CMD` without `--` is now an error; `kubectl wait --for=create`, `kubectl logs --all-pods`, and `kubectl debug --custom` (beta, on) plus `--keep-*` flags are new (all verified with kubectl 1.30 vs 1.31).
@@ -223,7 +224,8 @@ The cluster is 1.31. Never suggest the following as available; they fail validat
 - **`lifecycle.preStop.sleep.seconds: 0`** (`PodLifecycleSleepActionAllowZero`, alpha in 1.32, beta-on 1.33). Verified: 1.31 rejects `0` with `must be greater than 0 and less than terminationGracePeriodSeconds (30)`.
 - **Relaxed environment-variable names** (`RelaxedEnvironmentVariableValidation`, beta-on in 1.32, GA 1.34). Verified: 1.31 rejects `name: "1VAR"` (`must not start with a digit`); 1.32 accepts it.
 - **Job `spec.managedBy`** honoured (`JobManagedBy` beta-on in 1.32, GA 1.35). Verified: 1.31 silently drops it — the built-in Job controller then runs the Job itself, the opposite of what a MultiKueue manifest intends.
-- **Pod-level `spec.resources`** (`PodLevelResources`, alpha 1.32, beta-on 1.34). Verified: `kubectl explain pod.spec.resources` fails on 1.31 (`field "resources" does not exist`).
+- **Pod-level `spec.resources`** (`PodLevelResources`, alpha 1.32, beta-on 1.34).
+- **StatefulSet `updateStrategy.rollingUpdate.maxUnavailable`** (`MaxUnavailableStatefulSet`): alpha/off on 1.30–1.34, so verified dropped on create by the v1.30.3, v1.31.0 and v1.32.0 apiservers (the stored `rollingUpdate` is just `{partition: 0}`); on by default only in v1.35.0–v1.35.3 and again in 1.37. Never suggest it to speed up 1.31 rollouts. Verified: `kubectl explain pod.spec.resources` fails on 1.31 (`field "resources" does not exist`).
 - **CEL name formats library** in new rules (`format.dns1123Label().validate(self)` etc.; usable for new expressions from 1.32). Verified: a CRD rule using it fails to compile on 1.31 and is accepted on 1.32.
 - `flowcontrol.apiserver.k8s.io/v1beta3` is **removed** in 1.32 (the reverse direction: it still works on 1.31, but new manifests must use `v1`).
 - DRA `resource.k8s.io/v1beta1` (beta, off), `SchedulerQueueingHints` on, `WatchList` beta-on, `AuthorizeWithSelectors`/`AuthorizeNodeWithSelectors` beta-on, `AnonymousAuthConfigurableEndpoints` beta, CBOR serialization (alpha), `/statusz`/`/flagz` (alpha), `KubeletCrashLoopBackOffMax` (alpha), `RecoverVolumeExpansionFailure` beta-on, `SELinuxChangePolicy`, `RelaxedDNSSearchValidation`.
@@ -234,7 +236,7 @@ The cluster is 1.31. Never suggest the following as available; they fail validat
 
 **Kubernetes 1.34 (released 2025-08-27):** DRA **GA** (`resource.k8s.io/v1`); VolumeAttributesClass **GA** (`storage.k8s.io/v1`); `PodLifecycleSleepAction` GA; Job `podReplacementPolicy` GA; pod-level resources beta-on; `MutatingAdmissionPolicy` beta; `PreferSameZone`/`PreferSameNode` traffic distribution (beta-on); relaxed environment-variable names GA; CEL `isSemver()`/`semver()` in new rules; AppArmor annotations no longer mirrored from fields.
 
-**Kubernetes 1.35–1.37:** in-place Pod resize GA, Pod `metadata.generation`/`status.observedGeneration`, Job `managedBy` GA, `supplementalGroupsPolicy` GA, container `restartPolicyRules`, `env[].valueFrom.fileKeyRef`, image volumes beta-on (1.35) and GA (1.36), MutatingAdmissionPolicy `v1` (1.36), user namespaces GA (1.36), Service names starting with a digit (1.36), StatefulSet `updateStrategy.type: Recreate` (1.37), `storagemigration.k8s.io/v1` (1.37), KYAML output (`kubectl get -o kyaml`).[^8]
+**Kubernetes 1.35–1.37:** in-place Pod resize GA, Pod `metadata.generation`/`status.observedGeneration`, Job `managedBy` GA, `supplementalGroupsPolicy` GA, container `restartPolicyRules`, `env[].valueFrom.fileKeyRef`, image volumes beta-on (1.35) and GA (1.36), MutatingAdmissionPolicy `v1` (1.36), user namespaces GA (1.36), Service names starting with a digit (1.36), StatefulSet `updateStrategy.type: Recreate` (alpha in 1.37), `storagemigration.k8s.io/v1` (1.37), KYAML output (`kubectl get -o kyaml`).[^8]
 
 **Library versions to reject for a 1.31-only target:** `k8s.io/client-go v0.32+` with controller-runtime v0.20+ is fine on the wire (±1 minor skew), but raises the module's `go` directive to 1.23.0 and brings 1.32 API fields that a 1.31 apiserver drops. controller-runtime v0.22+ APIs such as `client.Client.Apply(ctx, applyConfiguration, ...)`, `mgr.GetEventRecorder` (events.k8s.io, v0.23), `ctrl.NewWebhookManagedBy(mgr, obj)` (generic, v0.23), `reconcile.Result.Priority` (v0.23) **do not exist in v0.19** — never suggest them for a v0.19 module.
 
@@ -258,7 +260,7 @@ The cluster is 1.31. Never suggest the following as available; they fail validat
 | PV annotation `volume.beta.kubernetes.io/mount-options` | Deprecated (warning on create/update since 1.31) | `spec.mountOptions` |
 | `kubectl exec POD CMD` (no `--`) | **Removed** in kubectl 1.31 | `kubectl exec POD -- CMD` |
 | cgroup v1 nodes | Maintenance mode (warnings and events) | cgroup v2 hosts |
-| SHA-1 signed serving certificates for webhooks/aggregated APIs | Only with `GODEBUG=x509sha1=1`; impossible with Go 1.24-built binaries | SHA-256+ certificates |
+| SHA-1 signed serving certificates for webhooks/aggregated APIs | Only with `GODEBUG=x509sha1=1`; impossible with v1.31.14 (built with Go 1.24) | SHA-256+ certificates |
 | `k8s.io/client-go/kubernetes/fake.NewSimpleClientset` | Deprecated in v0.31 (no field management) | `fake.NewClientset` (new in v0.31) |
 | controller-runtime `admission.Validator` / `admission.Defaulter` (methods on the API type), `ValidatingWebhookFor`/`DefaultingWebhookFor` | Deprecated in v0.19; removed in v0.20 | `admission.CustomValidator` / `CustomDefaulter` + `WithValidator` / `WithDefaulter` |
 | `k8s.io/utils/pointer` | Deprecated | `k8s.io/utils/ptr` (`ptr.To`, `ptr.Deref`) |
@@ -312,7 +314,7 @@ The cluster is 1.31. Never suggest the following as available; they fail validat
 | Go | ≥ 1.22 (module directive); build with a **supported** Go release | `k8s.io/* v0.31` and controller-runtime v0.19 declare `go 1.22.0`. Go 1.22 itself is unsupported since February 2025 — build with a current Go toolchain; the modules compile with newer Go (verified with Go 1.24 and 1.25) |
 | `k8s.io/api`, `apimachinery`, `client-go`, `apiextensions-apiserver` | v0.31.x (keep all on the **same** patch, ideally v0.31.14) | Mixed minors cause compile or runtime scheme errors |
 | controller-runtime | v0.19.x (final v0.19.7) | Its `go.mod` requires `k8s.io/* v0.31.0`; Go MVS raises it to your v0.31.x patch |
-| controller-tools (`controller-gen`) | v0.16.x (final v0.16.5); **≥ v0.16.4** for `+kubebuilder:selectablefield` | The selectable-field marker first appears in v0.16.4 (checked in the module sources of v0.16.0–v0.16.5); Kubebuilder v4.2.0 scaffolds v0.16.1, which does not know it |
+| controller-tools (`controller-gen`) | v0.16.x (final v0.16.5); **≥ v0.16.4** for `+kubebuilder:selectablefield` | The selectable-field marker first appears in v0.16.4 (module sources: absent in v0.16.3, present in v0.16.4). Older versions **ignore it silently** — verified: controller-gen v0.16.0 exits 0 and emits the CRD without `selectableFields`, v0.16.5 emits it. Kubebuilder v4.2.0 scaffolds v0.16.1; v4.3.x scaffolds v0.16.4 |
 | Kubebuilder | v4.2.0–v4.4.x (scaffolds controller-runtime v0.19) | v4.4 already scaffolds controller-tools v0.17 (k8s 1.32 libraries) |
 | envtest binaries | 1.31.x (`setup-envtest use 1.31.x`) | Test against the version you ship to |
 
@@ -469,7 +471,7 @@ type RedisCluster struct {
 }
 ```
 
-**[NEW in 1.31 — beta, on]** `+kubebuilder:selectablefield` (controller-tools ≥ v0.16.4) becomes `spec.versions[].selectableFields`. On 1.31, `kubectl get rcl --field-selector spec.tier=premium` filters server-side (verified); a 1.30 apiserver **drops** `selectableFields` silently (gate alpha/off), and a field selector on an unlisted field fails. At most 8 selectable fields per version; each must point to a string, integer or boolean field. Charts that also install on ≤ 1.30 must not depend on CR field selectors.
+**[NEW in 1.31 — beta, on]** `+kubebuilder:selectablefield` (controller-tools ≥ v0.16.4) becomes `spec.versions[].selectableFields`. On 1.31, `kubectl get rcl --field-selector spec.tier=premium` filters server-side (verified); a 1.30 apiserver **drops** `selectableFields` silently (gate alpha/off), and a field selector on an unlisted field fails. At most 8 selectable fields per version; each must point to a string, integer or boolean field. Charts that also install on ≤ 1.30 must not depend on CR field selectors. Check the controller-gen version in the Makefile: below v0.16.4 the marker is silently ignored and the generated CRD has no `selectableFields`.
 
 ##### Spec Design Rules
 
@@ -550,6 +552,8 @@ type RedisClusterSpec struct {
 	AllowedSources []string `json:"allowedSources,omitempty"`
 }
 ```
+
+controller-gen v0.16.5 renders these markers as expected (verified): the two type-level rules land on `spec` with `fieldPath: .replicas`, `reason: FieldValueInvalid` and the `messageExpression`; `items:XValidation` lands on `allowedSources.items`; `required` becomes `[image, replicas, tier]`; `metav1.Condition` contributes `maxLength: 316` plus the type/reason patterns; `+kubebuilder:selectablefield` becomes `spec.versions[0].selectableFields`. Review the generated YAML, not only the markers — a typo in a marker name is silently ignored.
 
 The same kind of rules written directly in a CRD manifest, with the CEL libraries that a 1.31 apiserver accepts in **new** rules (`quantity`, `url`/`isURL`, string `format`, IP/CIDR — all verified):
 
@@ -1225,7 +1229,7 @@ With SSA, set the owner reference inside the apply configuration (as above) so t
 | Use `controllerutil.SetControllerReference` (not hand-built refs) | Sets `controller: true` and `blockOwnerDeletion: true`, refuses a second controller owner |
 | One resource should have **at most one controller owner** | Multiple owners only for non-controller (informational) references |
 | `blockOwnerDeletion: true` requires `update` on the owner's `finalizers` subresource when the `OwnerReferencesPermissionEnforcement` admission plugin is enabled (not in the default plugin set, common in hardened/OpenShift clusters) | Grant `<owner-resource>/finalizers` `update` — Kubebuilder's marker does — or child creates fail with `cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set finalizers on` |
-| Never let a Node own anything through an owner reference set *by the node* | CVE-2025-5187: before v1.31.12, a kubelet could add an owner reference to its own Node and get the Node garbage-collected. Fixed in NodeRestriction in v1.31.12 |
+| Node objects must not carry owner references | CVE-2025-5187: before v1.31.12, a kubelet could add an owner reference to its own Node object and get it garbage-collected (deleted). Fixed in NodeRestriction in v1.31.12 (nodes may no longer change their `ownerReferences`) |
 
 ##### When to Use Finalizers vs. OwnerReferences
 
@@ -1371,7 +1375,7 @@ func SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 Review points:
 
-- **Always check the type assertion** — an unchecked `obj.(*cachev1.RedisCluster)` panics if the webhook is ever registered for another type; controller-runtime recovers the panic only when `RecoverPanic` is enabled.
+- **Always check the type assertion** — an unchecked `obj.(*cachev1.RedisCluster)` panics if the webhook is ever registered for another type. controller-runtime v0.19 recovers webhook panics by default (`RecoverPanic` unset means recover) and answers with an HTTP 500 `panic: … [recovered]` error, so the request is rejected (or let through with `failurePolicy: Ignore`) instead of getting a meaningful message.
 - `ctrl.NewWebhookManagedBy(mgr, &cachev1.RedisCluster{})` (two arguments) and `admission.Validator[*T]` are controller-runtime **v0.23** APIs; they do not compile against v0.19.
 - The tier-downgrade check above is a simple transition rule (`self.tier == oldSelf.tier || oldSelf.tier != 'premium'`) and belongs in CEL; keep webhooks for checks that need external state.
 
@@ -1617,7 +1621,7 @@ spec:
 ```
 
 - **BAD**: new manifests that still use `container.apparmor.security.beta.kubernetes.io/<container>: runtime/default`. Verified on 1.31: `Warning: metadata.annotations[container.apparmor.security.beta.kubernetes.io/aa]: deprecated since v1.30; use the "appArmorProfile" field instead`; the apiserver copies the annotation into the container's `appArmorProfile` field on create.
-- When both an annotation and a pod-level field are present, the container-level value derived from the annotation wins for that container (verified: annotation `runtime/default` + pod `Unconfined` → container `RuntimeDefault`). Do not mix the two mechanisms.
+- When both an annotation and a pod-level field are present, the container-level value derived from the annotation wins for that container (verified: annotation `runtime/default` + pod `Unconfined` → container `RuntimeDefault`). An annotation that contradicts the **container-level** field is rejected (verified: `appArmorProfile.type: Forbidden: apparmor type in annotation and field must match`). Do not mix the two mechanisms.
 - `Localhost` profiles must exist on every node; since 1.31 the kubelet **rejects** Pods that request AppArmor on a node where AppArmor is disabled (previously ignored), so a DaemonSet with an AppArmor profile now fails on nodes without AppArmor (e.g. some SELinux-based distributions) instead of running unconfined.[^3]
 - AppArmor fields are Linux-only; the Pod Security baseline policy forbids `Unconfined`.
 
@@ -1651,9 +1655,9 @@ Verified with `kubectl apply --dry-run=server -o yaml` on v1.31.0 (no warning is
 | `containers[].securityContext.procMount: Unmasked` | `ProcMountType` beta, off | Reset to `Default` |
 | `containers[].resizePolicy` | `InPlacePodVerticalScaling` alpha | Dropped (`kubectl patch --subresource resize` is rejected client-side: `Must be one of [status scale]`) |
 | `Job.spec.managedBy` | `JobManagedBy` alpha | Dropped — the built-in Job controller runs the Job |
-| `StatefulSet.spec.updateStrategy.rollingUpdate.maxUnavailable` | `MaxUnavailableStatefulSet` alpha | Accepted in the API but ignored by the controller (one Pod at a time) |
+| `StatefulSet.spec.updateStrategy.rollingUpdate.maxUnavailable` | `MaxUnavailableStatefulSet` alpha | Dropped (stored `rollingUpdate` is `{partition: 0}`, also on 1.30 and 1.32); updates proceed one Pod at a time |
 
-A security reviewer must treat a manifest that relies on `hostUsers: false` or `supplementalGroupsPolicy: Strict` for isolation as **unprotected** on a default 1.31 cluster.
+A security reviewer must treat a manifest that relies on `hostUsers: false` or `supplementalGroupsPolicy: Strict` for isolation as **unprotected** on a default 1.31 cluster. `kubectl apply` keeps the dropped fields in the `kubectl.kubernetes.io/last-applied-configuration` annotation (verified), so the object *looks* configured when that annotation is inspected; check the live `spec` instead.
 
 ##### `recursiveReadOnly` mounts (beta, on in 1.31)
 
@@ -1712,7 +1716,7 @@ spec:
 
 - **[GA in 1.31]** `ordinals.start` lets a StatefulSet start at a non-zero ordinal (for slicing a StatefulSet across clusters or namespaces during migrations).
 - `persistentVolumeClaimRetentionPolicy.whenDeleted: Delete` only for disposable data; the default `Retain` keeps PVCs. 1.31 fixed the auto-delete logic to respect PVCs whose controlling owner is not the StatefulSet.[^3]
-- `rollingUpdate.maxUnavailable` (verified: kept in the stored object on 1.30, 1.31 and 1.32) is **ignored** by the controller unless `MaxUnavailableStatefulSet` is enabled on kube-controller-manager (alpha, off). The effective behaviour is one Pod at a time.
+- `rollingUpdate.maxUnavailable` is **dropped** by a default 1.31 apiserver (`MaxUnavailableStatefulSet` alpha/off; verified on v1.30.3, v1.31.0 and v1.32.0: the stored object only has `rollingUpdate: {partition: 0}`). Rolling updates replace one Pod at a time; a manifest or chart value that sets `maxUnavailable` silently does nothing and causes GitOps drift. It only works where the gate is enabled on both kube-apiserver and kube-controller-manager.
 - `serviceName` must reference an existing headless Service for stable DNS.
 
 ##### Jobs
@@ -1794,7 +1798,7 @@ spec:
   trafficDistribution: PreferClose    # only accepted value on 1.31
 ```
 
-- Verified: 1.31 keeps the field; **1.30 drops it silently** (gate alpha/off); `PreferSameZone`/`PreferSameNode` are rejected on 1.31 and 1.32 (`Unsupported value: "PreferSameZone": supported values: "PreferClose"`). They appear in 1.34.
+- Verified: 1.31 keeps the field; **1.30 drops it silently** (gate alpha/off); `PreferSameZone`/`PreferSameNode` are rejected on 1.31 and 1.32 (`Unsupported value: "PreferSameZone": supported values: "PreferClose"`). They are alpha (gate off) in 1.33 and beta-on in 1.34.
 - `PreferClose` is a *preference*: kube-proxy (and conforming dataplanes) routes to topologically close endpoints when they exist and falls back to remote ones. It requires a kube-proxy/CNI that implements it.
 - Do not combine `trafficDistribution` with the `service.kubernetes.io/topology-mode: Auto` annotation; topology-aware routing hints take precedence and the combination is confusing.
 - `internalTrafficPolicy: Local` is a hard requirement (no fallback), not a preference — flag it where availability matters.
@@ -1802,7 +1806,7 @@ spec:
 ##### Service names, IPs and `externalIPs`
 
 - Service names must be RFC 1035 labels (no leading digit) — see Naming.
-- Use canonical IP literals. 1.31 warns on `010.000.000.005` (`IP address was accepted, but will be invalid in a future Kubernetes release`); newer releases reject it.
+- Use canonical IP literals. 1.31 warns on `010.000.000.005` (`IP address was accepted, but will be invalid in a future Kubernetes release`); 1.32–1.35 still only warn, 1.36 rejects it (`StrictIPCIDRValidation` beta-on).
 - `spec.externalIPs` lets any user who can create Services intercept traffic for arbitrary IPs (CVE-2020-8554). Clusters should block it with a ValidatingAdmissionPolicy (`!has(object.spec.externalIPs)`) or the `DenyServiceExternalIPs` admission plugin; new manifests should use `LoadBalancer`, `NodePort` or Gateway API.
 - Services support field selectors on `spec.clusterIP` and `spec.type` since 1.31. Verified: `kubectl get svc --field-selector spec.type=LoadBalancer` works on 1.31; 1.30 answers `"spec.type" is not a known field selector`.
 
@@ -2172,7 +2176,7 @@ cfg, err := env.Start()
 - **[NEW in 1.31 — beta, on]** `kubectl debug --custom=<file.json|yaml>` with partial container specs, and `--keep-labels`, `--keep-annotations`, `--keep-liveness`, `--keep-readiness`, `--keep-startup`, `--keep-init-containers` for `--copy-to` debugging.
 - `kubectl port-forward` uses WebSockets by default (falls back to SPDY); proxies/load balancers in front of the apiserver must allow WebSocket upgrades. Set `KUBECTL_PORT_FORWARD_WEBSOCKETS=false` only as a workaround.
 - `-o kyaml` and `.kuberc` preferences do not exist in kubectl 1.31.
-- YAML coercion is a real manifest bug, not a style issue. Verified: `metadata: {name: n}` fails with `json: cannot unmarshal bool into Go struct field ObjectMeta.metadata.name of type string` because kubectl's YAML parser reads unquoted `n` as a boolean. Quote values such as `y`, `n`, `yes`, `no`, `on`, `off`, `true`, `false`, version strings (`"1.10"`), and octal-looking numbers in labels, annotations, env values and ConfigMap data.
+- YAML coercion is a real manifest bug, not a style issue. Verified: `metadata: {name: n}` fails with `json: cannot unmarshal bool into Go struct field ObjectMeta.metadata.name of type string` because kubectl's YAML parser reads unquoted `n` as a boolean. Map **keys** are affected too: a hand-written CRD schema property `n:` (or `y:`, `on:`, `off:`) becomes the key `false`/`true`, and a CEL rule `self.n` then fails with `undefined field 'n'` (verified on 1.31). Quote values such as `y`, `n`, `yes`, `no`, `on`, `off`, `true`, `false`, version strings (`"1.10"`), and octal-looking numbers in labels, annotations, env values and ConfigMap data.
 - `kubectl explain` shows alpha fields that the server will drop; use `--dry-run=server -o yaml` to prove a field survives.
 - `--subresource` (beta) works for `status` and `scale` with `get`, `patch`, `edit` and `replace`; `resize` is rejected client-side by kubectl 1.31.
 - Helm: declare `kubeVersion` in `Chart.yaml` when a chart depends on 1.31 behaviour, and gate optional fields with `semverCompare` on `.Capabilities.KubeVersion.Version`. `helm template` without `--kube-version` renders for a built-in default, not your cluster — verified: Helm v3.22.1 and v4.3.1 assume `v1.37.0`, Helm v4.0.5 assumes `v1.34.0`, so a template that branches on the version renders 1.34+/1.37 fields for a 1.31 target. Always pass `--kube-version 1.31.x` in CI renders. Verified: `kubeVersion: ">=1.31.0-0"` rejects `--kube-version 1.30.14`; Helm v3 strips vendor suffixes (`v1.31.14-eks-abc` → `v1.31.14`) in `.Capabilities.KubeVersion.Version`, Helm v4.3 keeps them.
@@ -2204,7 +2208,8 @@ spec:
 | `ServiceTrafficDistribution` beta-on | Services with `trafficDistribution` written for 1.30 | Field now takes effect (it was dropped on 1.30) |
 | CEL compatibility env 1.30 | CRDs/policies | IP/CIDR library usable; name-format library still not |
 | Strict decoding of encryption config | `--encryption-provider-config` with typos | Fix the file before upgrading |
-| Removed flags (`--keep-terminated-pod-volumes`, `--proxy-port-range`, KCM HPA delays, `--volume-host-*`) | kubelet/kube-proxy/KCM configs, kubeadm `extraArgs` | Remove before upgrading |
+| Removed flags (`--keep-terminated-pod-volumes`, kubelet `--iptables-masquerade-bit`/`--iptables-drop-bit`, `--proxy-port-range`, KCM HPA delays, `--volume-host-*`, `kubectl drain --delete-local-data`) | kubelet/kube-proxy/KCM configs, kubeadm `extraArgs`, scripts | Remove before upgrading |
+| Removed GA feature gates (`APIPriorityAndFairness`, `ReadWriteOncePod`, `CSINodeExpandSecret`, `ConsistentHTTPGetHandlers`, `InTreePlugin*Unregister`, …) | `--feature-gates` in component configs | Components refuse to start with `unrecognized feature gate`; delete the entries |
 | `PersistentVolumeLabel` admission plugin removed | `--enable-admission-plugins` lists | Remove it |
 | Non-CSI volume-limit scheduler plugins deprecated | Custom scheduler configs | Use `NodeVolumeLimits` |
 | `DisableNodeKubeProxyVersion` on in v1.31.0, off from v1.31.1 | Tools reading `nodeInfo.kubeProxyVersion` | Stop reading it |
@@ -2212,7 +2217,7 @@ spec:
 | Patch-level CVE fixes (v1.31.5, v1.31.6, v1.31.12) | Pinned 1.31 versions | Run ≥ v1.31.12 if still on 1.31; plan the upgrade off 1.31 (EOL) |
 | client-go v0.31 `fake.NewClientset` | Tests using `NewSimpleClientset` | Migrate tests to `NewClientset` for SSA support |
 | controller-runtime v0.19 deprecates `admission.Validator`/`Defaulter` | Kubebuilder v3-style webhooks (`func (r *T) ValidateCreate() ...`) | Move to `CustomValidator`/`CustomDefaulter` (required for v0.20) |
-| Go 1.24-built late patches drop SHA-1 cert support | Webhooks/aggregated APIs with SHA-1 certificates | Reissue certificates with SHA-256+ |
+| v1.31.14 (Go 1.24) drops SHA-1 cert support | Webhooks/aggregated APIs with SHA-1 certificates | Reissue certificates with SHA-256+ |
 
 ---
 
@@ -2222,7 +2227,7 @@ spec:
 
 - [ ] Manifests use only API versions served by a default 1.31 apiserver (no `storage.k8s.io/v1beta1` VAC, `networking.k8s.io/v1beta1`, `resource.k8s.io/v1alpha3`, MutatingAdmissionPolicy)
 - [ ] No 1.32+ fields or behaviour assumed (`PreferSameZone`, `preStop.sleep.seconds: 0`, Job `managedBy`, pod-level `resources`, `pods/resize`, CEL `format.dns1123Label()`/`isSemver()`, …)
-- [ ] No reliance on silently-dropped alpha/off fields (`image` volumes, `hostUsers: false`, `supplementalGroupsPolicy`, `resizePolicy`, `procMount: Unmasked`) unless the cluster config enables the gate
+- [ ] No reliance on silently-dropped alpha/off fields (`image` volumes, `hostUsers: false`, `supplementalGroupsPolicy`, `resizePolicy`, `procMount: Unmasked`, Job `managedBy`, StatefulSet `rollingUpdate.maxUnavailable`) unless the cluster config enables the gate
 - [ ] `FlowSchema`/`PriorityLevelConfiguration` on `flowcontrol.apiserver.k8s.io/v1`, not `v1beta3`
 - [ ] `go.mod`: all `k8s.io/*` on the same v0.31.x patch, controller-runtime v0.19.x, built with a supported Go toolchain
 - [ ] envtest/kind/Helm renders pinned to 1.31, not "latest"
