@@ -121,6 +121,18 @@ style_guides:
       "13": styleguides/csharp-13.md
       "14": styleguides/csharp-14.md
       "15": styleguides/csharp-15.md
+  rust:
+    default: styleguides/rust.md
+    versions:
+      # Keyed by the crate's edition (Cargo.toml `edition`, inherited from
+      # [workspace.package], Cargo's 2015 default when unset), not by the
+      # compiler: the edition guides label every feature with the rustc
+      # release that stabilised it. 2015 crates share the 2018 guide, which
+      # covers the 2015 differences.
+      "2015": styleguides/rust-2018.md
+      "2018": styleguides/rust-2018.md
+      "2021": styleguides/rust-2021.md
+      "2024": styleguides/rust-2024.md
   sql: styleguides/sql.md
   postgresql:
     default: styleguides/postgresql.md
@@ -214,6 +226,8 @@ version_source_priority:
     - .tool-versions
     - .github/workflows/*
     - .gitlab-ci.yml
+  rust:
+    - Cargo.toml
   postgresql:
     - compose.yaml
     - compose.yml
@@ -245,6 +259,7 @@ style_guide_order:
   - css
   - scss
   - csharp
+  - rust
   - sql
   - postgresql
   - mysql
@@ -280,6 +295,12 @@ detectors:
         - '(?is)\balter\s+table\b'
         - '(?is)\bexplain(?:\s+analyze)?\b'
         - '(?is)\bwith\b.+\bselect\b'
+
+  - language: rust
+    probe_paths:
+      basenames: [Cargo.toml, Cargo.lock, rust-toolchain, rust-toolchain.toml]
+    match_any:
+      basenames: [Cargo.toml, Cargo.lock, rust-toolchain, rust-toolchain.toml]
 
   - language: postgresql
     probe_paths:
