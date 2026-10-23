@@ -41,7 +41,7 @@
 
 #### What's New in 1.34
 
-Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered or continued in beta, 13 are new alpha features.[^1] The changes that matter to people writing manifests, CRDs, policies and controllers:
+Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered beta, 13 entered alpha.[^1] The changes that matter to people writing manifests, CRDs, policies and controllers:
 
 ##### Graduated to GA (stable) in 1.34
 
@@ -76,7 +76,9 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered or 
 | **External ServiceAccount token signer** | `ExternalServiceAccountTokenSigner` beta, on | apiserver flag `--service-account-signing-endpoint`. |
 | **kuberc** (`~/.kube/kuberc`) | beta, on in kubectl 1.34 | Aliases and default flags, separate from kubeconfig. |
 | **WatchList** (streaming informer initial list) | apiserver `WatchList` beta, **on** (new); client-go `WatchListClient` beta, **off** | Used by kube-controller-manager; opt-in for your clients. |
-| **List from cache snapshot**, **size-based LIST cost (APF)**, **async scheduler API calls**, **PSI metrics**, **Windows graceful shutdown**, **mutable CSINode allocatable count** (off) | Server/node internals. | |
+| **Kubelet PodResources API reports DRA allocations** (KEP-3695) | `KubeletPodResourcesDynamicResources`, `KubeletPodResourcesGet` beta, on | Node monitoring agents can see devices allocated through DRA. |
+| **Declarative validation of built-in types** (KEP-5073) | `DeclarativeValidation` beta, on (since 1.33) | Internal; some built-in validation error messages changed wording. |
+| **List from cache snapshot**, **size-based LIST cost (APF)**, **async scheduler API calls** (turned off again in v1.34.2), **PSI metrics**, **Windows graceful shutdown**, **mutable CSINode allocatable count** (off) | Server/node internals. | |
 
 ##### New alpha in 1.34 (off by default — the apiserver silently drops or rejects these fields)
 
@@ -95,7 +97,7 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered or 
 
 - **Pod Security Standards**: the **Baseline and Restricted** levels now forbid setting `host` on probe and lifecycle `httpGet`/`tcpSocket` handlers (KEP-4940). Namespaces pinned to `pod-security.kubernetes.io/enforce-version: v1.33` or older do not get the new check.[^1][^7]
 - **AppArmor**: profiles in `securityContext.appArmorProfile` are **no longer copied into the deprecated `container.apparmor.security.beta.kubernetes.io/*` annotations**. Anything that reads those annotations must read the fields.
-- **CRDs**: an **unrecognized OpenAPI `format`** in a CRD schema now produces a warning on write (write still succeeds). v1.34.0 also warned wrongly on `int32`/`int64`/`float`/`double` formats of number/integer properties; fixed in v1.34.1.[^2]
+- **CRDs**: an **unrecognized OpenAPI `format`** in a CRD schema now produces a warning on write (write still succeeds). v1.34.0 also warned wrongly on `int32`/`int64`/`float`/`double` formats of number/integer properties; fixed in v1.34.1. The changelog also lists new `k8s-short-name`/`k8s-long-name` formats, but they are registered with "introduced in 1.34" and CRD validation uses the n-1 compatibility version, so a 1.34 apiserver still treats them as unrecognized (warning, not enforced); they take effect in 1.35.[^2]
 - **CEL**: the **Kubernetes semver library** (`isSemver()`, `semver()`) is available in CRD rules and admission policies from 1.34.[^8]
 - **API Go types**: zero-valued `metadata.creationTimestamp` is **omitted** from JSON/YAML/CBOR (no more `creationTimestamp: null`); all generated apply configurations implement the new `runtime.ApplyConfiguration` interface; `k8s.io/utils/pointer` usages were replaced by `k8s.io/utils/ptr` across the code base.[^2]
 - **DRA**: `resource.k8s.io/v1alpha3` now only contains `DeviceTaintRule`; the v1alpha4 kubelet gRPC API was removed and the v1beta1 kubelet DRA gRPC API is deprecated (v1 is GA).
@@ -104,8 +106,11 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered or 
 - **Default APF configuration** no longer has the `endpoint-controller` and `workload-leader-election` FlowSchemas — migrate leader election from `configmapsleases`/`endpointsleases` to `leases`.
 - **Aggregated API servers**: kube-apiserver now proxies using the **EndpointSlices** of the APIService's Service, not Endpoints. Hand-written Endpoints for an aggregated API need a matching EndpointSlice.
 - **`topologySpreadConstraints[].matchLabelKeys`** is merged into `labelSelector` by the apiserver (`MatchLabelKeysInPodTopologySpreadSelectorMerge` beta, on). Upgrade 1.32 → 1.33 → 1.34 one minor at a time.
-- **Headless Services**: setting `externalIPs`, `loadBalancerIP` or `sessionAffinity` on a headless Service now returns a warning (they are ignored).
-- **Scheduler**: no longer clears `status.nominatedNodeName`; the apiserver clears it when the Pod is bound.
+- **Headless Services**: setting `externalIPs`, `loadBalancerIP` or `sessionAffinity: ClientIP` on a headless Service now returns a warning (they are ignored). v1.34.0/v1.34.1 print `Warning: spec.SessionAffinity is ignored for headless services` for **every** headless Service (the defaulted `None` triggered it; verified on v1.34.1); v1.34.2 fixed the spurious warning — do not "fix" manifests because of it.
+- **Scheduler / `nominatedNodeName`**: the KEP-5278 changes (scheduler uses `status.nominatedNodeName` as a placement hint, the apiserver clears it on binding) sit behind `NominatedNodeNameForExpectation` and `ClearingNominatedNodeNameAfterBinding`, which 1.34 **demoted to alpha/off** before release (verified in `kube-apiserver -h` of v1.34.1); the default 1.34 behaviour is unchanged. Both are beta/on in 1.35.
+- **Kubelet**: static Pods that reference API objects (ConfigMaps, Secrets, ServiceAccounts, ResourceClaims, …) are now rejected by the kubelet instead of running without a mirror Pod.
+- **kubectl / kubeconfig**: the `preferences` field in kubeconfig is deprecated in favour of `kuberc`; `kubectl api-resources -o json|yaml`, `kubectl autoscale --cpu/--memory` (deprecating `--cpu-percent`) and `kubectl top --show-swap` are new.
+- **etcd**: the default etcd version moves to the **v3.6** line (v3.6.1 at release; etcd client library v3.6.4).
 - **Gates removed** (feature permanently on): `LegacySidecarContainers`, `PodDisruptionConditions`, `DevicePluginCDIDevices`; `JobPodReplacementPolicy`, `AuthorizeWithSelectors`, `RelaxedEnvironmentVariableValidation`, `MultiCIDRServiceAllocator` locked on.
 - **client-go**: API streaming support was removed from typed/dynamic/metadata `List()` (streaming is only through informers/reflector with `WatchListClient`).[^2]
 
@@ -114,11 +119,13 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered or 
 | Fixed in | Problem |
 |---|---|
 | v1.34.1 | Spurious CRD warnings about `int32`/`int64` formats on integer/number properties. |
-| v1.34.2 | **Spurious rollout of all existing StatefulSets** after upgrading the control plane 1.33 → 1.34 (fix behind `StatefulSetSemanticRevisionComparison`, on). Job status update failure "startTime cannot be removed for unsuspended job" after resume. The `SchedulerAsyncAPICalls` gate was turned **off** again to avoid a scheduler performance regression. |
+| v1.34.2 | **Spurious rollout of all existing StatefulSets** after upgrading the control plane 1.33 → 1.34 (fix behind `StatefulSetSemanticRevisionComparison`, on). Job status update failure "startTime cannot be removed for unsuspended job" after resume. The `SchedulerAsyncAPICalls` gate was turned **off** again to avoid a scheduler performance regression. Spurious `spec.SessionAffinity is ignored for headless services` warning on every headless Service removed. |
 | v1.34.3 | **client-go regression: informers ignored configured `Transformer` functions** (affects controller-runtime cache transforms). ValidatingAdmissionPolicy/MutatingAdmissionPolicy spurious "namespace not found" for objects in brand-new namespaces. |
 | v1.34.4 | Possible apiserver panic validating a custom resource whose CRD declares a status subresource but no `status` property in the schema. Pods with env values containing `$` followed by a multi-byte character failed to start (1.34 regression). DRA double allocation under fast scheduling. |
+| v1.34.7 | Built with Go 1.25; audit-log request-latency annotation regression (1.34) fixed; kube-proxy nftables mode works with nft 1.1.3. |
 | v1.34.9 | Env values from Secrets with binary (non-UTF-8) data broke (1.34 regression). |
 | v1.34.11 | Built with Go 1.26; `golang.org/x/net`/`x/text` security updates; **`k8s.io/*` v0.34.11+ modules declare `go 1.25.0`** (v0.34.0–v0.34.10 declare `go 1.24.0`). |
+| v1.34.12 | kube-scheduler crash (integer overflow) for ResourceClaims whose device counts add up past the int range; duplicate CDI device IDs after a retried DRA `PrepareResources`. |
 
 ---
 
@@ -162,12 +169,12 @@ These come from newer releases. In 1.34 they are absent, rejected, or alpha-off-
 - In-place Pod resize as **GA**, and in-place resize of pod-level resources (`InPlacePodLevelResourcesVerticalScaling`, alpha in 1.35; new Pod `status.resources`/`status.allocatedResources`) — 1.34 has container-level resize as beta only.
 - `restartPolicy`/`restartPolicyRules` on regular containers enabled by default (`ContainerRestartRules` beta/on in 1.35), `env[].valueFrom.fileKeyRef` enabled by default (`EnvFiles`), `spec.hostnameOverride` enabled by default (`HostnameOverride`) — all alpha/off in 1.34.
 - Image volumes (`volumes[].image`) **enabled by default** — in 1.34 `ImageVolume` is beta but **off**, so the volume is dropped.
-- StatefulSet `rollingUpdate.maxUnavailable` on by default (`MaxUnavailableStatefulSet` beta in 1.35), HPA `behavior.*.tolerance` on by default (`HPAConfigurableTolerance`), Deployment/ReplicaSet `status.terminatingReplicas` on by default.
+- StatefulSet `rollingUpdate.maxUnavailable` (`MaxUnavailableStatefulSet`: beta/on only in v1.35.0–v1.35.3, turned off again in v1.35.4 and in 1.36, on by default again in 1.37), HPA `behavior.*.tolerance` on by default (`HPAConfigurableTolerance`), Deployment/ReplicaSet `status.terminatingReplicas` on by default.
 - Alpha features of 1.35 that do not exist at all in 1.34: Pod `spec.workloadRef`, the `scheduling.k8s.io/v1alpha1` `Workload` API and gang scheduling; Node `status.declaredFeatures`; toleration operators `Gt`/`Lt` (`TaintTolerationComparisonOperators`); constrained impersonation (`impersonate-on:` verbs).
 - `CSIDriver.spec.serviceAccountTokenInSecrets`; `podCertificate.userAnnotations`; PodCertificateRequest as `certificates.k8s.io/v1beta1`.
 - CRD `status.observedGeneration` and `status.conditions[].observedGeneration` on CustomResourceDefinition objects.
 - `storagemigration.k8s.io/v1beta1` `StorageVersionMigration` (1.34 only has the alpha API behind a gate).
-- **Enforced `k8s-short-name` / `k8s-long-name` formats** in CRDs: on 1.34.1 these formats produce `Warning: unrecognized format "k8s-short-name"` and are **not enforced** (a value `Bad_Name` was accepted); on 1.35.0 the warning is gone. Use `pattern`/`maxLength` or a CEL `format.dns1123Label()` rule on 1.34.
+- **Enforced `k8s-short-name` / `k8s-long-name` formats** in CRDs: although CHANGELOG-1.34 announces them, on 1.34.1 these formats produce `Warning: unrecognized format "k8s-short-name"` and are **not enforced** (a value `Bad_Name` was accepted) because CRD format support is evaluated at the n-1 compatibility version; on 1.35.0 the warning is gone. Use `pattern`/`maxLength` or a CEL `format.dns1123Label()` rule on 1.34.
 - A deprecation warning for `trafficDistribution: PreferClose` (added in 1.35; 1.34 accepts it silently). `PreferSameZone`/`PreferSameNode` reached GA in 1.35 but are already beta/on in 1.34.
 - `kubectl get -o kyaml` without `KUBECTL_KYAML=true` (1.35 enables it by default). Comparable resource versions: before 1.35 clients may only compare `resourceVersion` for equality.
 - `DynamicResourceAllocation` locked on (in 1.34 it is GA but can still be disabled).
@@ -251,7 +258,7 @@ Defaults read from `kube-apiserver -h` of v1.33.0, v1.34.1 and v1.35.0 (GA gates
 | `UserNamespacesSupport` | beta, on | beta, on | beta, on | `hostUsers: false` accepted; needs runtime support |
 | `ProcMountType` | beta, on | beta, on | beta, on | `procMount: Unmasked` (requires `hostUsers: false`) |
 | `SupplementalGroupsPolicy` | beta, on | beta, on | — (GA) | `securityContext.supplementalGroupsPolicy: Strict` |
-| `MaxUnavailableStatefulSet` | alpha | alpha | beta, on | `rollingUpdate.maxUnavailable` dropped |
+| `MaxUnavailableStatefulSet` | alpha | alpha | beta, on (v1.35.0–v1.35.3; off from v1.35.4) | `rollingUpdate.maxUnavailable` dropped |
 | `HPAConfigurableTolerance` | alpha | alpha | beta, on | `behavior.*.tolerance` dropped |
 | `DeploymentReplicaSetTerminatingReplicas` | alpha | alpha | beta, on | `status.terminatingReplicas` not populated |
 | `JobManagedBy` | beta, on | beta, on | — (GA) | `spec.managedBy` honoured |
@@ -932,7 +939,7 @@ func main() {
 ```
 
 Notes for v0.22:
-- Leader election uses `coordination.k8s.io/v1` Leases (the default since v0.16). RBAC needs `leases` get/create/update in the manager's namespace. The default APF FlowSchemas for `configmapsleases`/`endpointsleases` were removed in 1.34 — flag any `LeaderElectionResourceLock` override to those values.
+- Leader election uses `coordination.k8s.io/v1` Leases (the default since v0.16). RBAC needs `leases` get/create/update in the manager's namespace. 1.34 removed the default APF FlowSchemas `endpoint-controller` and `workload-leader-election` that covered the legacy `configmapsleases`/`endpointsleases` locks — flag any `LeaderElectionResourceLock` override to those values.
 - Metrics: serve over HTTPS with `SecureServing: true` and protect them with `filters.WithAuthenticationAndAuthorization` (`sigs.k8s.io/controller-runtime/pkg/metrics/filters`), as Kubebuilder v4 scaffolds; do not expose plain `:8080/metrics` to the cluster network.
 - `controller.Options.UsePriorityQueue` (beta, off by default in v0.22), `EnableWarmup` and `SkipNameValidation` exist; controller names must be unique per manager unless `SkipNameValidation` is set (tests that create two managers hit this).
 - Use `mgr.GetEventRecorderFor(name)` (core/v1 Events). `mgr.GetEventRecorder()` (events.k8s.io/v1) exists only from v0.23.
@@ -1435,14 +1442,14 @@ spec:
 ##### StatefulSets
 
 - `persistentVolumeClaimRetentionPolicy` (GA since 1.32) controls PVC deletion on scale-down/delete.
-- `rollingUpdate.maxUnavailable` is **dropped** on 1.34 (alpha) — updates proceed one Pod at a time regardless of the manifest. It works on 1.35 (beta/on).
+- `rollingUpdate.maxUnavailable` is **dropped** on 1.34 (alpha; verified: the stored `rollingUpdate` is only `{partition: 0}`) — updates proceed one Pod at a time regardless of the manifest. Do not promise it after an upgrade either: it is honoured by default only on v1.35.0–v1.35.3 (disabled again from v1.35.4 and in 1.36 because of a `Parallel` pod-management regression) and again from 1.37.
 - `minReadySeconds` is now honoured by StatefulSets (1.34 fix).
 - Upgrading the control plane to 1.34.0/1.34.1 could trigger a **rollout of every existing StatefulSet**; fixed in v1.34.2.
 
 ##### Services and Traffic
 
 - `trafficDistribution`: `PreferSameZone` (preferred spelling), `PreferSameNode` (beta/on in 1.34), `PreferClose` (deprecated alias of `PreferSameZone`; 1.33 only knows `PreferClose` and rejects `PreferSameNode` with `Unsupported value`).
-- Headless Services (`clusterIP: None`) ignore `externalIPs`, `loadBalancerIP` and `sessionAffinity`; 1.34 warns (`Warning: spec.externalIPs is ignored for headless services`).
+- Headless Services (`clusterIP: None`) ignore `externalIPs`, `loadBalancerIP` and `sessionAffinity`; 1.34 warns (`Warning: spec.externalIPs is ignored for headless services`). On v1.34.0/v1.34.1 every headless Service also gets a spurious `spec.SessionAffinity is ignored` warning (fixed in v1.34.2) — not a manifest bug.
 - Avoid `externalIPs` entirely (CVE-2020-8554; deprecated from 1.36).
 - Service names must still be DNS-1035 labels in 1.34.
 - `topologySpreadConstraints[].matchLabelKeys` values are merged into `labelSelector` by the apiserver (observed: `pod-template-hash: abc123` became a `matchExpressions` entry). Keys listed in `matchLabelKeys` must not also appear in `labelSelector` (rejected: `exists in both matchLabelKeys and labelSelector`).
@@ -1530,7 +1537,7 @@ Review rules:
 - A ResourceClaim allocates at most **32 devices** (1.33 accidentally limited it to 16; restored in 1.34).
 - Device selectors are CEL with `device.driver`, `device.attributes["<domain>"].<name>`, `device.capacity["<domain>"].<name>` (quantities: use `compareTo(quantity(...))`).
 - `ResourceClaimTemplate` per Pod, `ResourceClaim` for sharing one allocation across Pods.
-- Static Pods may not reference ResourceClaims (1.34 closes that loophole).
+- Static Pods may not reference ResourceClaims (1.34 closes that loophole; the kubelet now rejects static Pods that reference any API object).
 - Drivers: use the `k8s.io/dynamic-resource-allocation/kubeletplugin` helper from 1.34 (supports the v1 and the deprecated v1beta1 kubelet gRPC API; v1alpha4 is removed).
 - Extended-resource mapping (`DeviceClass.spec.extendedResourceName`), consumable capacity and binding conditions are alpha/off in 1.34.
 
