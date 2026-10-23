@@ -80,7 +80,7 @@ These are the 5.7 habits that fail or change meaning on 8.0 (all verified on 5.7
 |---|---|
 | `GROUP BY a DESC` / `GROUP BY a ASC` | `ERROR 1064` (removed in 8.0.13; 5.7 warns 1287) |
 | Relying on `GROUP BY` sorting its output | `GROUP BY` no longer sorts implicitly; add `ORDER BY` |
-| `GRANT ... TO new_user IDENTIFIED BY 'x'` creating users | `ERROR 1410 You are not allowed to create a user with GRANT`; use `CREATE USER` then `GRANT` |
+| `GRANT ... TO new_user IDENTIFIED BY 'x'` creating users | `ERROR 1064` (syntax error: `IDENTIFIED BY` is gone from `GRANT`); a plain `GRANT` to a missing account is `ERROR 1410 You are not allowed to create a user with GRANT`; use `CREATE USER` then `GRANT` |
 | `PASSWORD('x')`, `ENCODE()`, `DECODE()`, `ENCRYPT()`, `DES_ENCRYPT()` | removed: `PASSWORD('x')` is `ERROR 1064`, the others `ERROR 1305 FUNCTION ... does not exist` |
 | `SET sql_mode = '...,NO_AUTO_CREATE_USER,...'` (common in old dumps and ORMs) | `ERROR 1231 Variable 'sql_mode' can't be set to the value of 'NO_AUTO_CREATE_USER'` |
 | Query cache (`SQL_CACHE`, `query_cache_*` variables) | removed; `SQL_NO_CACHE` accepted with a deprecation warning |

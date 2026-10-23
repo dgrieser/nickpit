@@ -187,7 +187,7 @@ These are deprecated (most print a warning on 8.4.13); code that depends on them
 - Integer display width (`INT(11)`), `ZEROFILL`, `FLOAT(M,D)`/`DOUBLE(M,D)` (warning 1681).
 - The `utf8` / `utf8mb3` character set (warning 3719) → `utf8mb4`.
 - `$` as the first character of an unquoted identifier (warning 1681).
-- Wildcards `%` and `_` in database names of `GRANT` statements (deprecated since 8.2.0; no warning is printed on 8.4.13).[^1]
+- Wildcards `%` and `_` in database names of `GRANT` statements (deprecated in 8.2.0 and, on the 8.0 line, 8.0.35, both released 2023-10-25; no warning is printed on 8.4.13).[^1]
 - `mysql_native_password` (deprecated and disabled), `innodb_log_file_size`/`innodb_log_files_in_group` (use `innodb_redo_log_capacity`).
 - The `binlog_format` variable itself (warning 1287 on every read or `SET`, deprecated since 8.0.34); writeset-based dependency tracking, which 8.4 always uses, requires `ROW`, and `MIXED` is no longer supported for it.[^1]
 - `INFORMATION_SCHEMA.PROCESSLIST` (warning 1287) → `performance_schema.processlist`.
@@ -1549,7 +1549,7 @@ Review rules:[^36][^37]
 
 - Application accounts get DML on their schema only; migrations run under a separate account with DDL privileges. No `ALL PRIVILEGES ON *.*`, no `SUPER`, `FILE`, `PROCESS`, `SYSTEM_USER`, `GRANT OPTION` or `CONNECTION_ADMIN` for applications.
 - Every role grant needs `SET DEFAULT ROLE` (or `SET ROLE` in the session); otherwise the account has no effective privileges.
-- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards: `GRANT SELECT ON db_1.*` also matches `dbx1`. Escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour is deprecated since 8.2 (no warning is printed on 8.4.13).[^1]
+- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards: `GRANT SELECT ON db_1.*` also matches `dbx1`. Escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour is deprecated since 8.2.0 (8.0.35 on the 8.0 line; no warning is printed on 8.4.13).[^1]
 - Host part: prefer specific hosts or network ranges over `'%'`; `'localhost'` matches only socket/`localhost` connections.
 - Credentials never in migrations or code; use environment variables or a secret store, and do not log DSNs (the Go driver's `FormatDSN()` contains the password).
 

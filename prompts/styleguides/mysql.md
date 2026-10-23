@@ -36,7 +36,7 @@ Upgrade paths:[^8]
 
 - **An LTS series cannot be skipped**: 5.7 → 8.0 → 8.4 LTS → 9.7 LTS. 8.0 → 9.7 directly is not supported.
 - Within an LTS series, in-place upgrade **and downgrade** between patch releases is supported. Innovation releases upgrade to newer Innovation releases; a jump across a major version goes through the LTS in between (8.3 → 8.4 → 9.x). Downgrading an Innovation release needs a logical dump and reload.
-- Docker Hub tags: `mysql:8.4`, `mysql:9.7` and `mysql:lts` follow the LTS lines; **`mysql:latest` and `mysql:innovation` point to the newest Innovation release** (26.10.0 in October 2026). A project that wants an LTS must pin `mysql:8.4` or `mysql:9.7` (better: a full patch version), never `latest`.
+- Docker Hub tags (October 2026): `mysql:8.4` and `mysql:8` point to 8.4.13; `mysql:9.7`, `mysql:9` and **`mysql:lts` point to 9.7.4** (the newest LTS, not 8.4); **`mysql:latest` and `mysql:innovation` point to the newest Innovation release** (26.10.0), and `mysql:26` follows the 26.x line. `mysql:8.0` is no longer maintained in the official image list. A project that wants an LTS must pin `mysql:8.4` or `mysql:9.7` (better: a full patch version), never `latest`.
 
 Review consequences: flag a project on 5.7, 8.0 or any superseded Innovation release (8.1–8.3, 9.0–9.6, 26.7) as running an unsupported server and recommend the next LTS on the upgrade path; still judge the code against the version it actually runs.
 
@@ -82,9 +82,9 @@ The release that introduced each feature a reviewer commonly needs. "8.0.x" item
 | 64-bit `UNIX_TIMESTAMP()`/`FROM_UNIXTIME()` (beyond 2038) | 8.0.28 |
 | `ALGORITHM=INSTANT` `ADD COLUMN` at any position and `DROP COLUMN` (64 row versions per table) | 8.0.29 (release withdrawn; use 8.0.30+) |
 | Generated invisible primary keys (`sql_generate_invisible_primary_key`) | 8.0.30 |
-| `INTERSECT`, `EXCEPT` | 8.0.31 |
+| `INTERSECT`, `EXCEPT` (both with `DISTINCT`/`ALL`) | 8.0.31 |
 | `SHOW BINARY LOG STATUS`, `RESET BINARY LOGS AND GTIDS`, `DISABLE ON REPLICA`, `SET_ANY_DEFINER` privilege | 8.2.0 (first LTS: 8.4) |
-| `EXPLAIN FORMAT=JSON INTO @var`; `ANALYZE TABLE ... UPDATE HISTOGRAM ... AUTO UPDATE`; `GROUP BY ROLLUP (a, b)` spelling; foreign keys must reference a `PRIMARY`/`UNIQUE` key (`restrict_fk_on_non_standard_key=ON`) | 8.4 (8.1–8.4 Innovation/LTS) |
+| `EXPLAIN FORMAT=JSON INTO @var` (8.1.0); `ANALYZE TABLE ... UPDATE HISTOGRAM ... AUTO UPDATE` (8.4.0); foreign keys must reference a `PRIMARY`/`UNIQUE` key (`restrict_fk_on_non_standard_key=ON`, 8.4.0); `GROUP BY ROLLUP (a, b)` spelling (documented in 8.4.3 and 9.1.0, accepted by every 8.4.x) | 8.1.0–8.4.0 (first LTS: 8.4) |
 | `VERSION_WITH_UPDATE()` | 8.4.13 / 9.7.4 |
 | `VECTOR(n)` type and `STRING_TO_VECTOR()`/`VECTOR_TO_STRING()`/`VECTOR_DIM()`; **inline column `REFERENCES` enforced**; `PREPARE` of event DDL | 9.0.0 (first LTS: 9.7) |
 | `CREATE VIEW IF NOT EXISTS`; 255 instant row versions | 9.1.0 |
@@ -123,7 +123,8 @@ Never suggest these for MySQL; when they appear in code, flag them as bugs (synt
 | `CREATE OR REPLACE TABLE`, `CREATE SEQUENCE`, `nextval()` | `DROP TABLE IF EXISTS` + `CREATE TABLE`; `AUTO_INCREMENT` or a counter table |
 | Partial indexes (`WHERE`), `INCLUDE` columns, GIN/GiST/BRIN, `CREATE INDEX CONCURRENTLY` | composite or functional indexes; online DDL (`ALGORITHM=INPLACE, LOCK=NONE`) |
 | Materialized views (`CREATE MATERIALIZED VIEW` is a syntax error up to 8.4; 9.7.4 accepts it but silently creates a plain view), `WITH x AS MATERIALIZED (...)` | summary table refreshed by a job; `MERGE`/`NO_MERGE` hints |
-| `ILIKE`, `::type` casts, `SERIAL`, `BOOLEAN` as a real type, arrays, `TIMESTAMPTZ` | `_ci` collation, `CAST()`, `BIGINT UNSIGNED AUTO_INCREMENT`, `TINYINT(1)` (`BOOL` alias), JSON arrays, `DATETIME` in UTC |
+| `ILIKE`, `::type` casts, `BOOLEAN` as a real type, arrays (`INT[]`), `TIMESTAMPTZ` | `_ci` collation, `CAST()`, `TINYINT(1)` (`BOOL` alias), JSON arrays, `DATETIME` in UTC |
+| `SERIAL` as in PostgreSQL | MySQL accepts `SERIAL`, but it means `BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE`: `id SERIAL PRIMARY KEY` creates a redundant second unique index. Write `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY` |
 | Transactional DDL | one DDL per migration step (see Migrations) |
 | `QUALIFY` | outer query filtering a window result (`QUALIFY` only with the 9.7+ hypergraph optimizer) |
 | A UUIDv7 function | generate UUIDv7 in the application |
@@ -132,11 +133,11 @@ Never suggest these for MySQL; when they appear in code, flag them as bugs (synt
 
 #### MariaDB Is Not MySQL
 
-MariaDB forked from MySQL 5.5 and has diverged for over a decade; its version numbers (10.x, 11.x, 12.x) are unrelated to MySQL's. Never assume feature parity in either direction, and never treat a MariaDB-only feature as valid MySQL (or vice versa):[^13]
+MariaDB forked from MySQL in 2009 and has diverged since its 10.0 series (2014); its version numbers (10.x, 11.x, 12.x) are unrelated to MySQL's. Never assume feature parity in either direction, and never treat a MariaDB-only feature as valid MySQL (or vice versa):[^13]
 
 - **MariaDB-only syntax** (syntax errors on MySQL): `INSERT ... RETURNING`, `DELETE ... RETURNING`, `CREATE OR REPLACE TABLE`, `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `CREATE SEQUENCE`, system-versioned tables (`WITH SYSTEM VERSIONING`).
 - **`JSON` differs**: in MariaDB `JSON` is an alias for `LONGTEXT` with a `JSON_VALID()` check, not MySQL's binary format; MySQL's multi-valued indexes and binary JSON storage do not carry over, and row-based replication of MySQL `JSON` columns to MariaDB is not supported.
-- **Authentication, collations and replication differ**: only recent MariaDB releases support MySQL's default `caching_sha2_password`; older MariaDB releases reject MySQL's `utf8mb4_0900_ai_ci` collation in dumps (`ERROR 1273 Unknown collation`), newer ones map it as an alias to their own UCA 14.0.0 collations, so comparison results can still differ; MariaDB's GTID format differs from MySQL's.
+- **Authentication, collations and replication differ**: MariaDB Server has no `caching_sha2_password` plugin before 11.4/12.1, and even there it is a migration aid that is not installed by default; older MariaDB releases reject MySQL's `utf8mb4_0900_ai_ci` collation in dumps (`ERROR 1273 Unknown collation`), newer ones (11.4.5+) map it as an alias to their own UCA 14.0.0 collations, so comparison results can still differ; MariaDB's GTID format differs from MySQL's.
 - MySQL features without a direct MariaDB equivalent: multi-valued JSON indexes, invisible indexes (MariaDB has "ignored indexes"), MySQL's `INSTANT` DDL rules, MySQL's `VECTOR` functions.
 
 If a project runs MariaDB (image `mariadb:*`, `MariaDBDialect`, `mariadb` driver), this guide does not apply; review against MariaDB's documentation.
@@ -802,7 +803,7 @@ Recursive CTEs over data (trees, graphs) need a termination condition that does 
 
 ##### Set operations, GROUP_CONCAT, misc
 
-- `UNION` de-duplicates (extra work); use `UNION ALL` unless duplicates must go. `INTERSECT`/`EXCEPT` exist since **8.0.31** only.
+- `UNION` de-duplicates (extra work); use `UNION ALL` unless duplicates must go. `INTERSECT`/`EXCEPT` (including `INTERSECT ALL`/`EXCEPT ALL`) exist since **8.0.31** only.
 - `GROUP_CONCAT` truncates at `group_concat_max_len` (1024 bytes by default) with only a warning; ID lists and JSON built with it silently lose data. Use `JSON_ARRAYAGG()` (5.7.22+) or raise `group_concat_max_len` for the session.
 
 ```sql
@@ -1232,7 +1233,7 @@ CREATE USER legacy@'%' IDENTIFIED WITH mysql_native_password BY 'Legacy-pass-1';
 - New code and accounts use `caching_sha2_password`. Upgrades: accounts still on `mysql_native_password` cannot log in after moving to 8.4 (without the option) or 9.x; migrate them first: `ALTER USER u@'%' IDENTIFIED WITH caching_sha2_password BY '...'`.
 - The first login after a server restart or cache flush needs **TLS** or RSA key exchange; over plain TCP without either it fails (`ERROR 2061 ... Authentication requires secure connection`) — the classic "works until the database restarts" bug. Use TLS and, in production, require it (`require_secure_transport=ON` or `REQUIRE SSL` per account) with certificate verification in clients. Flag `allowPublicKeyRetrieval=true` (JDBC), `tls=skip-verify` (Go) and `ssl-mode=DISABLED` in production configs.
 - Old client libraries (very old PHP `mysqlnd`, `MySQLdb` built against libmysqlclient 5.x, the Node `mysql` package) do not support `caching_sha2_password`; `mysql2` and current connectors do.
-- `GRANT ... IDENTIFIED BY` no longer creates users (8.0+: `ERROR 1410`), and `PASSWORD()` is removed; use `CREATE USER`, then `GRANT`. `FLUSH PRIVILEGES` is unnecessary after account statements (and deprecated since 9.2).
+- `GRANT` no longer creates users (8.0+): `GRANT ... IDENTIFIED BY` is a syntax error (`ERROR 1064`), and a `GRANT` to a nonexistent account fails with `ERROR 1410 You are not allowed to create a user with GRANT`. `PASSWORD()` is removed (`ERROR 1064`); use `CREATE USER`, then `GRANT`. `FLUSH PRIVILEGES` is unnecessary after account statements (and deprecated since 9.2).
 
 ##### Least privilege and roles
 
@@ -1248,7 +1249,7 @@ SHOW GRANTS FOR app@'%';
 
 - `activate_all_roles_on_login` is `OFF` by default: every role grant needs `SET DEFAULT ROLE` (or `SET ROLE` in the session), otherwise the account has no effective privileges. Since 9.5, roles in `mandatory_roles` are activated at login for every account (`activate_mandatory_roles=ON`); review that list.
 - Application accounts get DML on their schema only; migrations run under a separate account with DDL privileges. No `ALL PRIVILEGES ON *.*`, `SUPER`, `FILE`, `PROCESS`, `SYSTEM_USER`, `GRANT OPTION` or `CONNECTION_ADMIN` for applications.
-- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards (`GRANT ... ON db_1.*` also matches `dbx1`); escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour is deprecated since 8.0.35 (no warning is printed).
+- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards (`GRANT ... ON db_1.*` also matches `dbx1`) unless `partial_revokes=ON` (default `OFF`), which makes them literal; escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour, and the server treating privileges granted to `user@'%'` as also granted to `user@'localhost'`, were deprecated in 8.0.35 and 8.2.0 (both released 2023-10-25); no warning is printed.[^32]
 - Host part: prefer specific hosts or networks over `'%'`.
 - Credentials never in migrations, code or logs; the Go driver's `FormatDSN()` output contains the password.
 
@@ -1294,7 +1295,7 @@ Driver pitfalls:
 
 - **Time handling**: without `parseTime=true` (Go) a `DATETIME` scans as `[]byte`; the driver's location and the session `time_zone` must agree with how data is written, or every `TIMESTAMP` shifts by the offset. JDBC: `connectionTimeZone`/`forceConnectionTimeZoneToSession` (Connector/J 8.0.23+); set them explicitly.
 - **Character set**: `charset=utf8mb4` (Go), `characterEncoding=UTF-8` (JDBC), `charset='utf8mb4'` (PyMySQL/mysqlclient). The legacy `utf8` setting means `utf8mb3` and fails on emoji.
-- **Client-side interpolation** (`interpolateParams=true` in Go, emulated prepares in PDO, `useServerPrepStmts=false` in JDBC) substitutes parameters in the driver. It is safe only with ASCII-compatible connection character sets; the Go driver refuses it for BIG5, CP932, GB2312, GBK and SJIS. Do not enable it without measurements.
+- **Client-side interpolation** (`interpolateParams=true` in Go, emulated prepares in PDO, `useServerPrepStmts=false` in JDBC) substitutes parameters in the driver. It is safe only with ASCII-compatible connection character sets; the Go driver refuses it for BIG5, CP932, GB2312, GBK, GB18030 and SJIS collations. Do not enable it without measurements.
 - **Server-side prepared statements** are limited by `max_prepared_stmt_count` (16,382 default); drivers that prepare per query without closing leak statements until the limit fails all prepares. Close statements, or let the pool cache them.
 - **Multi-statements off** (see Security).
 - **Booleans**: `TINYINT(1)` maps to bool in most drivers; `TINYINT(2)` or `TINYINT UNSIGNED` does not.
@@ -1408,7 +1409,7 @@ CREATE TABLE external (id INT);           -- 8.4.13: OK   9.7.4: ERROR 1064
 
 ##### Deprecated everywhere (keep out of new code)
 
-`VALUES(col)` in `ON DUPLICATE KEY UPDATE` (8.0.20), `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()`, `&&`/`||`/`!`, user-variable assignment inside expressions, integer display width/`ZEROFILL`/`FLOAT(M,D)`, `utf8`/`utf8mb3`, `$` as the first character of unquoted identifiers, `JSON_MERGE()`, `binlog_format`, `information_schema.processlist`, wildcard database grants, `mysql_native_password`, `MD5()`/`SHA1()`.
+`VALUES(col)` in `ON DUPLICATE KEY UPDATE` (8.0.20), `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()`, `&&`/`||`/`!`, user-variable assignment inside expressions, integer display width/`ZEROFILL`/`FLOAT(M,D)`, `utf8`/`utf8mb3`, `$` as the first character of unquoted identifiers, `JSON_MERGE()`, `binlog_format`, `information_schema.processlist`, wildcard database grants and `'%'` matching `localhost` in grants, `mysql_native_password`, `MD5()`/`SHA1()`.
 
 ```sql
 SELECT 1 && 1;      -- 1, Warning 1287: '&&' is deprecated and will be removed in a future release. Please use AND instead
@@ -1503,3 +1504,4 @@ SELECT 1 && 1;      -- 1, Warning 1287: '&&' is deprecated and will be removed i
 [^29]: MySQL 9.7 Reference Manual — mysql Client Options (--commands). https://dev.mysql.com/doc/refman/9.7/en/mysql-command-options.html
 [^30]: MySQL 8.4 Reference Manual — Stored Program Binary Logging. https://dev.mysql.com/doc/refman/8.4/en/stored-programs-logging.html
 [^31]: go-sql-driver/mysql — README (parseTime, loc, multiStatements, interpolateParams, clientFoundRows). https://github.com/go-sql-driver/mysql
+[^32]: Changes in MySQL 8.0.35 and Changes in MySQL 8.2.0 (2023-10-25), Deprecation and Removal Notes — wildcards in database-level grants and '%' as a synonym for localhost deprecated. https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-35.html , https://dev.mysql.com/doc/relnotes/mysql/8.2/en/news-8-2-0.html
