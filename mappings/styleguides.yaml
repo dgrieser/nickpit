@@ -123,7 +123,13 @@ style_guides:
       "15": styleguides/csharp-15.md
   sql: styleguides/sql.md
   shell: styleguides/bash.md
-  helm: styleguides/helm.md
+  helm:
+    default: styleguides/helm.md
+    versions:
+      # Keyed by the Helm CLI version (.tool-versions, azure/setup-helm,
+      # alpine/helm images). Helm 2 has no guide of its own.
+      "3": styleguides/helm-3.md
+      "4": styleguides/helm-4.md
   kubernetes: styleguides/kubernetes.md
 
 version_source_priority:
@@ -155,6 +161,11 @@ version_source_priority:
   csharp:
     - "*.csproj"
     - Directory.Build.props
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  helm:
     - .tool-versions
     - .github/workflows/*
     - .gitlab-ci.yml

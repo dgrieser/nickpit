@@ -220,6 +220,13 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"csharp", []string{"15.0"}, "styleguides/csharp-15.md"},
 		{"csharp", []string{"14.0", "12.0"}, "styleguides/csharp-12.md"},
 		{"csharp", []string{"16.0"}, "styleguides/csharp.md"},
+		{"helm", nil, "styleguides/helm.md"},
+		{"helm", []string{"2.17.0"}, "styleguides/helm.md"},
+		{"helm", []string{"3.15.2"}, "styleguides/helm-3.md"},
+		{"helm", []string{"v3.22.1"}, "styleguides/helm-3.md"},
+		{"helm", []string{"4.0.1"}, "styleguides/helm-4.md"},
+		{"helm", []string{"4.3.1", "3.16.1"}, "styleguides/helm-3.md"},
+		{"helm", []string{"5.0.0"}, "styleguides/helm.md"},
 	}
 	for _, tt := range tests {
 		got, ok := StyleGuideFile(tt.language, tt.detected)
