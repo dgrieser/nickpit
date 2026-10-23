@@ -2,7 +2,7 @@
 
 > **Version**: Kubernetes v1.33.0 "Octarine", released 2025-04-23. The last patch release is **v1.33.13** (release artifacts dated 2026-06-12; `dl.k8s.io/release/stable-1.33.txt` reports `v1.33.13`). There will be no further 1.33 patches.[^1][^2][^3]
 > **Support**: 1.33 reached **end of life on 2026-06-28** and is **out of support** as of October 2026: no security fixes, no bug fixes, no CVE backports. The newest minor is **1.37** (v1.37.0 on 2026-08-26, latest patch v1.37.1). Supported minors as of 2026-10-22: 1.37, 1.36 (v1.36.5), 1.35 (v1.35.9) and 1.34 (v1.34.12, EOL **2026-10-27**). A cluster on 1.33 needs an upgrade plan; it cannot skip minors, so it must go 1.33 → 1.34 → 1.35 (…) one minor at a time.[^2]
-> **Client libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go` and the other staging modules at **v0.33.x** (final v0.33.13, tagged 2026-06-12); **controller-runtime v0.21.0** (2025-05-20, the only v0.21 release) and **controller-tools v0.18.0** (2025-05-08) pair with 1.33. All of them declare `go 1.24.0`. Kubernetes 1.33.0 was built with Go 1.24.2; from v1.33.11 the release binaries are built with Go 1.25 (v1.33.13: Go 1.25.11).[^4][^5]
+> **Client libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go` and the other staging modules at **v0.33.x** (final v0.33.13, tagged 2026-06-12); **controller-runtime v0.21.0** (2025-05-20, the only v0.21 release) and **controller-tools v0.18.0** (2025-05-08) pair with 1.33; Kubebuilder **v4.6.0–v4.8.x** scaffolds exactly these two (v4.9 moves to controller-runtime v0.22). All of them declare `go 1.24.0`. Kubernetes 1.33.0 was built with Go 1.24.2; from v1.33.11 the release binaries are built with Go 1.25 (v1.33.13: Go 1.25.11).[^4][^5]
 > **Scope**: Kubernetes manifests (raw YAML, Kustomize output, Helm-rendered YAML), admission policies (ValidatingAdmissionPolicy, webhooks), CustomResourceDefinitions with CEL validation, and Go operators/controllers built with controller-runtime, client-go and Kubebuilder that target a 1.33 cluster.
 > **Note**: This document is self-contained. It carries forward every still-correct house rule (operator principles, CRD design, status conditions, finalizers, RBAC, webhooks, observability, testing) and adds the 1.33-specific layer. Sections marked **[NEW in 1.33]** cover behaviour that differs from 1.32. Every manifest in this guide was applied (for real or with `kubectl apply --dry-run=server`) against a v1.33.0 kube-apiserver with etcd; boundary claims were re-checked against v1.32.0 and v1.34.1 apiservers; feature-gate states were read from the `kubernetes_feature_enabled` metric of those apiservers. Go snippets compile against k8s.io/* v0.33.13 and controller-runtime v0.21.0. Runtime (kubelet, scheduler, controller-manager) behaviour is sourced from the release notes and documentation, not executed.
 
@@ -81,12 +81,15 @@ Kubernetes 1.33 contains 64 enhancements: 18 graduated to Stable, 20 entered Bet
 | **Relaxed DNS search validation** | `dnsConfig.searches` may contain `.` and `_` labels. 1.32 rejects them. | beta, **on** |
 | **SELinux change policy** | `securityContext.seLinuxChangePolicy` (`MountOption` / `Recursive`). The cluster-wide `SELinuxMount` gate is beta but **off**. | `SELinuxChangePolicy` beta, on |
 | **Ordered namespace deletion** | Pods are deleted before other namespaced resources when a namespace is deleted. | beta, on |
-| **Kubelet fine-grained authorization** (KEP-2862) | `nodes/metrics`, `nodes/stats`, `nodes/pods`, `nodes/healthz`, `nodes/configz` instead of `nodes/proxy`. | beta, on |
+| **Kubelet fine-grained authorization** (KEP-2862) | The kubelet's `/pods`, `/runningPods/`, `/healthz` and `/configz` endpoints first check `nodes/pods`, `nodes/healthz`, `nodes/configz` and only then fall back to `nodes/proxy` (`/metrics` and `/stats` already used `nodes/metrics` / `nodes/stats`). | beta, on |
 | **ClusterTrustBundle** (KEP-3257) | `certificates.k8s.io/v1beta1`; beta API, **off by default** (needs `--runtime-config` and the gate). | beta, **off** |
 | **Image volumes** (KEP-4639) | `volumes[].image` graduated to beta, but the gate is **off**: the apiserver silently drops the field (verified). | beta, **off** |
 | **Coordinated leader election** | `coordination.k8s.io/v1beta1` `LeaseCandidate`; off by default. | beta, off |
 | **DRA structured parameters** | New `resource.k8s.io/v1beta2`; `v1beta1` deprecated. DRA itself stays **beta and off** (`DynamicResourceAllocation`), and both beta API versions are disabled by default. Users with the namespaced `edit` role may manage ResourceClaims. | beta, **off** |
 | Declarative validation (validation-gen) | Internal; mismatches are only reported via metrics. | `DeclarativeValidation` beta, on |
+| **DRA device status** (KEP-4817) | `ResourceClaim.status.devices` (standardized network-interface data reported by drivers). | `DRAResourceClaimDeviceStatus` beta, on |
+| Service-account audience restriction for kubelets | NodeRestriction only lets a kubelet request tokens for audiences that the Pod's volumes reference. | `ServiceAccountNodeAudienceRestriction` beta, on |
+| User UID from X.509 client certificates | Components read the user UID from subject RDN OID `1.3.6.1.4.1.57683.2`. | `AllowParsingUserUIDFromCertAuth` beta, on |
 | Streaming list encoding | The apiserver streams large JSON/Protobuf list responses item by item (less memory). | beta, on |
 | `SchedulerAsyncPreemption`, `SchedulerPopFromBackoffQ`, `WinDSR`, `RemoteRequestHeaderUID`, `DistributeCPUsAcrossNUMA` | Cluster/node level. | beta, on |
 
@@ -103,7 +106,10 @@ Kubernetes 1.33 contains 64 enhancements: 18 graduated to Stable, 20 entered Bet
 - **The `v1` Endpoints API is deprecated.** Requests to `v1` Endpoints return `Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice` (verified on create; 1.32 is silent). The API will not be removed, but code should read EndpointSlices.[^7]
 - **IP/CIDR warnings got clearer.** Non-canonical values are still accepted but warn: `non-standard CIDR value "010.0.0.0/8" will be considered invalid in a future Kubernetes release` and `CIDR value "192.168.0.5/24" is ambiguous in this context` (verified). They become errors only when `StrictIPCIDRValidation` is enabled (alpha in 1.33).
 - **StatefulSet `serviceName` must be a valid DNS-1123 label on create** (verified: `serviceName: Bad_Name` is rejected on 1.33 with `a lowercase RFC 1123 label must consist of ...`, accepted on 1.32); previously such StatefulSets were stored but could never create Pods.
-- **`kubectl apply` coerces `null` label/annotation values to `""`** instead of dropping all labels and annotations.
+- **`kubectl` 1.33 decodes `null` label/annotation values as `""`** instead of discarding the whole `labels`/`annotations` map. Verified with `labels: {a: null, b: x}` / `annotations: {c: null}`: client-side `kubectl apply` stores `c: ""` but still removes label `a` (its three-way patch treats `null` as "delete"), `kubectl apply --server-side` stores `a: ""`. Write `""` explicitly instead of relying on either.
+- **Node-affinity values are validated.** `nodeSelectorTerms[].matchExpressions[].values` must be valid label values on 1.33 (`"bad value!"` → `a valid label must be an empty string or consist of alphanumeric characters ...`); 1.32 accepted them (verified).
+- **StatefulSet `revisionHistoryLimit` < 0** now returns `Warning: spec.revisionHistoryLimit: a negative value retains all historical revisions` (verified; 1.32 is silent), and a negative value no longer panics kube-controller-manager.
+- **`LegacySidecarContainers`** (off, 1.33 only) can re-enable the pre-sidecar kubelet code path as an emergency escape hatch; it is removed in 1.34.
 - **WatchList is off again on the apiserver** (`WatchList` beta, **off**) in favour of streaming list encoding; client-go's `WatchListClient` is beta/off as well.
 - **CEL**: two-variable comprehensions (`all(i, v, ...)`, `exists(i, v, ...)`, `existsOne(i, v, ...)`) and `transformList` / `transformMap` / `transformMapEntry` are available in CRD rules and policies (verified on 1.33, rejected on 1.32). `cel-go` was bumped to v0.23.2.
 - **Windows**: host-network support for Windows Pods (`WindowsHostNetwork`) was withdrawn; HostProcess containers are unaffected.
@@ -112,12 +118,13 @@ Kubernetes 1.33 contains 64 enhancements: 18 graduated to Stable, 20 entered Bet
 ##### Patch-release fixes that matter (1.33.1–1.33.13)
 
 - 1.33.1: restored the per-ResourceClaim device limit to 32 (1.33.0 regressed it to 16).
-- 1.33.2: kubelet stops static Pods from referencing arbitrary ResourceClaims; clearer error for user-namespaced Pods on runtimes without support.
+- 1.33.2: kubelet stops static Pods from referencing arbitrary ResourceClaims; clearer error for user-namespaced Pods on runtimes without support; restored the accidentally removed `-o` shorthand of `kubectl explain`.
 - 1.33.3: fixed a 1.33 regression where paginated LISTs fell back to etcd instead of the watch cache; fixed delayed Pod creation for new Jobs.
 - 1.33.4: fixed a 1.33 kube-scheduler nil-pointer panic when aggregating container requests; NodeRestriction forbids nodes changing their own `ownerReferences`.
 - 1.33.5: masked Linux thermal-interrupt info in `/proc` and `/sys`.
 - 1.33.6: fixed a 1.33 regression in DaemonSet handling of orphaned Pods; fixed sidecar startup-probe races; nftables kube-proxy fixes.
 - 1.33.7: fixed a data race that made ValidatingAdmissionPolicy evaluation non-deterministic, and spurious "namespace not found" errors for policies on objects in newly created namespaces; fixed an apiserver panic for CRDs that declare a status subresource but no `status` schema.
+- 1.33.8: fixed a DRA scheduler race that could allocate the same device to two ResourceClaims.
 - 1.33.10: fixed a kube-controller-manager crash when a ValidatingAdmissionPolicy's object schema has `additionalProperties: true`.
 - 1.33.11: built with Go 1.25; fixed apiserver start-up with many namespaces when `MultiCIDRServiceAllocator` is on.
 - 1.33.13: built with Go 1.25.11; endpoint-controller panic fix for pre-dual-stack Services.[^3]
@@ -137,15 +144,15 @@ A 1.33 apiserver does not know these API versions, fields or values, or it knows
 | `resource.k8s.io/v1` (DRA GA: DeviceClass, ResourceClaim, ResourceClaimTemplate, ResourceSlice) | 1.34 GA | `no matches for kind "DeviceClass" in version "resource.k8s.io/v1"`; 1.33 has only `v1beta1`/`v1beta2`, both off by default |
 | `admissionregistration.k8s.io/v1beta1` MutatingAdmissionPolicy (1.34, off by default) and `v1` (GA 1.36) | 1.34 / 1.36 | `no matches for kind "MutatingAdmissionPolicy"`; 1.33 has only `v1alpha1` behind an alpha gate |
 | Service `trafficDistribution: PreferSameZone` / `PreferSameNode` | 1.34 beta (GA 1.35) | `Unsupported value: "PreferSameNode": supported values: "PreferClose"` |
-| Pod `spec.hostnameOverride` | 1.34 alpha | `unknown field "spec.hostnameOverride"` |
-| `env[].valueFrom.fileKeyRef` (EnvFiles) | 1.34 alpha | `unknown field "spec.containers[0].env[0].valueFrom.fileKeyRef"` |
-| Container `restartPolicy` + `restartPolicyRules` on regular containers | 1.34 alpha | `unknown field "spec.containers[0].restartPolicyRules"` |
+| Pod `spec.hostnameOverride` | 1.34 alpha, 1.35 beta/on | `unknown field "spec.hostnameOverride"` |
+| `env[].valueFrom.fileKeyRef` (EnvFiles) | 1.34 alpha, 1.35 beta/on | `unknown field "spec.containers[0].env[0].valueFrom.fileKeyRef"` |
+| Container `restartPolicy` + `restartPolicyRules` on regular containers | 1.34 alpha, 1.35 beta/on | `unknown field "spec.containers[0].restartPolicyRules"` |
 | Pod-level `spec.resources` | 1.32 alpha, **1.34 beta/on** | field exists but is **dropped** on 1.33 (alpha/off) |
 | HPA `behavior.*.tolerance` | 1.33 alpha (still alpha/off in 1.34), beta/on in 1.35 | **dropped** on 1.33 and 1.34 (1.32 rejects it as unknown) |
 | HPA `minReplicas: 0` | alpha everywhere up to 1.36 | `must be greater than or equal to 1` |
 | `lifecycle.stopSignal` | 1.33 alpha, beta later | **dropped** |
-| Image volumes `volumes[].image` | beta/on from 1.35, GA 1.36 | **dropped** on 1.33 and 1.34 (beta/off) — the Pod would start without the volume source |
-| StatefulSet `rollingUpdate.maxUnavailable` | beta/on in 1.35 | **dropped** on 1.32–1.34 (alpha/off); stored object keeps only `partition` |
+| Image volumes `volumes[].image` | beta/on from 1.35, GA 1.36 | **dropped** on 1.33 and 1.34 (beta/off): the whole volume *and every `volumeMount` that references it* disappear from the stored Pod (verified), so the container starts without the data |
+| StatefulSet `rollingUpdate.maxUnavailable` | beta/on in v1.35.0–v1.35.3 only (off again from v1.35.4 and in 1.36, on in 1.37) | **dropped** on 1.32–1.34 (alpha/off); stored object keeps only `partition` |
 | Pod `status.observedGeneration` populated by the kubelet | 1.34 beta/on, GA 1.35 | alpha/off: the field is in the schema but nobody sets it |
 | Leading-digit Service names (`8080-web`) | 1.34 alpha, 1.36 beta/on | `a DNS-1035 label must ... start with an alphabetic character` |
 | Decreasing a memory limit in place without `RestartContainer` | 1.34 | `memory limits cannot be decreased unless resizePolicy is RestartContainer` |
@@ -518,7 +525,7 @@ Review notes for this template:
 - **`hostUsers: false`** needs node support (see Pod Security). On a node without user-namespace support the Pod fails to start; 1.33.2 improved that error message.
 - **`supplementalGroupsPolicy: Strict`** makes the kubelet reject the Pod on nodes whose runtime cannot honour it (`.status.features.supplementalGroupsPolicy: false` on the Node). Check node/runtime support before rolling it out.
 - **`recursiveReadOnly: Enabled`** requires `readOnly: true` (otherwise `may only be specified when readOnly is true`, verified) and a runtime that supports recursive read-only mounts; `IfPossible` degrades silently instead of failing. It is GA in 1.33.
-- **Do not add `volumes[].image`** on 1.33 (dropped: beta/off), nor pod-level `spec.resources` (dropped: alpha/off), nor `lifecycle.stopSignal` (dropped: alpha/off).
+- **Do not add `volumes[].image`** on 1.33 (dropped together with its mounts: beta/off; 1.33's Pod Security `restricted` profile already allows image volumes, which only matters on clusters that turn the gate on), nor pod-level `spec.resources` (dropped: alpha/off), nor `lifecycle.stopSignal` (dropped: alpha/off).
 
 ##### Resource Requests, Limits and In-Place Resize **[NEW in 1.33: beta, on]**
 
@@ -855,7 +862,7 @@ rules:
     verbs: ["get"]
 ```
 
-Kubelet path → subresource mapping with `KubeletFineGrainedAuthz`: `/stats/*` → `nodes/stats`, `/metrics/*` → `nodes/metrics`, `/logs/*` → `nodes/log`, `/pods` and `/runningPods/` → `nodes/pods`, `/healthz` → `nodes/healthz`, `/configz` → `nodes/configz`; the kubelet falls back to `nodes/proxy` when the specific check is denied.[^15] Keep a `nodes/proxy` grant only where the agent must also run on clusters or nodes without the gate.
+Kubelet path → subresource mapping with `KubeletFineGrainedAuthz`: `/stats/*` → `nodes/stats`, `/metrics/*` → `nodes/metrics`, `/logs/*` → `nodes/log` (these three never needed `nodes/proxy`); new in 1.33 (beta, on): `/pods` and `/runningPods/` → `nodes/pods`, `/healthz` → `nodes/healthz`, `/configz` → `nodes/configz`, each with a fallback to `nodes/proxy` when the fine-grained check is denied; every other path still requires `nodes/proxy`.[^15] Keep a `nodes/proxy` grant only where the agent must also run on clusters or nodes without the gate.
 
 ---
 
@@ -1094,9 +1101,12 @@ webhooks:
 
 ##### Minimal Skeleton (Go, Kubebuilder markers)
 
-This is the Kubebuilder layout for controller-tools v0.18 / controller-runtime v0.21 (it compiles against v0.21.0; `zz_generated.deepcopy.go` comes from `controller-gen object`):
+This is the Kubebuilder layout for controller-tools v0.18 / controller-runtime v0.21, condensed into one file (it compiles against v0.21.0; `zz_generated.deepcopy.go` comes from `controller-gen object`, the CRD from `controller-gen crd`). The package-level `+kubebuilder:object:generate=true` and `+groupName` markers normally live in `groupversion_info.go`; they are mandatory — without them controller-gen v0.18.0 emits DeepCopy only for the root types (the package then fails to compile: `in.Status.DeepCopyInto undefined`) and writes a CRD with `group: ""` (verified).
 
 ```go
+// Package v1 contains the example.com/v1 API.
+// +kubebuilder:object:generate=true
+// +groupName=example.com
 package v1
 
 import (
@@ -1178,7 +1188,7 @@ func init() {
 }
 ```
 
-`sigs.k8s.io/controller-runtime/pkg/scheme.Builder` is the normal, non-deprecated helper in v0.21 (it was deprecated only in later controller-runtime releases). Do not ask 1.33 projects to replace it; `runtime.NewSchemeBuilder` from apimachinery works too.
+`sigs.k8s.io/controller-runtime/pkg/scheme.Builder` is the normal, non-deprecated helper in v0.21 (it is deprecated only from controller-runtime v0.24). Do not ask 1.33 projects to replace it; `runtime.NewSchemeBuilder` from apimachinery works too.
 
 ##### Spec Design Rules
 
@@ -1373,7 +1383,7 @@ Verified by creating CRDs with each function on v1.32.0, v1.33.0 and v1.34.1 api
 | Function family | 1.32 | **1.33** | 1.34 |
 |---|---|---|---|
 | Standard macros (`all`, `exists`, `exists_one`, `map`, `filter`), `has`, optionals (`optionalOldSelf`, `.?field`, `optional.of`) | yes | yes | yes |
-| Kubernetes list (`sum`, `min`, `max`, `indexOf`, `isSorted`), regex (`find`, `findAll`), URL, quantity, IP/CIDR (`isIP`, `ip()`, `isCIDR`, `cidr().containsCIDR`), `format.*` (`format.dns1123Label()`, `format.dns1123Subdomain()`, `format.named(...)`), `sets.*`, extended strings (`lowerAscii`, `trim`, `split`, `join`, `quote`) | yes | yes | yes |
+| Kubernetes list (`sum`, `min`, `max`, `indexOf`, `isSorted`), regex (`find`, `findAll`), URL, quantity, IP/CIDR (`isIP`, `ip()`, `isCIDR`, `cidr().containsCIDR`), `format.*` (`format.dns1123Label()`, `format.dns1123Subdomain()`, `format.named(...)`), `sets.*`, extended strings (`lowerAscii`, `upperAscii`, `trim`, `replace`, `split`, `join`, `charAt`, `indexOf`, and the global function `strings.quote(s)` — `s.quote()` does not compile) | yes | yes | yes |
 | **Two-variable comprehensions** `all(i, v, …)`, `exists(i, v, …)`, `existsOne(i, v, …)`; **`transformList`, `transformMap`, `transformMapEntry`** | no | **yes [NEW in 1.33]** | yes |
 | Semver (`isSemver`, `semver(...)`, `semver(s, true)`) | no | **no** | yes |
 | `string.reverse()`, list `sort()` / `slice()`, `base64.*`, `math.*` | no | no | no |
@@ -1830,9 +1840,9 @@ func main() {
 | k8s.io/* v0.33, Go 1.24 | bump toolchain and all `k8s.io/*` modules together |
 | Client-side rate limiting off by default | set `cfg.QPS`/`cfg.Burst` if the old 20/30 throttle was relied on |
 | `Result.Requeue` deprecated | replace with `RequeueAfter` or return an error |
-| Priority queue: priority set automatically by handlers, `IsInInitialList` on create events; builder option `WithLowPriorityWhenUnchanged` removed | only matters when `UsePriorityQueue` is enabled |
+| Priority queue: priority set automatically by the built-in handlers, `IsInInitialList` on create events, priority kept after `Reconcile`; the builder no longer wraps handlers in `handler.WithLowPriorityWhenUnchanged` (the function itself still exists) | only matters when `UsePriorityQueue` is enabled |
 | `NewUnmanaged`/`NewTypedUnmanaged` no longer take a manager | update call sites |
-| All Go runtime metrics are exposed | dashboards may see new `go_*` series |
+| All Go runtime metrics are exposed; native histograms adopted | dashboards may see new `go_*` series |
 | Multi-handlers return warnings; `WarningHandlerWithContext` | admission warnings from chained handlers are no longer lost |
 
 ---
@@ -2287,7 +2297,7 @@ var _ = Describe("Widget controller", func() {
 | `KUBECTL_KUBERC=true kubectl --kuberc ~/.kube/kuberc ...` | **[NEW in 1.33]** alpha: aliases and default flags in `~/.kube/kuberc`, separate from kubeconfig. Do not commit team tooling that depends on it |
 | `kubectl wait --for=create` | waits for an object to appear; 1.33 fixed it for label selectors |
 | `kubectl autoscale` | creates `autoscaling/v2` HPAs (falls back to v1) |
-| `kubectl apply` with `labels: {a: null}` | 1.33 coerces `null` to `""` instead of dropping all labels |
+| `kubectl apply` with `labels: {a: null}` | 1.33 no longer discards the whole map; a `null` value becomes `""` (client-side apply still removes the key) — write `""` explicitly |
 | `kubectl debug` | default profile is still `legacy`; pass `--profile=general` (or `baseline`/`restricted`) explicitly |
 | `kubectl explain --recursive` | long form only (no `-R` in 1.33) |
 
