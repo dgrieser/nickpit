@@ -50,12 +50,12 @@ Sources: the official NEWS and CHANGES files; every non-interactive item was exe
 | `cd ""` is an error (`cd: null directory`, status 1) | §17 | Not reverted by `BASH_COMPAT=52` |
 | `local BASH_REMATCH` works: matches inside a function no longer clobber the caller's `BASH_REMATCH` | §6 | |
 | Multiple simultaneous coprocesses are enabled by default (no `coproc … still exists` warning) | §14 | |
-| New loadable builtins `kv`, `strptime`, `fltexpr` (and `chmod` in the examples directory) | §24 | Only if the distribution ships the loadables |
+| New loadable builtins `kv`, `strptime`, `fltexpr` (the 5.3 build also installs a `chmod` loadable) | §24 | Only if the distribution ships the loadables |
 | POSIX mode: function names need not be identifiers; `kill` fails if any target is not found; `test` `<`/`>` use the locale; `wait -n` removes reaped jobs; new job-notification rules | §25 | |
 | `exit` with no argument at a trap's top level uses the pre-trap `$?` (POSIX interp. 1602) | §9 | 5.2 used the trap's last status |
 | `BASH_COMPAT=52` restores 5.2 behaviour for `test` parsing, `bind -p/-P` arguments and job notifications while sourcing | §28 | |
 
-Point releases matter: **bash53-007** fixed no-fork command substitutions whose redirections leaked into the enclosing command, and later patches fix `mapfile` callbacks that unset the target array (011/014), a subshell running an inherited `EXIT` trap after a fatal signal (012) and `read` buffer indexing (015).[^14] Prefer 5.3.7 or newer when relying on `${ cmd; }` with redirections.
+Point releases matter: **bash53-007** fixed no-fork command substitutions whose redirections leaked into the enclosing command, and later patches fix a subshell or background job whose `EXIT` trap calls `wait` looping on inherited jobs (010), `mapfile` callbacks that unset the target array (011/014), a subshell running an inherited `EXIT` trap after a fatal signal (012), `read` buffer indexing (015) and, on macOS, a variable name directly followed by a byte ≥ 0x80 (e.g. `"$nameä"`) being misparsed (019).[^14] Prefer 5.3.7 or newer when relying on `${ cmd; }` with redirections.
 
 ##### Do not use or recommend (version gates)
 
@@ -368,14 +368,16 @@ output on 5.2+:
 s='a.b'; r='&x'
 echo "${s//./$r}"     # 3.2–5.1: a&xb    5.2+: a.xb   (& replaced by the match ".")
 x=${s//./"$r"}        # GOOD on every version 3.2–5.3: a&xb (quoted replacement is literal)
-echo "${s//./\&}"     # literal & via backslash on every version: a&b
+echo "${s//./\&}"     # literal & via backslash: a&b on 4.4–5.3; 3.2 keeps the backslash: a\&b
 ```
 
 Quote a data-derived replacement *inside* the expansion. Do this in an
 assignment or another context that is not itself double-quoted: in Bash 3.2
 (and under `BASH_COMPAT=42` or lower) `"${s//./"$r"}"` keeps the inner quotes
 literally (3.2 prints `a"&x"b`). On 5.2+ `shopt -u patsub_replacement` restores the old
-behaviour globally, but `shopt` with that name fails on older versions.
+behaviour globally, but `shopt` with that name fails on older versions. Since
+5.3 the option's default is a build-time setting, so a distribution may ship
+it off: code must be correct with either setting, which quoting guarantees.
 
 ##### Parameter transformations `${var@op}` (4.4+, extended in 5.1 and 5.2)
 
@@ -559,13 +561,15 @@ declare -p config    # prints: declare -A config=([host]="localhost" ...)
 ##### Untrusted data in array subscripts and arithmetic (command injection)
 
 Indexed-array subscripts and every arithmetic context (`$(( ))`, `(( ))`,
-`let`, `declare -i`, `[[ $a -eq $b ]]`) **evaluate** their operands. A value such
-as `a[$(cmd)0]` or `$(cmd)0` read from input runs `cmd` — in every version
-through 5.3. (`[ "$x" -eq 1 ]` with single brackets accepts only integer
-literals and is not affected.)
+`let`, `declare -i`, `[[ $a -eq $b ]]`) **evaluate** their operands. A value
+that contains an array reference such as `a[$(cmd)0]`, read from input, runs
+`cmd` when it is used there — in every version through 5.3. (A bare `$(cmd)0`
+is only an arithmetic syntax error, because the expanded value is not
+re-expanded; the array-reference form is the exploit. `[ "$x" -eq 1 ]` with
+single brackets accepts only integer literals and is not affected.)
 
 ```bash
-idx='$(touch /tmp/pwned)0'
+idx='a[$(touch /tmp/pwned)0]'
 : "${arr[$idx]}"            # BAD: runs touch (indexed subscript is arithmetic)
 n='a[$(touch /tmp/pwned)0]'
 echo $(( n + 1 ))           # BAD: runs touch (variable value evaluated recursively)
@@ -577,7 +581,9 @@ echo $(( 10#$n + 1 ))       # 10# also stops "08"/"09" from being parsed as octa
 
 Associative-array keys used in `(( A[$key]++ ))` or `[[ -v A[$key] ]]` were
 expanded twice up to 5.1, so a key like `x$(cmd)` ran `cmd`; 5.0/5.1 need
-`shopt -s assoc_expand_once`, and 5.2+ behave that way by default (the option is
+`shopt -s assoc_expand_once` (on 5.0 it protects only arithmetic commands —
+`[[ -v A[$key] ]]` and `[[ A[$key] -gt 0 ]]` still run `cmd` there; 5.1 covers
+`[[ ]]` too), and 5.2+ behave that way by default (the option is
 named `array_expand_once` in 5.3, with `assoc_expand_once` kept as a deprecated
 synonym). `test -v "A[$key]"` and `[ -v "A[$key]" ]` **still** execute the
 substitution on 5.3 — use `[[ -v A[$key] ]]` only on 5.2+, or test membership
@@ -694,9 +700,16 @@ printf '%.3Q\n' 'a b c'           # -> a\ b   (%.3q would truncate the quoted te
 printf '%#q\n' "it's"             # -> 'it'\''s'   (5.2 ignores #: it\'s)
 ```
 
-`printf %d` with a non-numeric argument prints a diagnostic, outputs `0` (or the
-leading digits: `12abc` → `12`) and returns status 1 in every version — check the
-status or validate the input first.
+`printf %d` with a non-numeric argument prints a diagnostic (`invalid number`),
+outputs `0` — or, on 4.4–5.3, the leading digits (`12abc` → `12`; 3.2 prints
+`0`) — and returns status 1 in every version; check the status or validate the
+input first.
+
+**5.3:** `%ls`/`%lc` (`%S`/`%C`) treat the argument as a wide string/character
+in a multibyte locale, so the precision counts characters instead of bytes:
+under `LC_ALL=C.UTF-8`, `printf '%.1ls' 'äb'` prints `ä`, while `%.1s` prints
+only the first byte of `ä` (an invalid sequence). On 5.2 `%ls` behaves like
+`%s`.
 
 ##### Command substitution — `$( … )` and the non-forking `${ …; }` / `${| …; }` (New in 5.3)
 
@@ -863,7 +876,8 @@ shopt -s failglob             # an unmatched glob is an error instead
 (collation order of the locale) unless `GLOBSORT` names another key:
 `name`, `numeric` (all-digit names by value, others after them by name),
 `size`, `blocks`, `mtime`, `atime`, `ctime`, or `nosort` (directory order); a
-leading `-` reverses the order.[^16]
+leading `-` reverses the order (a leading `+` is ignored; `-` alone means
+reverse name order).[^16]
 
 ```bash
 GLOBSORT=-mtime               # newest first (5.3+)
@@ -879,7 +893,8 @@ unset GLOBSORT                # restore name order for the rest of the script
   error and name order is used; only `nosort` disables sorting.
 - `GLOBSORT` is global state: set it in a function with `local GLOBSORT=…`
   so other globs in the script keep the expected order.
-- Equal keys (same size/mtime) fall back to name order.
+- Equal keys (same size/mtime) fall back to name order — reversed as well
+  under a `-` prefix.
 
 ***
 
@@ -936,7 +951,7 @@ get_stats total_count total_sum
 
 # Scope shell options to a function (Bash 4.4+): restored on return
 with_strict_globs() {
-  local -                     # saves single-letter options (set -f, -u, -x …)
+  local -                     # saves options changed with set (-f, -u, -x, -o pipefail …)
   set -f                      # noglob only inside this function
   local IFS=,                 # IFS scoped the same way
   read -ra parts <<< "$1"
@@ -944,7 +959,8 @@ with_strict_globs() {
 }
 ```
 
-`local -` restores only `set` single-letter options; `shopt` options (extglob,
+`local -` restores only options changed with `set` (including long-only ones
+such as `set -o pipefail`); `shopt` options (extglob,
 nullglob, …) are **not** restored — save them with `shopt -p extglob` and
 `eval` the saved line on return. Bash uses dynamic scoping: a `local` variable is
 visible to every function the declaring function calls.
@@ -1101,7 +1117,8 @@ trap -P TERM                             # 5.3+: prints only the action: on_sign
 - **Changed in 5.3:** `exit` without an argument at the top level of a trap
   action now exits with the status from *before* the trap ran (POSIX
   interpretation 1602): `trap 'false; exit' USR1` exits 1 on 5.2 (status of
-  `false`) but with the interrupted command's status on 5.3. Pass an explicit
+  `false`) but with the value `$?` had when the trap started on 5.3 (for
+  example 0 after a successful `kill -USR1 "$BASHPID"`). Pass an explicit
   status (`exit "$rc"`) in every trap that exits.
 
 ##### Lock files
@@ -1364,7 +1381,8 @@ teardown_logging() {
 `{var}>file` on a command other than `exec` leaves the descriptor **open** after
 the command (a descriptor leak in loops) unless `shopt -s varredir_close` (5.2+)
 is set; close it explicitly with `{var}>&-`. `{var}>&-` with a non-numeric `$var`
-no longer silently closes stdin since 5.3.[^18]
+silently closes **stdin** on 5.2 and older; since 5.3 it fails with
+`ambiguous redirect` (status 1) and leaves stdin open.[^18]
 
 ***
 
@@ -1509,8 +1527,9 @@ EOF
   produces YAML/SQL/JSON is an injection point — generate structured formats
   with a real tool (`jq -n --arg`, parameterised SQL).
 - Bash 5.1+ feeds small here-docs/here-strings through a **pipe** instead of a
-  temporary file (`BASH_COMPAT=50` restores temp files); code that seeks on
-  stdin or checks `[[ -f /dev/stdin ]]` behaves differently.[^6]
+  temporary file (`BASH_COMPAT=50` restores temp files on 5.2+; 5.1 itself
+  ignores that setting); code that seeks on stdin or checks
+  `[[ -f /dev/stdin ]]` behaves differently.[^6]
 
 ##### Here-string (Bash 2.05b+)
 
@@ -2331,7 +2350,7 @@ GLOBSORT=-mtime; f=(*)      # silently ignored on 5.2 and older
 | `localvar_inherit`, `assoc_expand_once` | **5.0** | `assoc_expand_once` deprecated in 5.3 |
 | `SRANDOM`, `wait -p`, `declare -I` | **5.1** | |
 | `${v@U}` `@u` `@L` `@K`, key/value list `declare -A m=(k v)` | **5.1** | |
-| Here-docs/strings via pipe when small | **5.1** | `BASH_COMPAT=50` reverts |
+| Here-docs/strings via pipe when small | **5.1** | `BASH_COMPAT=50` reverts (5.2+) |
 | `${v@k}`, `printf %Q` | **5.2** | |
 | `patsub_replacement` (default **on**), `globskipdots` (default **on**) | **5.2** | Behaviour change for existing code |
 | `varredir_close`, `noexpand_translation` | **5.2** | |
