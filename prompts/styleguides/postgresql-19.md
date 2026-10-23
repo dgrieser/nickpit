@@ -68,12 +68,12 @@ PostgreSQL 20 is in development (`20devel`); its release notes are a placeholder
 
 The 20 development docs no longer list the `array_nulls` setting, which still exists in 19 (`SHOW array_nulls` → `on`); do not build anything on `array_nulls = off`.
 
-Also not available — these are frequently assumed but are neither in 19 nor in the 20 development docs (all are syntax errors on 19rc1): `GROUP BY ALL`; `UPDATE/DELETE ... FOR PORTION OF` (temporal DML); `ALTER TABLE ... MERGE PARTITIONS` / `SPLIT PARTITION`; SQL/PGQ (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`).
+Also not available — these are frequently assumed but are neither in 19 nor in the 20 development docs (all are syntax errors on 19rc1): `GROUP BY ALL` meaning "group by every non-aggregate output column"; `UPDATE/DELETE ... FOR PORTION OF` (temporal DML); `ALTER TABLE ... MERGE PARTITIONS` / `SPLIT PARTITION`; SQL/PGQ (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`). Do not confuse the first with the grouping-sets keyword of 14: `GROUP BY ALL a, b` (the explicit opposite of `GROUP BY DISTINCT`) is valid and groups by the listed elements only; a bare `GROUP BY ALL` is `syntax error at or near ";"` on 19rc1.
 
 ##### Deprecated in 19 (still works, flag new uses)
 
 - **`VACUUM FULL` and `CLUSTER`** are superseded by `REPACK` ("The old commands have been retained for compatibility"). Both still run on 19rc1.[^1][^6]
-- **MD5 passwords** (deprecated since 18). 19 now also warns at **login**: `WARNING: authenticated with an MD5-encrypted password` (verified; controlled by `md5_password_warnings`, default `on`).[^1][^15]
+- **MD5 passwords** (deprecated since 18). 19 now also warns at **login**: `WARNING: authenticated with an MD5-encrypted password` (verified). Both warnings are controlled by `md5_password_warnings` (default `on`; the setting itself exists since 18, where it only covers setting a password).[^1][^15]
 - **`pg_verifybackup --wal-directory`** is deprecated in favour of `--wal-path`.[^1]
 - **`pg_buffercache_numa_pages()`** remains only for backward compatibility; use `pg_buffercache_os_pages()`.[^1]
 
@@ -81,9 +81,8 @@ Also not available — these are frequently assumed but are neither in 19 nor in
 
 Tests that compare exact error output need updates. Verified differences against 18.6:
 
-- "function ... does not exist" now carries `DETAIL: There is no function of that name.` or `DETAIL: No function of that name accepts the given argument types.` (18 put the explanation into the `HINT`). "operator is not unique" likewise gained a `DETAIL` line.
+- "function ... does not exist" now carries `DETAIL: There is no function of that name.` or `DETAIL: No function of that name accepts the given argument types.` (18 put the explanation into the `HINT`: `No function matches the given name and argument types.`). "operator does not exist" and "operator is not unique" likewise moved the explanation into a `DETAIL` line (`Could not choose a best candidate operator.`), leaving only `You might need to add explicit type casts.` in the `HINT`.
 - Lock-timeout and statement-timeout cancellations while waiting for a lock now add `CONTEXT: waiting for AccessShareLock on relation 16384 of database 5` (18 printed no context).
-- Inserting into a `GENERATED ALWAYS` identity column adds `DETAIL: Column "id" is an identity column defined as GENERATED ALWAYS.` before the `HINT`.
 
 SQLSTATE codes did not change in these cases; match on SQLSTATE, not on message text.
 
@@ -111,6 +110,16 @@ Release-note highlights plus the incompatibilities a reviewer must know.[^1]
 | Security | `standard_conforming_strings` forced `on`; RADIUS removed; MD5 login warning; password-expiry warning; CR/LF banned in database, role and tablespace names; `postgres_fdw` inherits `READ ONLY`; server-side SNI (`pg_hosts.conf`) | Security |
 | Removed | `MULE_INTERNAL` encoding; `escape_string_warning`; `io_workers`; btree_gist as default `inet`/`cidr` GiST opclass | Migration notes |
 | Monitoring | `pg_stat_lock`, `pg_stat_recovery`, `pg_stat_autovacuum_scores`, `pg_stat_progress_repack`, `stats_reset` columns, `log_min_messages` per process type, `log_autoanalyze_min_duration`; wait-event type `BufferPin` renamed `Buffer`; `pg_stat_subscription_stats.sync_error_count` renamed | Observability |
+
+Smaller release-note items that are not covered in their own section:[^1]
+
+- **Encodings and Unicode**: the client-side `GB18030` encoding is updated from the 2000 to the 2022 standard, so conversions of a few code points change for `client_encoding = GB18030` applications; Unicode data is updated to 17.0 (`SELECT unicode_version()` → `17.0` on 19rc1), which affects case mapping and normalization only for characters newly assigned since 16.0.
+- **Queries**: `GROUP BY` handles target-list subqueries that reference non-grouped outer columns, and `GROUPING()` handles target-list subquery aliases correctly.
+- **Performance without SQL changes**: `NOTIFY` wakes only backends listening on that channel; TID range scans (`WHERE ctid >= ... AND ctid < ...`) can run in parallel; radix sort; faster row deformation; `SELECT simple-expression INTO var` in PL/pgSQL is optimized.
+- **PL/Python** can implement event triggers.
+- **psql**: prompt escapes `%S` (current `search_path`, needs an 18+ server) and `%i` (hot-standby status); `\pset display_true`/`display_false`; comments shown by `\dRp+`, `\dRs+`, `\dX+`; variable `SERVICEFILE`.
+- **Tools**: `pgbench --continue-on-error`; `vacuumdb --dry-run`; `pg_waldump` and `pg_verifybackup` read WAL from tar archives; `pg_upgrade` handles non-default tablespaces inside `PGDATA`; `pg_createsubscriber --logdir` and ignoring existing publications.
+- `pg_stat_wal_receiver.status` can be `connecting`; new setting `debug_print_raw_parse`; `file_fdw` reads multi-line headers; `btree_gin` supports all B-tree cross-type comparisons.
 
 ***
 
@@ -393,7 +402,7 @@ SELECT '{"a":1}'::my_jsonb_domain IS JSON OBJECT; -- 19: t       18: cannot use 
 
 ##### Text search
 
-New built-in configurations `polish` and `esperanto` (with `polish_stem`/`esperanto_stem` dictionaries; 18: `text search configuration "polish" does not exist`). The Dutch stemmer was updated; the old one is available as `dutch_porter`. After upgrading, rebuild Dutch full-text indexes and stored `tsvector` columns, because stems can differ.[^1]
+New built-in configurations `polish` and `esperanto` (with `polish_stem`/`esperanto_stem` dictionaries; 18: `text search configuration "polish" does not exist`). The Dutch stemmer behind the `dutch` configuration and `dutch_stem` was updated. The old algorithm is not a configuration (`to_tsvector('dutch_porter', ...)` fails with `text search configuration "dutch_porter" does not exist`) but a Snowball language: `CREATE TEXT SEARCH DICTIONARY dutch_old (TEMPLATE = snowball, LANGUAGE = dutch_porter)` (verified). After upgrading, rebuild Dutch full-text indexes and stored `tsvector` columns, because stems can differ — or build a configuration on such a dictionary to keep the old stems.[^1]
 
 ***
 
@@ -501,7 +510,7 @@ EXPLAIN (COSTS OFF) SELECT ...;     -- Nested Loop, "Disabled: true", JOIN_ORDER
 
 Review notes (verified on 19rc1 unless stated):
 
-- Advice only **constrains** the planner; impossible or mistyped advice never errors — it yields a plan with `Disabled: true` nodes that can be much worse than no advice. Every stored advice string needs a test that checks the feedback is `/* matched */`.
+- Advice only **constrains** the planner. A string that does not parse is rejected when it is set (`SET pg_plan_advice.advice = 'BOGUS_TAG(f)'` → `ERROR: invalid value for parameter "pg_plan_advice.advice"` / `DETAIL: Could not parse advice: syntax error at or near "BOGUS_TAG"`), but well-formed advice that names unknown aliases or indexes, or asks for something impossible, never fails planning: it is reported as `/* not matched */`, `/* partially matched */`, `/* inapplicable */`, `/* conflicting */` or `/* failed */` and can yield a plan with `Disabled: true` nodes that is much worse than no advice. Every stored advice string needs a test that checks the feedback is `/* matched */`; `pg_plan_advice.feedback_warnings = on` (default `off`) turns unenforced advice into warnings.[^11]
 - **On 18 (or when the module is not loaded) `SET pg_plan_advice.advice = '...'` succeeds silently** (custom placeholder setting) and does nothing; `EXPLAIN (PLAN_ADVICE)` fails with `unrecognized EXPLAIN option "plan_advice"`.
 - Advice cannot control aggregation strategy or set operations (documented limitation).[^11]
 - `pg_stash_advice` (`CREATE EXTENSION pg_stash_advice`, module preloaded) maps query ids to advice strings in shared memory (`pg_create_advice_stash()`, `pg_set_stashed_advice()`, setting `pg_stash_advice.stash_name`). Any user can set the stash name for their session and may see stashed advice, so do not embed sensitive values in advice strings.[^12]
@@ -828,7 +837,7 @@ ALTER TABLE child VALIDATE CONSTRAINT child_id_pos;
 CREATE TABLE s2 (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text);
 INSERT INTO s2 (id, v) VALUES (5, 'x');
 -- ERROR:  cannot insert a non-DEFAULT value into column "id"
--- DETAIL:  Column "id" is an identity column defined as GENERATED ALWAYS.   (DETAIL new in 19)
+-- DETAIL:  Column "id" is an identity column defined as GENERATED ALWAYS.
 -- HINT:  Use OVERRIDING SYSTEM VALUE to override.
 
 -- Legacy: serial creates a separately owned sequence plus a DEFAULT; avoid in new schemas
@@ -1253,7 +1262,7 @@ CREATE TABLE m_2025_02 PARTITION OF m FOR VALUES FROM ('2025-02-01') TO ('2025-0
 
 Verified rules and traps on 19rc1:
 
-- **Unique constraints and primary keys must include all partition key columns** (`unique constraint on partitioned table must include all partitioning columns`). Global uniqueness of `id` alone is not enforceable; use an identity/sequence and accept it, or a separate lookup table.
+- **Unique constraints and primary keys must include all partition key columns** (`UNIQUE constraint on partitioned table must include all partitioning columns`). Global uniqueness of `id` alone is not enforceable; use an identity/sequence and accept it, or a separate lookup table.
 - **`CREATE INDEX CONCURRENTLY` is not supported on the partitioned parent.** Build it without blocking writes like this:
 
 ```sql
