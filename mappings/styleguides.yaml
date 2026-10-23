@@ -122,6 +122,18 @@ style_guides:
       "14": styleguides/csharp-14.md
       "15": styleguides/csharp-15.md
   sql: styleguides/sql.md
+  postgresql:
+    default: styleguides/postgresql.md
+    versions:
+      # Keyed by the PostgreSQL server major pinned by container images in
+      # Compose files, CI and the Dockerfile. 13 and older share the 14
+      # guide, which marks every 14 feature and its 13 boundary.
+      "<15": styleguides/postgresql-14.md
+      "15": styleguides/postgresql-15.md
+      "16": styleguides/postgresql-16.md
+      "17": styleguides/postgresql-17.md
+      "18": styleguides/postgresql-18.md
+      "19": styleguides/postgresql-19.md
   mysql:
     default: styleguides/mysql.md
     versions:
@@ -202,6 +214,14 @@ version_source_priority:
     - .tool-versions
     - .github/workflows/*
     - .gitlab-ci.yml
+  postgresql:
+    - compose.yaml
+    - compose.yml
+    - docker-compose.yaml
+    - docker-compose.yml
+    - .gitlab-ci.yml
+    - .github/workflows/*
+    - Dockerfile
   mysql:
     - compose.yaml
     - compose.yml
@@ -226,6 +246,7 @@ style_guide_order:
   - scss
   - csharp
   - sql
+  - postgresql
   - mysql
   - shell
   - helm
@@ -259,6 +280,27 @@ detectors:
         - '(?is)\balter\s+table\b'
         - '(?is)\bexplain(?:\s+analyze)?\b'
         - '(?is)\bwith\b.+\bselect\b'
+
+  - language: postgresql
+    probe_paths:
+      extensions: [.go, .py, .js, .jsx, .ts, .tsx, .cs, .java, .kt, .rb, .php, .sql]
+      path_segments: [migrations, migration, db, database, queries, schema]
+    match_any:
+      content_contains:
+        - github.com/jackc/pgx
+        - github.com/lib/pq
+        - 'postgres://'
+        - 'postgresql://'
+        - import psycopg
+        - import asyncpg
+        - from 'pg'
+        - require('pg')
+        - Npgsql
+        - CREATE INDEX CONCURRENTLY
+        - pg_catalog.
+      content_regex:
+        - '(?i)::(?:jsonb|timestamptz|regclass|text\[\])\b'
+        - '(?i)\bGENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY\b'
 
   - language: mysql
     probe_paths:
@@ -357,4 +399,4 @@ detectors:
 # pins the database server (a postgres or mysql image) or a dialect detector
 # matched the change.
 toolchain_companions:
-  sql: [mysql]
+  sql: [postgresql, mysql]

@@ -241,6 +241,16 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"kubernetes", []string{"1.37.1"}, "styleguides/kubernetes-1.37.md"},
 		{"kubernetes", []string{"1.36", "1.32"}, "styleguides/kubernetes-1.32.md"},
 		{"kubernetes", []string{"1.38.0"}, "styleguides/kubernetes.md"},
+		{"postgresql", nil, "styleguides/postgresql.md"},
+		{"postgresql", []string{"12"}, "styleguides/postgresql-14.md"},
+		{"postgresql", []string{"14.24"}, "styleguides/postgresql-14.md"},
+		{"postgresql", []string{"15.4.0"}, "styleguides/postgresql-15.md"},
+		{"postgresql", []string{"16-alpine"}, "styleguides/postgresql-16.md"},
+		{"postgresql", []string{"17-3.5"}, "styleguides/postgresql-17.md"},
+		{"postgresql", []string{"18.6"}, "styleguides/postgresql-18.md"},
+		{"postgresql", []string{"19rc1"}, "styleguides/postgresql-19.md"},
+		{"postgresql", []string{"18", "16"}, "styleguides/postgresql-16.md"},
+		{"postgresql", []string{"20"}, "styleguides/postgresql.md"},
 		{"mysql", nil, "styleguides/mysql.md"},
 		{"mysql", []string{"5.7"}, "styleguides/mysql.md"},
 		{"mysql", []string{"8.0"}, "styleguides/mysql-8.0.md"},
@@ -514,7 +524,7 @@ func TestMySQLDetectorAndCompanions(t *testing.T) {
 			t.Errorf("mysql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
 		}
 	}
-	if got := ToolchainCompanions("sql"); !slices.Equal(got, []string{"mysql"}) {
+	if got := ToolchainCompanions("sql"); !slices.Equal(got, []string{"postgresql", "mysql"}) {
 		t.Fatalf("ToolchainCompanions(sql) = %v", got)
 	}
 	if got := ToolchainCompanions("go"); got != nil {
@@ -535,5 +545,24 @@ func TestToolchainCompanionsValidation(t *testing.T) {
 	empty := base + "toolchain_companions:\n  sql: []\n"
 	if _, err := parseStyleGuidesYAML([]byte(empty)); err == nil || !strings.Contains(err.Error(), "no companions") {
 		t.Fatalf("empty companion validation err = %v", err)
+	}
+}
+
+func TestPostgreSQLDetector(t *testing.T) {
+	tests := []struct {
+		path, content string
+		want          bool
+	}{
+		{"internal/store/store.go", "import \"github.com/jackc/pgx/v5/pgxpool\"\n", true},
+		{"migrations/003_orders.sql", "CREATE TABLE orders (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);\n", true},
+		{"migrations/004_idx.sql", "CREATE INDEX CONCURRENTLY orders_created_idx ON orders (created_at);\n", true},
+		{"repo/query.py", "cur.execute(\"SELECT payload::jsonb FROM events\")\n", true},
+		{"migrations/001_init.sql", "CREATE TABLE t (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\n", false},
+	}
+	for _, tt := range tests {
+		got := slices.Contains(StyleGuideDetectorLanguages(tt.path, tt.content), "postgresql")
+		if got != tt.want {
+			t.Errorf("postgresql detector on %s %q = %v, want %v", tt.path, tt.content, got, tt.want)
+		}
 	}
 }
