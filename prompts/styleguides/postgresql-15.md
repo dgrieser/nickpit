@@ -58,7 +58,7 @@ All items below are taken from the official release notes.[^1] Items that are SQ
 | `CLUSTER` on partitioned tables | |
 | `range_agg()` over multiranges, `min()`/`max()` for `xid8` | |
 | `to_char()` patterns `of`, `tzh`, `tzm` | Lower-case forms of the existing `OF`, `TZH`, `TZM`. |
-| `pg_size_pretty()` / `pg_size_bytes()` with `PB` | |
+| `pg_size_pretty()` / `pg_size_bytes()` with `PB` | `pg_size_pretty(2^55)` is `32 PB` (14: `32768 TB`); `pg_size_bytes('1 PB')` fails on 14 with `Invalid size unit: "PB"`. |
 | `^@` / `starts_with()` can use a B-tree index under the `C` collation | Before 15 only SP-GiST indexes supported them. |
 | `CREATE DATABASE ... STRATEGY wal_log \| file_copy`, `OID` | `wal_log` is the new default (no checkpoints; slower for large templates). |
 | ICU as the default collation of a cluster or database | `CREATE DATABASE ... LOCALE_PROVIDER icu ICU_LOCALE 'en-US'`, `initdb --locale-provider=icu`. |
@@ -70,10 +70,10 @@ All items below are taken from the official release notes.[^1] Items that are SQ
 - **`security_invoker` views** check the underlying tables' privileges and RLS policies as the **calling** user.[^7]
 - **`GRANT SET ON PARAMETER` / `GRANT ALTER SYSTEM ON PARAMETER`**, `has_parameter_privilege()` and the `pg_parameter_acl` catalog.
 - **`pg_checkpoint`** predefined role allows `CHECKPOINT` without superuser. (The role is called `pg_checkpoint`, not `pg_checkpointer`.)
-- A login role **no longer has implicit `ADMIN OPTION` on its own role**. On 14, `alice` could run `GRANT alice TO bob` while logged in as `alice`; on 15 this fails with `must have admin option on role "alice"`.
+- A login role **no longer has implicit `ADMIN OPTION` on its own role**. On 14, `alice` could run `GRANT alice TO bob` when connected as `alice` (session user); on 15 this fails with `must have admin option on role "alice"`. (A superuser session that only ran `SET ROLE alice` got the same error on 14 too: the old exception applied to the session user.)
 - `pg_write_server_files` members can take server-side base backups. `pg_read_all_stats` members can read `pg_backend_memory_contexts` and `pg_shmem_allocations`.
 - Logical replication applies changes **as the subscription owner**, and `UPDATE`/`DELETE` replication needs `SELECT` on the table.
-- Custom settings whose prefix matches a loaded extension are reserved: `SET plpgsql.bogus_setting = 1` fails on 15 with `invalid configuration parameter name "plpgsql.bogus_setting"` (`"plpgsql" is a reserved prefix`). It was accepted on 14. Application-specific settings such as `myapp.tenant` are unaffected.
+- Custom settings whose prefix matches a loaded extension are reserved: once `plpgsql` has been loaded in the session (for example after any `DO` block), `SET plpgsql.bogus_setting = 1` fails on 15 with `invalid configuration parameter name "plpgsql.bogus_setting"` (`"plpgsql" is a reserved prefix`). A placeholder set *before* the library loads is accepted and then removed with `WARNING: invalid configuration parameter name ..., removing it` when it loads. 14 accepted both. Application-specific settings such as `myapp.tenant` are unaffected.
 
 ##### Server, performance and operations
 
@@ -133,7 +133,7 @@ The server is PostgreSQL 15. Everything in these tables was introduced in a late
 | `CREATE TABLE t (c text STORAGE external)` | syntax error | `ALTER TABLE t ALTER COLUMN c SET STORAGE EXTERNAL` |
 | `debug_parallel_query` | unrecognized parameter | `force_parallel_mode` (the 15 name) |
 | `scram_iterations` | unrecognized parameter | (fixed at 4096 on 15) |
-| Predefined ICU collations `unicode`, `ucs_basic`; ICU tailoring `rules` | `collation "unicode" ... does not exist` | `CREATE COLLATION ... (provider = icu, locale = 'und')` |
+| Predefined ICU collation `unicode`; ICU tailoring `rules` | `collation "unicode" for encoding "UTF8" does not exist`, `collation attribute "rules" not recognized` | `CREATE COLLATION ... (provider = icu, locale = 'und')` (`ucs_basic` already exists on 15 as a libc collation) |
 | `XMLSERIALIZE(... INDENT)` | syntax error | |
 | `pg_split_walfile_name()`, `pg_size_bytes('10 B')` | function does not exist / `Invalid size unit: "B"` | Parse the file name in the client; `pg_size_bytes('10 bytes')` |
 | `'+infinity'::timestamptz` | invalid input syntax | `'infinity'` |
@@ -192,7 +192,7 @@ The server is PostgreSQL 15. Everything in these tables was introduced in a late
 | `123abc` parsed as `123 AS abc` | Write the space and `AS`: `123 AS abc` |
 | `interval '1.99 years'` = `1 year 11 mons` | Now `2 years` (rounded to the nearest month) |
 | `interval::text` in index expressions | `interval_out` is now `STABLE`; such indexes fail to build (`functions in index expression must be marked IMMUTABLE`) |
-| `chr(-1)` | Error `character number must be positive` |
+| `chr(-1)` | Error `character number must be positive` (14.24 in a UTF8 database already failed, with `requested character too large for encoding: -1`) |
 | `array_to_tsvector()` with an empty-string element | Error `lexeme array may not contain empty strings` (14 also errors; 15 documents it as an incompatibility because older releases may have stored empty lexemes) |
 | `random()` sequence for a given `setseed()` | Different on 15 (`setseed(0.5); random()` is `0.98516...` on 15.19, `0.24991...` on 14.24). Tests with hard-coded "random" values break |
 | `"char"` output of non-ASCII bytes | Now a backslash and three octal digits (`'é'::"char"::text` is `\303`) |
@@ -203,8 +203,12 @@ The server is PostgreSQL 15. Everything in these tables was introduced in a late
 | `log_checkpoints = off`, `log_autovacuum_min_duration = -1` defaults | `on`, `10min` |
 | libpq `PQsendQuery()` in pipeline mode | `PQsendQueryParams()` |
 | `pg_dump --no-synchronized-snapshots` | Removed |
-| psql `--single-transaction` always ending with `ROLLBACK` after an error | Now only with `ON_ERROR_STOP` set; without it the transaction **commits** |
+| psql `--single-transaction` always ending with `ROLLBACK` after an error | psql now sends `ROLLBACK` only when `ON_ERROR_STOP` is set, otherwise `COMMIT`. The server still rolls back the aborted transaction (measured: no rows committed), but without `ON_ERROR_STOP` psql runs the rest of the script against the aborted transaction and exits with status 0 on both 14 and 15. Always use `psql -1 -v ON_ERROR_STOP=1` |
 | `xml2`'s `xml_is_well_formed()` | Core `xml_is_well_formed()` |
+| `justify_hours()`, `justify_days()`, `justify_interval()` silently overflowing | `interval out of range` (14.24 returned `-2147483648 days` for `justify_hours(interval '2147483647 days 24 hrs')`) |
+| `EXPLAIN VERBOSE` naming the session's temp schema (`pg_temp_3.tt`) | Shows `pg_temp.tt`; tests that compare plan text change |
+| libpq and client programs ignoring `HOME` | On non-Windows platforms `HOME` is consulted first (for example for `~/.pgpass`); the password database is the fallback when it is empty or unset |
+| `postgres_fdw` sending explicitly cast constants | Unnecessary casts are no longer sent, so foreign tables whose local column types intentionally differ from the remote ones stop failing on them |
 
 Already gone before 15, and still common in old code: `pg_stat_statements.total_time` (renamed `total_exec_time` in 13), `recovery.conf` (merged into `postgresql.conf` in 12), `WITH OIDS` (removed in 12), `abstime`/`reltime` types (removed in 12).
 
@@ -257,8 +261,8 @@ Behaviour verified on 15.19 that reviewers must know:
 - **Duplicate source rows**: if one target row matches two source rows, `MERGE` raises `MERGE command cannot affect row a second time`. Deduplicate the source (`DISTINCT ON`, `GROUP BY`) first.
 - **Clause order matters.** The first `WHEN` clause whose condition is true runs. An unconditional `WHEN MATCHED` followed by another `WHEN MATCHED` is rejected (`unreachable WHEN clause specified after unconditional WHEN clause`). Put conditional clauses first.
 - **Privileges.** `MERGE` needs `SELECT` on every target and source column used in conditions (including `ON`), plus `INSERT`/`UPDATE`/`DELETE` for the actions that appear. A role with only `INSERT` on the target got `permission denied for table tgt`.
-- **Row-level security.** Rows that RLS hides from the user are "not matched". In a test, a policy hid the existing row `id = 1` from the user, the `MERGE` went to the `WHEN NOT MATCHED THEN INSERT` branch, and failed with a primary-key violation. `MERGE` RLS enforcement was corrected in 15.4 (CVE-2023-39418), and several `MERGE` concurrency and partition fixes followed in 15.5, 15.6 and 15.14. Run the latest 15.x.[^13]
-- **Triggers.** Statement-level triggers fire for each action type that appears in the statement (a `MERGE` with only an `UPDATE` branch fired `AFTER UPDATE STATEMENT`). Row triggers fire per affected row as for the equivalent command.
+- **Row-level security.** Rows that RLS hides from the user are "not matched". In a test, a policy hid the existing row `id = 1` from the user, the `MERGE` went to the `WHEN NOT MATCHED THEN INSERT` branch, and failed with a primary-key violation. `MERGE` RLS enforcement was corrected in 15.4 (CVE-2023-39418), and `MERGE` fixes followed in 15.5 (rechecking of concurrently updated rows), 15.6 (cross-partition updates) and 15.14 (plain-inheritance parents). Run the latest 15.x.[^13]
+- **Triggers.** Statement-level triggers fire for each action type that appears in the statement, even when no row takes that action (a `MERGE` with `UPDATE` and `INSERT` branches that only inserted fired both `AFTER UPDATE STATEMENT` and `AFTER INSERT STATEMENT`). Row triggers fire per affected row as for the equivalent command.
 - **CTEs** are allowed before `MERGE` (`WITH s AS (...) MERGE INTO t USING s ...`), and the source can be any query.
 
 ***
@@ -456,13 +460,13 @@ CREATE PUBLICATION p_schema FOR TABLES IN SCHEMA app;               -- whole sch
 
 Rules verified on 15.19:[^14]
 
-- **Row filters and replica identity.** If the publication publishes `UPDATE` or `DELETE` (the default), the `WHERE` clause may only use replica-identity columns. Otherwise the publisher **rejects writes to the table**: `UPDATE rf SET v = 2` failed with `cannot update table "rf"` / `Column used in the publication WHERE expression is not part of the replica identity`, and `DELETE` failed the same way. A migration that adds such a publication can break the application. Either filter on primary-key columns, set `REPLICA IDENTITY FULL`, or publish only inserts (`WITH (publish = 'insert')`).
-- **Column lists must cover the replica identity** for `UPDATE`/`DELETE`: `cannot update table "cl"` / `Column list used by the publication does not cover the replica identity`.
+- **Row filters and replica identity.** If the publication publishes `UPDATE` or `DELETE` (the default), the `WHERE` clause may only use replica-identity columns. Otherwise the publisher **rejects writes to the table**: `UPDATE rf SET v = 2` failed with `cannot update table "rf"` / `Column used in the publication WHERE expression is not part of the replica identity`, and `DELETE` failed the same way. A migration that adds such a publication can break the application. Either filter on primary-key columns, set `REPLICA IDENTITY FULL` (only if the table has no column list in any publication, see next point), or publish only inserts (`WITH (publish = 'insert')`).
+- **Column lists must cover the replica identity** for `UPDATE`/`DELETE`: `cannot update table "cl"` / `Column list used by the publication does not cover the replica identity`. With `REPLICA IDENTITY FULL` that means **every** column, so a column list that leaves out a sensitive column plus `REPLICA IDENTITY FULL` blocks all updates and deletes on the publisher (measured on 15.19).
 - Row filters cannot use volatile or user-defined functions (`User-defined or built-in mutable functions are not allowed`).
-- An `UPDATE` that moves a row out of the filter is replicated as a `DELETE`, and one that moves a row into it as an `INSERT`. Column lists are the way to keep sensitive columns (e.g. password hashes) off a replica.
+- An `UPDATE` that moves a row out of the filter is replicated as a `DELETE`, and one that moves a row into it as an `INSERT` (measured with a publisher and subscriber database on one 15.19 server: a row updated from `region = 'us'` to `'eu'` appeared on the subscriber). Column lists are the way to keep sensitive columns (e.g. password hashes) off a replica: a `pwhash` column outside the list stayed NULL on the subscriber.
 - `FOR TABLES IN SCHEMA` publishes tables created later in that schema too. Review new tables in such schemas for data that must not leave the cluster.
 - Subscriptions now apply changes as the subscription owner, which must have privileges on the target tables. Only superusers, table owners or `BYPASSRLS` roles can replicate into tables with RLS policies.
-- Operational: `ALTER SUBSCRIPTION s SKIP (lsn = '0/14C0378')` skips one failing remote transaction (data loss for that transaction), and `CREATE SUBSCRIPTION ... WITH (disable_on_error = true)` stops endless apply-error loops. These subscriber-side features were taken from the documentation; they need a running publisher/subscriber pair and were not executed for this guide.
+- Operational: `ALTER SUBSCRIPTION s SKIP (lsn = '0/14C0378')` skips one failing remote transaction (data loss for that transaction), and `CREATE SUBSCRIPTION ... WITH (disable_on_error = true)` stops endless apply-error loops. Both were executed on 15.19 (`pg_subscription.subskiplsn`, `subdisableonerr`); apply errors are counted in `pg_stat_subscription_stats`.
 - Creating a publication on a server with `wal_level` below `logical` succeeds with `WARNING: wal_level is insufficient to publish logical changes`. Check `wal_level = logical` in the server configuration, not only that the DDL succeeded.
 - 15.19 added `output_plugin_libraries`: logical decoding output plugins other than `pgoutput` and `test_decoding` must be allow-listed after updating (CVE-2026-6471).[^2]
 
@@ -1221,7 +1225,7 @@ Sort order and range comparisons on text depend on the collation. Keyset paginat
 - Set `search_path` on functions that use unqualified names: a must for `SECURITY DEFINER` functions, and strongly advised for functions used by indexes, constraints and materialized views so the code survives a later upgrade to 17+.
 - PL/pgSQL: `RAISE EXCEPTION` with `USING ERRCODE`, `GET STACKED DIAGNOSTICS` in exception handlers. `EXCEPTION` blocks create a subtransaction per execution, which is costly in loops and consumes subtransaction IDs. Since 15, `CONSTANT` variables are enforced also for `CALL` output parameters and `OPEN` of refcursors.
 - Procedures (`CREATE PROCEDURE`, `CALL`) can `COMMIT` inside, which suits batch jobs, but not when called inside an outer transaction block.
-- Triggers: `BEFORE` row triggers for normalization and validation, `AFTER` for side effects. Statement-level triggers with transition tables (`REFERENCING NEW TABLE AS ...`) are cheaper for bulk changes. `CREATE OR REPLACE TRIGGER` (14+). `MERGE` fires the triggers of each action it performs.
+- Triggers: `BEFORE` row triggers for normalization and validation, `AFTER` for side effects. Statement-level triggers with transition tables (`REFERENCING NEW TABLE AS ...`) are cheaper for bulk changes. `CREATE OR REPLACE TRIGGER` (14+). `MERGE` fires statement-level triggers for every action type in its `WHEN` clauses (even if no row took that action) and row-level triggers for the rows it actually changes.
 - **PL/Python**: only `plpython3u` exists on 15. `CREATE EXTENSION plpythonu`/`plpython2u` from old migrations fails. Untrusted languages (`*u`) run as the server OS user; only superusers can create such functions.
 - `ALTER FUNCTION ... SET work_mem/plan_cache_mode` scopes settings to one function.
 
@@ -1237,7 +1241,7 @@ Sort order and range comparisons on text depend on the collation. Keyset paginat
 - Retries: retry on `40001` (serialization), `40P01` (deadlock), and connection loss before commit. Never blindly retry after an unknown commit outcome for non-idempotent writes. Use idempotency keys.
 - `sslmode=verify-full` for connections over untrusted networks. libpq has been able to match IP addresses against the certificate's Subject Alternative Name since 15.
 - Use `COPY FROM STDIN` (driver copy APIs) or multi-row `INSERT` for bulk writes instead of row-by-row inserts.
-- A 15.x server rejects endless SSL/GSS negotiation loops since 15.18 (CVE-2026-6479). libpq's `PQfn()` is deprecated since 15.18 (CVE-2026-6477).[^13]
+- A 15.x server rejects endless SSL/GSS negotiation loops since 15.18 (CVE-2026-6479). libpq's `PQfn()` is marked unsafe since 15.18 (CVE-2026-6477): a malicious server could overrun the client's result buffer; use normal queries instead of the fast-path interface.[^13]
 
 ***
 
@@ -1321,8 +1325,8 @@ Minor releases contain only fixes and need no dump/restore, but some require act
 - **15.13 (May 8, 2025)**: CVE-2025-4207 (GB18030 over-read). Self-referential foreign keys on partitioned tables may need to be recreated; reindex BRIN bloom indexes.
 - **15.14 (August 14, 2025)**: CVE-2025-8713 (statistics leak through views and partitions; permission errors can now appear at planning time), CVE-2025-8714/8715 (`pg_dump` output injection; psql `\restrict`). Reindex BRIN `numeric_minmax_multi_ops` indexes.
 - **15.15 (November 13, 2025)**: CVE-2025-12817 (`CREATE STATISTICS` checks `CREATE` on the schema), CVE-2025-12818 (libpq allocation overflow).
-- **15.16 (February 12, 2026)**: CVE-2026-2003 to 2006 (`oidvector` checks, `intarray` selectivity estimator, pgcrypto PGP buffer overrun, multibyte length validation). **15.17 (February 26, 2026)**: out of cycle; fixed multixact WAL replay on standbys and a too-strict `substring()` encoding check.
-- **15.18 (May 14, 2026)**: CVEs including startup-packet recursion (CVE-2026-6479), allocation overflows (CVE-2026-6473), time zone names in `timeofday()` (CVE-2026-6474), multirange schema privilege (CVE-2026-6472), timing-safe password comparison (CVE-2026-6478), `PQfn()` deprecated (CVE-2026-6477), and path traversal in `pg_basebackup`/`pg_rewind`.
+- **15.16 (February 12, 2026)**: CVE-2026-2003 to 2006 (`oidvector`/`int2vector` checks, hardened selectivity estimators, pgcrypto PGP buffer overrun, multibyte length validation). **15.17 (February 26, 2026)**: out of cycle; fixed multixact WAL replay on standbys and a too-strict `substring()` encoding check.
+- **15.18 (May 14, 2026)**: CVEs including startup-packet recursion (CVE-2026-6479), allocation overflows (CVE-2026-6473), time zone names in `timeofday()` (CVE-2026-6474), multirange schema privilege (CVE-2026-6472), timing-safe password comparison (CVE-2026-6478), `PQfn()` marked unsafe (CVE-2026-6477), path traversal in `pg_basebackup`/`pg_rewind` (CVE-2026-6475), over-length `ts_headline()` options (CVE-2026-6473) and `contrib/refint` quoting (CVE-2026-6637).
 - **15.19 (August 13, 2026)**: about 30 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must be allow-listed in `output_plugin_libraries` (CVE-2026-6471). pgcrypto PGP decryption fails for data that was never actually encrypted because OpenSSL rejected the cipher (CVE-2026-14663; `ignore-cipher-failure=1` recovers it). psql skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing `COPY` commands. Buffer overruns in `to_char()` (CVE-2026-14669) and the regexp functions (CVE-2026-14664). Reindex `btree_gist` and `ltree` indexes as described in the notes.[^2]
 
 Pin `postgres:15` (floating minor) or an exact `postgres:15.19` in containers, and update minors promptly.
