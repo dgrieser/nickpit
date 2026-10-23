@@ -1,7 +1,7 @@
 ### PostgreSQL 18: The Complete Production SQL Review Guide
 
 > **Version**: PostgreSQL 18.0 was released on **September 25, 2025**. The latest minor release is **18.6 (August 13, 2026)**; 18.5 was never shipped because of a regression, so 18.4 is followed directly by 18.6. The next scheduled minor release is November 12, 2026.[^1][^2][^3][^5]
-> **Support**: PostgreSQL 18 is supported until **November 14, 2030** (five years of minor releases). As of October 2026 the supported majors are 18, 17, 16, 15 and 14; 14 receives its final release on November 12, 2026. PostgreSQL 19 is **not released**: 19 RC 1 shipped on October 15, 2026 and GA is planned for later this month.[^2][^4][^5]
+> **Support**: PostgreSQL 18 is supported until **November 14, 2030** (five years of minor releases). As of October 2026 the supported majors are 18, 17, 16, 15 and 14; 14 receives its final release on November 12, 2026. PostgreSQL 19 is **not released**: 19 RC 1 shipped on October 15, 2026, RC 2 is planned for November 12, 2026 and general availability for November 19, 2026.[^2][^4][^5][^43]
 > **Scope**: SQL that runs on a PostgreSQL 18 server: schema migrations, queries embedded in application code, functions/procedures/triggers, schema design, indexing, transactions, security, JSONB, partitioning, connection handling and upgrades. Every SQL example was executed on PostgreSQL 18.6; "new in 18" boundaries were checked against 17.11, and 19-only features were checked to fail on 18.6 and work on 19rc1.
 > **Note**: This document is self-contained. Everything usable from PostgreSQL 14–17 is carried forward and marked with the version that introduced it. Sections marked **New in 18** cover behaviour specific to this release.
 
@@ -45,7 +45,7 @@ The project pins PostgreSQL 18. Judge code against what 18.x actually does:
 
 - **Verify before you claim something is unavailable.** Many "new" features are older than reviewers remember: `MERGE` is 15, `MERGE ... RETURNING` and `JSON_TABLE` are 17, `gen_random_uuid()` is core since 13, `CREATE INDEX CONCURRENTLY` and `REINDEX CONCURRENTLY` (12) are long available. Check the version table in "Features from 14–17" before asking for a workaround.
 - **Say "not available in PostgreSQL 18" only when 18 proves it.** The "Do not use or recommend" list below is verified: each item fails on 18.6.
-- **Minor releases matter.** 18.x minors fix security issues (18.6 alone fixes 28 CVEs) and wrong-result bugs; some require post-upgrade actions (`ANALYZE` on tables with parallel-built GIN indexes, `REINDEX` of certain `btree_gist`/`ltree` indexes in 18.6).[^3] A deployment pinned to `postgres:18.0` or any minor older than 18.6 is a finding.
+- **Minor releases matter.** 18.x minors fix security issues (18.6 alone fixes 28 CVEs) and wrong-result bugs; some require post-upgrade actions: 18.2 asks for a `REINDEX` of indexes on `ltree` columns; 18.6 asks for `ANALYZE` on tables whose `reltuples` was corrupted by a parallel GIN index build, a `REINDEX` of `btree_gist` indexes on `float4`/`float8` columns that may contain `NaN` and of B-tree indexes over very long `ltree` values, and it introduces configuration changes (see "Changes inside the 18.x series" below).[^3][^44] A deployment pinned to `postgres:18.0` or any minor older than 18.6 is a finding.
 - **Client and pooler versions are part of the contract.** Older `psql` clients have `\copy` problems with 18 servers' CSV `\.` handling; PgBouncer before 1.21 cannot use protocol-level prepared statements in transaction mode.[^1][^30]
 
 ##### Do not use or recommend (PostgreSQL 19 and later, or never released)
@@ -68,7 +68,7 @@ PostgreSQL 19 is at RC 1. Everything below fails on 18.6 (verified) — never su
 | jsonpath string methods `.lower()`, `.upper()`, `.ltrim()`, `.rtrim()`, `.btrim()`, `.initcap()`, `.replace()`, `.split_part()` | 19 | jsonpath syntax error |
 | `ALTER TABLE ... ALTER CONSTRAINT ... [NOT] ENFORCED` on a `CHECK` constraint (18 allows it only for foreign keys) | 19 | cannot alter enforceability |
 | `EXPLAIN (ANALYZE, IO)` | 19 | unrecognized EXPLAIN option |
-| `pg_plan_advice` / `pg_stash_advice` extensions, `pg_clear_extended_stats()`, `pg_restore_extended_stats()` | 19 | not present |
+| `pg_plan_advice` module, `pg_stash_advice` extension, `pg_clear_extended_stats()`, `pg_restore_extended_stats()` | 19 | not present |
 | `ALTER TABLE ... MERGE PARTITIONS` / `SPLIT PARTITION`, `UPDATE/DELETE ... FOR PORTION OF`, `GRAPH_TABLE` (SQL/PGQ) | not in any release (also fail on 19rc1) | syntax error |
 
 Also do not assume 19 behaviour changes: in 18, `json_array(SELECT ... )` over zero rows returns `NULL` (19 returns `[]`), `standard_conforming_strings` can still be set to `off` (19 forces `on`), JIT is **on** by default, `max_locks_per_transaction` defaults to 64, `default_toast_compression` defaults to `pglz` and `log_lock_waits` defaults to `off` (all verified on 18.6; each changes in 19).[^4]
@@ -78,6 +78,21 @@ Also do not assume 19 behaviour changes: in 18, `json_array(SELECT ... )` over z
 - **MD5 passwords.** `CREATE ROLE`/`ALTER ROLE` with an MD5-hashed password emits `WARNING: setting an MD5-encrypted password` (controlled by `md5_password_warnings`); support will be removed in a future major release. Use SCRAM (`password_encryption = scram-sha-256`, the default since 14).[^1][^17]
 - **`ssl_ecdh_curve`** is renamed `ssl_groups` (old name still accepted).[^1]
 - **`pg_recvlogical --two-phase`** is renamed `--enable-two-phase`.[^1]
+
+##### Changes inside the 18.x series (minor releases)
+
+Minor releases normally only fix bugs, but several 18.x fixes change behaviour that code or operations can observe:[^44]
+
+- **18.1**: generated columns are rejected in partition keys in all forms (also via whole-row references) and in `COPY ... FROM ... WHERE`; a column with an invalid (`NOT VALID`) not-null constraint cannot be made an identity column; `CREATE STATISTICS` checks `CREATE` privilege on the schema.
+- **18.2**: `ALTER TABLE ... ADD CONSTRAINT <name> NOT NULL col` on a column that is already `NOT NULL` fails unless `<name>` matches the existing constraint; sub-selects inside aggregates that reference a lower-level CTE now raise an error; new setting `file_extend_method`; reindex `ltree` indexes.
+- **18.4**: `WITHOUT OVERLAPS` accepts domains over range types; `MERGE` raises a serialization failure (`40001`) on a concurrently updated row under `REPEATABLE READ`/`SERIALIZABLE`; `ALTER INDEX ... ATTACH PARTITION` can mark the parent index valid; several virtual-generated-column bugs fixed.
+- **18.6** (security release, 28 CVEs):
+  - New server setting `output_plugin_libraries` (default `'pgoutput, test_decoding'`): logical decoding may only load the listed output plugins. Setups using `wal2json`, `decoderbufs` or other third-party plugins must add them, and `pg_upgrade --check` fails when the new cluster's setting does not cover the old cluster's logical slots (CVE-2026-6471; verified: `SHOW output_plugin_libraries` on 18.6).
+  - `pgcrypto` PGP encryption with ciphers that OpenSSL rejects (e.g. `bf`, `cast5`, `3des` in FIPS mode or without the legacy provider) used to "encrypt" to an XOR of the plaintext; such messages now fail to decrypt unless `'ignore-cipher-failure=1'` is passed to `pgp_sym_decrypt()`/`pgp_pub_decrypt()` (CVE-2026-14663). Re-encrypt affected data with a modern cipher.
+  - `psql` skips inline data after a scripted `COPY ... FROM STDIN` that fails at startup (previously the data lines ran as SQL); test scripts with intentionally failing `COPY` need a `\.` terminator after the data (CVE-2026-6464).
+  - Cached plans are invalidated after role membership/attribute changes, which affects row-level-security results (CVE-2026-14666).
+  - Calls from SQL to functions taking or returning type `internal` are rejected; `uuidv7(interval)` rejects shifts outside the representable range (`timestamp out of range for UUID version 7`) instead of producing garbage.
+  - Wrong-result fixes: `RETURNING old` (see below), `IN (array)` with an empty array, `count()` window functions with an `EXCLUDE` clause or without `ORDER BY`, range-partition pruning that skipped the `DEFAULT` partition, `SERIALIZABLE` conflict detection on an initially empty B-tree index.
 
 ***
 
@@ -177,8 +192,9 @@ Verified restrictions of virtual generated columns on 18.6:
 
 | Operation | Virtual | Stored |
 | --- | --- | --- |
-| Expression uses a user-defined function or type | **error**: "Virtual generated columns that make use of user-defined functions are not yet supported" | allowed (function must be immutable) |
-| `CREATE INDEX` on the column | **error**: "indexes on virtual generated columns are not supported" | allowed |
+| Expression uses a user-defined function | **error**: "generation expression uses user-defined function" (detail: "Virtual generated columns that make use of user-defined functions are not yet supported") | allowed (function must be immutable) |
+| Column of a user-defined type (enum, composite, …) or a domain | **error**: "virtual generated column "b" cannot have a user-defined type" / "... cannot have a domain type" | allowed |
+| `CREATE INDEX` on the column, in an index expression or in a partial-index predicate | **error**: "indexes on virtual generated columns are not supported" | allowed |
 | `UNIQUE` / `PRIMARY KEY` | **error** | allowed |
 | `FOREIGN KEY` on the column | **error**: "foreign key constraints on virtual generated columns are not supported" | allowed |
 | `CHECK` and `NOT NULL` constraints | allowed | allowed |
@@ -198,6 +214,8 @@ CREATE INDEX ON users (email_norm);   -- ERROR: indexes on virtual generated col
 -- GOOD: stored column (table rewrite: plan it), or index the expression directly
 CREATE INDEX users_email_lower ON users (lower(email));   -- no rewrite, usable by WHERE lower(email) = ...
 ```
+
+Several virtual-column bugs were fixed in minor releases (18.4: `WHERE CURRENT OF` on tables with virtual columns, `EXCLUDED.<virtual col>` in `ON CONFLICT`, spurious "indexes on virtual generated columns are not supported" errors; 18.6: JIT tuple deforming with virtual columns), so code relying on virtual columns needs at least 18.6.[^44]
 
 Choose virtual for cheap derived values that are read rarely or only projected; choose stored (or an expression index) when the value is filtered, joined, indexed or replicated. Adding a virtual column is a metadata-only change — the cheapest way to add a derived column to a large table.
 
@@ -229,6 +247,7 @@ UPDATE acct SET bal = 1 RETURNING WITH (OLD AS o, NEW AS n) o.bal, n.bal;
 - Replace `RETURNING (xmax = 0) AS inserted` hacks with `old.<pk> IS NULL` — `xmax` semantics are an implementation detail.
 - Test against a non-nullable column (`old.id IS NULL`), not `old IS NULL`, which is true only if *every* column of the old row is null.
 - On 17 this is `missing FROM-clause entry for table "old"` (verified).
+- 18.6 fixes two `OLD` bugs: `(old).col` / `(old).*` were silently treated as `NEW` references, and under `READ COMMITTED` a concurrently updated row on a table with a `BEFORE UPDATE` trigger returned stale `old` values. Code using `RETURNING old` needs 18.6.[^44]
 
 ***
 
@@ -345,7 +364,7 @@ ALTER TABLE child ADD CONSTRAINT child_id_nn NOT NULL id NOT VALID;
 ALTER TABLE child VALIDATE CONSTRAINT child_id_nn;
 ```
 
-Verified on 18.6: step 1 holds `AccessExclusiveLock` only for the catalog update, inserts of `NULL` fail right after it, and `VALIDATE CONSTRAINT` holds `ShareUpdateExclusiveLock`; after validation `attnotnull` is true and `\d` shows the column as `not null`. Plain `ALTER COLUMN ... SET NOT NULL` still takes `ACCESS EXCLUSIVE` for the full-table scan. Adding a named `NOT NULL` constraint to a column that already has one fails (`A not-null constraint named "e2_p_not_null" already exists for this column`); migrations must check `pg_constraint` first. On 17 the `NOT NULL ... NOT VALID` syntax does not exist; the pre-18 technique (still valid) is a validated `CHECK (col IS NOT NULL)` constraint, which lets `SET NOT NULL` skip the scan:
+Verified on 18.6: step 1 holds `AccessExclusiveLock` only for the catalog update, inserts of `NULL` fail right after it, and `VALIDATE CONSTRAINT` holds `ShareUpdateExclusiveLock`; after validation `attnotnull` is true and `\d` shows the column as `not null`. Plain `ALTER COLUMN ... SET NOT NULL` still takes `ACCESS EXCLUSIVE` for the full-table scan. Adding a `NOT NULL` constraint under a *different* name to a column that already has one fails (`cannot create not-null constraint "e2_other" on column "p" of table "e2"`, detail `A not-null constraint named "e2_p_not_null" already exists for this column`; enforced since 18.2), while repeating the existing name is a no-op; migrations must check `pg_constraint` first. On 17 the `NOT NULL ... NOT VALID` syntax does not exist; the pre-18 technique (still valid) is a validated `CHECK (col IS NOT NULL)` constraint, which lets `SET NOT NULL` skip the scan:
 
 ```sql
 ALTER TABLE child ADD CONSTRAINT bid_nn CHECK (big_id IS NOT NULL) NOT VALID;
@@ -364,7 +383,12 @@ CREATE TABLE ne (a int, CONSTRAINT pos CHECK (a > 0) NOT ENFORCED);
 INSERT INTO ne VALUES (-1);   -- succeeds
 ```
 
-A `NOT ENFORCED` constraint is documentation, not protection. Flag it on data that the application relies on. In 18, `ALTER CONSTRAINT ... ENFORCED`/`NOT ENFORCED` works for foreign keys only; for `CHECK` constraints it fails ("cannot alter enforceability") — that is a 19 feature.
+A `NOT ENFORCED` constraint is documentation, not protection. Flag it on data that the application relies on. Verified on 18.6:
+
+- `NOT ENFORCED` is accepted only for `CHECK` and foreign keys; on `UNIQUE`, `PRIMARY KEY` or `NOT NULL` it is `misplaced NOT ENFORCED clause`.
+- A `NOT ENFORCED` constraint is stored with `convalidated = false`, and `VALIDATE CONSTRAINT` on it fails (`cannot validate NOT ENFORCED constraint`).
+- `ALTER TABLE ... ALTER CONSTRAINT fk ENFORCED` checks all existing rows (fails on the first orphan) while holding `ACCESS EXCLUSIVE` on the referencing table — a blocking full scan. For large tables, drop the unenforced FK and add it again as `NOT VALID` + `VALIDATE CONSTRAINT` instead.
+- `ALTER CONSTRAINT ... ENFORCED`/`NOT ENFORCED` works for foreign keys only; for `CHECK` constraints it fails ("cannot alter enforceability") — that is a 19 feature.
 
 ##### Foreign keys on partitioned tables
 
@@ -437,6 +461,19 @@ SELECT ('{"a":null}'::jsonb -> 'a')::int;                   -- NULL (17: ERROR c
 - **`pg_dump`/`pg_restore`/`pg_dumpall`** gain `--statistics`, `--statistics-only`, `--no-statistics`, `--no-data`, `--no-schema`, `--no-policies`, and `pg_dump --sequence-data`.[^1]
 - **New predefined role** `pg_signal_autovacuum_worker`; `pg_get_acl()`; `has_largeobject_privilege()`; `ALTER DEFAULT PRIVILEGES` for large objects.[^1]
 - **Wire protocol 3.2** with 256-bit cancel keys; libpq negotiates it only when `max_protocol_version` allows (default still 3.0 in 18's libpq).[^1]
+
+##### Other 18 changes a reviewer may meet
+
+From the release notes; settings and function names were checked with `SHOW`/`pg_proc` on 18.6:[^1]
+
+- **SQL/DDL**: `CREATE FOREIGN TABLE ... LIKE`; `ALTER TABLE ... ALTER CONSTRAINT ... [NO] INHERIT` for `NOT NULL` constraints (not allowed on partitioned tables); non-B-tree unique indexes (the access method must support equality) usable as partition-key indexes and for `REFRESH MATERIALIZED VIEW CONCURRENTLY`; `VACUUM ONLY`/`ANALYZE ONLY` on partitioned tables; parallel GIN index builds; `EXTRACT(QUARTER ...)` corrected for negative intervals (`-4 months` → `-2`); Unicode 16.0.0 data; Estonian stemming.
+- **Statistics functions**: `pg_restore_relation_stats()`, `pg_restore_attribute_stats()`, `pg_clear_relation_stats()`, `pg_clear_attribute_stats()` (used by `pg_dump --statistics` and `pg_upgrade`). Only extended statistics lack such functions in 18 (they come in 19).
+- **Server settings**: `autovacuum_worker_slots` (lets `autovacuum_max_workers` change without restart), `autovacuum_vacuum_max_threshold`, `vacuum_truncate`, `vacuum_max_eager_freeze_failure_rate`, `track_cost_delay_timing`, `file_copy_method`, `extension_control_path`, `max_active_replication_origins`, `idle_replication_slot_timeout`, `ssl_tls13_ciphers`, `ssl_groups` (default now includes X25519), `md5_password_warnings`, `log_lock_failures`; `max_files_per_process` now counts only files opened by the backend.
+- **Logical replication**: generated columns can be published (stored ones via `publish_generated_columns = stored`; virtual ones cannot be published at all, not even in a column list); `CREATE SUBSCRIPTION` defaults to `streaming = parallel`; `ALTER SUBSCRIPTION` can change `two_phase`; conflicts are logged and counted in `pg_stat_subscription_stats`; `pg_createsubscriber --all`, `--clean`, `--enable-two-phase`.
+- **psql**: `\parse`, `\bind_named`, `\close_prepared` for named prepared statements; pipeline commands `\startpipeline`, `\syncpipeline`, `\sendpipeline`, `\endpipeline`, `\flushrequest`, `\flush`, `\getresults`; prompt `%P`; `\conninfo` is tabular; `WATCH_INTERVAL`; leakproof flag in `\df+`.
+- **libpq**: `PQfullProtocolVersion()`, `min_protocol_version`/`max_protocol_version`, `sslkeylogfile`, `PQtrace()` covers all messages, `search_path` changes are reported to the client.
+- **Contrib**: `pg_overexplain` and `pg_logicalinspect` (new); `pgcrypto` `sha256crypt`/`sha512crypt`, CFB mode, `fips_mode()`, `pgcrypto.builtin_crypto_enabled`; `postgres_fdw`/`dblink` SCRAM pass-through (`use_scram_passthrough`); `passwordcheck.min_password_length`; `amcheck` `gin_index_check()`; `pg_buffercache_evict_relation()`/`pg_buffercache_evict_all()`; `file_fdw` `on_error`/`log_verbosity`/`reject_limit`; `pg_stat_statements` groups queries on same-named tables in different schemas into one entry.
+- **Catalog**: `pg_attribute.attcacheoff` removed; `pg_class.relallfrozen` and `pg_constraint.conenforced` added; `pg_get_loaded_modules()`.
 
 ***
 
@@ -707,7 +744,7 @@ Verified behaviours on 18.6 (100,000-row table, default `en_US.utf8` collation):
 | `WHERE id::text = '42'` | PK | Seq Scan |
 | `WHERE email LIKE '%r4242%'` | `gin (email gin_trgm_ops)` (pg_trgm) | Bitmap Index Scan |
 | `WHERE status = $1 AND created_at > ...` with generic plan | partial index `WHERE status = 'active'` | **Seq Scan** — a partial index is unusable when the predicate value is a parameter |
-| `WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC LIMIT 20` | `(created_at DESC, id DESC)` | Index Only Scan, no sort |
+| `WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC LIMIT 20` | `(created_at DESC, id DESC)` | Index Scan (Index Only Scan when only `created_at, id` are selected), no sort |
 
 Review rules:
 
@@ -1091,7 +1128,7 @@ Verified exploit on 18.6: an unprivileged role with its own schema `evil` create
 ```sql
 -- BAD: concatenating values into SQL (PL/pgSQL)
 EXECUTE 'SELECT count(*) FROM pg_class WHERE relname = ''' || val || '''' INTO n;
--- with val = x' OR '1'='1 → counted every row (477) instead of 0
+-- with val = x' OR '1'='1 → counted every row of pg_class instead of 0
 
 -- GOOD: identifiers through format(%I), values as parameters
 EXECUTE format('SELECT count(*) FROM %I WHERE relname = $1', tbl) INTO n USING val;
@@ -1279,6 +1316,11 @@ Behaviour changes that can break code or operations when moving from 17 to 18 (e
 | Primary/foreign keys require compatible collations (deterministic, or the same nondeterministic) | Mixed-collation key pairs are rejected | Align collations |
 | `COPY ... FREEZE` on foreign tables errors | Previously ignored | Drop `FREEZE` |
 | Build: OpenSSL ≥ 1.1.1, LLVM ≥ 14, Python ≥ 3.6.8 for PL/Python | Old build environments fail | Update toolchain |
+| `pg_backend_memory_contexts.level` and `pg_log_backend_memory_contexts()` levels one-based | Off-by-one in memory monitoring | Adjust queries |
+| `pg_attribute.attcacheoff` removed | Catalog-reading tools break | Update tools |
+| `log_connections` is a list (`''` = off) | `SHOW log_connections` returns `''`, not `off` | Use the list values |
+| 18.6: `output_plugin_libraries` restricts logical decoding plugins | Third-party output plugins (e.g. `wal2json`) stop working; `pg_upgrade --check` fails | Add the plugins to the setting |
+| 18.6: `pgcrypto` rejects messages "encrypted" with unsupported ciphers | `pgp_sym_decrypt()` errors on affected data | `'ignore-cipher-failure=1'`, then re-encrypt |
 
 Upgrade path: `pg_upgrade` (now with statistics, `--swap`, parallel `--jobs` checks), dump/restore, or logical replication. After `pg_upgrade`, run `vacuumdb --all --analyze-in-stages --missing-stats-only` and `vacuumdb --all --analyze-only`, and recreate extended statistics with `ANALYZE`.[^15]
 
@@ -1291,7 +1333,7 @@ Upgrade path: `pg_upgrade` (now with statistics, `--swap`, parallel `--jobs` che
 - [ ] Server pinned to the latest 18.x (18.6 as of October 2026); not `postgres:18.0`
 - [ ] No PostgreSQL 19 syntax or functions (`REPACK`, `ON CONFLICT DO SELECT`, `IGNORE NULLS`, `WAIT FOR`, `COPY (FORMAT json)`, `random(date, date)`, `error_on_null`, `base64url`, `oid8`, jsonpath `.lower()`)
 - [ ] Code shared with ≤17 servers avoids `uuidv7()`, virtual columns, `RETURNING old/new`, `WITHOUT OVERLAPS`, `NOT NULL ... NOT VALID`, `NOT ENFORCED`, `casefold()`, `array_sort()`
-- [ ] Post-minor-upgrade steps of 18.6 applied (GIN `reltuples` check, `btree_gist`/`ltree` reindex where relevant)
+- [ ] Post-minor-upgrade steps applied (18.2 `ltree` reindex; 18.6 GIN `reltuples` check, `btree_gist`/`ltree` reindex, `output_plugin_libraries` for third-party decoding plugins, `pgcrypto` cipher check)
 
 ##### Migrations
 
@@ -1399,3 +1441,5 @@ Upgrade path: `pg_upgrade` (now with statistics, `--swap`, parallel `--jobs` che
 [^40]: pg_stat_statements. https://www.postgresql.org/docs/18/pgstatstatements.html
 [^41]: CREATE VIEW (security_invoker, security_barrier). https://www.postgresql.org/docs/18/sql-createview.html
 [^42]: libpq — Connection Strings (sslmode, min/max_protocol_version, sslkeylogfile). https://www.postgresql.org/docs/18/libpq-connect.html
+[^43]: PostgreSQL 19 RC 1 Released! (October 15, 2026; RC 2 on November 12, GA planned November 19, 2026). https://www.postgresql.org/about/news/postgresql-19-rc-1-released-3409/
+[^44]: PostgreSQL 18.1, 18.2, 18.3, 18.4 and 18.6 Release Notes. https://www.postgresql.org/docs/18/release-18-1.html , https://www.postgresql.org/docs/18/release-18-2.html , https://www.postgresql.org/docs/18/release-18-3.html , https://www.postgresql.org/docs/18/release-18-4.html , https://www.postgresql.org/docs/18/release-18-6.html
