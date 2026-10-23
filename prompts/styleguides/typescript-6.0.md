@@ -98,7 +98,7 @@ The compiler is TypeScript 6.0. These belong to newer releases, other tools, or 
 
 ##### Deprecated or removed older features (do not introduce in 6.0 code)
 
-- Removed **before** 6.0 (errors with no escape hatch since 5.5): `charset`, `importsNotUsedAsValues`, `preserveValueImports`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `out`, `target: es3`, `prepend` in project references. (6.0.3 reports TS5102 "has been removed" for all of them, including `prepend` in a project reference, and silently tolerates `importsNotUsedAsValues: "remove"`, the old default value.)[^7]
+- Removed **before** 6.0 (stopped functioning in 5.5, where `"ignoreDeprecations": "5.0"` still accepted but ignored them; hard errors with no escape hatch since 5.6): `charset`, `importsNotUsedAsValues`, `preserveValueImports`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `out`, `target: es3`, `prepend` in project references. (6.0.3 reports TS5102 "has been removed" for all of them, including `prepend` in a project reference, and silently tolerates `importsNotUsedAsValues: "remove"`, the old default value.)[^7]
 - Deprecated **in 6.0** (see the Deprecations section): everything listed in What's New.
 - `experimentalDecorators` and `emitDecoratorMetadata` are **not** deprecated in 6.0 and still work, but new code should use standard decorators (5.0+).
 
