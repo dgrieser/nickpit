@@ -630,9 +630,9 @@ spec:
 ```
 
 Review points:
-- `restartPolicy: Always` is valid only on init containers (and, with container restart rules, regular containers accept `Never`/`OnFailure`/`Always` overrides — see below). Ordinary init containers must not set `restartPolicy`.
+- On an init container, `restartPolicy: Always` is what makes it a sidecar; a plain init container leaves `restartPolicy` unset. Per-container `restartPolicy` on regular containers is a separate, beta feature (container restart rules, below) — do not confuse the two.
 - Sidecar resources count towards the Pod's effective request together with the app containers (unlike classic init containers, whose request is a max).
-- Since 1.37, in-place resize also covers sidecars (`InPlacePodVerticalScalingInitContainers` GA).
+- In-place resize also covers sidecars (`InPlacePodVerticalScalingInitContainers`, beta-on in 1.36, GA in 1.37).
 - Do not gate on the `SidecarContainers` feature gate: it was removed in 1.37 (passing it to a component now fails).
 
 ##### In-place resize (GA 1.35)
