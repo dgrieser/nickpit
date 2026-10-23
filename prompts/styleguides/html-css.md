@@ -34,7 +34,7 @@ A feature's "Baseline year" is the year it became Newly available (e.g. `:has()`
 Key consequences:
 
 - **Newly available ≠ safe for everyone.** It only says the *latest* versions support it. Users on Safari 17 or a two-year-old Android Chrome do not have it.
-- **A feature's status is the weakest of its parts.** `web-features` computes a feature's status from every browser-compat-data key it contains. Anchor positioning is the prime example: its core properties are Newly available since 2026-01-13, but the feature as a whole is *Limited* because `position-visibility: anchor-valid | anchor-visible` only exist in Safari 27.
+- **A feature's status is the weakest of its parts.** `web-features` computes a feature's status from every browser-compat-data key it contains. Anchor positioning is the prime example: most of its keys (`anchor-name`, `anchor()`, `@position-try`, `position-area`, …) are Newly available since 2026-01-13, but the feature as a whole is *Limited* because `position-visibility: anchor-valid | anchor-visible` only exist in Safari 27 (Chrome 157 is in beta). Individual keys can even lag the "core": `position-anchor` is recorded as fully supported only from Chrome/Firefox 151 and Safari 27 (2026-09-14), because earlier versions used a different initial value (`auto`/`none`/`implicit` instead of `normal`) — an explicit `position-anchor: --name` works since the core versions.
 - **Non-core browsers** (Samsung Internet, Opera, in-app WebViews) are not part of the definition. Check them separately if analytics say they matter.
 - **Baseline says nothing about bugs, accessibility support in screen readers, or performance.** `display: contents` on buttons, for example, has a long history of accessibility-tree bugs that compat data does not model as "unsupported".
 
@@ -68,10 +68,10 @@ Newly available (HTML/CSS-relevant), per `web-features` 3.44.0:
 - **2026-01-13** anchor-positioning *core properties* (feature as a whole still Limited), `:active-view-transition`, `startViewTransition({ types })`, Navigation API, `rch`/`rex`/`ric`/`rcap` units (Firefox 147)
 - **2026-02-24** Trusted Types, `shape()` (Firefox 148) · **2026-03-13** `text-indent: hanging | each-line` · **2026-03-24** `@scope`, Custom Highlight API, CSP violation reports via the Reporting API (Safari 26.4)
 - **2026-04-10** `contrast-color()` · **2026-05-07** name-only container queries, `image-rendering: crisp-edges` · **2026-05-11** `:open` · **2026-05-19** container style queries (Firefox 151)
-- **2026-06-16** `field-sizing` (Firefox 152) · **2026-08-18** `sibling-index()`/`sibling-count()` (Firefox 154) · **2026-09-01** `progress()`
+- **2026-06-16** `field-sizing` (Firefox 152) · **2026-08-18** `sibling-index()`/`sibling-count()` and the `text-box`/`text-box-trim`/`text-box-edge` properties (Firefox 154) · **2026-09-01** `progress()`
 - **2026-09-14** (Safari 27): `ariaNotify()`, `light-dark()` for images, `alpha()`, `revert-rule`, `overflow-anchor`; **2026-09-11** `autocorrect`
 
-Became Widely available: `oklch()`/`oklab()`/`lab()`/`color()`, `color-mix()`, `:nth-child(of S)` (2025-11-09); two-value `display` (2026-01-21); **subgrid** (2026-03-15); `contain-intrinsic-size`, `image-set()`, `modulepreload`, `hyphens`, `@counter-style` (2026-03-18); `<search>` (2026-04-13); ARIA attribute reflection (2026-04-24); `:user-valid`/`:user-invalid` (2026-05-02); `lh`/`rlh` (2026-05-21); `:dir()`, CSS masks, `exp()`/`pow()`… (2026-06-07); **CSS nesting**, `linear()` easing, `cap` unit, preloading responsive images (2026-06-11); **`:has()`** and **`loading="lazy"`** (2026-06-19); AVIF (2026-07-25); declarative shadow DOM (2026-08-20); `white-space-collapse`, `text-wrap: wrap | nowrap` (2026-09); `transform-box`, `align-content` in block layout (2026-10-16).
+Became Widely available: `oklch()`/`oklab()`/`lab()`/`color()`, `color-mix()`, `:nth-child(of S)` (2025-11-09); `calc()` constants `pi`/`e`/`infinity` (2025-12-06); `animation-composition` (2026-01-04); two-value `display` (2026-01-21); **subgrid** (2026-03-15); `contain-intrinsic-size`, `image-set()`, `modulepreload`, `hyphens`, `@counter-style` (2026-03-18); `<search>` (2026-04-13); ARIA attribute reflection (2026-04-24); `:user-valid`/`:user-invalid`, `clip-path` box values (2026-05-02); `lh`/`rlh` (2026-05-21); `:dir()`, CSS masks, `exp()`/`pow()`… (2026-06-07); **CSS nesting**, `linear()` easing, `cap` unit, preloading responsive images (2026-06-11); **`:has()`** and **`loading="lazy"`** (2026-06-19); AVIF (2026-07-25); declarative shadow DOM (2026-08-20); `white-space-collapse`, `text-wrap: wrap | nowrap` (2026-09-19); `paint-order` (2026-09-22); `transform-box`, `align-content` in block layout (2026-10-16).
 
 ##### Version-aware (Baseline-aware) review rules
 
@@ -132,12 +132,12 @@ Browser versions are the first versions where *the whole feature* is supported a
 | `contain-intrinsic-size` | **W** | W 2026-03-18 | C83 F107 S17 |
 | `sibling-index()`, `sibling-count()` | **N** | 2026-08-18 | C138 F154 S26.2 |
 | `scrollbar-gutter` | **N** | 2024-12-11 | C94 F97 S18.2 |
-| `overscroll-behavior` | **L** | — | C144 F150 (no Safari) |
+| `overscroll-behavior` | **L** | — | C63 F59 S16 for real scroll containers; full support (also on containers without scrollable overflow) only C144 F150, Safari partial |
 | `line-clamp` (unprefixed) | **L** | — | none |
-| `text-box` | **L** | — | C133 S18.2 |
+| `text-box` (whole feature) | **L** | — | C133 S18.2; the `text-box`, `text-box-trim`, `text-box-edge` properties are **N** since 2026-08-18 (C133 F154 S18.2), but the `<text-edge>` value keys (`cap`, `alphabetic`, `ex`, `text`) are not recorded for Firefox |
 | Grid lanes (formerly "masonry") | **L** | — | none |
 | `reading-flow` | **L** | — | C137 only |
-| Anchor positioning (whole feature) | **L** | — | S27 only; core properties are **N** since 2026-01-13 (C125 F147 S26) |
+| Anchor positioning (whole feature) | **L** | — | S27 only; core properties are **N** since 2026-01-13 (C125 F147 S26; `position-area` C129) |
 
 ##### CSS colour, motion, effects
 
@@ -160,11 +160,12 @@ Browser versions are the first versions where *the whole feature* is supported a
 | Cross-document view transitions `@view-transition` | **L** | — | C126 S18.2 (no Firefox) |
 | Element-scoped view transitions | **L** | — | C147 only |
 | `transition-behavior: allow-discrete` | **N** | 2024-08-06 | C117 F129 S17.4 |
-| Animating `display`/`overlay` | **L** | — | C117 S18 (no Firefox) |
+| Animating `display` (`display-animation`) | **L** | — | C117 S18 (no Firefox) |
+| `overlay` property | **L** | — | C117 only (no Firefox, no Safari) |
 | `interpolate-size`, `calc-size()` | **L** | — | C129 only |
 | Scroll-driven animations | **L** | — | C115 S26 (no Firefox) |
 | `backdrop-filter` | **N** | 2024-09-16 | C76 F103 S18 |
-| `accent-color` | **L** | — | C93 F92 S26.2 (no Chrome Android) |
+| `accent-color` | **L** | — | C93 F92 S26.2 (Chrome Android only partial: no minimum-contrast adjustment) |
 | Customizable `<select>` (`appearance: base-select`) | **L** | — | C135 S27 |
 | `zoom` | **N** | 2024-05-14 | C1 F126 S3.1 |
 
@@ -175,14 +176,14 @@ Browser versions are the first versions where *the whole feature* is supported a
 | `<dialog>` (`showModal()`, `::backdrop`) | **W** | W 2024-09-14 | C37 F98 S15.4 |
 | `dialog.requestClose()` | **N** | 2025-05-27 | C134 F139 S18.4 |
 | `<dialog closedby>` | **L** | — | C134 F141 (no Safari) |
-| Popover API (`popover`, `popovertarget`) | **N** | 2025-01-27 | C116 F125 S17 (iOS 18.3) |
-| `popover="hint"` | **L** | — | C151 F153 |
+| Popover API (`popover`, `popovertarget`) | **N** | 2025-01-27 | C116 F125 S17 (iOS 18.3; iOS 17–18.2 lacked tap-outside light dismiss) |
+| `popover="hint"` | **L** | — | C151 F153 (C133–150 and F149–152 implemented an older, inconsistent version) |
 | Invoker commands (`command`/`commandfor`) | **N** | 2025-12-12 | C135 F144 S26.2 |
 | Interest invokers (`interestfor`) | **L** | — | C142 only |
 | `inert` | **W** | N 2023-04-11, W 2025-10-11 | C102 F112 S15.5 |
 | `<details>`/`<summary>` | **W** | W 2022-07-15 | — |
 | `<details name>` (exclusive accordion) | **N** | 2024-09-03 | C120 F130 S17.2 |
-| `hidden="until-found"` | **L** | — | C102 F148 (no Safari) |
+| `hidden="until-found"` | **L** | — | C102 F148; Safari 26.2 partial (does not scroll to the match correctly) |
 | `<search>` | **W** | N 2023-10-13, W 2026-04-13 | C118 F118 S17 |
 | Date/time inputs (`date`, `time`, `datetime-local`) | **W** | W 2024-04-05 | C20 F93 S14.1 |
 | `<input type="color">`, `<datalist>` | **L** | — | Firefox Android lacks them |
@@ -221,20 +222,20 @@ These are **not Baseline** (Limited availability) as of 2026-10-22. Never presen
 
 - **Anchor positioning as a whole** (`position-visibility: anchor-valid | anchor-visible` missing outside Safari 27). The core (`anchor-name`, `position-anchor`, `anchor()`, `anchor-size()`, `position-area`, `@position-try`, `position-try-fallbacks`) is only *Newly* available (Firefox 147, Safari 26) — still gate it for older browsers.
 - **Cross-document view transitions** (`@view-transition { navigation: auto }`) — no Firefox. Harmless to add (it is ignored), but do not build navigation feedback that depends on it.
-- **Animating `display` / `overlay`** with `transition-behavior: allow-discrete` — `transition-behavior` itself is Newly available, but `display`/`overlay` animation lacks Firefox: exit animations simply do not run there.
+- **Animating `display` / `overlay`** with `transition-behavior: allow-discrete` — `transition-behavior` itself is Newly available, but `display` animation lacks Firefox and the `overlay` property is Chromium-only: exit animations simply do not run (or the element leaves the top layer before its exit animation finishes) there.
 - **`interpolate-size: allow-keywords` and `calc-size()`** (animating to `height: auto`) — Chromium only.
 - **Scroll-driven animations** (`animation-timeline: scroll()/view()`, `ScrollTimeline`) — no Firefox.
 - **Container scroll-state queries** (`@container scroll-state(stuck: top)`) — Chromium only.
 - **`if()`, `@function`, typed `attr()`** (`attr(data-x type(<length>))`, Chrome 133, Firefox 155, no Safari) — `attr()` outside `content` is not Baseline.
 - **`text-wrap: pretty`** — no Firefox. Cosmetic: fine as enhancement.
-- **`text-box` (`text-box-trim`/`-edge`)** — no Firefox.
+- **`text-box` (`text-box-trim`/`-edge`)** — the properties are Newly available (2026-08-18, Firefox 154), but the feature stays Limited because the `<text-edge>` values (`cap`, `alphabetic`, `ex`, `text`) are not recorded for Firefox. Cosmetic: fine as enhancement.
 - **`reading-flow`, scroll markers (`::scroll-marker`, `::scroll-button()`)**, `corner-shape`, `@custom-media`, grid lanes/masonry — Chromium-only or no implementation.
 - **Customizable `<select>`** (`appearance: base-select`, `::picker(select)`) — Chrome 135 and Safari 27, not Firefox.
 - **`<dialog closedby>`** — no Safari; use `requestClose()` (Newly) or your own light-dismiss handler.
-- **`popover="hint"`** and **interest invokers** (`interestfor`) — Chromium (+ Firefox for `hint`) only.
-- **`hidden="until-found"`** and the `beforematch` event — no Safari: content stays hidden from find-in-page there and is still hidden visually.
-- **`accent-color`** — missing on Chrome Android per BCD; acceptable as cosmetic enhancement.
-- **`overscroll-behavior`** — no Safari per the data set.
+- **`popover="hint"`** and **interest invokers** (`interestfor`) — Chromium (+ Firefox 153 for `hint`) only; Chrome 133–150 and Firefox 149–152 shipped an older, inconsistent `hint` behaviour.
+- **`hidden="until-found"`** and the `beforematch` event — Chrome 102, Firefox 148; Safari 26.2 supports it only partially (find-in-page does not scroll to the match correctly), and older Safari treats it like plain `hidden` (content not findable).
+- **`accent-color`** — only partial on Chrome Android per BCD (the control's minimum contrast is not maintained), so check contrast yourself; acceptable as cosmetic enhancement.
+- **`overscroll-behavior`** — works on real scroll containers everywhere (Chrome 63, Firefox 59, Safari 16); it is Limited because Safari (and Chrome < 144, Firefox < 150) ignore it on scroll containers without scrollable overflow, e.g. a modal's `overflow: auto` wrapper whose content fits.
 - **`sizes="auto"`** — no Safari; keep an explicit `sizes` fallback (`sizes="auto, 100vw"`).
 - **Speculation rules**, **`blocking="render"`**, **credentialless iframes**, **`CloseWatcher`**, **`moveBefore()`** — not Baseline.
 - **`<input type="color">` and `<datalist>`** — missing on Firefox Android per BCD.
@@ -676,12 +677,12 @@ textarea {
 }
 ```
 
-*(Chromium-verified: an empty `field-sizing: content` textarea measured 7 px wide; after input it grew to 239 px — always set minimum sizes.)* Older browsers ignore it and keep the fixed size, which is an acceptable fallback.[^27]
+*(Chromium-verified: an empty `field-sizing: content` textarea measured 7 px wide; after typing one short sentence it grew to fit the text, about 280 px — always set minimum sizes.)* Older browsers ignore it and keep the fixed size, which is an acceptable fallback.[^27]
 
 ##### Styling form controls
 
 - `appearance: none` (Widely) removes native styling — then you must restore focus, checked, disabled, invalid and forced-colors states yourself.
-- `accent-color` is **not Baseline** (no Chrome Android); treat as cosmetic.
+- `accent-color` is **not Baseline** (only partial on Chrome Android, which does not keep the control legible); treat as cosmetic and check contrast.
 - Customizable `<select>` (`appearance: base-select`) is Chrome 135 / Safari 27 only; do not ship a design that relies on it without the native look as fallback.
 
 ***
@@ -756,7 +757,7 @@ Behaviour *(Chromium-verified)*: `popover` (= `"auto"`) renders in the top layer
 - A popover is **not modal**: no inert background, no focus trap. Use `<dialog>.showModal()` when the user must respond.
 - `popover="manual"` has no light dismiss; you must provide a close control.
 - Keep the popover in the DOM right after its invoker so the tab order makes sense (focus is not moved into it automatically).
-- Popover is Newly available — Safari 17 on macOS, but Safari on iOS only from 18.3. For broad audiences, keep a non-popover fallback or polyfill.
+- Popover is Newly available — Chrome 114 (the whole feature from 116), Firefox 125, Safari 17. Safari on iOS 17–18.2 supports it, but tapping outside does not light-dismiss the popover (fixed in 18.3, which is why the feature counts as Newly available only from 2025-01-27). On those iOS versions always provide a visible close control. For audiences with pre-2024 browsers, keep a non-popover fallback or polyfill.
 - `popover="hint"`, `interestfor` (hover/focus-triggered popovers) are not Baseline.
 - Positioning popovers next to the invoker: anchor positioning is Newly available for its core but not Baseline as a whole; fall back to a centred or JS-positioned popover.
 
@@ -771,7 +772,7 @@ Behaviour *(Chromium-verified)*: `popover` (= `"auto"`) renders in the top layer
 </dialog>
 ```
 
-Built-in commands: `show-modal`, `close`, `request-close` (dialogs); `show-popover`, `hide-popover`, `toggle-popover` (popovers). Custom commands start with `--` and dispatch a `command` event on the target. *(Chromium-verified: `command="show-modal"` opened the dialog as `:modal` and focused its `autofocus` button.)* Because this is only Newly available, keep a `click` handler fallback when the target audience includes Safari < 26.2 / Firefox < 144:
+Built-in commands: `show-modal`, `close`, `request-close` (dialogs; `request-close` only from Chrome 139); `show-popover`, `hide-popover`, `toggle-popover` (popovers). Custom commands start with `--` and dispatch a `command` event on the target. *(Chromium-verified: `command="show-modal"` opened the dialog as `:modal` and focused its `autofocus` button.)* Because this is only Newly available, keep a `click` handler fallback when the target audience includes Safari < 26.2 / Firefox < 144:
 
 ```js
 if (!('command' in HTMLButtonElement.prototype)) {
@@ -802,7 +803,7 @@ if (!('command' in HTMLButtonElement.prototype)) {
 | Hidden visually, read by screen readers | `.visually-hidden` |
 | Visible, hidden from screen readers (decorative) | `aria-hidden="true"` (never on focusable content) |
 | Visible but non-interactive and hidden from AT | `inert` |
-| Hidden but findable with Ctrl+F | `hidden="until-found"` — **not Baseline** (no Safari); acceptable as enhancement |
+| Hidden but findable with Ctrl+F | `hidden="until-found"` — **not Baseline** (Safari only partial since 26.2); acceptable as enhancement |
 
 `hidden` is overridden by any author `display` value: `.panel { display: grid }` makes `<div class="panel" hidden>` visible. Add `[hidden] { display: none !important; }` in the reset or write `.panel:not([hidden])`.
 
@@ -1238,7 +1239,7 @@ Pitfalls (all *Chromium-verified* unless noted):
 
 Facts *(Chromium-verified)*:[^23]
 
-- `color-mix(in srgb, red, blue)` computes to `color(srgb 0.5 0 0.5)`; `color-mix(in oklab, …)` to an `oklab()` value. The interpolation space is mandatory in Baseline browsers.
+- `color-mix(in srgb, red, blue)` computes to `color(srgb 0.5 0 0.5)`; `color-mix(in oklab, …)` to an `oklab()` value. The current CSS Color 5 draft makes the `in <space>` part optional (default Oklab), but Chromium 141 rejects `color-mix(red, blue)` and the omission is not tracked as Baseline: always write the interpolation space.
 - `oklch(70% 0.4 150)` is accepted and stays out of gamut in the computed value; the browser gamut-maps when painting. Keep chroma within the target gamut (sRGB chroma is usually ≤ 0.15–0.2 depending on hue) or provide a `@media (color-gamut: p3)` variant.
 - Relative colour results compute to `color(srgb …)` for `rgb(from …)`.
 - `contrast-color()` was not available in Chromium 141 (Chrome 147+); `color-mix()` with three colours parses in neither Chromium 141 nor any Baseline browser set.
@@ -1311,7 +1312,7 @@ dialog:not([open]) { opacity: 0; }
 }
 ```
 
-*(Chromium-verified: two frames after `showModal()` the opacity was ~0.02 and reached 1 after the transition.)* Without `@starting-style`,[^26] an element that goes from `display: none` to visible has no "before" style and does not transition. Put `@starting-style` *after* the base rule (or give it equal-or-higher specificity) — it participates in the normal cascade.
+*(Chromium-verified: two frames after `showModal()` the opacity was still well below 1 and reached 1 after the transition.)* Without `@starting-style`,[^26] an element that goes from `display: none` to visible has no "before" style and does not transition. Put `@starting-style` *after* the base rule (or give it equal-or-higher specificity) — it participates in the normal cascade.
 
 ##### `text-wrap`
 
@@ -1379,7 +1380,7 @@ p { text-wrap: pretty; }                         /* NOT Baseline (no Firefox) �
 
 ```css
 :root {
-  color-scheme: light dark;   /* REQUIRED for light-dark() to ever pick the dark value */
+  color-scheme: light dark;   /* light-dark() needs this or the color-scheme <meta> to pick the dark value */
 
   --surface: light-dark(#ffffff, oklch(20% 0.01 260));
   --text:    light-dark(oklch(25% 0.02 260), oklch(92% 0.01 260));
@@ -1394,8 +1395,8 @@ body { background: var(--surface); color: var(--text); }
 
 Facts *(Chromium-verified)*:
 
-- **`light-dark()` uses the element's used `color-scheme`, not the media query.** Without `color-scheme: light dark` it always returns the light value, even when the OS is dark.
-- `<meta name="color-scheme" content="light dark">` alone makes the default canvas dark and default text white in dark mode, while the computed `color-scheme` property stays `normal` — so `light-dark()` still needs the CSS property.
+- **`light-dark()` uses the element's used colour scheme, not the media query.** Without any colour-scheme opt-in it always returns the light value, even when the OS is dark.
+- The opt-in can come from the `color-scheme` property **or** from `<meta name="color-scheme" content="light dark">`: elements whose computed `color-scheme` is `normal` follow the page colour scheme set by the meta element (CSS Color Adjustment 1). With only the meta element, the canvas turns dark, default text white, and `light-dark()` returns its dark value although the computed property stays `normal`. A `color-scheme: light` on an element (e.g. a `[data-theme="light"]` override) wins over the meta for its subtree.
 - `light-dark()` is **Newly** available (2024-05-13; Chrome 123, Firefox 120, Safari 17.5) and becomes Widely available on 2026-11-13. For older browsers, the `@media (prefers-color-scheme: dark)` custom-property pattern (Widely) is the fallback:
 
 ```css
@@ -1440,14 +1441,14 @@ Facts *(Chromium-verified)*:
 .row > .content { min-inline-size: 0; }        /* allow shrinking */
 
 /* 2. Grid 1fr = minmax(auto, 1fr) — same problem */
-.layout { grid-template-columns: 1fr; }               /* BAD: track grows to 430px in a 100px grid */
+.layout { grid-template-columns: 1fr; }               /* BAD: track grows to the text width (~450px) in a 100px grid */
 .layout { grid-template-columns: minmax(0, 1fr); }    /* GOOD: stays 100px */
 
 /* 3. Long unbreakable strings */
 .prose { overflow-wrap: anywhere; }
 ```
 
-In the measurements, a nowrap child inside a 100 px flex container produced a 430 px scroll width; a 100 px `1fr` grid's track grew to 430 px while `minmax(0, 1fr)` stayed at 100 px.
+In the measurements (font-dependent), a nowrap child inside a 100 px flex container produced a ~450 px scroll width; a 100 px `1fr` grid's track grew to ~450 px while `minmax(0, 1fr)` stayed at 100 px.
 
 ##### Containing-block and stacking surprises
 
@@ -1641,7 +1642,7 @@ Keep raw values in tokens and semantic aliases (`--surface`, `--text`, `--border
 - [ ] No `&__suffix` in native CSS nesting; declarations before nested rules
 - [ ] `var()` fallbacks not relied on for invalid values; `@property` for typed tokens
 - [ ] Container queries do not query the container itself; `inline-size` unless height is fixed
-- [ ] `light-dark()` accompanied by `color-scheme: light dark`
+- [ ] `light-dark()` accompanied by a colour-scheme opt-in (`color-scheme: light dark` or `<meta name="color-scheme">`)
 - [ ] `prefers-reduced-motion` honoured for animations, smooth scroll, view transitions
 - [ ] Logical properties in multilingual UIs; `min-inline-size: 0`/`minmax(0, 1fr)` where content can overflow
 - [ ] Every Newly-available feature has an acceptable fallback for the project's target; no Limited-availability feature carries essential function
