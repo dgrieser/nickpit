@@ -331,7 +331,7 @@ Rules:
 - Import a module for its side effects with a bare `import "./register";`.
 - Mark type-only imports explicitly: `import type { User } from "./types";` (3.8+) or `import { createUser, type User } from "./types";` (**4.5+**; a parse error, TS1005, before 4.5). The same goes for re-exports: `export type { User } from "./types";` / `export { type User } from "./types";` (4.5+).
 - Under `isolatedModules` (needed for esbuild, swc, Babel, `ts-jest` `isolatedModules`, Vite), re-exporting a type without `type` is TS1205; a file without any `import`/`export` is TS1208 in 4.x (5.0 dropped TS1208); accessing an ambient (`declare const enum` in a `.d.ts`) const enum is TS2748. Note: on 4.0–4.4 a single parse error (such as `export { type X }`) makes `tsc` report only syntax errors for the whole program, so a version mismatch can hide the isolatedModules errors entirely.
-- `importsNotUsedAsValues` (`remove` | `preserve` | `error`, 3.8+) and `preserveValueImports` (**4.5+**, requires `module` ≥ `es2015`; together with `isolatedModules` it reports TS1444 for types imported without `type`) control elision in 4.x. Both are **deprecated in 5.0** (TS5101 "will stop functioning in TypeScript 5.5") and removed in 5.5; their replacement is `verbatimModuleSyntax` (5.0). On 4.x, the portable way to enforce type-only imports is `isolatedModules` plus the `@typescript-eslint/consistent-type-imports` lint rule; avoid introducing `importsNotUsedAsValues: "error"` in a project that is about to move to 5.x.
+- `importsNotUsedAsValues` (`remove` | `preserve` | `error`, 3.8+) and `preserveValueImports` (**4.5+**, requires `module` ≥ `es2015`; together with `isolatedModules` it reports TS1444 for types imported without `type`) control elision in 4.x. Both are **deprecated in 5.0** (TS5101 "will stop functioning in TypeScript 5.5") stop functioning in 5.5 (still accepted with `"ignoreDeprecations": "5.0"` but ignored) and are hard errors (TS5102) from 5.6; their replacement is `verbatimModuleSyntax` (5.0). On 4.x, the portable way to enforce type-only imports is `isolatedModules` plus the `@typescript-eslint/consistent-type-imports` lint rule; avoid introducing `importsNotUsedAsValues: "error"` in a project that is about to move to 5.x.
 
 ##### `paths`, `baseUrl` and `rootDirs`
 
@@ -1641,7 +1641,7 @@ TypeScript 5.0 (March 16, 2023) is the next release after 4.9; there is no 4.10.
 - Replace `importsNotUsedAsValues`/`preserveValueImports` usage with explicit `import type`/`type` modifiers so that the switch to `verbatimModuleSyntax` is mechanical.
 - Pin `@types/*` and linting to versions that support both 4.9 and 5.x during the transition (e.g. `typescript-eslint` 6.21–8.x).
 
-##### 5.0 deprecations (errors TS5101/TS5107 in 5.0–5.4, removed in 5.5)
+##### 5.0 deprecations (errors TS5101/TS5107 in 5.0–5.4, no effect in 5.5, hard errors from 5.6)
 
 In 5.0, each of these is an **error** unless `"ignoreDeprecations": "5.0"` is set (verified on 5.0.4: TS5101 for `importsNotUsedAsValues: "preserve"`/`"error"`, TS5107 for `target: ES3`; the default values such as `importsNotUsedAsValues: "remove"` are not reported):[^17]
 

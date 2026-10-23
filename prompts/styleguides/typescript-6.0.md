@@ -58,7 +58,7 @@ TypeScript 6.0 contains few language features. It is a **configuration and ecosy
 | `esModuleInterop` / `allowSyntheticDefaultImports` | `false` (unless implied) | `true`, and `false` is deprecated |
 | `alwaysStrict` | `false` unless `strict` | `true`, and `false` is deprecated |
 
-**Deprecations that are now errors** (silenced with `"ignoreDeprecations": "6.0"`, removed outright in 7.0): `target: es5`, `downlevelIteration`, `moduleResolution: node`/`node10`/`classic`, `module: amd`/`umd`/`system`/`none`, `baseUrl`, `outFile`, `esModuleInterop: false`, `allowSyntheticDefaultImports: false`, `alwaysStrict: false`, and import assertions (`assert { … }`). Two syntax changes are errors that `ignoreDeprecations` does **not** silence: the `module Foo { }` namespace keyword (TS1540) and, on the command line, `tsc file.ts` in a directory that contains a `tsconfig.json` (TS5112).[^1]
+**Deprecations that are now errors** (silenced with `"ignoreDeprecations": "6.0"`, removed outright in 7.0): `target: es5`, `downlevelIteration`, `moduleResolution: node`/`node10`/`classic`, `module: amd`/`umd`/`system`/`none`, `baseUrl`, `outFile`, `esModuleInterop: false`, `allowSyntheticDefaultImports: false`, `alwaysStrict: false`, and import assertions (`assert { … }`; under `module: nodenext` they are already TS2880 since 5.8, and `node20` since 5.9, which `ignoreDeprecations` does not silence). Two syntax changes are errors that `ignoreDeprecations` does **not** silence: the `module Foo { }` namespace keyword (TS1540) and, on the command line, `tsc file.ts` in a directory that contains a `tsconfig.json` (TS5112).[^1]
 
 **New features**:
 

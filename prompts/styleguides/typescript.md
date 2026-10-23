@@ -55,7 +55,7 @@
 | 5.3 | 5.3.2 (2023-11-20) | 5.3.3 (2023-12-06) | frozen | import attributes (`with { type: "json" }`), `switch (true)` narrowing |
 | 5.4 | 5.4.2 (2024-03-06) | 5.4.5 (2024-04-10) | frozen | narrowing preserved in closures, `NoInfer<T>`, `module: preserve`, `Object.groupBy`/`Map.groupBy` typings |
 | 5.5 | 5.5.2 (2024-06-20) | 5.5.4 (2024-07-22) | frozen | inferred type predicates, constant indexed-access narrowing, `isolatedDeclarations`, regex syntax checking, `${configDir}`, JSDoc `@import`; options deprecated in 5.0 stop having any effect |
-| 5.6 | 5.6.2 (2024-09-09) | 5.6.3 (2024-10-08) | frozen | always-truthy/never-nullish errors, iterator helper typings, `strictBuiltinIteratorReturn`, `noUncheckedSideEffectImports`, `--noCheck`; options deprecated in 5.0 become hard errors (TS5102) |
+| 5.6 | 5.6.2 (2024-09-09) | 5.6.3 (2024-10-08) | frozen | always-truthy/never-nullish errors, iterator helper typings, `strictBuiltinIteratorReturn`, `noUncheckedSideEffectImports`, `--noCheck`; options deprecated in 5.0 become hard errors (TS5102; TS5108 for `target: es3`) |
 | 5.7 | 5.7.2 (2024-11-22) | 5.7.3 (2025-01-08) | frozen | never-initialized variable checks, `rewriteRelativeImportExtensions`, `target`/`lib` `es2024`, generic `TypedArray`s |
 | 5.8 | 5.8.2 (2025-02-28) | 5.8.3 (2025-04-05) | frozen | `require()` of ESM under `nodenext`, `module: node18`, `erasableSyntaxOnly`, `libReplacement`, per-branch return checks |
 | 5.9 | 5.9.2 (2025-07-31) | 5.9.3 (2025-09-30) | frozen | `import defer`, `module: node20`, minimal `tsc --init`, `ArrayBuffer`/`TypedArray` lib tightening |
@@ -104,14 +104,14 @@ The reviewer must not suggest a construct the project's compiler rejects. Typica
 
 ##### Deprecated and removed configuration (any version)
 
-Verified on the adjacent releases: 5.5.4 still accepts the 5.0-deprecated options with `"ignoreDeprecations": "5.0"` (they are simply ignored — `keyofStringsOnly` no longer changes `keyof`), and 5.6.3 rejects them with TS5102 "has been removed" whatever `ignoreDeprecations` says. The 5.5 release notes announced the hard error only for 6.0.
+Verified on the adjacent releases: 5.5.4 still accepts the 5.0-deprecated options with `"ignoreDeprecations": "5.0"` (they are simply ignored — `keyofStringsOnly` no longer changes `keyof`), and 5.6.3 rejects them with TS5102 "Option '…' has been removed" (TS5108 for `target: es3`) whatever `ignoreDeprecations` says. The 5.5 release notes announced the hard error only for 6.0. 7.0 no longer knows these options at all (TS5023 "Unknown compiler option"; TS6046 for `target: es3`).
 
 | Setting | Deprecated | Error |
 |---|---|---|
 | `importsNotUsedAsValues`, `preserveValueImports` | 5.0 (silenced by `"ignoreDeprecations": "5.0"`; no effect from 5.5) | 5.6 (TS5102; replacement: `verbatimModuleSyntax`) |
 | `target: es3`, `out`, `charset`, `keyofStringsOnly`, `noImplicitUseStrict`, `noStrictGenericChecks`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `prepend` in references | 5.0 (no effect from 5.5) | 5.6 |
-| `target: es5`, `downlevelIteration`, `moduleResolution: node`/`node10`/`classic`, `module: amd`/`umd`/`system`/`none`, `baseUrl`, `outFile`, `esModuleInterop: false`, `allowSyntheticDefaultImports: false`, `alwaysStrict: false` | 6.0 (error unless `"ignoreDeprecations": "6.0"`) | 7.0 (removed; `ignoreDeprecations` no longer helps) |
-| import assertions `assert { type: "json" }` | 6.0 (TS2880 unless `"ignoreDeprecations": "6.0"`) | 7.0 (TS2880) |
+| `target: es5`, `downlevelIteration`, `moduleResolution: node`/`node10`/`classic`, `module: amd`/`umd`/`system`/`none`, `baseUrl`, `outFile`, `esModuleInterop: false`, `allowSyntheticDefaultImports: false`, `alwaysStrict: false` | 6.0 (TS5101/TS5107 unless `"ignoreDeprecations": "6.0"`) | 7.0 (removed: TS5102/TS5108, TS6046 for `module: none`; `ignoreDeprecations` no longer helps) |
+| import assertions `assert { type: "json" }` | 6.0 (TS2880 unless `"ignoreDeprecations": "6.0"`) | 7.0 (TS2880); under `module: nodenext` already TS2880 from 5.8 (`node20` from 5.9), and `ignoreDeprecations` does not silence it there |
 | `module Foo { }` for namespaces | — | 6.0 (TS1540, not silenced by `ignoreDeprecations`) |
 
 ***
@@ -230,6 +230,7 @@ Explicit values make a config mean the same thing on every compiler. The default
 | `types` | every package in `node_modules/@types` | `[]` | list the globals you need (`["node"]`) |
 | `rootDir` | common directory of all inputs | directory containing `tsconfig.json` | set when `outDir` is set |
 | `noUncheckedSideEffectImports` | `false` | `true` | declare asset modules instead of disabling it |
+| `libReplacement` (5.8+) | `true` | `false` | set `true` only when a `@typescript/lib-*` replacement package is used |
 | `esModuleInterop` / `allowSyntheticDefaultImports` | `false` | `true` (and `false` is deprecated) | do not set `false` |
 
 A config with only `outDir: "dist"` and sources in `src/` emitted `dist/index.js` before 6.0 and emits `dist/src/index.js` (with error TS5011 asking for an explicit `rootDir`) on 6.0 and 7.0. A config without `module` emitted CommonJS before 6.0 and emits ES modules from 6.0 — **with no compile error**, but Node.js then fails at run time on extensionless relative imports. Review rule: every tsconfig that emits code sets `module`, `target`, `rootDir` and `outDir` explicitly.
@@ -1104,12 +1105,12 @@ export const text = readFileSync(new URL("./data.txt", import.meta.url), "utf8")
 
 ```ts
 // tsconfig: {"resolveJsonModule": true}
-// 5.3+: import attributes. Before 5.3 only `assert { … }` exists; from 6.0 `assert` is deprecated (TS2880).
+// 5.3+: import attributes. Before 5.3 only `assert { … }` exists; `assert` is TS2880 under nodenext from 5.8 and under every module setting from 6.0.
 import pkg from "./package.json" with { type: "json" };
 export const version: string = pkg.version;
 ```
 
-Under `module: nodenext` (from 5.7) a JSON import in an ES module requires the `type: "json"` attribute (TS1543), and only the default import is allowed (`import { version } from "./package.json" with { type: "json" }` is TS1544), matching Node.js, which exposes JSON modules only as a default export. 5.6 accepted both silently. Verified: Node.js 18.20.8 and 20.20.2 accept both `with` and `assert`; Node.js 22 and 24 accept only `with` (`assert` is a `SyntaxError`). Check the runtime's exact version before migrating; early 18.x/20.x releases only knew `assert`.
+Under `module: nodenext` (from 5.7) a JSON import in an ES module requires the `type: "json"` attribute (TS1543), and only the default import is allowed (`import { version } from "./package.json" with { type: "json" }` is TS1544), matching Node.js, which exposes JSON modules only as a default export. 5.6 accepted both silently. The older `assert { type: "json" }` form is TS2880 under `nodenext` from 5.8 (and under `node20` in 5.9) even with `"ignoreDeprecations": "6.0"`; under `esnext`/`preserve`/`node18` it stays accepted until 6.0. Verified: Node.js 18.20.8 and 20.20.2 accept both `with` and `assert`; Node.js 22 and 24 accept only `with` (`assert` is a `SyntaxError`). Check the runtime's exact version before migrating; early 18.x/20.x releases only knew `assert`.
 
 ##### CommonJS interop: `esModuleInterop` and default imports
 
@@ -1129,7 +1130,7 @@ console.log(legacy());
 
 ##### `verbatimModuleSyntax` and `isolatedModules`
 
-`verbatimModuleSyntax` (5.0+) means "what you write is what is emitted": imports without `type` stay, `import type` disappears. It replaces `importsNotUsedAsValues` and `preserveValueImports` (removed in 5.5).
+`verbatimModuleSyntax` (5.0+) means "what you write is what is emitted": imports without `type` stay, `import type` disappears. It replaces `importsNotUsedAsValues` and `preserveValueImports` (without effect from 5.5, hard error TS5102 from 5.6).
 
 ```ts
 // tsconfig: {"verbatimModuleSyntax": true}
@@ -1182,7 +1183,7 @@ Only interfaces and type aliases need the `type` modifier; imported classes are 
 - The `types` condition must come **first** in each `exports` entry; conditions are matched in order.
 - Once `exports` exists, deep imports that are not listed are blocked at run time and, under `node16`/`nodenext`/`bundler`, in TypeScript. Under `moduleResolution: node10` TypeScript ignores `exports` entirely and falls back to `types`/`typings` and `typesVersions`.
 - Dual ESM/CommonJS packages need separate declaration files per format (`.d.mts`/`.d.cts`) or a CommonJS build whose types are correct for `require`. Check with `@arethetypeswrong/cli` and `publint`.
-- Declarations generated by a new compiler may use syntax that older consumers cannot parse (`const` type parameters, `accessor`, `NoInfer`). Document the minimum TypeScript version and test it, or use `typesVersions` to ship downlevelled declarations.
+- Declarations generated by a new compiler may use syntax or names that older consumers cannot parse or resolve (`const` type parameters and `accessor` fail to parse, `NoInfer` is TS2304 before 5.4). Document the minimum TypeScript version and test it, or use `typesVersions` to ship downlevelled declarations.
 
 ##### `isolatedDeclarations` (5.5+)
 
@@ -1652,15 +1653,15 @@ TypeScript minor releases routinely add errors. Pin the compiler, upgrade one li
 
 ##### 4.x → 5.x
 
-- 5.0 deprecates `importsNotUsedAsValues`, `preserveValueImports` (→ `verbatimModuleSyntax`), `target: es3`, `out`, `keyofStringsOnly`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `charset`, `prepend`; they became hard errors in 5.5.
+- 5.0 deprecates `importsNotUsedAsValues`, `preserveValueImports` (→ `verbatimModuleSyntax`), `target: es3`, `out`, `keyofStringsOnly`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `noStrictGenericChecks`, `charset`, `prepend`; they stop having any effect in 5.5 (still accepted with `"ignoreDeprecations": "5.0"`) and are hard errors (TS5102/TS5108) from 5.6.
 - 5.0 makes every enum a union enum: out-of-range numeric literals assigned to an enum type become errors.
 - 5.0 switches decorators to the TC39 standard unless `experimentalDecorators` is set; frameworks that need legacy decorators must keep the flag.
-- The compiler's own Node.js requirement rises: `engines.node` is `>=4.2.0` in 4.9, `>=12.20` in 5.0, `>=14.17` in 5.9 and 6.0, and `>=16.20.0` in 7.0 (whose `tsc` is a native binary launched through a small Node.js wrapper). CI images with old Node.js versions break on compiler upgrades.
+- The compiler's own Node.js requirement rises: `engines.node` is `>=4.2.0` in 4.9, `>=12.20` in 5.0, `>=14.17` from 5.1 through 6.0, and `>=16.20.0` in 7.0 (whose `tsc` is a native binary launched through a small Node.js wrapper). CI images with old Node.js versions break on compiler upgrades.
 
 ##### 5.x → 6.0
 
 - New defaults (`strict`, ES-module output, `bundler` resolution, `target: es2025`, `types: []`, `rootDir`, `noUncheckedSideEffectImports`) change errors **and emitted output** for configs that relied on them. Make every such option explicit before upgrading.
-- Deprecations are errors (TS5101/TS5107/TS2880/TS1540) unless `"ignoreDeprecations": "6.0"` is set; fix them, because 7.0 removes them.
+- Deprecations are errors (TS5101/TS5107/TS2880) unless `"ignoreDeprecations": "6.0"` is set; fix them, because 7.0 removes them. The `module Foo { }` namespace keyword (TS1540) and `tsc file.ts` next to a `tsconfig.json` (TS5112) are errors that `ignoreDeprecations` does not silence.
 - `baseUrl` → `paths` relative to the tsconfig (`"*": ["./src/*"]` for bare lookups) or `package.json` `imports`.
 - `tsc file.ts` next to a `tsconfig.json` is TS5112; use `tsc -p .`.[^4]
 

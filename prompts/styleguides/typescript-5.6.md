@@ -1313,7 +1313,7 @@ Use `with`, not the older `assert` keyword (deprecated in 6.0, removed in 7.0).
 
 ##### `verbatimModuleSyntax` (5.0+) and type-only imports
 
-`verbatimModuleSyntax` makes the rule simple: imports/exports without `type` are kept, those with `type` are dropped. It replaces `importsNotUsedAsValues` and `preserveValueImports` (both removed in 5.5: setting either is error TS5102).
+`verbatimModuleSyntax` makes the rule simple: imports/exports without `type` are kept, those with `type` are dropped. It replaces `importsNotUsedAsValues` and `preserveValueImports` (both stopped functioning in 5.5; from 5.6 setting either is error TS5102).
 
 ```ts
 // @opts: {"verbatimModuleSyntax": true}
