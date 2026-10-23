@@ -1,7 +1,7 @@
 ### Helm 4: Charts, Releases and CI — Complete Review Guide
 
-> **Version**: Helm **v4.0.0** was released on **2025-11-12** (announced at KubeCon + CloudNativeCon North America), the first new major version in six years.[^1][^2] Minor releases since then: **4.1.0** (2026-01-21), **4.2.0** (2026-05-14) and **4.3.0** (2026-09-09). The latest release as of 2026-10-22 is **v4.3.1 (2026-10-15)**. The next scheduled releases are 4.3.2 (patch, 2026-11-11) and 4.4.0 (minor, 2027-01-13).[^3][^4] The newest 4.0.x patch is v4.0.5 (2026-01-14); Helm patches only the latest minor, so a pinned 4.0/4.1/4.2 should move to 4.3.x.
-> **Helm 3 status**: Helm 3 is in its final, security-only phase. The original plan (bug fixes until 2026-07-08, security fixes until 2026-11-11) was extended: **v3.22.0 (2026-09-10) is the last Helm 3 minor release**, bug fixes ended with it, and **security fixes continue until 2027-02-10**. After that Helm 3 receives no updates. The latest Helm 3 release is v3.22.1 (2026-10-15); v3.22.2 is scheduled for 2026-11-11.[^2][^5]
+> **Version**: Helm **v4.0.0** was released on **2025-11-12** (announced at KubeCon + CloudNativeCon North America), the first new major version in six years.[^1][^2] Minor releases since then: **4.1.0** (2026-01-21), **4.2.0** (2026-05-14) and **4.3.0** (2026-09-09). The latest release as of 2026-10-22 is **v4.3.1 (2026-10-15)**. The next scheduled releases are 4.3.2 (patch, 2026-11-11) and 4.4.0 (minor, 2027-01-13).[^3][^4] The newest 4.0.x patch is v4.0.5 (2026-01-14); Helm patches only the latest minor, so a pinned 4.0/4.1/4.2 should move to 4.3.x; 4.0.x–4.1.3 in particular lack the plugin-verification security fixes of 4.1.4 (section 2).
+> **Helm 3 status**: Helm 3 is in its final, security-only phase. The original plan (bug fixes until 2026-07-08, security fixes until 2026-11-11) was extended: **v3.22.0 (2026-09-09, as scheduled in the EOL post; the GitHub release is timestamped 2026-09-10 UTC) is the last Helm 3 minor release**, bug fixes ended with it, and **security fixes continue until 2027-02-10**. After that Helm 3 receives no updates. The latest Helm 3 release is v3.22.1 (2026-10-15); v3.22.2 is scheduled for 2026-11-11.[^2][^5]
 > **Kubernetes skew**: Helm 4 supports the Kubernetes minor it was compiled against and three older ones: 4.3.x → 1.37–1.34, 4.2.x → 1.36–1.33, 4.1.x → 1.35–1.32, 4.0.x → 1.34–1.31.[^6] `helm version` prints the compiled-in client-go version (`KubeClientVersion:"v1.37"` for v4.3.1).
 > **Scope**: Helm charts (`Chart.yaml`, `Chart.lock`, `values.yaml`, `values.schema.json`, `templates/*.yaml`, `_helpers.tpl`, `templates/tests/`, `NOTES.txt`, `crds/`), library charts, chart CI (lint/template/package/push, OCI publishing, signing) and `helm` CLI usage in scripts and pipelines, for projects that pin **Helm 4.x** (`.tool-versions` `helm 4.x`, `azure/setup-helm` with `version: v4.x`, `alpine/helm:4.x` images, `HELM_VERSION=4.x`).
 > **Note**: This guide is self-contained: it carries every still-correct general chart rule and adds the Helm 4 layer. Sections marked **[NEW in 4.0]** describe behaviour that differs from Helm 3; **[4.1]**, **[4.2]**, **[4.3]** mark changes in a minor release. Every example was rendered with `helm lint`/`helm template`/`helm package` on **v4.3.1**, boundary claims were re-run on **v4.0.5** and **v3.22.1**, and install/upgrade/uninstall semantics were exercised against a real **kube-apiserver v1.36.2** (no kubelet, so Pods never become Ready; wait behaviour on Pods is taken from the source and docs and was tested on non-Pod resources).
@@ -51,7 +51,7 @@ Helm 4 keeps the chart format (charts with `apiVersion: v2` render unchanged) bu
 | **Apply method** | Client-side three-way merge patch (field manager `helm`, operation `Update`) | **Server-side apply** for new releases (manager `helm`, operation `Apply`). Upgrades/rollbacks keep the release's previous method (`--server-side=auto`). The method is recorded per release (`helm get metadata` shows `applyMethod: ssa`/`csa`). |
 | **Conflicts** | Live drift on chart-managed fields is silently overwritten | An upgrade that changes a field owned by another field manager **fails** with `conflict with "<manager>"`; `--force-conflicts` takes ownership. |
 | **`--wait`** | Boolean; polls Pods, PVCs, Services, Deployments/StatefulSets/ReplicaSets | `--wait=<strategy>`: `watcher` (kstatus; bare `--wait` means `watcher`), `legacy` (Helm 3 polling) or `hookOnly` (default when omitted). `watcher` waits for **every** resource kstatus understands, including custom resources with `Ready` conditions. |
-| **Atomic** | `--atomic` | `--rollback-on-failure` (old flag hidden and deprecated; on `install` it was missing entirely in 4.0.x–4.1.2, see below) |
+| **Atomic** | `--atomic` | `--rollback-on-failure` (old flag hidden and deprecated; on `install` it was missing entirely before 4.1.3, see below) |
 | **Force** | `--force` (replace) | `--force-replace` (old flag deprecated); new `--force-conflicts` for SSA |
 | **Post-renderers** | `--post-renderer <executable>` | `--post-renderer <plugin-name>`; post-renderers are `postrenderer/v1` plugins and also see **hook** manifests |
 | **Plugins** | `plugin.yaml` without `apiVersion` | New `apiVersion: v1` plugin format with `type` (`cli/v1`, `getter/v1`, `postrenderer/v1`) and `runtime` (`subprocess` or `extism/v1` WebAssembly). Legacy plugins still load. Tarball installs require a `.prov` signature by default. |
@@ -65,6 +65,7 @@ Helm 4 keeps the chart format (charts with `apiVersion: v2` render unchanged) bu
 | **Uninstall** | Deletes every resource in the release manifest | **[4.3]** Skips resources whose `meta.helm.sh/release-name`/`-namespace` annotations point to another release |
 | **Logging** | Ad-hoc `log` output | `log/slog` (`level=WARN msg=...`); colour via `--color`/`HELM_COLOR`/`NO_COLOR` |
 | **Removed flags** | — | `helm version --client`, `helm status --show-desc/--show-resources`, `helm repo add --no-update`, `helm repo update --fail-on-repo-update-fail`, `helm rollback --recreate-pods`, `helm list -a/--all`; `helm template --validate` is deprecated (use `--dry-run=server`) |
+| **Chart archives** | Every `helm package` run embeds the current time (different digest each run) | Deterministic: entries carry the files' modification times, so packaging unchanged files twice is byte-identical; **[4.3]** `SOURCE_DATE_EPOCH` overrides the times |
 | **Chart API v3** | — | Experimental only, behind `HELM_EXPERIMENTAL_CHART_V3=1`; not usable for real charts (see "Do Not Use") |
 | **Template output** | `helm template` default `.Capabilities.KubeVersion` = v1.37.0 (3.22.1) | v1.34.0 in 4.0.5, v1.37.0 in 4.3.1 — the default tracks the compiled-in client-go |
 
@@ -93,19 +94,21 @@ Minor releases add features; only the latest minor receives patches. Review a ch
 
 - `--wait` accepts an explicit `hookOnly` strategy (`--wait=hookOnly`); 4.0.x accepts only `watcher` and `legacy` (verified: v4.0.5 rejects `--wait=hookOnly` with `Valid inputs are watcher, and legacy`).
 - `helm repo list --no-headers`.
-- `helm upgrade --install --server-side=...` now passes the flag through to the install path.
-- Status waiting watches namespace-scoped (no cluster-wide LIST permission needed).
-- Unresolved URN `$ref`s in `values.schema.json` warn and are ignored.
+- `--kube-version` keeps vendor suffixes (`1.34.1-eks-abc`) in `.Capabilities.KubeVersion` (section 8).
 - Kubernetes client libraries 1.35.
-- **4.1.3** (2026-03-11) restores `helm install --atomic` as a deprecated alias (in 4.0.x–4.1.2 it fails with `unknown flag: --atomic`)[^10], fixes `chart:tag@sha256:…` OCI references (4.0.x fails with `encoding/hex: invalid byte: U+0073 's'`)[^11], and restores Helm 3 behaviour for user-supplied `null` under an empty-map chart default (4.0.x dropped the key).[^12]
+- Fixes listed in the 4.1.0 notes that were already backported to **4.0.5** (verified on v4.0.5 where testable): `helm upgrade --install --server-side=...` passes the flag through to the install path, status waiting watches namespace-scoped (no cluster-wide LIST permission needed), plugin names that shadow a built-in command are rejected at load time (`name conflicts`), and `helm test --logs` works with `hook-succeeded`/`hook-failed` delete policies. Unresolved URN `$ref`s in `values.schema.json` warn and are ignored since **4.0.2**.
+- There is no 4.1.2 release (a tag exists, but release automation failed); **4.1.3** (2026-03-11) restores `helm install --atomic` as a deprecated alias (in 4.0.x–4.1.1 it fails with `unknown flag: --atomic`)[^10], fixes `chart:tag@sha256:…` OCI references (4.0.x fails with `encoding/hex: invalid byte: U+0073 's'`)[^11], makes `--dry-run=server` accept `metadata.generateName`, fixes pulling charts from OCI image indexes, fixes YAML corruption when template trimming glues content to a `---` separator (seen after post-rendering), and restores Helm 3 behaviour for user-supplied `null` under an empty-map chart default (4.0.x dropped the key).[^12][^30]
+- **4.1.4** (2026-04-09) is a security release:[^31] CVE-2026-35205 (GHSA-q5jf-9vfq-h4h7, critical — `helm plugin install`/`update` of an archive **without** a `.prov` file succeeded even when verification was required; 4.0.5 only prints `WARNING: No provenance file found for plugin`), CVE-2026-35204 (GHSA-vmx8-mqv2-9gmg, high — a plugin `version` such as `../../x` wrote files outside the plugin directory; plugin versions must now be SemVer, verified: v4.0.5 installs such a plugin, v4.3.1 rejects it with `must be valid semver`) and CVE-2026-35206 (GHSA-hr2v-4r36-88hr, moderate — a chart named `.`/`..` made `helm pull --untar` extract into the output directory itself; also fixed in 3.20.2). Helm 4.0.x never received these fixes.
 
 ##### 4.2 (4.2.0 on 2026-05-14; last patch 4.2.4 on 2026-08-13)[^13]
 
 - `mustToToml` template function.
-- `--dry-run=server` respects `metadata.generateName` (real installs still reject it; see section 8).
+- `--dry-run=server` respects `metadata.generateName` (listed in the 4.2.0 notes, but already shipped in 4.1.3; real installs still reject it; see section 8).
 - `helm template --hide-notes` and `--render-subchart-notes` are deprecated no-ops ("will be removed in Helm 5").
 - `helm create --chart-api-version` (gated by `HELM_EXPERIMENTAL_CHART_V3`).
 - Release builds switched to GoReleaser; Kubernetes client libraries 1.36; Go 1.26.
+- **4.2.1**: registry client messages (`Pulled:`, `Pushed:`, `Digest:`) go to stdout instead of stderr (which also polluted `helm template` output until 4.3.0 routed them back to stderr there).
+- **4.2.4**: server-side apply retries on conflicts caused by concurrent writers; `helm push` requests the correct `pull,push` token scope from token-auth registries; `helm test --logs` shows logs of all containers; `helm template` no longer drops blank lines at the end of a document (section 15).
 
 ##### 4.3 (4.3.0 on 2026-09-09; 4.3.1 on 2026-10-15)[^14]
 
@@ -114,9 +117,11 @@ Minor releases add features; only the latest minor receives patches. Review a ch
 - `helm rollback --description` (max 256 characters) and `helm history --show-rollback-revision`.
 - `helm package` honours `SOURCE_DATE_EPOCH` (byte-identical archives).
 - Provenance verification accepts GnuPG 2 `pubring.kbx` keyrings.
-- The engine logs at debug level when `lookup` returns nothing.
-- SSA retries on conflicts caused by concurrent writers; status computation is concurrent; resync period lowered from 1 h to 3 min.
-- Registry client messages go to stdout (and to stderr during `helm template`).
+- The engine logs at debug level when `lookup` finds nothing (only when rendering against a cluster).
+- Status computation is concurrent; the watcher's resync period is lowered from 1 h to 3 min.
+- Registry client messages go to stderr again during `helm template`/`helm show` (stdout elsewhere, since 4.2.1).
+- `helm test` skips non-Pod test hooks when fetching logs.
+- The experimental chart v3 code is removed (section 3).
 - A values file whose size is an exact multiple of 4096 bytes no longer loses its last line.
 - **4.3.1**: hook-only waiting also waits for CRDs to become `Established`.
 - Kubernetes client libraries 1.37.
@@ -134,13 +139,14 @@ Check the pinned minor before suggesting any of these:
 | `mustToToml` | 4.2 | `function "mustToToml" not defined` |
 | `durationSeconds`, `mustToDuration`, other `duration*` helpers | 4.3 | `function "durationSeconds" not defined` |
 | `--wait=hookOnly` written explicitly | 4.1 | rejected by 4.0.x (omit `--wait` instead) |
-| `helm install --atomic` (deprecated alias) | 4.1.3 | `unknown flag: --atomic` on 4.0.x–4.1.2; use `--rollback-on-failure` everywhere |
+| `helm install --atomic` (deprecated alias) | 4.1.3 | `unknown flag: --atomic` before 4.1.3; use `--rollback-on-failure` everywhere |
 | `oci://…/chart:1.2.3@sha256:…` (tag **and** digest) | 4.1.3 | `encoding/hex: invalid byte` on 4.0.x; digest-only `chart@sha256:…` works on every 4.x |
 | `helm repo list --no-headers` | 4.1 | unknown flag |
-| `--dry-run=server` with `generateName` | 4.2 | `resource name may not be empty` |
+| `--dry-run=server` with `generateName` | 4.1.3 | `resource name may not be empty` |
 | `helm create --chart-api-version` | 4.2 | unknown flag |
 | `helm rollback --description`, `helm history --show-rollback-revision` | 4.3 | unknown flag |
-| `SOURCE_DATE_EPOCH` for reproducible `helm package` | 4.3 | ignored; archives embed the current time |
+| `SOURCE_DATE_EPOCH` for reproducible `helm package` | 4.3 | ignored; archive entries carry the files' modification times (a fresh checkout gives a new digest) |
+| Unsigned plugin archives rejected by `helm plugin install` | 4.1.4 | installed with only a warning (CVE-2026-35205); pin ≥ 4.1.4 |
 | `pubring.kbx` as `--keyring` | 4.3 | `failed to load keyring: openpgp: invalid data` |
 | Uninstall ownership check | 4.3 | 4.0–4.2 delete every resource listed in the release manifest |
 
@@ -167,7 +173,7 @@ Also never recommend:
 | `helm lint` (no path) | **Error**: `"helm lint" requires at least 1 argument` |
 | `helm template --validate` | Deprecated; use `--dry-run=server` |
 | bare `--dry-run` | Deprecated (`--dry-run is deprecated and should be replaced with '--dry-run=client'`) |
-| `--wait=true` / `--wait=false` | Deprecated booleans (warning suggests `watcher` / `hookOnly`) |
+| `--wait=true` / `--wait=false` | Deprecated booleans (warning suggests `watcher` for `true`; for `false` 4.3 suggests `hookOnly`, 4.0 suggests omitting `--wait`) |
 | `helm template --hide-notes`, `--render-subchart-notes` | No-ops, deprecated in 4.2 |
 | `HELM_EXPERIMENTAL_OCI` | Not needed (OCI is GA since 3.8) |
 
@@ -203,7 +209,7 @@ Helm 4 implements HIP-0023: new releases are applied with Kubernetes server-side
 | `helm upgrade` / `helm rollback` | `--server-side=auto` | Same method as the previous revision. A release created by Helm 3 stays on client-side apply (`csa`) after a Helm 4 upgrade. |
 | `helm upgrade --server-side=true` | — | Switches the release to SSA (Helm migrates the `Update` managed-field entries of `helm` to `Apply`) |
 | `helm upgrade --server-side=false` | — | Forces client-side three-way merge |
-| `helm upgrade --install` | install path uses `--server-side` as given (fixed in 4.1) | — |
+| `helm upgrade --install` | install path uses `--server-side` as given (fixed in 4.0.5; verified) | — |
 
 The method is stored in the release and shown by `helm get metadata` (`applyMethod: ssa` or `applyMethod: csa`). Verified: a Helm 3-installed release upgraded by Helm 4.3.1 keeps `applyMethod: csa` and its ConfigMap keeps the `helm Update` managed-field entry; `--server-side=true` converts it to `helm Apply`, and fields dropped from the chart in that same upgrade are removed correctly.
 
@@ -248,7 +254,7 @@ failed to create typed patch object (...): .spec.template.spec.containers[name="
 
   This typically happens when a chart appends user-supplied `extraEnv` to built-in variables. Merge them by name (a dict keyed by variable name) or document that overrides must not repeat built-in names.
 - **Duplicate objects in one release are no longer detected.** If two templates render the same kind/namespace/name, Helm 3.22.1 fails the install (`configmaps "same" already exists`); Helm 4.3.1 applies both documents to one object and reports `deployed` — the content depends on apply order. Catch duplicate names in review (two templates using the same `include "x.fullname"` without a suffix, subcharts with `fullnameOverride` collisions); `helm lint` does not detect them.
-- SSA conflicts with concurrent writers are retried since 4.3.
+- SSA conflicts caused by concurrent writers (not by other field managers' ownership) are retried since 4.2.4.
 
 ##### `--force-replace` is not `--force-conflicts`
 
@@ -280,18 +286,18 @@ STATUS: deployed
 Review consequences:
 
 - `--wait` under Helm 4 means more than under Helm 3. A chart that ships custom resources for an operator (Certificates, Kafka topics, database clusters) now blocks until the operator marks them Ready. That is usually what you want; if the operator is installed by the same pipeline later, or the CR legitimately never becomes Ready (e.g. waits for external DNS), the deploy times out. Choose the strategy deliberately and set `--timeout` explicitly.
-- Error messages name the resource and its kstatus message (`resource Deployment/s4/w1 not ready. status: InProgress, message: Replicas: 0/1`), which makes CI failures diagnosable. `legacy` only says `context deadline exceeded`.
+- Error messages name the resource and its kstatus message (`resource Deployment/s4/w1 not ready. status: InProgress, message: Replicas: 0/1` on 4.3.1; 4.0.5 prints `resource not ready, name: g, kind: Gadget, status: InProgress`), which makes CI failures diagnosable. `legacy` only says `context deadline exceeded`.
 - `--wait` without `--timeout` uses the default timeout of 5m0s.
 - `--wait-for-jobs` still applies: without it, a regular (non-hook) Job counts as ready as soon as it has started; with it, Helm waits for `Complete` and fails fast on `Failed`.
 - `--wait=true`/`--wait=false` are deprecated boolean spellings; write `--wait` / `--wait=watcher`, or omit the flag.
-- `helm uninstall --wait` waits for deletion; since 4.3 the help recommends `--cascade foreground` with `--wait` so resources with finalizers are fully gone before the command returns.
+- `helm uninstall --wait` waits for deletion; since 4.2 the help recommends `--cascade foreground` with `--wait` so resources with finalizers are fully gone before the command returns.
 
 ***
 
 #### Failure Handling: `--rollback-on-failure`, `--force-replace`, `--cleanup-on-fail`
 
 ```bash
-# BAD (Helm 4): deprecated aliases; 'helm install --atomic' is an unknown flag on 4.0.0–4.1.2
+# BAD (Helm 4): deprecated aliases; 'helm install --atomic' is an unknown flag before 4.1.3
 helm upgrade --install web ./chart --atomic --force
 
 # GOOD
@@ -346,15 +352,15 @@ annotations:
 # --dry-run=server/install: found: "yes"
 ```
 
-Never design a chart so that `helm template` output is wrong or invalid when `lookup` returns empty: GitOps tools (Argo CD, Flux with post-renderers) render with `helm template` semantics, so `lookup`-dependent branches always take the "not found" path there. Since 4.3 the engine logs `lookup` misses at debug level (`helm template --debug`).
+Never design a chart so that `helm template` output is wrong or invalid when `lookup` returns empty: GitOps tools (Argo CD, Flux with post-renderers) render with `helm template` semantics, so `lookup`-dependent branches always take the "not found" path there. Since 4.3 the engine logs `lookup` misses at debug level (`level=DEBUG msg="lookup: resource not found" ... name=...`) when rendering against a cluster (`install`/`upgrade --debug`, `--dry-run=server --debug`); plain `helm template` never calls the cluster, so there is nothing to log.
 
 ##### `generateName`
 
-Helm tracks resources by name, so `metadata.generateName` without `metadata.name` is unsupported. `--dry-run=server` accepts it since 4.2, but a real install still fails on v4.3.1:
+Helm tracks resources by name, so `metadata.generateName` without `metadata.name` is unsupported. `--dry-run=server` accepts it since 4.1.3 (4.0.5 rejects even the dry run), but a real install still fails on v4.3.1:
 
 ```console
-$ helm install lk ./lk -n l
-Error: INSTALLATION FAILED: could not get information about the resource: resource name may not be empty
+$ helm install gnr ./lk -n l
+Error: INSTALLATION FAILED: server-side apply failed for object l/ /v1, Kind=ConfigMap: resource name may not be empty
 ```
 
 Flag `generateName` in chart templates.
@@ -362,7 +368,7 @@ Flag `generateName` in chart templates.
 ##### `.Capabilities` offline vs. online
 
 - Offline (`helm template`, `helm lint`, `--dry-run=client`), `.Capabilities.KubeVersion` defaults to the client-go version Helm was built with: **v1.34.0 on 4.0.5**, **v1.37.0 on 4.3.1** (and v1.37.0 on 3.22.1). A `kubeVersion` constraint or `semverCompare` gate therefore renders differently on different Helm minors in CI. Pass `--kube-version` explicitly in CI to render for the target cluster. Vendor suffixes are preserved since 4.1: on 4.3.1, `--kube-version 1.34.1-eks-abc` gives `.Capabilities.KubeVersion.Version` and `.GitVersion` = `v1.34.1-eks-abc` (4.0.5 strips the suffix), so `semverCompare` constraints need a `-0` suffix (`">=1.33.0-0"`).
-- Offline `.Capabilities.APIVersions` contains only **group/version** entries of built-in APIs (57 entries on 4.3.1), not `group/version/Kind`. Against a cluster it contains both forms (102 on the 1.36 apiserver). So `.Capabilities.APIVersions.Has "apps/v1/Deployment"` is `false` under `helm template` and `true` on install, while `Has "policy/v1"` is `true` in both. Gate on group/version, or pass `--api-versions` for CRD-provided APIs:
+- Offline `.Capabilities.APIVersions` contains only **group/version** entries of built-in APIs (57 entries on 4.3.1), not `group/version/Kind`. Against a cluster it contains both forms (about 100 entries on a bare 1.36 apiserver). So `.Capabilities.APIVersions.Has "apps/v1/Deployment"` is `false` under `helm template` and `true` on install, while `Has "policy/v1"` is `true` in both. Gate on group/version, or pass `--api-versions` for CRD-provided APIs:
 
 ```bash
 helm template web ./chart --kube-version 1.36.0 \
@@ -445,13 +451,13 @@ helm upgrade --install web ./chart --post-renderer kustomize-env
 | `apiVersion` | `v1` (new format). Files without `apiVersion` are legacy Helm 3 plugins and still load as `cli/v1` or `getter/v1`. |
 | `type` | `cli/v1` (adds a `helm <name>` subcommand), `getter/v1` (downloads `protocol://` URLs), `postrenderer/v1` |
 | `runtime` | `subprocess` (executes `runtimeConfig.platformCommand`) or `extism/v1` (sandboxed WebAssembly, HIP-0026) |
-| `version` | Required, SemVer |
+| `version` | Required; must be SemVer since 4.1.4 (CVE-2026-35204) |
 
 - A plugin directory shared with Helm 3 breaks Helm 3: v3.22.1 aborts `helm plugin list` with `failed to load plugin at ".../plugin.yaml": error unmarshaling JSON: while decoding JSON: json: unknown field "apiVersion"`. Do not point `HELM_PLUGINS`/`HELM_DATA_HOME` of both majors at the same directory once v1 plugins are installed.
-- `helm plugin install` from a tarball (`.tgz`) **verifies a `.prov` signature by default** and fails if it is missing or invalid; `--verify=false` disables that and should be flagged in review. Local directories and VCS installs are not signature-checked. `helm plugin package` and `helm plugin verify` create and check signed plugin archives.
+- `helm plugin install` from a tarball (`.tgz`) **verifies a `.prov` signature by default** and fails if it is missing or invalid (`plugin verification failed: no provenance file (.prov) found`) — but only since **4.1.4**; 4.0.x–4.1.3 install an unsigned archive with a warning (CVE-2026-35205). `--verify=false` disables the check and should be flagged in review. Local directories and VCS installs are not signature-checked. `helm plugin package` and `helm plugin verify` create and check signed plugin archives.
 - Plugins can be installed from OCI registries (`helm plugin install oci://…`), HTTP(S) tarballs, VCS URLs and local paths.
 - `HELM_NO_PLUGINS=1` disables all plugins, useful for reproducible CI renders.
-- A plugin name may not shadow a built-in command (4.1).
+- A plugin name may not shadow a built-in command (since 4.0.5: such a plugin installs, then fails to load with `name conflicts`).
 
 ***
 
@@ -505,9 +511,9 @@ helm install web ./web-1.4.0.tgz --verify --keyring ./ci/pubring.gpg
 - Since **4.3**, `--keyring` may be a GnuPG 2 `pubring.kbx`; on 4.0.5 and 3.22.1 it fails with `failed to load keyring: openpgp: invalid data: tag byte does not have MSB set` — export with `gpg --export > pubring.gpg` there.
 - `helm push` uploads the `.prov` file alongside the chart when it exists next to the archive. Many teams sign OCI charts with Sigstore/cosign instead; either way, verification must happen in the deploy path, not only at publish time.
 
-##### Reproducible archives [4.3]
+##### Reproducible archives [NEW in 4.0; `SOURCE_DATE_EPOCH` in 4.3]
 
-`helm package` in 4.3 honours `SOURCE_DATE_EPOCH`: with it set, two packages of the same sources are byte-identical and file times inside the archive are the epoch (verified: identical sha256, `2023-11-14 22:13` for `SOURCE_DATE_EPOCH=1700000000`). Without it, and on 4.0.5 and 3.22.1 with or without it, every run embeds the current time and produces a different digest.
+Helm 4 writes deterministic archives: packaging the same files twice gives the same sha256, and each entry carries the file's **modification time** (verified on 4.0.5 and 4.3.1; 3.22.1 embeds the current time and produces a new digest on every run). Touching a file, or a fresh `git checkout` in CI (mtime = checkout time), therefore still changes the digest. Since **4.3**, `SOURCE_DATE_EPOCH` replaces the file times (verified: identical sha256 across checkouts, entries dated `2023-11-14 22:13` for `SOURCE_DATE_EPOCH=1700000000`); 4.0.5 ignores the variable.
 
 ```bash
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
@@ -543,7 +549,7 @@ Review: a `---` inside a chart's `values.yaml` makes the chart behave differentl
 helm upgrade --install web ./chart --set-json '{"podAnnotations":{"team":"payments"},"replicaCount":3}'
 ```
 
-Helm 3.22.1 rejects this form (`failed parsing --set-json data`). Precedence is unchanged: `-f` files, then `--set-json`, then `--set`, then `--set-string`, then `--set-file`, each later source overriding earlier ones.
+Helm 3.22.1 rejects this form (`failed parsing --set-json data`). Precedence is unchanged: `-f` files, then `--set-json`, then `--set`, then `--set-string`, then `--set-file`, then `--set-literal`, each later source overriding earlier ones (verified: `-f` + `--set-json c=10` + `--set c=20` gives `c: 20`).
 
 ##### Deleting a default with `null`
 
@@ -598,7 +604,7 @@ annotations:
 
 - **Unknown fields** are reported by Helm 4 lint as a warning: `[WARNING] Chart.yaml: failed to strictly parse chart metadata file ... json: unknown field "unknownField"`. It does not fail `helm lint` without `--strict`, and `helm template`/`package` still work, but typos such as `dependency:`, `appversion:` or `kubeversion:` are now visible. Treat this warning as an error in review: a misspelled key is a silently ignored setting.
 - **`version` must be SemVer 2.** `version: 1.0` (YAML float) is an error in both majors (`version should be of type string but it's of type float64`); `version: "1.0"` passes Helm 3.22.1 silently but Helm 4 warns `version '1.0' is not a valid SemVerV2`, and `helm lint --strict` fails. OCI tags and `Chart.lock` resolution rely on valid SemVer.
-- **`kubeVersion`** and pre-release/vendor suffixes: Helm 4.3 checks `kubeVersion` against a normalized cluster version with the vendor suffix removed, so `>=1.30.0` accepts `v1.31.2-eks-7f9249a`. Helm 3 compares the full version, where `-eks-…` makes it a SemVer pre-release that `>=1.30.0` excludes. Write `>=1.30.0-0` so the constraint works with both. A mismatch fails install and render: `Error: chart requires kubeVersion: >=1.30.0-0 which is incompatible with Kubernetes v1.29.0`.
+- **`kubeVersion`** and pre-release/vendor suffixes: against a live cluster, Helm 3 and Helm 4 (verified on 4.0.5 and 4.3.1 with an apiserver reporting `v1.31.2-eks-7f9249a`) compare the full version, where `-eks-…` makes it a SemVer pre-release that `>=1.30.0` excludes: `Error: chart requires kubeVersion: >=1.30.0 which is incompatible with Kubernetes v1.31.2-eks-7f9249a`. Only an offline `--kube-version 1.31.2-eks-…` is normalized (4.1+), so `helm template` in CI passes while the real deploy fails. Write `>=1.30.0-0`. A mismatch fails install and render: `Error: chart requires kubeVersion: >=1.30.0-0 which is incompatible with Kubernetes v1.29.0`.
 - In templates, `semverCompare` against `.Capabilities.KubeVersion.Version` **always** needs the `-0` suffix: on 4.3.1, `--kube-version 1.31.2-eks-7f9249a` yields `.Capabilities.KubeVersion.Version = "v1.31.2-eks-7f9249a"` and `semverCompare ">=1.30.0"` is `false` (4.0.5 and 3.22.1 strip the suffix from `--kube-version` and return `true`; against a real EKS/GKE apiserver the suffix is present in every version).
 - `appVersion` must be quoted: unquoted `appVersion: 2.10` is a lint error (`appVersion should be of type string but it's of type float64`), yet `helm template`/`install` proceed with `appVersion: "2.1"` — and the default image tag becomes `2.1`.
 - `icon` missing is an `[INFO]` lint message only.
@@ -650,7 +656,7 @@ Rules from the chart best practices, still valid for Helm 4:[^23]
 
 #### `_helpers.tpl`, Names and Labels
 
-The helper set produced by `helm create` (unchanged between 3.22.1 and 4.3.1 except comment punctuation) is the baseline. Tested on 4.3.1:
+The helper set produced by `helm create` (identical in 3.22.1 and 4.3.1) is the baseline, plus `web.image` and `web.secretName`. Tested on 4.3.1:
 
 ```yaml
 {{/*
@@ -717,6 +723,13 @@ Image reference: registry/repository[:tag][@digest]. Digest wins over tag.
 {{- printf "%s:%s" $ref (.Values.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Secret holding the password: the user's existingSecret or the chart-managed one.
+*/}}
+{{- define "web.secretName" -}}
+{{- .Values.existingSecret | default (printf "%s-secret" (include "web.fullname" .)) }}
+{{- end }}
 ```
 
 Review points:
@@ -724,7 +737,7 @@ Review points:
 - **Selector labels are immutable.** `spec.selector` of Deployments, StatefulSets and DaemonSets cannot change; putting `helm.sh/chart`, `app.kubernetes.io/version` or any value-driven label into `selectorLabels` breaks every upgrade that changes it (`field is immutable`). Selectors contain only `app.kubernetes.io/name` and `app.kubernetes.io/instance` (plus `component` for multi-workload charts).
 - Use the Kubernetes recommended labels (`app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`, `managed-by`) on every object.[^24] `app.kubernetes.io/managed-by: {{ .Release.Service }}` renders `Helm`.
 - The `helm create` scaffold puts the full `labels` (including `helm.sh/chart` and `app.kubernetes.io/version`) on the **pod template**. That makes every chart or app version bump roll all Pods even when the image did not change. It is a deliberate choice in the scaffold; accept it or use `selectorLabels` plus stable labels on the pod template.
-- `include` returns a string and can be piped (`| nindent 4`); `template` cannot. `{{ template "x" . | nindent 4 }}` is a parse error. Always use `include`.
+- `include` returns a string and can be piped (`| nindent 4`); `template` cannot: `{{ template "x" . | nindent 4 }}` pipes the *argument* into `nindent` and fails at render time (`wrong type for value; expected string; got common.Values`). Always use `include`.
 - Pass the right context: `include "web.fullname" .` at top level, `include "web.fullname" $` inside `range`/`with`. Helpers that need extra parameters take a dict: `include "web.componentName" (dict "root" $ "component" "worker")`.
 
 ***
@@ -795,7 +808,7 @@ data:
     {{- .Values.config.featureFlags | mustToJson | nindent 4 }}
 ```
 
-- In Helm 4.3.1 the `helm template` output keeps blank lines that a template leaves at the end of a document (for example after `{{- end }}`); 4.0.5 and 3.22.1 strip them. The YAML is equivalent, but golden-file tests comparing raw `helm template` output must be regenerated when moving between these versions.
+- Since 4.2.4 the `helm template` output keeps blank lines that a template leaves at the end of a document (for example after `{{- end }}`); 4.0.5 and 3.22.1 strip them (verified on 4.3.1 vs 4.0.5/3.22.1). The YAML is equivalent, but golden-file tests comparing raw `helm template` output must be regenerated when moving between these versions.
 
 ##### Scope: `with`, `range` and `$`
 
@@ -816,7 +829,7 @@ data:
   ns: {{ $.Release.Namespace }}
 ```
 
-Helm 4 prints template errors on several lines (file:line:col, then `executing ... at <...>:`, then the cause); Helm 3 printed them on one line starting with `Error: template:`. CI scripts that grep for `Error: template:` no longer match.
+Helm 4 prints execution errors from the template engine itself (field evaluation, wrong argument types, errors inside `include`) on several lines — `file:line:col`, then `executing ... at <...>:`, then the cause, repeated for every `include` level — where Helm 3 printed one line starting with `Error: template:`. Errors returned by a function keep the one-line Helm 3 format in Helm 4 (`Error: template: ...: error calling dig: ...`), and `required`/`fail` (`execution error at (...)`) and parse errors (`parse error at (...)`) are unchanged. CI scripts that grep for `Error: template:` miss part of the Helm 4 failures; match on the exit code instead.
 
 ##### `default` treats false and 0 as empty
 
@@ -1023,7 +1036,7 @@ Rules:
 
 #### `values.schema.json`
 
-Helm validates merged values against `values.schema.json` on `install`, `upgrade`, `template` and `lint` (skip with `--skip-schema-validation`, available on 3.22.1 and 4.x). Each subchart's schema validates that subchart's values. Helm 3.22.1 and Helm 4 use the same validator (`santhosh-tekuri/jsonschema/v6`) and both accept JSON Schema draft 2020-12 (`prefixItems`, `unevaluatedProperties`), draft-07 and earlier. Both resolve `$ref` to `http(s)://` URLs at validation time — which makes rendering depend on network access, so vendor referenced schemas into the chart instead; unresolvable URN `$ref`s produce a warning and are ignored (4.1).
+Helm validates merged values against `values.schema.json` on `install`, `upgrade`, `template` and `lint` (skip with `--skip-schema-validation`, available on 3.22.1 and 4.x). Each subchart's schema validates that subchart's values. Helm 3.22.1 and Helm 4 use the same validator (`santhosh-tekuri/jsonschema/v6`) and both accept JSON Schema draft 2020-12 (`prefixItems`, `unevaluatedProperties`), draft-07 and earlier. Both resolve `$ref` to `http(s)://` URLs at validation time — which makes rendering depend on network access, so vendor referenced schemas into the chart instead; unresolvable URN `$ref`s produce a warning and are ignored (since 4.0.2).
 
 The example chart's schema (tested on 4.3.1):
 
@@ -1286,7 +1299,9 @@ metadata:
   labels:
     {{- include "web.labels" . | nindent 4 }}
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
+    # post-install, not pre-install: on the first install the Secret and ServiceAccount
+    # below are regular chart resources and do not exist before the pre-install phase
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
@@ -1328,7 +1343,7 @@ Review points:
 
 - **Hook resources are not part of the release.** They are not upgraded in place, not deleted on uninstall (verified on 4.3.1: a `pre-install` ConfigMap hook remains after `helm uninstall`), and not listed by `helm get manifest`. Always set `helm.sh/hook-delete-policy`. Without the annotation, Helm applies `before-hook-creation` (delete the previous instance before creating a new one).
 - `hook-delete-policy: hook-succeeded` removes the evidence of success; keep `before-hook-creation` alone if you need logs, or add `"helm.sh/hook-output-log-policy": hook-failed` (or `hook-succeeded`) so Helm prints the hook Pod/Job container logs.
-- **Ordering**: hooks run by ascending `helm.sh/hook-weight` (a string: `"-5"`), then by kind and name. A `pre-install` hook runs **before** any regular resources exist: a migration Job that mounts a Secret or ServiceAccount from `templates/` fails because they are not created yet. Either make those dependencies hooks with a lower weight, or create them outside the chart.
+- **Ordering**: hooks run by ascending `helm.sh/hook-weight` (a string: `"-5"`), then by resource name (the source sorts by name; the docs also mention kind). A `pre-install` hook runs **before** any regular resources exist: a migration Job that mounts a Secret or ServiceAccount from `templates/` fails because they are not created yet. Either make those dependencies hooks with a lower weight, or create them outside the chart.
 - **Helm waits for hook Jobs/Pods** (the default `hookOnly` strategy). A hook that never completes blocks the release until `--timeout` (default 5m). Set `backoffLimit` and `activeDeadlineSeconds`.
 - Under Helm 4, **post-renderers also modify hooks** (see section 9).
 - Hooks are applied with server-side apply in Helm 4 like regular resources (manager `helm`, operation `Apply`).
@@ -1368,7 +1383,7 @@ spec:
           drop: ["ALL"]
 ```
 
-- Run with `helm test <release> --logs --timeout 2m`. Since 4.1, `--logs` works together with `hook-succeeded`/`hook-failed` delete policies (logs are collected before deletion); since 4.3, logs of all containers in test Pods are shown and non-Pod test hooks are skipped when fetching logs.
+- Run with `helm test <release> --logs --timeout 2m`. Since 4.0.5/4.1.0, `--logs` works together with `hook-succeeded`/`hook-failed` delete policies (logs are collected before deletion); since 4.2.4 logs of all containers in test Pods are shown, and since 4.3.0 non-Pod test hooks are skipped when fetching logs.
 - Test Pods must satisfy the namespace's Pod Security level too (the scaffold's `busybox` test with no securityContext is rejected in `restricted` namespaces).
 - Pin test images (`busybox:1.37`, better a digest); `latest` makes tests non-reproducible.
 - Tests should check behaviour (HTTP 200 on a readiness endpoint), not only TCP reachability.
@@ -1520,7 +1535,7 @@ helm upgrade --install web oci://ghcr.io/acme/charts/web@sha256:<digest> \
 - Template errors are multi-line in Helm 4 (section 15); `helm template --debug` still renders invalid YAML for inspection.
 - Colour: `--color never|auto|always` (alias `--colour`), `HELM_COLOR`, and `NO_COLOR` (overrides). Set `NO_COLOR=1` in CI when logs are parsed.
 - `helm status` always includes the resource list and description (the Helm 3 `--show-resources`/`--show-desc` flags are gone); use `helm status -o json` for scripts.
-- Registry client messages (`Pulled: …`, `Digest: …`) go to stdout since 4.3 except during `helm template`, where they go to stderr so they do not corrupt rendered YAML.
+- Registry client messages (`Pulled: …`, `Digest: …`) go to stdout since 4.2.1 (4.0.5 writes them to stderr); since 4.3.0 `helm template`/`helm show` send them to stderr again so they do not corrupt rendered YAML (verified on 4.3.1).
 - `helm version` prints `KubeClientVersion` in addition to the Helm and Go versions; `helm version --short` remains.
 
 ***
@@ -1534,7 +1549,7 @@ helm upgrade --install web oci://ghcr.io/acme/charts/web@sha256:<digest> \
 | Unknown/misspelled fields | Warning, field dropped | Install/upgrade fails (`field not declared in schema`) | Fix the manifests |
 | Duplicate objects in a release | Install fails (`already exists`) | Applied twice, last write wins, no error | Review names for collisions |
 | Keyed-list duplicates (`env` names) | Warning | Fails (`duplicate entries for key`) | Deduplicate |
-| `--atomic`, `--force` | Supported | Deprecated aliases (`install --atomic` missing in 4.0.0–4.1.2) | `--rollback-on-failure`, `--force-replace` |
+| `--atomic`, `--force` | Supported | Deprecated aliases (`install --atomic` missing before 4.1.3) | `--rollback-on-failure`, `--force-replace` |
 | `--wait` | Boolean, Helm 3 readiness rules | Strategies; `watcher` waits for CRs too | Choose `watcher`/`legacy`; set `--timeout` |
 | Post-renderer | Executable path; hooks not post-rendered | Plugin name; hooks post-rendered | Package the renderer as `postrenderer/v1` plugin; check its selectors |
 | Plugins | Legacy `plugin.yaml` | v1 format, WASM runtime, signed tarballs | Legacy still loads; reinstall with `.prov` or `--verify=false` (review) |
@@ -1546,7 +1561,7 @@ helm upgrade --install web oci://ghcr.io/acme/charts/web@sha256:<digest> \
 | `helm template --validate` | Validates against cluster | Deprecated | `--dry-run=server` |
 | Removed flags | — | `version --client`, `status --show-desc/--show-resources`, `repo add --no-update`, `repo update --fail-on-repo-update-fail`, `rollback --recreate-pods` | Remove from scripts |
 | Offline `.Capabilities.KubeVersion` | Built-in default | Tracks compiled client-go (v1.34 on 4.0, v1.37 on 4.3) | Pass `--kube-version` |
-| Template error format | One line `Error: template: …` | Multi-line | Update log matchers |
+| Template error format | One line `Error: template: …` | Multi-line for engine execution errors; function errors still one line | Match on exit codes, not on message text |
 | Uninstall | Deletes all manifest resources | Skips resources owned by other releases (4.3) | — |
 | Chart API | v2 | v2 (v3 experimental, not usable) | Keep `apiVersion: v2` |
 | Kubernetes support | 3.22: n-3 of client-go 1.37 | 4.x: n-3 of its client-go (4.3: 1.34–1.37) | Upgrade Helm minor with the cluster |
@@ -1561,6 +1576,7 @@ Helm 4 manages Helm 3 releases in place (same release Secret format); there is n
 
 - [ ] Helm pinned to an exact 4.x version in every CI job and container image
 - [ ] No Helm 4-minor feature used beyond the pinned minor (`mustToToml` 4.2, `duration*` 4.3, `--wait=hookOnly` 4.1, `install --atomic` 4.1.3, tag@digest 4.1.3, `rollback --description` 4.3, `SOURCE_DATE_EPOCH` 4.3)
+- [ ] Helm ≥ 4.1.4 wherever plugins are installed (CVE-2026-35205/35204)
 - [ ] Charts consumed by Helm 3 users avoid Helm 4-only functions and multi-document `values.yaml`
 - [ ] `--rollback-on-failure`/`--force-replace` instead of `--atomic`/`--force`
 - [ ] Explicit `--wait` strategy and `--timeout`; custom resources in the chart have operators that set Ready conditions
@@ -1655,3 +1671,5 @@ Helm 4 manages Helm 3 releases in place (same release Secret format); there is n
 [^27]: Kubernetes Pod Security Standards. https://kubernetes.io/docs/concepts/security/pod-security-standards/
 [^28]: Helm Chart Hooks. https://helm.sh/docs/topics/charts_hooks/
 [^29]: Helm Charts topic (Chart.yaml fields, dependencies, crds/, schema, library charts). https://helm.sh/docs/topics/charts/
+[^30]: Helm v4.1.3 release notes ("there was no 4.1.2 release due to a release automation issue"). https://github.com/helm/helm/releases/tag/v4.1.3
+[^31]: Helm v4.1.4 release and security advisories GHSA-q5jf-9vfq-h4h7 (CVE-2026-35205), GHSA-vmx8-mqv2-9gmg (CVE-2026-35204), GHSA-hr2v-4r36-88hr (CVE-2026-35206). https://github.com/helm/helm/releases/tag/v4.1.4 , https://github.com/helm/helm/security/advisories
