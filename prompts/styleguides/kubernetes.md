@@ -51,7 +51,7 @@ Look for, in this order:
 - Managed-cluster versions in IaC (Terraform `kubernetes_version`, `cluster_version`, eksctl/AKS/GKE config), kubeadm `ClusterConfiguration.kubernetesVersion`.
 - Pod Security `enforce-version` labels, `kubectl` pins in `.tool-versions`/`mise.toml`.
 
-If nothing pins a version, assume the oldest **supported** minor (1.34 in October 2026) for "is this available" questions, and say explicitly that the recommendation depends on the cluster version.
+If nothing pins a version, assume the oldest **supported** minor (1.34 until its end of life on 2026-10-27, then 1.35) for "is this available" questions, and say explicitly that the recommendation depends on the cluster version.
 
 ##### Why version mistakes are dangerous: fields are dropped silently
 
@@ -64,7 +64,7 @@ A newer field does not always fail loudly on an older API server. There are two 
 
 Verified examples of the second, most dangerous case:
 
-- `spec.hostUsers: false` on 1.30–1.32 (user namespaces beta but off): the Pod is stored **without** it and would run in the host user namespace — a security degradation, not a validation error.
+- `spec.hostUsers: false` on 1.29–1.32 (user namespaces alpha in 1.29, beta but off in 1.30–1.32): the Pod is stored **without** it and would run in the host user namespace — a security degradation, not a validation error.
 - `volumes[].image` on 1.34 (image volumes beta-off): the whole volume **and every `volumeMount` that references it** disappear; the container starts without its data.
 - `restartPolicyRules` on 1.34, `trafficDistribution` on 1.30, CRD `selectableFields` on 1.30, StatefulSet `rollingUpdate.maxUnavailable` on 1.34 and 1.36, `emptyDir.mode` on 1.37 (alpha): all dropped without a warning.
 
@@ -118,7 +118,7 @@ The `k8s.io/*` staging modules use `v0.N.x` for Kubernetes `1.N`. controller-run
 | 1.37 | v0.37.x (v0.37.1) | `go 1.26.0` | v0.25.x (v0.25.2) | v0.22.0, v0.23.0 | v4.16 |
 | 1.36 | v0.36.x (v0.36.5) | `go 1.26.0` | v0.24.x (v0.24.1) | v0.21.x | v4.15 |
 | 1.35 | v0.35.x (v0.35.9) | `go 1.25.0` | v0.23.x (v0.23.3) | v0.20.x | v4.11–v4.14 |
-| 1.34 | v0.34.x (v0.34.12) | `go 1.25.0` | v0.22.x (v0.22.5) | v0.19.x | v4.9–v4.10 |
+| 1.34 | v0.34.x (v0.34.12) | `go 1.24.0` (v0.34.0–v0.34.10), `go 1.25.0` (v0.34.11+) | v0.22.x (v0.22.5) | v0.19.x | v4.9–v4.10 |
 | 1.33 | v0.33.x (v0.33.13) | `go 1.24.0` | v0.21.0 | v0.18.0 | v4.6–v4.8 |
 | 1.32 | v0.32.x (v0.32.13) | `go 1.23.0` | v0.20.x (v0.20.4) | v0.17.x | v4.5 |
 | 1.31 | v0.31.x (v0.31.14) | `go 1.22.0` | v0.19.x (v0.19.7) | v0.16.x | v4.2–v4.4 |
@@ -139,7 +139,7 @@ controller-runtime API boundaries that reviewers meet often (verified in the mod
 
 | API | Available since | Notes |
 |---|---|---|
-| `client.Client.Apply(ctx, applyConfiguration, …)` (typed server-side apply) | v0.22 | the old `Patch(ctx, obj, client.Apply)` form is deprecated |
+| `client.Client.Apply(ctx, applyConfiguration, …)` (typed server-side apply) | v0.22 | the old `Patch(ctx, obj, client.Apply)` form is marked deprecated from v0.23 |
 | `controller.Options.ReconciliationTimeout` | v0.22 | deadline on each `Reconcile` context |
 | `mgr.GetEventRecorder(name)` (`events.k8s.io/v1`) | v0.23 | `GetEventRecorderFor` (core v1 Events) is deprecated; v0.22 has no `GetEventRecorder` (verified compile failure) |
 | Generic webhooks `admission.Validator[T]` / `Defaulter[T]`, `ctrl.NewWebhookManagedBy(mgr, &T{})` | v0.23 | `CustomValidator`/`CustomDefaulter` deprecated |
@@ -166,7 +166,7 @@ controller-runtime API boundaries that reviewers meet often (verified in the mod
 | `sleep.seconds: 0` | — | 1.33 | 1.34 | ✔ 1.32 rejects: `must be greater than 0` |
 | AppArmor fields (replace annotations) | `securityContext.appArmorProfile` | 1.30 | 1.31 | ✔ 1.29: unknown field |
 | In-place Pod resize | `resizePolicy`, `pods/resize` subresource | 1.33 | 1.35 | ✔ no `pods/resize` on 1.32 |
-| User namespaces | `spec.hostUsers: false` | 1.33 (beta-**off** 1.30–1.32) | 1.36 | ✔ silently dropped on 1.30–1.32 |
+| User namespaces | `spec.hostUsers: false` | 1.33 (beta-**off** 1.30–1.32) | 1.36 | ✔ silently dropped on 1.29–1.32 |
 | Fine-grained supplemental groups | `securityContext.supplementalGroupsPolicy` | 1.33 | 1.35 | ✔ dropped on 1.31–1.32, unknown on 1.30 |
 | Pod-level resources | `spec.resources` | 1.34 | — (beta) | ✔ dropped on 1.33, unknown on ≤ 1.31 |
 | Image volumes | `volumes[].image` | 1.35 (beta-**off** 1.33–1.34) | 1.36 | ✔ volume **and mounts** dropped on 1.34 |
@@ -202,12 +202,12 @@ controller-runtime API boundaries that reviewers meet often (verified in the mod
 | Strict IP/CIDR validation | every IP/CIDR field | 1.36 | 1.38 (planned) | ✔ 1.33–1.35 warn (`CIDR value "10.0.0.1/8" is ambiguous`); ≤ 1.32 accept silently |
 | Server-side field validation (strict by default in kubectl) | `fieldValidation` | — | 1.27 | |
 | DRA core | `resource.k8s.io/v1` | beta-off ≤ 1.33 | 1.34 | ✔ `deviceclasses` v1 from 1.34 |
-| VolumeAttributesClass | `storage.k8s.io/v1` | beta-off | 1.34 | ✔ |
+| VolumeAttributesClass | `storage.k8s.io/v1` | beta-off 1.31–1.33 | 1.34 | ✔ v1 served on 1.37 |
 | StorageVersionMigration | `storagemigration.k8s.io/v1` | beta-off 1.35–1.36 | 1.37 | ✔ served only on 1.37 |
-| Pod certificates, ClusterTrustBundle | `certificates.k8s.io/v1` | beta-off 1.35–1.36 | 1.37 | ✔ |
-| WebSocket exec/attach/port-forward need `create` | RBAC on `pods/exec` etc. | 1.35 | — | ✔ 1.34 authorizes a WebSocket exec with `get` only |
+| Pod certificates (`PodCertificateRequest`), ClusterTrustBundle | `certificates.k8s.io/v1` | beta-off (`v1beta1`): Pod certificates 1.35–1.36, ClusterTrustBundle 1.33–1.36 | 1.37 | ✔ both served as `v1` on 1.37 |
+| WebSocket exec/attach/port-forward need `create` (in addition to `get`) | RBAC on `pods/exec` etc. | 1.35 | — (still beta in 1.37) | ✔ 1.34 authorizes a WebSocket exec with `get` only; 1.35+ needs `get` **and** `create` |
 | Fine-grained kubelet authorization | `nodes/pods`, `nodes/healthz`, `nodes/configz` | 1.33 | 1.36 | |
-| KYAML output | `kubectl get -o kyaml` | kubectl 1.35 | kubectl 1.37 | |
+| KYAML output | `kubectl get -o kyaml` | kubectl 1.35 (kubectl 1.34: only with `KUBECTL_KYAML=true`) | kubectl 1.37 | ✔ kubectl 1.33 and a default 1.34 reject `-o kyaml` |
 
 ##### CRDs and admission
 
@@ -234,7 +234,7 @@ A CRD or policy that uses a newer library is **rejected at write time** by an ol
 | Extended strings library v2 (incl. `'…'.format([…])`) | 1.30 | ✔ `format()` rejected on 1.29 |
 | IP and CIDR libraries (`isIP`, `ip()`, `isCIDR`, `cidr()`) | 1.31 | ✔ rejected on 1.30 |
 | Format library (`format.dns1123Label()` …) | 1.32 | ✔ rejected on 1.31 |
-| Two-variable comprehensions (`all(k, v, …)`, `transformMap`) | 1.33 | |
+| Two-variable comprehensions (`all(k, v, …)`, `transformMap`) | 1.33 | ✔ rejected on 1.32 |
 | Semver library (`isSemver`, `semver()`) | 1.34 | ✔ rejected on 1.33 |
 
 ---
@@ -272,7 +272,7 @@ These are not served by any supported release and fail with `no matches for kind
 - kube-proxy `ipvs` mode (deprecated since 1.35) — `nftables` (GA 1.33) or `iptables`.
 - The community **Ingress NGINX** controller was retired on 2026-03-24 and receives no fixes; new routing should use Gateway API or a maintained controller.[^22]
 - Long-lived `kubernetes.io/service-account-token` Secrets — use projected, audience-bound tokens.
-- controller-runtime: `Result.Requeue`, `GetEventRecorderFor`, `CustomValidator`/`CustomDefaulter`, `Patch(…, client.Apply)`; client-go: untyped workqueues (`workqueue.New`, `NewRateLimitingQueue`, `DefaultControllerRateLimiter`), `fake.NewSimpleClientset` (no field management — use `fake.NewClientset`), `k8s.io/utils/pointer` (use `k8s.io/utils/ptr`).
+- controller-runtime: `Result.Requeue`, `GetEventRecorderFor`, `CustomValidator`/`CustomDefaulter`, `Patch(…, client.Apply)`; client-go: untyped workqueues (`workqueue.New`, `NewRateLimitingQueue`, `DefaultControllerRateLimiter`), `fake.NewSimpleClientset` in new tests (no field management or server-side apply — use `fake.NewClientset`; its `DEPRECATED` marker from v0.31 was removed again in v0.35.3/v0.36, so do not call it deprecated), `k8s.io/utils/pointer` (use `k8s.io/utils/ptr`).
 
 ---
 
@@ -800,7 +800,7 @@ Flag: `privileged: true`, `hostNetwork`/`hostPID`/`hostIPC`, `hostPath` volumes,
 ##### Version-tied hardening options
 
 - `securityContext.appArmorProfile: {type: RuntimeDefault}` — 1.30+ (GA 1.31); replaces the deprecated annotations.
-- `spec.hostUsers: false` (user namespaces) — beta-on 1.33, GA 1.36; **silently dropped on 1.30–1.32** (verified), and requires node support (Linux ≥ 6.3 with idmap mounts on the volume filesystems, a recent containerd/CRI-O). Root inside a user namespace is not root on the host; for such Pods PSA skips the `runAsNonRoot`/`runAsUser` checks, but only for policy versions **v1.35 and later** (verified on 1.37: a root Pod with `hostUsers: false` is rejected by `restricted:v1.34` with `runAsNonRoot != true` and admitted by `restricted:v1.35` and `restricted:latest`).[^17] Cannot be combined with `hostNetwork`/`hostPID`/`hostIPC`.
+- `spec.hostUsers: false` (user namespaces) — beta-on 1.33, GA 1.36; **silently dropped on 1.29–1.32** (verified), and requires node support (Linux ≥ 6.3 with idmap mounts on the volume filesystems, a recent containerd/CRI-O). Root inside a user namespace is not root on the host; for such Pods PSA skips the `runAsNonRoot`/`runAsUser` checks, but only on a **1.35+ API server** and only for policy versions **v1.35 and later** (verified on 1.35, 1.36 and 1.37: a root Pod with `hostUsers: false` is rejected by `restricted:v1.34` with `runAsNonRoot != true` and admitted by `restricted:v1.35` and `restricted:latest`; a 1.33 or 1.34 API server rejects it under every policy version, including `latest`).[^17] Cannot be combined with `hostNetwork`/`hostPID`/`hostIPC`.
 - `supplementalGroupsPolicy: Strict` — beta-on 1.33, GA 1.35; stops groups from the image's `/etc/group` being added.
 - `seLinuxChangePolicy` (GA 1.36) and the `SELinuxMount` default change in 1.37: on SELinux nodes, Pods with *different* SELinux labels sharing one volume can block in `ContainerCreating` on 1.37; such Pods need `seLinuxChangePolicy: Recursive`.
 
@@ -1033,9 +1033,11 @@ rules:
 
 `resourceNames` cannot restrict `create` or `deletecollection` (the name is not known at authorization time); a `list`/`watch` grant with `resourceNames` only works for clients that send a matching `metadata.name` field selector. A plain `list`/`watch` grant covers every object of the type.
 
+A `get`-only, `resourceNames`-scoped Secret rule does not work with controller-runtime's default **cached** client: the first `r.Get` of a Secret starts an informer that needs `list`/`watch` on all Secrets (namespace- or cluster-wide) and fails with `forbidden`. Read such objects through `mgr.GetAPIReader()` or exclude the type from the cache (manager option `Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}}`), or scope the cache with `cache.Options.ByObject` and grant `list`/`watch` only for that scope.
+
 ##### The `pods/exec` `get` loophole (fixed by default in 1.35)
 
-Interactive `exec`, `attach` and `port-forward` use HTTP `POST` (SPDY) or a WebSocket upgrade, which is an HTTP `GET`. Before 1.35, the API server authorized the WebSocket `GET` with the RBAC verb **`get`** — so a "read-only" role that granted `get` on `pods/exec` (or on `pods/*`) allowed command execution in any Pod of the namespace. With `AuthorizePodWebsocketUpgradeCreatePermission` (beta-on from **1.35**) the WebSocket upgrade additionally requires `create`.[^19] Verified with a raw WebSocket upgrade by a user bound only to `get` on `pods` and `pods/exec`:
+Interactive `exec`, `attach` and `port-forward` use HTTP `POST` (SPDY) or a WebSocket upgrade, which is an HTTP `GET`. Before 1.35, the API server authorized the WebSocket `GET` with the RBAC verb **`get`** — so a "read-only" role that granted `get` on `pods/exec` (or on `pods/*`) allowed command execution in any Pod of the namespace. With `AuthorizePodWebsocketUpgradeCreatePermission` (beta-on from **1.35**, still beta in 1.37) the WebSocket upgrade additionally requires `create`, so a WebSocket client needs **both** `get` and `create` (verified on 1.37: a user with only `create` on `pods/exec` is refused with `cannot get resource "pods/exec"`, a user with `get` and `create` passes authorization).[^19] Verified with a raw WebSocket upgrade by a user bound only to `get` on `pods` and `pods/exec`:
 
 ```text
 1.34.1:  "pod web does not have a host assigned"   (authorization passed; failed later)
@@ -1049,7 +1051,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log", "pods/exec"]
     verbs: ["get", "list", "watch"]
-# GOOD: read-only roles never name exec/attach/portforward; grant exec explicitly with create
+# GOOD: read-only roles never name exec/attach/portforward; grant exec explicitly in a
+# separate role with verbs [get, create] on pods/exec (WebSocket clients on 1.35+ need both)
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
@@ -1329,9 +1332,9 @@ spec:
 The RedisCluster "bad" is invalid:
 * spec.minReplicas: Invalid value: minReplicas (5) must be <= replicas (2)
 * spec.replicas: Invalid value: tier large needs at least 3 replicas
+* spec.tls: Invalid value: tls.secretName is required when tls is set
 * spec.image: Invalid value: "registry.example.com/redis:7.2": image must be pinned by digest
 * spec.memory: Invalid value: "32Mi": memory must be a quantity above 64Mi
-* spec.tls: Invalid value: tls.secretName is required when tls is set
 ```
 
 Design checklist for this manifest:
