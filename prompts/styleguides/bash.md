@@ -1,7 +1,77 @@
 ### Bash Production Coding Guidelines
 
 > **Target audience:** Senior engineers writing production-grade automation, DevOps tooling, and system scripts.
-> **Scope:** GNU Bash 3.2 → 5.2, with version annotations on every feature that has constraints.
+> **Scope:** GNU Bash 3.2 → 5.3, with version annotations on every feature that has constraints.
+
+**Release status (October 2026).** Bash **5.3** is the current release. Chet Ramey announced it on July 5, 2025; the latest official patch is **bash53-020, i.e. 5.3.20, published September 14, 2026** (`echo "$BASH_VERSION"` → `5.3.20(1)-release`).[^13][^14] Bash 5.2 ended at 5.2.37 (patch published September 23, 2024), 5.1 at 5.1.16, 5.0 at 5.0.18, 4.4 at 4.4.23 and 3.2 at 3.2.57 (October 2014). GNU Bash publishes no support or EOL calendar; in practice official patches appear only for the newest release series, so 5.2 and older receive fixes only through distribution backports. **There is no Bash 5.4 alpha, beta or release as of October 2026**: the upstream `devel` branch has been versioned `bash-5.4-devel` since August 21, 2026, and some distributions package `5.4_alpha_pre*` git snapshots, but these are development snapshots, not releases.[^19] Never recommend anything from 5.4 development snapshots.
+
+This guide is self-contained. It covers **every** Bash version from 3.2 to 5.3 in one document because a shebang carries no version: `#!/usr/bin/env bash` runs whatever Bash is first in `PATH`, which is 3.2.57 for `/bin/bash` on macOS, 5.1 or 5.2 on most LTS Linux distributions and their container images, and 5.3 on Ubuntu 26.04, rolling distributions and the `bash:5.3` image. Every feature that is not available in all of these versions carries an inline annotation such as **(4.3+)** or **New in 5.3**.
+
+***
+
+#### Version-Aware Review
+
+##### Establish the minimum Bash version first
+
+Before flagging a construct as "unavailable" or recommending a newer one, determine the oldest Bash the script must run on. Evidence, in order of strength:
+
+1. An explicit runtime guard (`(( BASH_VERSINFO[0] >= 5 ))`, `${BASH_VERSINFO[*]}` checks) or a `Requires: Bash X.Y+` header.
+2. The execution environment: Dockerfile base image (`FROM bash:5.3`; Debian 12 bookworm ships 5.2.15, Debian 13 trixie 5.2.37, Ubuntu 22.04 5.1, Ubuntu 24.04 5.2.21, Ubuntu 26.04 5.3[^23]; Alpine images have no Bash unless the `bash` package is installed), CI runner images, Ansible/packaging metadata.
+3. Platform: anything that must run on stock macOS uses `/bin/bash` **3.2.57** unless it explicitly finds a Homebrew/MacPorts Bash.
+4. Constructs already used elsewhere in the same script or repository: if the file already uses `declare -n` (4.3+) or `${var@Q}` (4.4+), its floor is at least that version.
+
+Rules for the reviewer:
+
+- Verify a feature against the pinned/minimum version before claiming it is unavailable. Say "not available in Bash X.Y" only when the minimum version is known to be X.Y and the feature is newer (use the matrix in §27).
+- Do not flag a 5.3 feature (`${ cmd; }`, `GLOBSORT`, `BASH_TRAPSIG`, `source -p`, …) as a bug in code that targets 5.3; do flag it when the script must also run on an older Bash — on 5.2 and older most of these are **runtime** errors (`bad substitution`, `invalid option`) or are silently ignored (`GLOBSORT`, `BASH_TRAPSIG`, `BASH_MONOSECONDS` are ordinary variables there), not parse-time errors, so the script starts and fails or misbehaves later.
+- Do not recommend a feature newer than the minimum version. When suggesting a fix, prefer the oldest construct that solves the problem.
+- Behaviour changes are the dangerous part of an upgrade: `patsub_replacement` (5.2, `&` in `${var/pat/rep}`), `globskipdots` (5.2), `cd ""` failing (5.3), `test` parenthesis parsing (5.3). See §28.
+
+##### What's new in Bash 5.3
+
+Sources: the official NEWS and CHANGES files; every non-interactive item was executed on 5.2.37 and 5.3.20 (interactive-only changes such as `read -E` completion and job notifications are taken from the release notes).[^5][^18]
+
+| Change | Where | Notes |
+|--------|-------|-------|
+| `${ cmd; }` — command substitution **without forking**; runs in the current shell | §6 | Side effects (`cd`, assignments, `exit`) persist; trailing newlines removed |
+| `${\| cmd; }` — expands to `$REPLY` set by `cmd`; stdout is **not** captured | §6 | `REPLY` is local to the construct |
+| `GLOBSORT` — sort pathname expansion by `name`, `numeric`, `size`, `blocks`, `mtime`, `atime`, `ctime` or `nosort`; `-` prefix reverses | §7 | Invalid values silently fall back to name order |
+| `BASH_TRAPSIG` — signal number of the trap being run; `trap -P SIG` prints only the action | §9 | `BASH_TRAPSIG` is `0` in an `EXIT` trap |
+| `BASH_MONOSECONDS` — monotonic clock in whole seconds | §24 | |
+| `source -p PATH file` / `. -p PATH file` — search `PATH` argument instead of `$PATH` | §17 | |
+| `compgen -V array` — store completions in an array instead of printing | §24 | Avoids a `$(compgen …)` subshell |
+| `read -E` — `read -e` with Bash's default/programmable completion | §16 | Interactive only |
+| `printf` alternate form `%#q` / `%#Q` forces single quoting; `%ls`/`%lc` (`%S`/`%C`) print wide strings/chars in multibyte locales | §6 | |
+| `shopt -s array_expand_once` replaces `assoc_expand_once` (now a deprecated synonym) | §5 | |
+| `shopt -s bash_source_fullpath` — absolute paths in `BASH_SOURCE` | §17 | Off by default |
+| `TIMEFORMAT` precision up to 6 digits (`%6R`) | §24 | 5.2 caps at 3 |
+| `test`/`[` with more than four arguments: a parenthesised sub-expression of ≤ 4 arguments is parsed with the POSIX rules | §18 | Reverted by `BASH_COMPAT=52` |
+| `[[ str =~ re ]]` prints an error when `re` does not compile | §6 | Status stays `2` |
+| `cd ""` is an error (`cd: null directory`, status 1) | §17 | Not reverted by `BASH_COMPAT=52` |
+| `local BASH_REMATCH` works: matches inside a function no longer clobber the caller's `BASH_REMATCH` | §6 | |
+| Multiple simultaneous coprocesses are enabled by default (no `coproc … still exists` warning) | §14 | |
+| New loadable builtins `kv`, `strptime`, `fltexpr` (and `chmod` in the examples directory) | §24 | Only if the distribution ships the loadables |
+| POSIX mode: function names need not be identifiers; `kill` fails if any target is not found; `test` `<`/`>` use the locale; `wait -n` removes reaped jobs; new job-notification rules | §25 | |
+| `exit` with no argument at a trap's top level uses the pre-trap `$?` (POSIX interp. 1602) | §9 | 5.2 used the trap's last status |
+| `BASH_COMPAT=52` restores 5.2 behaviour for `test` parsing, `bind -p/-P` arguments and job notifications while sourcing | §28 | |
+
+Point releases matter: **bash53-007** fixed no-fork command substitutions whose redirections leaked into the enclosing command, and later patches fix `mapfile` callbacks that unset the target array (011/014), a subshell running an inherited `EXIT` trap after a fatal signal (012) and `read` buffer indexing (015).[^14] Prefer 5.3.7 or newer when relying on `${ cmd; }` with redirections.
+
+##### Do not use or recommend (version gates)
+
+Never suggest these to code whose minimum version is below the listed one:
+
+- **5.3:** `${ cmd; }`, `${| cmd; }`, `GLOBSORT`, `BASH_TRAPSIG`, `BASH_MONOSECONDS`, `trap -P`, `source -p`/`. -p`, `compgen -V`, `read -E`, `printf %#q`/`%#Q`, `shopt -s array_expand_once`, `shopt -s bash_source_fullpath`, `TIMEFORMAT` precision above 3, loadables `kv`/`strptime`/`fltexpr`.
+- **5.2:** `${var@k}`, `printf %Q`, `shopt -s patsub_replacement` (on by default), `globskipdots` (on by default), `varredir_close`, `noexpand_translation`, `@`/`*` as associative-array keys in assignments and `test -v`.
+- **5.1:** `SRANDOM`, `wait -p var`, `wait -n` with job arguments, `${var@U}`/`${var@u}`/`${var@L}`/`${var@K}`, `declare -I`/`local -I`, key-value associative compound assignment `declare -A m=(k1 v1 k2 v2)`, `test -v N` for positional parameters.
+- **5.0:** `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_ARGV0`, `wait -f`, `shopt -s localvar_inherit`, `shopt -s assoc_expand_once`.
+- **4.4:** `shopt -s inherit_errexit`, `${var@Q}`/`@E`/`@P`/`@A`/`@a`, `local -`, `mapfile -d`.
+- **4.3:** `declare -n`/`local -n` namerefs, `[[ -R var ]]`, assigning/unsetting negative indices (`a[-1]=x`), `wait -n`, `[[ -v arr[i] ]]` with array references.
+- **4.2:** `[[ -v var ]]`, `declare -g`, `printf '%(fmt)T'`, `shopt -s lastpipe`, reading negative indices `${a[-1]}`.
+- **4.1:** `{fd}>file` automatic file-descriptor allocation, `printf -v 'arr[i]'`.
+- **4.0:** associative arrays, `mapfile`/`readarray`, `${var^^}`/`${var,,}`, `declare -l`/`-u`, `&>>`, `|&`, `globstar`, `coproc`, `BASHPID`, fractional `read -t`.
+
+Deprecated or removed: the per-version `shopt` options `compat31` … `compat44` still exist in 5.3 but are deprecated in favour of `BASH_COMPAT` (the only mechanism for levels 50 and later); `BASH_COMPAT` accepts 31–53 in 5.3 (`30` is rejected); `shopt assoc_expand_once` is a deprecated synonym for `array_expand_once` in 5.3.[^6][^17]
 
 ***
 
@@ -34,6 +104,8 @@
 25. [POSIX Compliance & Portability](#25-posix-compliance--portability)
 26. [What Not to Do — Anti-Patterns](#26-what-not-to-do--anti-patterns)
 27. [Version Feature Matrix](#27-version-feature-matrix)
+28. [Removed / Changed in 5.3 — Migration Notes & `BASH_COMPAT`](#28-removed--changed-in-53--migration-notes--bash_compat)
+29. [Production / Review Checklist](#29-production--review-checklist)
 
 ***
 
@@ -46,13 +118,16 @@ Always specify the interpreter. Prefer `#!/usr/bin/env bash` for portability acr
 # Good — finds bash in PATH; works on macOS, Linux, NixOS, etc.
 
 #!/bin/bash
-# Acceptable on known-Linux systems; fails on macOS default /bin/bash (3.2)
+# Acceptable on known-Linux systems; on macOS this always runs the system
+# Bash 3.2.57, even when a newer Bash is installed via Homebrew/MacPorts
 
 #!/bin/sh
 # Use ONLY when you intend POSIX sh, not Bash — you lose arrays, [[ ]], etc.
 ```
 
-**macOS warning:** macOS ships Bash 3.2 at `/bin/bash` (GPLv2). Associative arrays, `mapfile`, `readarray`, and `declare -n` are **not available**. If your scripts must run on macOS, either require Bash 5 from Homebrew or restrict to Bash 3.2-compatible constructs.
+**macOS warning:** macOS ships Bash 3.2.57 at `/bin/bash` (the last GPLv2 release; the default interactive shell has been zsh since macOS 10.15). Associative arrays, `mapfile`/`readarray`, `${var,,}`/`${var^^}`, `declare -n`, `[[ -v ]]`, `{fd}>` redirections, `printf '%(…)T'`, fractional `read -t`, `&>>`, `globstar` and `inherit_errexit` are **not available** there. If your scripts must run on stock macOS, either require a newer Bash (Homebrew/MacPorts, found through `#!/usr/bin/env bash` and an explicit `BASH_VERSINFO` check) or restrict yourself to Bash 3.2 constructs.
+
+`#!/usr/bin/env bash` cannot pass more than one argument portably (`#!/usr/bin/env bash -e` fails on Linux, where the kernel passes `bash -e` as one word); put `set -euo pipefail` in the script body instead.
 
 ***
 
@@ -67,7 +142,7 @@ set -euo pipefail
 
 | Flag | Meaning | Notes |
 |------|---------|-------|
-| `-e` | Exit immediately on non-zero exit code | Does **not** trigger inside `if`, `&&`, `\|\|`, or `while` conditions |
+| `-e` | Exit immediately on non-zero exit code | Ignored in `if`/`while`/`until` conditions, in every command of an `&&`/`\|\|` list except the last, after `!`, and in **everything** (including function bodies) called from those contexts |
 | `-u` | Treat unset variables as errors | Catches typos like `$USRNAME` vs `$USERNAME`[^2] |
 | `-o pipefail` | Pipeline fails if **any** command in it fails | Without this, `false \| true` returns 0[^2] |
 | `-x` | Trace every command (debug) | Use in CI or dev, not production by default |
@@ -100,14 +175,39 @@ some_command || true          # explicit ignore
 some_command || { echo "failed" >&2; exit 1; }  # handle gracefully
 ```
 
-**`set -e` does not reach into command substitutions or subshells.** In
-non-POSIX mode Bash clears `-e` inside `$(...)` and `( ... )`, so a command that
-fails there does not abort the script. Re-enable it with `shopt -s
-inherit_errexit` (Bash 4.4+):
+**`set -e` does not reach into command substitutions.** A `( … )` subshell
+inherits `-e` (it exits on the first failure, and on 4.4+ its non-zero status
+then aborts the parent; Bash 3.2 continues after a failed subshell — write
+`( … ) || exit` there), but in non-POSIX mode Bash clears `-e` inside `$( … )` — and inside
+the 5.3 `${ …; }` form — so `x=$(false; echo after)` silently continues.
+Re-enable it with `shopt -s inherit_errexit` (**4.4+**; there is no equivalent on
+3.2, so check the status of each command inside the substitution there):
 
 ```bash
 set -euo pipefail
-shopt -s inherit_errexit      # $(...) and ( ) subshells now honor set -e
+shopt -s inherit_errexit      # 4.4+: $(...) and ${ ...; } now honor set -e
+```
+
+With `inherit_errexit`, a failure inside `$( … )` exits only the substitution's
+subshell (the assignment then fails and `set -e` aborts the script); a failure
+inside the non-forking `${ …; }` form (**5.3+**) exits the **whole shell**
+immediately, because the command runs in the current shell. The `EXIT` trap
+still runs, but its standard output is still redirected into the substitution
+and is discarded, so cleanup/diagnostic traps must write to stderr. Note that an
+assignment that is itself tested (`x=$(cmd) || handle`) disables `-e` inside the
+substitution even with `inherit_errexit`.
+
+**`set -e` is disabled for an entire function called in a tested context.**
+`deploy || handle_failure`, `if deploy; then`, `deploy && next`, and `! deploy`
+run *all* of `deploy`'s body with `-e` ignored — a failing command in the middle
+of `deploy` does not stop it, and `set -e` inside the function cannot re-enable
+it. Functions that are called this way must check every command explicitly
+(`cmd || return`).
+
+```bash
+set -e
+f() { false; echo "still running"; }   # prints "still running"
+f || echo "f failed"                    # never prints: f returns echo's status 0
 ```
 
 **`local`/`declare`/`export`/`readonly` mask a command's exit status.** In
@@ -115,8 +215,11 @@ shopt -s inherit_errexit      # $(...) and ( ) subshells now honor set -e
 sees `cmd` fail (ShellCheck SC2155). Declare, then assign, separately:
 
 ```bash
-local x
-x=$(cmd) || return            # cmd's failure is now visible to set -e / callers
+get_value() {
+  local x
+  x=$(cmd) || return          # cmd's failure is now visible to set -e / callers
+  printf '%s\n' "$x"
+}
 ```
 
 **`set -u` caveats:**
@@ -161,6 +264,7 @@ declare -l  lower_var="HELLO"       # auto-lowercase (Bash 4.0+)
 declare -u  upper_var="hello"       # auto-uppercase (Bash 4.0+)
 declare -x  EXPORTED="yes"          # same as export
 declare -g  global_from_func="yes"  # set global from within function (Bash 4.2+)
+declare -I  inherited               # local that inherits the caller's value/attributes (Bash 5.1+)
 ```
 
 ##### Essential parameter expansions
@@ -251,6 +355,45 @@ case "$path" in
 esac
 ```
 
+##### `&` in the replacement of `${var/pat/rep}` — Bash 5.2+
+
+See the pattern-substitution rules in the manual.[^24]
+
+Since **5.2** the `patsub_replacement` option is **on by default**: an unquoted
+`&` in the replacement string expands to the matched text (like `sed`). Code that
+inserts data containing `&` (URLs, query strings, HTML entities) silently changes
+output on 5.2+:
+
+```bash
+s='a.b'; r='&x'
+echo "${s//./$r}"     # 3.2–5.1: a&xb    5.2+: a.xb   (& replaced by the match ".")
+x=${s//./"$r"}        # GOOD on every version 3.2–5.3: a&xb (quoted replacement is literal)
+echo "${s//./\&}"     # literal & via backslash on every version: a&b
+```
+
+Quote a data-derived replacement *inside* the expansion. Do this in an
+assignment or another context that is not itself double-quoted: in Bash 3.2
+(and under `BASH_COMPAT=42` or lower) `"${s//./"$r"}"` keeps the inner quotes
+literally (3.2 prints `a"&x"b`). On 5.2+ `shopt -u patsub_replacement` restores the old
+behaviour globally, but `shopt` with that name fails on older versions.
+
+##### Parameter transformations `${var@op}` (4.4+, extended in 5.1 and 5.2)
+
+```bash
+v="it's a b"
+printf '%s\n' "${v@Q}"     # 'it'\''s a b' — shell-quoted, re-usable as input (4.4+)
+e='a\tb'; printf '%s\n' "${e@E}"   # expands backslash escapes like $'...' (4.4+)
+declare -a arr=(1); echo "${arr@a}"  # attributes: a (4.4+)
+echo "${v@A}"                        # an assignment statement that recreates v (4.4+)
+echo "${v@U} ${v@u} ${v@L}"          # upper / first-upper / lower (5.1+)
+declare -A m=([k]=v)
+echo "${m[@]@K}"            # k "v"  — quoted key/value pairs, one word (5.1+)
+echo "${m[@]@k}"            # k v    — separate words, usable in an assignment (5.2+)
+```
+
+`${v@Q}` is the safe way to log or `eval`-construct a command line; prefer
+`printf '%q '` when 3.2 support is required.
+
 ##### Nameref (indirect variable reference) — Bash 4.3+
 
 ```bash
@@ -265,7 +408,12 @@ increment count
 echo "$count"  # 6
 
 # WARNING: do NOT name the nameref the same as the target — circular reference
+# ("warning: _ref: circular name reference"); prefix nameref names (_ref, __out)
+# so a caller's variable cannot collide with them.
 ```
+
+On 3.2–4.2 use `printf -v "$name" '%s' "$value"` (3.1+) to assign indirectly and
+`${!name}` to read; never `eval "$name=\$value"` with an unvalidated `$name`.
 
 ***
 
@@ -282,11 +430,12 @@ fruits=("apple" "banana" "cherry")
 
 # Append
 fruits+=("date")
-fruits[${#fruits[@]}]="elderberry"  # same as +=
+fruits[${#fruits[@]}]="elderberry"  # same as += ONLY if the array has no gaps; prefer +=
 
 # Access
-echo "${fruits}"         # apple
-echo "${fruits[-1]}"        # elderberry (Bash 4.3+ negative index)
+echo "${fruits[0]}"         # apple  ("${fruits}" also gives element 0 — SC2128, avoid)
+echo "${fruits[-1]}"        # elderberry (reading a negative index: 4.2+; a[-1]=x / unset 'a[-1]': 4.3+)
+echo "${fruits[@]: -1}"     # elderberry on every version (3.2+): negative slice offset
 echo "${fruits[@]}"         # all elements (each as separate word when quoted with @)
 echo "${fruits[*]}"         # all elements joined by first char of IFS — avoid in most cases
 
@@ -311,7 +460,7 @@ for fruit in "${fruits[@]}"; do
 done
 
 # Read file into array (Bash 4.0+)
-mapfile -t lines < file.txt         # strips trailing newlines with -t
+mapfile -t lines < file.txt         # -t strips the trailing newline of each line
 readarray -t lines < file.txt       # synonym for mapfile
 
 # Read command output into array (process substitution, not pipe — avoids subshell)
@@ -321,7 +470,20 @@ mapfile -t pids < <(pgrep nginx)
 mapfile -d '' -t null_separated < <(find . -print0)
 ```
 
-**Pitfall:** `"${arr[*]}"` in double quotes joins all elements with `IFS`. Almost always use `"${arr[@]}"`.
+**Pitfall:** `"${arr[*]}"` in double quotes joins all elements with the first character of `IFS`. Almost always use `"${arr[@]}"`.
+
+**Pitfall (3.2–4.3):** under `set -u`, expanding an *empty* array (`"${arr[@]}"`)
+is an "unbound variable" error before Bash 4.4. Use `${arr[@]+"${arr[@]}"}` when
+the script must run on 3.2 (macOS) with `set -u`.
+
+**Bash 3.2 replacement for `mapfile`:**
+
+```bash
+lines=()
+while IFS= read -r line || [[ -n $line ]]; do   # || handles a missing final newline
+  lines+=("$line")
+done < file.txt
+```
 
 ```bash
 # Pass array to function — pass by name + nameref (Bash 4.3+)
@@ -338,7 +500,7 @@ process_list fruits
 
 #### 5. Associative Arrays (Maps)
 
-Requires Bash **4.0+**. Not available in `/bin/bash` on macOS (Bash 3.2).[^5][^6]
+Requires Bash **4.0+**. Not available in `/bin/bash` on macOS (Bash 3.2).[^5]
 
 ```bash
 # Declaration — -A is mandatory
@@ -351,7 +513,7 @@ declare -A config=(
   [user]="admin"
 )
 
-# Bash 5.1+ allows key/value alternating format:
+# Bash 5.1+ also accepts a key/value list (an error on 4.x–5.0):
 # declare -A config=( host localhost port 5432 )  # Bash 5.1+
 
 # Set / update
@@ -364,7 +526,7 @@ echo "${config[host]}"              # localhost
 echo "${config[missing_key]:-none}" # none
 
 # Check if key exists
-if [[ -v config[port] ]]; then      # -v tests for set variable (Bash 4.2+)
+if [[ -v config[port] ]]; then      # -v: 4.2+; with an array subscript: 4.3+
   echo "port is set"
 fi
 
@@ -392,7 +554,34 @@ declare -rA CONSTANTS=([VERSION]="1.2.3" [APP]="myapp")
 declare -p config    # prints: declare -A config=([host]="localhost" ...)
 ```
 
-**Pitfall:** Empty strings cannot be used as associative array keys.[^4]
+**Pitfall:** Empty strings cannot be used as associative array keys (`m[""]=1` → "bad array subscript" in every version up to 5.3); guard data-derived keys with `[[ -n $key ]]`.[^4]
+
+##### Untrusted data in array subscripts and arithmetic (command injection)
+
+Indexed-array subscripts and every arithmetic context (`$(( ))`, `(( ))`,
+`let`, `declare -i`, `[[ $a -eq $b ]]`) **evaluate** their operands. A value such
+as `a[$(cmd)0]` or `$(cmd)0` read from input runs `cmd` — in every version
+through 5.3. (`[ "$x" -eq 1 ]` with single brackets accepts only integer
+literals and is not affected.)
+
+```bash
+idx='$(touch /tmp/pwned)0'
+: "${arr[$idx]}"            # BAD: runs touch (indexed subscript is arithmetic)
+n='a[$(touch /tmp/pwned)0]'
+echo $(( n + 1 ))           # BAD: runs touch (variable value evaluated recursively)
+
+# GOOD: validate before any arithmetic use
+[[ $n =~ ^[0-9]+$ ]] || { echo "not a number: $n" >&2; exit 2; }
+echo $(( 10#$n + 1 ))       # 10# also stops "08"/"09" from being parsed as octal
+```
+
+Associative-array keys used in `(( A[$key]++ ))` or `[[ -v A[$key] ]]` were
+expanded twice up to 5.1, so a key like `x$(cmd)` ran `cmd`; 5.0/5.1 need
+`shopt -s assoc_expand_once`, and 5.2+ behave that way by default (the option is
+named `array_expand_once` in 5.3, with `assoc_expand_once` kept as a deprecated
+synonym). `test -v "A[$key]"` and `[ -v "A[$key]" ]` **still** execute the
+substitution on 5.3 — use `[[ -v A[$key] ]]` only on 5.2+, or test membership
+with `[[ ${A[$key]+set} ]]`, which is safe on every version from 4.0 on.[^6]
 
 **Bash 3 workaround** (when you must support macOS or old systems):
 
@@ -450,12 +639,24 @@ echo "${str: -6:5}"         # World  (negative offset — space required)
 
 ```bash
 # =~ operator with BASH_REMATCH (Bash 3.0+; RHS-quoting semantics changed in 3.2)
-if [[ "2024-07-07" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]]; then
+date_str="2024-07-07"
+if [[ $date_str =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]]; then
   year="${BASH_REMATCH[1]}"
   month="${BASH_REMATCH[2]}"
   day="${BASH_REMATCH[3]}"
 fi
 ```
+
+- Keep the regex **unquoted** on the right of `=~` (quoted parts match
+  literally since 3.2) and store complex patterns in a variable:
+  `re='^v([0-9]+)\.([0-9]+)$'; [[ $tag =~ $re ]]`.
+- An invalid regex makes `[[ … =~ … ]]` return **2**, which `if` treats as
+  "no match". **New in 5.3:** Bash also prints `invalid regular expression` to
+  stderr; on 5.2 and older the failure is silent.
+- `BASH_REMATCH` is global. **New in 5.3:** `local BASH_REMATCH` inside a
+  function keeps the function's matches from overwriting the caller's; on 5.2
+  and older the `local` declaration is ignored by `=~` and the global is
+  overwritten — copy the captures into locals immediately after the match.
 
 ##### String splitting
 
@@ -473,21 +674,82 @@ mapfile -t lines <<< "$(command)"
 ##### `printf` vs `echo`
 
 ```bash
-# Prefer printf for variables — echo mishandles leading -, -n/-e, and escapes; plain literal echo is fine
-var="-n tricky"
-echo "$var"          # prints nothing on some systems (interprets -n flag!)
+# Prefer printf for variables — echo mishandles values that look like options
+# (-n, -e, -E, -neE…) and, with xpg_echo or under sh, backslash escapes; plain literal echo is fine
+var="-n"
+echo "$var"          # Bash prints nothing at all: the value is taken as the -n option
 
 # ALWAYS use printf for reliable output
-printf '%s\n' "$var"  # always prints: -n tricky
+printf '%s\n' "$var"  # always prints: -n
 printf 'Count: %d\n' "$count"
 printf '%s\t%s\n' "$key" "$value"
 
 # %q — shell-quote a value so it can be safely reused as shell input.
 # Ideal for logging or reconstructing a command line without quoting bugs.
-printf '%q\n' "$var"              # -> -n\ tricky
-printf 'running: %q ' "$@"; echo # -> running: cmd arg\ with\ spaces ...
-# Bash 4.4+: %Q applies a precision and re-quotes for the current locale.
+printf '%q\n' "-n tricky"        # -> -n\ tricky
+printf 'running:'; printf ' %q' "$@"; printf '\n'   # -> running: cmd arg\ with\ spaces ...
+# Bash 5.2+: %Q is like %q but applies the precision to the UNQUOTED argument
+printf '%.3Q\n' 'a b c'           # -> a\ b   (%.3q would truncate the quoted text: a\ )
+# Bash 5.3+: the alternate form %#q / %#Q always uses single quotes
+printf '%#q\n' "it's"             # -> 'it'\''s'   (5.2 ignores #: it\'s)
 ```
+
+`printf %d` with a non-numeric argument prints a diagnostic, outputs `0` (or the
+leading digits: `12abc` → `12`) and returns status 1 in every version — check the
+status or validate the input first.
+
+##### Command substitution — `$( … )` and the non-forking `${ …; }` / `${| …; }` (New in 5.3)
+
+`$(cmd)` runs `cmd` in a forked subshell, captures stdout and strips **all**
+trailing newlines. Use `$(< file)` instead of `$(cat file)` (no `cat` process).
+To keep trailing newlines, append a sentinel: `out=$(cmd; printf x); out=${out%x}`.
+
+**New in 5.3** — two forms run the command **in the current shell**, without
+`fork()` and without a pipe:[^15]
+
+```bash
+# ${ cmd; } — captures stdout like $(...), trailing newlines removed
+count=0
+out=${ count=5; printf 'hi\n\n'; }
+echo "$out $count"        # hi 5   — the assignment persisted
+
+# ${| cmd; } — expands to $REPLY as set by cmd; cmd's stdout is NOT captured
+to_upper() { REPLY=${1^^}; }
+name=${| to_upper "$USER"; }
+
+# The space/tab/newline (or |) after "${" and the ";" (or newline) before "}" are mandatory
+x=${ date +%s; }          # GOOD
+x=${date +%s}             # bad substitution: not a funsub
+```
+
+Semantics the reviewer must check:
+
+- **Side effects persist.** `cd`, `set --`, `shift`, `set -e`/`shopt`
+  changes, traps, variable assignments and `exit` act on the calling shell
+  (`${ exit 3; }` terminates the script with status 3). Only use the form when
+  that is intended; a refactor from `$(…)` to `${ …; }` changes behaviour if the
+  body relies on subshell isolation (`cd` in a subshell is a common example).
+- **Function-like scope.** `local` inside the construct creates variables local
+  to it, and `return` ends it early; positional parameters are shared with the
+  caller. In `${| …; }`, `REPLY` is a fresh local: the caller's `REPLY` is
+  restored afterwards, and trailing newlines in `REPLY` are **kept**.
+- **Exit status** is that of `cmd`, as with `$( … )`; `set -e` is ignored
+  inside unless `inherit_errexit` is set, and then a failure exits the whole
+  script (see §2). Any `EXIT` trap that fires there writes its stdout into the
+  substitution.
+- **Not portable.** Bash 5.2 and older parse the script and fail only at
+  **run time** with `bad substitution`: a non-interactive shell abandons that
+  line with status 1; without `set -e` (and outside POSIX mode) it continues
+  with the **next** line, leaving the variable unchanged, so later code runs
+  with stale data.
+  Guard with `(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) ))`
+  or keep `$( … )` / `printf -v`.
+- **Use 5.3.7+** if the body uses redirections: bash53-007 fixed redirections
+  in a no-fork substitution leaking into the enclosing command.[^14]
+- ShellCheck 0.11.0 parses both forms.[^22]
+
+On older versions, the fork-free alternatives are `printf -v var …` (3.1+),
+namerefs (4.3+) and functions that set a global such as `REPLY`.
 
 ##### Quoted newlines are literal, not command separators
 
@@ -566,7 +828,7 @@ trimmed=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$var")
 ```bash
 # NEVER parse ls — filenames can contain spaces, newlines, special chars
 # BAD
-for f in $(ls *.txt); do ...  # breaks on spaces
+for f in $(ls *.txt); do process "$f"; done  # breaks on spaces
 
 # GOOD — use globs
 for f in *.txt; do
@@ -579,6 +841,45 @@ while IFS= read -r -d '' file; do
   process "$file"
 done < <(find . -name "*.txt" -print0)
 ```
+
+##### Glob options and result order
+
+```bash
+shopt -s nullglob             # unmatched glob expands to nothing (default: the literal pattern)
+files=(*.txt)                 # with nullglob: empty array when nothing matches
+shopt -s dotglob              # include dot-files (still never . or ..)
+shopt -s globstar             # ** recurses into directories (4.0+)
+shopt -s failglob             # an unmatched glob is an error instead
+```
+
+- Unquoted `arr[0]` is a glob: with `nullglob` set, `unset arr[0]` expands to
+  plain `unset` and does nothing; with a file named `arr0` in the current
+  directory it unsets the variable `arr0`. Always quote: `unset 'arr[0]'`.
+- **5.2+:** `globskipdots` is on by default, so `.*` no longer matches `.`
+  and `..`; on older versions `rm -rf .*` style code also hits the parent
+  directory (GNU `rm` refuses `.`/`..`, other tools may not).
+
+**New in 5.3 — `GLOBSORT`.** Pathname expansion results are sorted by name
+(collation order of the locale) unless `GLOBSORT` names another key:
+`name`, `numeric` (all-digit names by value, others after them by name),
+`size`, `blocks`, `mtime`, `atime`, `ctime`, or `nosort` (directory order); a
+leading `-` reverses the order.[^16]
+
+```bash
+GLOBSORT=-mtime               # newest first (5.3+)
+logs=(/var/log/myapp/*.log)
+newest=${logs[0]}
+unset GLOBSORT                # restore name order for the rest of the script
+```
+
+- On 5.2 and older `GLOBSORT` is an ordinary variable: the code still runs,
+  but silently returns name order — guard with a version check or fall back
+  to GNU `find … -printf '%T@ %p\0' | sort -z -rn` (not on macOS/BSD find).
+- An unknown value (including the spelling `none`) is ignored without an
+  error and name order is used; only `nosort` disables sorting.
+- `GLOBSORT` is global state: set it in a function with `local GLOBSORT=…`
+  so other globs in the script keep the expected order.
+- Equal keys (same size/mtime) fall back to name order.
 
 ***
 
@@ -596,7 +897,7 @@ my_function() {
 
 # Bash-specific syntax — avoid, not POSIX
 function my_function {
-  # ...
+  :  # ...
 }
 ```
 
@@ -632,13 +933,28 @@ get_stats() {
 }
 declare -i total_count total_sum
 get_stats total_count total_sum
+
+# Scope shell options to a function (Bash 4.4+): restored on return
+with_strict_globs() {
+  local -                     # saves single-letter options (set -f, -u, -x …)
+  set -f                      # noglob only inside this function
+  local IFS=,                 # IFS scoped the same way
+  read -ra parts <<< "$1"
+  printf '%s\n' "${parts[@]}"
+}
 ```
+
+`local -` restores only `set` single-letter options; `shopt` options (extglob,
+nullglob, …) are **not** restored — save them with `shopt -p extglob` and
+`eval` the saved line on return. Bash uses dynamic scoping: a `local` variable is
+visible to every function the declaring function calls.
 
 ##### Error handling in functions
 
 ```bash
-# Functions inherit set -e and set -u from the calling shell
-# Use || to handle failures
+# Functions inherit set -e and set -u from the calling shell — but a function
+# called as `f || …`, `if f`, `f && …` or `! f` runs with set -e ignored (see §2),
+# so check every step explicitly with || return
 deploy() {
   local env="$1"
   cd "/srv/${env}" || { log_error "Cannot cd to /srv/${env}"; return 1; }
@@ -725,8 +1041,8 @@ cleanup() {
   exit "$exit_code"
 }
 
-# EXIT is sufficient for most cleanup — runs on normal exit, errors, and signals
-# that cause exit (INT, TERM with set -e)
+# EXIT is sufficient for most cleanup — runs on normal exit, `exit`, set -e aborts,
+# and when the script is killed by an untrapped HUP/INT/TERM (not on SIGKILL)
 trap cleanup EXIT
 
 # For graceful shutdown on SIGINT/SIGTERM (e.g., kill background jobs)
@@ -734,15 +1050,16 @@ handle_signal() {
   echo "Signal received, shutting down..." >&2
   # kill background jobs if any
   jobs -p | xargs -r kill 2>/dev/null || true
-  exit 130   # 128 + 2 (SIGINT)
+  exit "$1"
 }
-trap handle_signal INT TERM
+trap 'handle_signal 130' INT    # 128 + 2 (SIGINT)
+trap 'handle_signal 143' TERM   # 128 + 15 (SIGTERM)
 
 # ERR trap — fires on any command returning non-zero (requires set -E to propagate into functions)
 set -E
 on_error() {
   local exit_code=$?
-  local line_no="${BASH_LINENO}"
+  local line_no="${BASH_LINENO[0]}"   # line of the failing command
   local command="${BASH_COMMAND}"
   echo "ERROR: command '${command}' failed with exit code ${exit_code} at line ${line_no}" >&2
 }
@@ -757,20 +1074,51 @@ TMPDIR_WORK=$(mktemp -d)
 - Listing `trap ... INT TERM EXIT` causes cleanup to run **twice** when INT/TERM received. Use `EXIT` alone for cleanup; use separate INT/TERM traps only for graceful shutdown signaling.[^8]
 - `trap ... ERR` requires `set -E` to fire inside functions.
 - In cleanup functions: use `set +e` and `|| true` to prevent recursive errors.
-- Create the temp dir **before** installing its cleanup trap, and never name the variable `TMPDIR`: `mktemp` consults `$TMPDIR`, so a trap that fires before the assignment can `rm -rf` the inherited real temp directory.
+- Initialise the cleanup variable to an empty value before installing the trap (as above) or create the temp dir first, and never name the variable `TMPDIR`: `mktemp` consults `$TMPDIR`, so a trap that fires before the assignment can `rm -rf` the inherited real temp directory.
+- There is one action per signal: a later `trap … EXIT` (for example in a library or a lock helper) silently **replaces** the earlier cleanup. Keep a single `cleanup` function and register resources with it.
+- A trap set inside a function is global; `trap - SIG` resets it. Subshells (`( … )`, `$( … )`, pipeline members) reset caught signals and the `EXIT` trap to their defaults; only `ERR` (with `set -E`) and `DEBUG`/`RETURN` (with `set -T`) are inherited.
+- To exit with the conventional status after a handled signal, reset the trap and re-send the signal (`trap - INT; kill -INT "$$"`), so a parent shell sees "killed by SIGINT" rather than an ordinary exit 130.
+
+##### Which signal fired? `BASH_TRAPSIG` and `trap -P` (New in 5.3)
+
+```bash
+on_signal() {
+  local sig=${BASH_TRAPSIG:-15}          # 5.3+: numeric signal of the running trap
+  echo "caught signal $sig, shutting down" >&2
+  exit $(( 128 + sig ))
+}
+trap on_signal INT TERM HUP
+trap -P TERM                             # 5.3+: prints only the action: on_signal
+```
+
+- `BASH_TRAPSIG` is set only while a trap action runs (it is `0` inside an
+  `EXIT` trap). On 5.2 and older it is an ordinary, normally unset variable, so
+  the fallback above reports 15 for every signal; code that must run there
+  should install one handler per signal instead
+  (`trap 'on_signal 2' INT; trap 'on_signal 15' TERM`), which works on 3.2+.
+- `trap -p SIG` (all versions) prints a reusable `trap -- '…' SIG` command;
+  `trap -P SIG` (5.3+) prints just the action string.
+- **Changed in 5.3:** `exit` without an argument at the top level of a trap
+  action now exits with the status from *before* the trap ran (POSIX
+  interpretation 1602): `trap 'false; exit' USR1` exits 1 on 5.2 (status of
+  `false`) but with the interrupted command's status on 5.3. Pass an explicit
+  status (`exit "$rc"`) in every trap that exits.
 
 ##### Lock files
 
 ```bash
-LOCKFILE="/var/run/myapp.lock"
+LOCKDIR="/run/lock/myapp.lock"     # mkdir is atomic: exactly one caller succeeds
+LOCK_HELD=false
 
 acquire_lock() {
-  if ! mkdir "$LOCKFILE" 2>/dev/null; then
-    echo "Script already running (lock: $LOCKFILE)" >&2
+  if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    echo "Script already running (lock: $LOCKDIR)" >&2
     exit 1
   fi
-  trap 'rmdir "$LOCKFILE" 2>/dev/null || true' EXIT
-}
+  LOCK_HELD=true    # release it from the single EXIT cleanup, e.g.:
+}                   # [[ $LOCK_HELD == true ]] && rmdir "$LOCKDIR"
+# A stale directory survives SIGKILL/power loss; flock(1) on Linux (§13) does not
+# have that problem because the kernel drops the lock when the process dies.
 ```
 
 ***
@@ -787,9 +1135,14 @@ Exit codes are 8-bit unsigned integers: **0–255**.[^9]
 | `64–78` | `sysexits.h` conventions (rarely enforced) |
 | `126` | Command found but not executable |
 | `127` | Command not found |
-| `128` | Invalid exit argument |
-| `128+N` | Fatal signal N (e.g., 137 = SIGKILL = 128+9) |
+| `128+N` | Fatal signal N (e.g., 137 = SIGKILL = 128+9, 143 = SIGTERM) |
 | `130` | Terminated by Ctrl-C (SIGINT = 128+2) |
+
+Values are taken modulo 256: `exit 256` exits 0 and `exit -1` exits 255. A
+non-numeric argument (`exit foo`) prints `numeric argument required` and exits
+**2** on 4.4–5.3 (255 on 3.2) — the "128 = invalid exit argument" row found in
+many tables does not describe Bash. Never `exit "$count"` with a count that can
+reach 256.
 
 ```bash
 # Exit with meaningful codes
@@ -876,9 +1229,14 @@ exec 3>&1 4>&2
 # Redirect through tee — live console + log file
 exec 1> >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
 
-# Restore on exit
+# Restore on exit (put this in your single cleanup function — a second
+# `trap … EXIT` would replace the existing one)
 trap 'exec 1>&3 2>&4; exec 3>&- 4>&-' EXIT
 ```
+
+The `tee` processes run asynchronously: the last lines can reach the log after
+the script has exited, and stdout/stderr ordering between the two `tee`s is not
+preserved.
 
 ***
 
@@ -985,6 +1343,11 @@ echo "data" >&4               # write to fd 4
 exec 3>&-
 exec 4<&-
 
+# Let Bash pick a free fd (4.1+) — avoids clobbering fds the caller uses
+exec {lock_fd}>"/run/lock/myapp.lock"
+flock -n "$lock_fd" || { echo "already running" >&2; exit 1; }   # flock(1): util-linux, not on macOS
+exec {lock_fd}>&-             # close it again by name
+
 # Production logging pattern with exec
 setup_logging() {
   local log_file="$1"
@@ -997,6 +1360,11 @@ teardown_logging() {
   exec 3>&- 4>&-              # close saved fds
 }
 ```
+
+`{var}>file` on a command other than `exec` leaves the descriptor **open** after
+the command (a descriptor leak in loops) unless `shopt -s varredir_close` (5.2+)
+is set; close it explicitly with `{var}>&-`. `{var}>&-` with a non-numeric `$var`
+no longer silently closes stdin since 5.3.[^18]
 
 ***
 
@@ -1051,6 +1419,39 @@ for pid in "${pids[@]}"; do
 done
 ```
 
+Bounded parallelism and "first failure wins" (Bash **5.1+** for `wait -p`;
+`wait -n` alone is 4.3+):
+
+```bash
+max_jobs=4
+for target in "${TARGETS[@]}"; do
+  while (( $(jobs -pr | wc -l) >= max_jobs )); do
+    wait -n -p done_pid || { echo "job $done_pid failed" >&2; exit 1; }
+  done
+  deploy "$target" &
+done
+rc=0
+while true; do
+  status=0
+  wait -n -p done_pid || status=$?
+  [[ -n ${done_pid-} ]] || break                 # no children left: wait unsets done_pid
+  (( status == 0 )) || { echo "job $done_pid failed ($status)" >&2; rc=1; }
+done
+exit "$rc"
+```
+
+- `wait` without arguments always returns 0 — it does **not** report failed
+  jobs; wait for each PID (or use `wait -n` in a loop) to collect statuses.
+- `wait -n` returns 127 when there are no unwaited-for children.
+  **5.3:** `wait -n` can also return terminated process substitutions and jobs
+  already reported to the user; in POSIX mode it removes the reaped job.
+- `wait -f PID` (5.0+) waits until the job terminates even when job control is
+  enabled, instead of returning on a stop.
+- Coprocesses (`coproc NAME { …; }`, 4.0+): before 5.3 a second simultaneous
+  coproc prints `warning: execute_coproc: coproc [PID:NAME] still exists`;
+  multiple coprocs are supported by default since 5.3. Close coproc fds you no
+  longer need (`exec {NAME[1]}>&-`) or the child never sees EOF.
+
 ***
 
 #### 15. Here-Docs & Here-Strings
@@ -1077,8 +1478,9 @@ cat <<'EOF'
 This is literal: $HOME ${PATH} $(command)
 EOF
 
-# Pass to command directly
-mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" <<EOF
+# Pass to command directly — keep secrets out of argv (visible in ps / /proc)
+# BAD:  mysql -p"$DB_PASS" …      GOOD: credentials from an option file or env
+mysql --defaults-extra-file="$creds_file" "$DB_NAME" <<'EOF'
 SELECT COUNT(*) FROM users WHERE active = 1;
 EOF
 
@@ -1103,6 +1505,12 @@ EOF
 - `<<-` strips **tabs only** — mixing spaces and tabs causes silent misalignment.[^11]
 - Variables and command substitutions are expanded unless delimiter is quoted.
 - Trailing newline is always included.
+- Expanded data is **not** escaped: `cat <<EOF` around `${user_input}` that
+  produces YAML/SQL/JSON is an injection point — generate structured formats
+  with a real tool (`jq -n --arg`, parameterised SQL).
+- Bash 5.1+ feeds small here-docs/here-strings through a **pipe** instead of a
+  temporary file (`BASH_COMPAT=50` restores temp files); code that seeks on
+  stdin or checks `[[ -f /dev/stdin ]]` behaves differently.[^6]
 
 ##### Here-string (Bash 2.05b+)
 
@@ -1134,7 +1542,8 @@ read -r -p "Enter value: " user_input
 read -r -s -p "Password: " password
 echo  # print newline after silent read
 
-# Read with timeout
+# Read with timeout (integer seconds on 3.2; fractional values such as -t 0.5 need 4.0+)
+# Status > 128 means the timeout expired
 if ! read -r -t 10 -p "Proceed? [y/N] " answer; then
   echo "Timeout — defaulting to No"
   answer="n"
@@ -1170,6 +1579,14 @@ IFS= read -r -d $'\0' content < <(printf '%s\0' "$data")
 
 **ShellCheck warning SC2162:** Always use `read -r` to avoid mangling backslashes.[^12]
 
+- `read` returns non-zero at end of file even when it read a final line that
+  lacks a trailing newline — use `while IFS= read -r line || [[ -n $line ]]`
+  for files that may not end in `\n`.
+- `read -e` (readline editing) and the **5.3** `read -E` (readline plus Bash's
+  default and programmable completion) only matter for interactive prompts;
+  `-E` is an "invalid option" error on 5.2 and older.
+- `read -p` writes the prompt only when input comes from a terminal.
+
 ***
 
 #### 17. Environment Handling
@@ -1191,9 +1608,15 @@ export -n VAR_NAME
 # Sanitize environment in production — use env -i for clean slate
 env -i HOME="$HOME" PATH="$PATH" bash ./clean_env_script.sh
 
-# Source config files safely
+# Sourcing a config file EXECUTES it — only source files owned by a trusted user
+# and not writable by others; parse untrusted key=value files with read instead
 config_file="${XDG_CONFIG_HOME:-$HOME/.config}/myapp/config"
-[[ -f "$config_file" ]] && source "$config_file"
+# Use if, not `[[ -f … ]] && source …`: as the last command of a function or
+# script, the && form returns 1 when the file is absent
+if [[ -f "$config_file" ]]; then
+  # shellcheck source=/dev/null
+  source "$config_file"
+fi
 
 # Show all exports
 declare -x       # or: export -p
@@ -1207,6 +1630,36 @@ declare -x       # or: export -p
 # Common environment variables to NOT override
 # Never: PATH= (use PATH="new:$PATH"), HOME=, IFS=, BASH=, SHELL=
 ```
+
+**`PATH` hygiene.** An empty `PATH`, an empty element (`::`, a leading or
+trailing `:`) or a `.` element makes Bash search the **current directory** —
+`PATH="$extra:$PATH"` with an empty `$extra` silently adds the cwd. Build
+`PATH` only from non-empty absolute directories.
+
+**Locating library files.** Resolve sourced files relative to the script, not
+the caller's working directory:
+
+```bash
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+source "$script_dir/lib/common.sh"
+
+# New in 5.3: search an explicit directory list instead of $PATH, with no
+# current-directory fallback (an empty list element still means the cwd)
+source -p "$script_dir/lib:/usr/local/share/myapp" common.sh
+```
+
+- `source file` without a slash searches `$PATH` first (and the current
+  directory as a fallback in non-POSIX mode, `sourcepath` on by default) — always
+  pass a path containing `/`, or use `source -p DIRS file` on **5.3+**
+  (`-p` is an invalid option on 5.2 and older).
+- **New in 5.3:** `shopt -s bash_source_fullpath` stores absolute pathnames
+  in `BASH_SOURCE` (off by default, so `${BASH_SOURCE[0]}` is still whatever
+  path the script was invoked or sourced with).
+
+**`cd` checks.** Always `cd -- "$dir" || exit`. **New in 5.3:** `cd ""` is an
+error (`cd: null directory`, status 1, also with `BASH_COMPAT=52`); 5.2 and
+older treat it as a successful no-op, so `cd "$maybe_empty"` used to keep running
+in the current directory — guard with `${dir:?}`.
 
 ***
 
@@ -1241,7 +1694,7 @@ declare -x       # or: export -p
 
 # Arithmetic
 (( count > 0 ))              # preferred for arithmetic tests
-[[ "$count" -gt 0 ]]         # POSIX numeric comparison
+[[ "$count" -gt 0 ]]         # numeric; inside [[ ]] operands are arithmetic expressions (§5)
 [[ "$count" -eq 0 ]]         # equal (numeric)
 
 # Logical operators
@@ -1266,6 +1719,24 @@ case "$env" in
     ;;
 esac
 ```
+
+##### `test` / `[` pitfalls and the 5.3 parsing change
+
+- Do not combine tests with `-a`/`-o` inside `[ … ]`; the result depends on
+  the number of arguments and on the operands' values (`!`, `(`, `=` as data).
+  Use `[ "$a" = x ] && [ "$b" = y ]` or `[[ … && … ]]`.
+- **Changed in 5.3:** with more than four arguments, `test`/`[` now scans a
+  parenthesised sub-expression and, if it holds four or fewer arguments, parses
+  it with the POSIX rules (as coreutils `test` does). An expression such as
+  `[ \( "!" = "!" \) -a x ]` fails with a "`)` expected" error (status 2) on 5.2 and
+  succeeds on 5.3; `BASH_COMPAT=52` restores the old algorithm. Code whose
+  result changes is already ambiguous — rewrite it with `[[ ]]` or separate
+  `[ ]` commands.
+- `[[ $a < $b ]]` and `[[ $a > $b ]]` compare by the current locale's collation
+  (since 4.1); **5.3 POSIX mode** makes `test`/`[` `<`/`>` locale-aware too. For
+  byte order use `LC_ALL=C`. For numbers use `(( a < b ))` or `-lt`.
+- `[ $var = x ]` with an empty or multi-word `$var` is a syntax error or a wrong
+  result — quote every operand of `[`.
 
 ***
 
@@ -1500,7 +1971,7 @@ EOF
 
 ```bash
 # BAD — breaks on spaces, newlines, special chars in filenames
-for f in $(ls *.txt); do ...
+for f in $(ls *.txt); do process "$f"; done
 
 # GOOD
 for f in *.txt; do
@@ -1560,7 +2031,7 @@ for f in *.txt; do
 done
 
 # FAST — batch external commands
-wc -l *.txt                  # one wc invocation for all files
+wc -l -- *.txt               # one wc invocation for all files
 ```
 
 A command substitution used to construct the loop input runs once before the
@@ -1573,7 +2044,7 @@ for _ in $(seq 1 30); do
   poll_service
 done
 
-# ALSO FINE — arithmetic for is a builtin in every supported Bash version (3.2–5.2)
+# ALSO FINE — arithmetic for is a builtin in every supported Bash version (3.2–5.3)
 for ((i = 1; i <= 30; i++)); do
   poll_service
 done
@@ -1595,6 +2066,42 @@ len=$(echo -n "$str" | wc -c)
 len="${#str}"                 # zero forks
 ```
 
+##### Capturing output without a fork
+
+`$( … )` always forks. In hot loops prefer, in order of availability:
+
+```bash
+printf -v stamp '%(%F %T)T' -1          # 4.2+: no date(1) process
+printf -v padded '%05d' "$n"            # 3.1+: formatted assignment, no subshell
+out=${ some_function; }                 # 5.3+: function output captured in-process
+compgen -V matches -W "$words" -- "$prefix"   # 5.3+: array result, no $(compgen …)
+```
+
+A `${ …; }` substitution of a function is markedly cheaper than `$( … )` in a
+loop of thousands of iterations, but only where 5.3 is the guaranteed minimum.
+
+##### Clocks and timing
+
+| Need | Construct | Version |
+|------|-----------|---------|
+| Wall-clock seconds | `$EPOCHSECONDS` (or `printf '%(%s)T' -1` on 4.2+) | 5.0+ |
+| Microsecond timestamp | `$EPOCHREALTIME` | 5.0+ |
+| Elapsed time immune to clock changes | `$BASH_MONOSECONDS` (whole seconds; falls back to `EPOCHSECONDS` without a monotonic clock) | **5.3+** |
+| Elapsed seconds since start | `$SECONDS` | all |
+| Timing a command | `TIMEFORMAT='%3R'` + `time cmd`; `%6R` (microseconds) needs **5.3+**, 5.2 caps the precision at 3 digits | |
+
+```bash
+start=$BASH_MONOSECONDS                   # 5.3+
+run_job
+(( BASH_MONOSECONDS - start > 300 )) && echo "job took more than 5 minutes" >&2
+```
+
+Bash arithmetic is integer-only. For floating point use `awk`/`bc`, or on 5.3
+the optional `fltexpr` loadable (`enable fltexpr` when
+`BASH_LOADABLES_PATH` contains the distribution's loadables directory, then
+`fltexpr 'x = 1.5 * 3'`). Loadables (`kv`, `strptime`, `fltexpr`, …) are
+often not installed — never depend on them without checking `enable` succeeds.
+
 ##### `xargs` for parallelism
 
 ```bash
@@ -1611,8 +2118,9 @@ find . -name "*.png" -print0 | xargs -0 -P8 -I{} convert {} {}.webp
 # Time a script
 time bash script.sh
 
-# Trace with timestamps — identify slow lines (date %N is GNU-only; not on macOS/BSD)
-PS4='+ $(date "+%s%N") ${FUNCNAME:+${FUNCNAME}():}${LINENO}: '
+# Trace with timestamps — identify slow lines (5.0+: EPOCHREALTIME, no fork per line)
+PS4='+ ${EPOCHREALTIME} ${FUNCNAME:+${FUNCNAME}():}${LINENO}: '
+# Before 5.0: PS4='+ $(date "+%s%N") …' (date %N is GNU-only; forks once per traced line)
 set -x
 # ... your code ...
 set +x
@@ -1646,12 +2154,16 @@ When writing scripts targeting `sh` (not Bash), avoid all of the following Bash-
 | `declare -n` nameref | ✅ Bash 4.3+ | ❌ |
 | `printf -v` | ✅ | ❌ |
 | `PIPESTATUS` | ✅ | ❌ |
+| `$'…'` ANSI-C quoting | ✅ | ✅ since POSIX.1-2024 (older `sh` implementations lack it)[^21] |
+| `set -o pipefail` | ✅ | ✅ since POSIX.1-2024 (older `sh` implementations lack it) |
+| `${ cmd; }` / `${\| cmd; }` | ✅ Bash 5.3+ | ❌ |
+| `GLOBSORT`, `BASH_*` variables | ✅ (version-specific) | ❌ |
 
 ```bash
 # POSIX-safe alternatives
 # Instead of [[ ]], use:
 [ -f "$file" ]
-case "$str" in pattern) ... esac
+case "$str" in pattern*) echo match ;; esac
 
 # Instead of arrays, use positional params or IFS-delimited strings:
 set -- one two three
@@ -1667,6 +2179,15 @@ command > output 2>&1
 shellcheck --shell=sh script.sh
 shellcheck --shell=bash script.sh   # Bash-specific checks
 ```
+
+**Bash's POSIX mode** (`set -o posix`, `bash --posix`, or Bash invoked as `sh`)
+changes Bash's own behaviour; it does not reject Bash extensions. Notable 5.3
+changes in POSIX mode: function names no longer need to be valid identifiers
+(5.2 exits with "not a valid identifier"), `kill` returns failure if **any**
+PID/job argument is not found (in default mode `kill 123 456` still returns 0
+when one target exists), `test`'s `<`/`>` use the locale, `wait -n` removes the
+reaped job from the job table, and `set -e` exits "as if executing `exit` with
+no arguments".[^20]
 
 ***
 
@@ -1759,61 +2280,180 @@ rm "$file"                  # if $file is "-rf", it is parsed as options
 # ❌ 19. Non-idempotent scripts (fail or corrupt on rerun)
 mkdir "$dir"                # errors if the directory already exists
 # ✅ mkdir -p "$dir"        — safe to rerun; design every step to be re-runnable
+
+# ❌ 20. Unquoted data as a pattern-substitution replacement (5.2+: & = match)
+out=${url//@HOST@/$host}    # a "&" in $host is replaced by "@HOST@" on 5.2+
+# ✅ out=${url//@HOST@/"$host"}
+
+# ❌ 21. Untrusted input in arithmetic or indexed-array subscripts
+(( count += $user_value ))  # "a[$(rm -rf ~)0]" executes the command
+# ✅ [[ $user_value =~ ^[0-9]+$ ]] && (( count += 10#$user_value ))
+
+# ❌ 22. Secrets on the command line
+curl -u "admin:$PASSWORD" "$url"        # visible in ps, /proc/PID/cmdline, xtrace
+# ✅ pass secrets via stdin, a 0600 file, or an environment variable the tool reads
+# ✅ disable xtrace around secret handling: { set +x; } 2>/dev/null
+
+# ❌ 23. Newer-version syntax in a script that must run on an older Bash
+x=${ date +%s; }            # bad substitution on 5.2 and older (run time, not parse time)
+GLOBSORT=-mtime; f=(*)      # silently ignored on 5.2 and older
+# ✅ guard with BASH_VERSINFO or use $(…) / find | sort when the minimum is < 5.3
 ```
 
 ***
 
 #### 27. Version Feature Matrix
 
+"≤ 3.2" means available in every version this guide covers. Boundaries for
+4.0–4.3 come from the official NEWS file;[^5] everything else was executed on
+3.2.57, 4.4.23, 5.0.18, 5.1.16, 5.2.37 and 5.3.20.
+
 | Feature | Min. Bash Version | Notes |
 |---------|------------------|-------|
-| Basic indexed arrays | **2.0** | |
-| Here-string `<<<` | **2.05b** | |
-| `[[ ]]` conditional | **2.02** | |
-| `$(( ))` arithmetic | **2.0** | |
-| `declare -a` indexed array | **2.0** | |
-| `declare -A` associative array | **4.0** (2009) | Not on macOS `/bin/bash` |
-| `mapfile` / `readarray` | **4.0** | |
-| `declare -l` / `-u` case attrs | **4.0** | |
-| `${var,,}` / `${var^^}` case ops | **4.0** | |
-| `&>>` append shorthand | **4.0** | |
-| `[[ -v var ]]` set test | **4.2** | |
-| `declare -g` set global in func | **4.2** | |
-| `declare -n` nameref | **4.3** | |
-| `local -n` nameref in function | **4.3** | |
-| Negative array indices (`arr[-1]`) | **4.3** | |
-| `mapfile -d` custom delimiter | **4.4** | |
-| Bash 5.0 `EPOCHSECONDS` / `EPOCHREALTIME` | **5.0** | |
-| `SRANDOM` (high-quality random) | **5.1** | |
-| Bash 5.1 associative array compound assign | **5.1** | |
-| `[[ -R var ]]` nameref test | **4.3** | |
-| `printf -v` print to variable | **3.1** | |
-| `BASH_REMATCH` / `=~` | **3.0** | 3.2 changed RHS-quoting rule |
-| `PIPESTATUS` array | **2.0** | |
-| `shopt -s globstar` (`**`) | **4.0** | |
-| `shopt -s nullglob` | **2.0** | |
-| `shopt -s extglob` | **2.02** | |
-| Process substitution `<()` | **2.0** | Not in POSIX `sh` |
-| `coproc` (coprocess) | **4.0** | |
+| Indexed arrays, `$(( ))`, `[[ ]]`, `PIPESTATUS`, process substitution `<( )`, `extglob`, `nullglob`, here-string `<<<` | **≤ 3.2** | Here-strings date from 2.05b |
+| `printf -v var` | **≤ 3.2** (3.1) | Assigning to `arr[i]` with `-v`: 4.1 |
+| `+=` append (scalars and arrays) | **≤ 3.2** (3.1) | |
+| `=~` / `BASH_REMATCH` | **≤ 3.2** (3.0) | 3.2 made quoted RHS parts literal |
+| `declare -A` associative arrays | **4.0** | Not on macOS `/bin/bash` |
+| `mapfile` / `readarray` | **4.0** | `-d delim`: 4.4 |
+| `declare -l` / `-u`, `${var,,}` / `${var^^}` | **4.0** | |
+| `&>>`, `\|&` | **4.0** | |
+| `globstar` (`**`), `coproc`, `BASHPID` | **4.0** | Multiple coprocs without warning: 5.3 |
+| Fractional `read -t 0.5` | **4.0** | 3.2: integer seconds only |
+| `{fd}>file` fd allocation | **4.1** | `varredir_close`: 5.2 |
+| `[[ -v var ]]`, `declare -g`, `printf '%(fmt)T'`, `lastpipe` | **4.2** | |
+| Reading negative indices `${a[-1]}` | **4.2** | `${a[@]: -1}` works on 3.2 |
+| `declare -n` / `local -n`, `[[ -R ]]` | **4.3** | |
+| Assign/unset negative indices, `[[ -v a[i] ]]`, `wait -n` | **4.3** | |
+| `inherit_errexit`, `local -`, `${v@Q}` `@E` `@P` `@A` `@a` | **4.4** | |
+| Empty `"${arr[@]}"` allowed under `set -u` | **4.4** | 3.2–4.3: "unbound variable" |
+| `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_ARGV0`, `wait -f` | **5.0** | |
+| `localvar_inherit`, `assoc_expand_once` | **5.0** | `assoc_expand_once` deprecated in 5.3 |
+| `SRANDOM`, `wait -p`, `declare -I` | **5.1** | |
+| `${v@U}` `@u` `@L` `@K`, key/value list `declare -A m=(k v)` | **5.1** | |
+| Here-docs/strings via pipe when small | **5.1** | `BASH_COMPAT=50` reverts |
+| `${v@k}`, `printf %Q` | **5.2** | |
+| `patsub_replacement` (default **on**), `globskipdots` (default **on**) | **5.2** | Behaviour change for existing code |
+| `varredir_close`, `noexpand_translation` | **5.2** | |
+| Double expansion of array subscripts in `(( ))`/`[[ -v ]]` prevented by default | **5.2** | `BASH_COMPAT=51` reverts |
+| `${ cmd; }`, `${\| cmd; }` (no-fork command substitution) | **5.3** | Use 5.3.7+ with redirections |
+| `GLOBSORT`, `BASH_TRAPSIG`, `BASH_MONOSECONDS` | **5.3** | Plain variables on older versions |
+| `trap -P`, `source -p`/`. -p`, `compgen -V`, `read -E` | **5.3** | |
+| `printf %#q`/`%#Q`, `%ls`/`%lc` | **5.3** | |
+| `array_expand_once`, `bash_source_fullpath` | **5.3** | |
+| `TIMEFORMAT` precision 4–6 | **5.3** | |
+| `local BASH_REMATCH` honoured | **5.3** | |
+| `cd ""` is an error | **5.3** | Not reverted by `BASH_COMPAT` |
+| `test` POSIX parsing of short parenthesised sub-expressions | **5.3** | `BASH_COMPAT=52` reverts |
 
 ##### Checking version at runtime
 
 ```bash
-# Check Bash version inside a script
-if (( BASH_VERSINFO < 4 )); then
+# Check Bash version inside a script (BASH_VERSINFO exists in every version)
+if (( BASH_VERSINFO[0] < 4 )); then
   echo "Requires Bash 4.0 or newer (found: $BASH_VERSION)" >&2
   exit 1
 fi
 
-# Check for specific feature
-if (( BASH_VERSINFO > 4 || (BASH_VERSINFO == 4 && BASH_VERSINFO[1] >= 3) )); then
-  # use declare -n
-  declare -n ref="$target"
+# Generic "at least X.Y" helper — works on 3.2+
+bash_at_least() {
+  (( BASH_VERSINFO[0] > $1 || (BASH_VERSINFO[0] == $1 && BASH_VERSINFO[1] >= $2) ))
+}
+
+if bash_at_least 4 3; then
+  declare -n ref="$target"     # nameref
 else
-  # fallback with eval or indirect expansion
-  ref_val="${!target}"
+  ref_val="${!target}"         # indirect expansion fallback (read-only)
+fi
+
+if bash_at_least 5 3; then
+  GLOBSORT=-mtime              # newest first
 fi
 ```
+
+Prefer feature checks over version checks only where Bash offers them without
+side effects (`shopt -q name 2>/dev/null` tells whether an option exists). Never
+probe new **syntax** with `eval` in production code just to pick a code path —
+choose one minimum version and enforce it once at the top.
+
+***
+
+#### 28. Removed / Changed in 5.3 — Migration Notes & `BASH_COMPAT`
+
+Upgrading a script's runtime from 5.2 to 5.3 is low-risk, but review these:[^5][^6]
+
+| 5.2 behaviour | 5.3 behaviour | Action |
+|---------------|---------------|--------|
+| `cd ""` succeeds and stays in the current directory | Error `cd: null directory`, status 1 | Guard: `cd -- "${dir:?}"`; not reverted by `BASH_COMPAT` |
+| `test`/`[` with > 4 args uses the historical algorithm for `( … )` | POSIX parsing of parenthesised sub-expressions with ≤ 4 args | Rewrite with `[[ ]]` or split `[ ]`; `BASH_COMPAT=52` reverts |
+| `local BASH_REMATCH` ignored by `=~` | Honoured | Callers that relied on a function leaking `BASH_REMATCH` must change |
+| Invalid regex in `=~` silent (status 2) | Error message on stderr, still status 2 | Validate regexes; do not rely on silence |
+| `printf %#q` same as `%q` | `#` forces single quotes | Only affects code that already used `#` |
+| `assoc_expand_once` | Deprecated synonym of `array_expand_once` | Use the new name on 5.3-only code; the old name still works |
+| Second concurrent `coproc` prints a warning | Supported silently | — |
+| `exit` without argument at a trap's top level exits with the last command's status inside the trap | Exits with the status from before the trap (POSIX interp. 1602) | Always pass an explicit status |
+| POSIX mode: invalid function names fatal; `kill` succeeds if one target exists | Names allowed; `kill` fails if any target is missing | Check `kill` status per PID |
+| Interactive: job notifications while sourcing | Deferred until sourcing finishes | `BASH_COMPAT=52` reverts |
+
+**`BASH_COMPAT`.** Setting `BASH_COMPAT=52` (or `5.2`) makes 5.3 emulate 5.2 for
+the items marked above — `test` parsing, `bind -p`/`-P` argument handling and
+job notifications while sourcing — not for anything else. Levels accumulate:
+`BASH_COMPAT=50` additionally restores, for example, the 5.0 `$RANDOM` sequence
+and temporary files for here-documents; `BASH_COMPAT=51` restores 5.1 subscript
+double expansion and `unset a[@]` semantics. In 5.3 the variable accepts 31–53
+(older values are rejected with "compatibility value out of range"); the
+`shopt compat31` … `compat44` options are deprecated and there are no
+`compat50`+ options. Treat `BASH_COMPAT` as a temporary migration aid — it
+re-enables known-unsafe behaviour (e.g. `BASH_COMPAT=51` brings back double
+expansion of array subscripts) and should not appear in new code.[^17]
+
+**Deprecated / removed across the covered range** (reviewer flags):
+
+- Backtick command substitution (labelled "deprecated" in the 5.3 manual) and
+  `$[ expr ]` (an undocumented, obsolete arithmetic syntax that 5.3 still
+  accepts) — use `$( )` and `$(( ))`.
+- `test`/`[` with `-a`, `-o` or parentheses — the 5.3 manual notes that POSIX
+  deprecated them and that scripts should no longer use them; use `&&`/`||`
+  between single-primary tests or `[[ ]]`.
+- `egrep`/`fgrep` — GNU grep 3.8+ warns that they are obsolescent; use
+  `grep -E`/`grep -F`.
+- `shopt -s compat4x` options — use `BASH_COMPAT`.
+
+***
+
+#### 29. Production / Review Checklist
+
+**Versions**
+
+- [ ] Minimum Bash version is known (runtime guard, `Requires:` header, base image, macOS 3.2) and no construct exceeds it (§27).
+- [ ] 5.3-only syntax (`${ cmd; }`, `${| cmd; }`, `source -p`, `compgen -V`, `trap -P`, `read -E`) appears only where 5.3 is guaranteed; `GLOBSORT`/`BASH_TRAPSIG`/`BASH_MONOSECONDS` have a fallback on older versions.
+- [ ] Code upgraded to 5.2+ was checked for `&` in `${var/pat/rep}` replacements and for `.*` globs relying on `.`/`..`.
+- [ ] Code upgraded to 5.3 was checked for `cd ""`, `test` with `( … )` and > 4 arguments, and `local BASH_REMATCH` assumptions.
+- [ ] `BASH_COMPAT` is not set in new code.
+
+**Correctness**
+
+- [ ] `set -euo pipefail` (entry scripts only), plus `shopt -s inherit_errexit` on 4.4+; functions called in `if`/`||`/`&&` contexts check each step.
+- [ ] `local x=$(cmd)` split into declaration + assignment (SC2155).
+- [ ] Every expansion quoted; arrays expanded as `"${arr[@]}"`; `--` before operands that may start with `-`.
+- [ ] `read -r` everywhere; `IFS=` when whitespace matters; loops over files use globs or `find -print0` + `read -d ''`.
+- [ ] `[[ ]]` RHS quoted unless a pattern/regex is intended; regex stored in a variable.
+- [ ] Exit statuses are 0–255; `wait` collects each background job's status.
+- [ ] `cd` checked (`cd -- "$d" || exit`); `${var:?}` guards before `rm -rf`.
+
+**Security**
+
+- [ ] No `eval` of untrusted data; no untrusted data in arithmetic, indexed subscripts or `test -v "A[$k]"`.
+- [ ] Data-derived pattern-substitution replacements quoted (`${s//x/"$r"}`).
+- [ ] Temp files via `mktemp`, cleaned in an `EXIT` trap; no fixed `/tmp` names.
+- [ ] Secrets never in argv, xtrace output or here-docs written to world-readable files.
+- [ ] `PATH` contains no empty/relative elements; sourced files are trusted and addressed by absolute path or `source -p` (5.3).
+
+**Robustness & tooling**
+
+- [ ] `EXIT` trap for cleanup (not `INT TERM EXIT` with an `exit` inside); trap output to stderr.
+- [ ] `{fd}>` redirections closed or `varredir_close` (5.2+) set.
+- [ ] `shellcheck` (0.11.0 understands 5.3 funsubs) passes with `--shell=bash`; `bash -n` in CI; tests run on the minimum and the newest supported Bash (e.g. `bash:3.2`/`bash:5.3` images).
 
 ***
 
@@ -1825,13 +2465,18 @@ fi
 # script_name.sh — Brief description
 # Usage: script_name.sh [OPTIONS] <arg>
 # Author: Your Name
-# Requires: Bash 4.3+
+# Requires: Bash 4.2+ (printf %(…)T)
 # ============================================================
 set -euo pipefail
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "Bash 4.2+ required (found $BASH_VERSION)" >&2   # plain echo: works on 3.2
+  exit 1
+fi
 
 # ── Constants ────────────────────────────────────────────────
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || exit 1
+readonly SCRIPT_DIR                # assign first, then mark readonly (SC2155)
 readonly LOG_FILE="${LOG_FILE:-/tmp/${SCRIPT_NAME%.sh}.log}"
 DRY_RUN="${DRY_RUN:-false}"   # not readonly: reassigned by --dry-run below
 
@@ -1902,7 +2547,6 @@ done
 # ── Prerequisites ────────────────────────────────────────────
 require_cmd git
 require_cmd kubectl
-(( BASH_VERSINFO >= 4 )) || die "Bash 4+ required"
 
 # ── Main ──────────────────────────────────────────────────────
 main() {
@@ -1916,30 +2560,31 @@ main() {
 main "$@"
 ```
 
----
+***
 
 #### References
 
-1. [10 Bash Traps That Are Costing You Hours (And How to Fix Them)](https://dev.to/beta_shorts_7f1150259405a/10-bash-traps-that-are-costing-you-hours-and-how-to-fix-them-3949) - Bash scripts breaking for no reason? Here are 10 common mistakes that waste hours—and how to fix the...
-
-2. [Bash Safety 101: Why set -euo pipefail Should Be in ... - LinkedIn](https://www.linkedin.com/posts/boris-levenzon_bash-safety-101-why-set-euo-pipefail-should-activity-7400210270041645056-LryT) - Bash Safety 101: Why set -euo pipefail Should Be in Every Production Script If you’re writing Bash s...
-
-3. [bash: trap cleanup et signaux](https://data.pm/snippets/bash/bash-trap-cleanup-et-signaux/) - Nettoyer et terminer proprement avec trap: cleanup, ERR, EXIT et signaux INT/TERM.
-
-4. [Arrays (Bash Reference Manual)](https://www.gnu.org/software/bash/manual/html_node/Arrays.html) - Arrays (Bash Reference Manual)
-
-5. [How to Declare and Access Associative Array in Bash](https://phoenixnap.com/kb/bash-associative-array) - Bash associative arrays use key-value pairs to store data. Learn how to declare, access & use associ...
-
-6. [Command Line Associative Arrays - Bash - Codecademy](https://www.codecademy.com/resources/docs/command-line/bash/associative-arrays) - Stores and retrieves data using key-value pairs in Bash scripts
-
-7. [What is the meaning of IFS=$'\n' in bash scripting?](https://unix.stackexchange.com/questions/184863/what-is-the-meaning-of-ifs-n-in-bash-scripting) - At the beginning of a bash shell script is the following line: IFS=$'\n' What is the meaning behind ...
-
-8. ["trap ... INT TERM EXIT" really necessary?](https://unix.stackexchange.com/questions/57940/trap-int-term-exit-really-necessary) - Many examples for trap use trap ... INT TERM EXIT for cleanup tasks. But is it really necessary to l...
-
-9. [Exit Status Codes - OberstKrueger](https://oberstkrueger.com/status) - The homepage for OberstKrueger.
-
-10. [Bash exec File-Descriptor Redirection Logging Prompt](https://devopsaitoolkit.com/prompts/bash-exec-fd-redirection-logging/) - Wire script-wide logging with exec, custom file descriptors, and tee to split stdout/stderr to conso...
-
-11. [3.3. Preventing Weird Behavior in a Here-Document - bash ... - O'Reilly](https://www.oreilly.com/library/view/bash-cookbook/0596526784/ch03s03.html) - Preventing Weird Behavior in a Here-DocumentProblemYour here-document is behaving weirdly. You tried...
-
-12. [Mapfile/Readarray | Poop Sheet](https://poopsheet.co.za/bash/builtins/mapfile-readarray/)
+[^1]: GNU Bash Reference Manual — Shell Scripts. https://www.gnu.org/software/bash/manual/html_node/Shell-Scripts.html
+[^2]: GNU Bash Reference Manual — The Set Builtin. https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
+[^3]: GNU Bash Reference Manual — Bourne Shell Builtins (`trap`, `exit`, `cd`, `.`). https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html
+[^4]: GNU Bash Reference Manual — Arrays. https://www.gnu.org/software/bash/manual/html_node/Arrays.html
+[^5]: Bash NEWS — feature list per release (bash-2.0 … bash-5.3). https://git.savannah.gnu.org/cgit/bash.git/plain/NEWS?h=bash-5.3
+[^6]: Bash COMPAT — incompatibilities between versions and the compatibility levels. https://git.savannah.gnu.org/cgit/bash.git/plain/COMPAT?h=bash-5.3
+[^7]: GNU Bash Reference Manual — Word Splitting. https://www.gnu.org/software/bash/manual/html_node/Word-Splitting.html
+[^8]: "trap ... INT TERM EXIT" really necessary? Unix & Linux Stack Exchange. https://unix.stackexchange.com/questions/57940/trap-int-term-exit-really-necessary
+[^9]: GNU Bash Reference Manual — Exit Status. https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html
+[^10]: GNU Bash Reference Manual — Redirections. https://www.gnu.org/software/bash/manual/html_node/Redirections.html
+[^11]: GNU Bash Reference Manual — Redirections: Here Documents. https://www.gnu.org/software/bash/manual/html_node/Redirections.html#Here-Documents
+[^12]: ShellCheck wiki — SC2162: read without -r will mangle backslashes. https://www.shellcheck.net/wiki/SC2162
+[^13]: Chet Ramey, bash-5.3 release announcement ("The first public release of bash-5.3 is now available"), bug-bash mailing list, July 5, 2025. https://lists.gnu.org/archive/html/bug-bash/2025-07/msg00005.html
+[^14]: GNU FTP — official bash-5.3 patches (bash53-001 … bash53-020). https://ftp.gnu.org/gnu/bash/bash-5.3-patches/
+[^15]: GNU Bash Reference Manual — Command Substitution. https://www.gnu.org/software/bash/manual/html_node/Command-Substitution.html
+[^16]: GNU Bash Reference Manual — Bash Variables (`GLOBSORT`, `BASH_TRAPSIG`, `BASH_MONOSECONDS`, `BASH_COMPAT`). https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html
+[^17]: GNU Bash Reference Manual — Shell Compatibility Mode. https://www.gnu.org/software/bash/manual/html_node/Shell-Compatibility-Mode.html
+[^18]: Bash CHANGES — detailed change log bash-5.2 → bash-5.3-rc2. https://git.savannah.gnu.org/cgit/bash.git/plain/CHANGES?h=bash-5.3
+[^19]: Bash git repository — `devel` branch log ("changed version to bash-5.4-devel", August 21, 2026) and release tags. https://git.savannah.gnu.org/cgit/bash.git/log/?h=devel
+[^20]: GNU Bash Reference Manual — Bash POSIX Mode. https://www.gnu.org/software/bash/manual/html_node/Bash-POSIX-Mode.html
+[^21]: POSIX.1-2024 (IEEE Std 1003.1-2024), Shell Command Language — Dollar-Single-Quotes and the `pipefail` option. https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html
+[^22]: ShellCheck v0.11.0 release. https://github.com/koalaman/shellcheck/releases/tag/v0.11.0
+[^23]: Debian sources (bash versions per suite) https://sources.debian.org/src/bash/ and Ubuntu Launchpad (bash source package) https://launchpad.net/ubuntu/+source/bash
+[^24]: GNU Bash Reference Manual — Shell Parameter Expansion. https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html
