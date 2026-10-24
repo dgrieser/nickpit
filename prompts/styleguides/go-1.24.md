@@ -6,36 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.24](#whats-new-in-go-124)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers & Weak Pointers](#pointers--weak-pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics & Type Aliases](#generics--type-aliases)
-11. [Iterators — iter package](#iterators--iter-package)
-12. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-13. [Strings & Bytes](#strings--bytes)
-14. [Error Handling](#error-handling)
-15. [Structured Logging with log/slog](#structured-logging-with-logslog)
-16. [Concurrency](#concurrency)
-17. [Memory Management: Cleanup & Weak Pointers](#memory-management-cleanup--weak-pointers)
-18. [Context Package](#context-package)
-19. [File I/O & Filesystem](#file-io--filesystem)
-20. [HTTP Servers](#http-servers)
-21. [Cryptography](#cryptography)
-22. [Testing & Benchmarking](#testing--benchmarking)
-23. [CLI Development & Tool Directive](#cli-development--tool-directive)
-24. [Performance Caveats & PGO](#performance-caveats--pgo)
-25. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.24
 
 Go 1.24.0 shipped 2025-02-10. It delivers **generic type aliases** (the final generics gap closed), **weak pointers** and improved finalizers, a new **Swiss Tables map** implementation (2–3% overall CPU improvement), the **`os.Root`** sandbox type, the **`testing.B.Loop`** method, new crypto packages (`crypto/mlkem`, `crypto/hkdf`, `crypto/pbkdf2`, `crypto/sha3`), and a completely reworked tool dependency system for `go.mod`.

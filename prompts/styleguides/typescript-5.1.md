@@ -7,40 +7,6 @@
 
 ---
 
-#### Table of Contents
-
-1. What's New in TypeScript 5.1
-2. Version-Aware Review — Do Not Use or Recommend
-3. New in 5.1: Language and Checker Changes
-4. New in 5.1: JSX Changes
-5. New in 5.1: Module Resolution and `typeRoots`
-6. New in 5.1: Editor Features, Performance, Runtime Requirement, `lib.d.ts`
-7. The 5.0 Foundation a 5.1 Codebase Builds On
-8. Recommended tsconfig Profiles
-9. Modules and Module Resolution
-10. Types: Fundamentals
-11. Narrowing and Control-Flow Analysis
-12. Generics, Inference, `satisfies` and `const` Type Parameters
-13. Advanced Types: Conditional, Mapped, Template Literal
-14. Classes and Class Fields
-15. Decorators: Standard (TC39) vs `experimentalDecorators`
-16. Enums, Namespaces and Other Emitting Syntax
-17. Library Typings and Runtime Targets
-18. Error Handling
-19. Async Code and Promises
-20. JSX and React
-21. Declaration Files and Library Publishing
-22. JavaScript Checking (`checkJs`, JSDoc)
-23. Security-Relevant Patterns
-24. Performance of the Compiler and of Emitted Code
-25. Testing and Type Tests
-26. Tooling: Linters, Runners, Bundlers, Editors
-27. Upgrading Beyond 5.1
-28. Removed / Changed in 5.1 — Migration Notes
-29. Production / Review Checklist
-
----
-
 #### What's New in TypeScript 5.1
 
 TypeScript 5.1 is a small release focused on ergonomics, JSX and resolution. Its language-level changes are narrow but they change which code compiles; its breaking changes are about the environment (the compiler's own Node.js requirement) and about `typeRoots`.[^1][^4]
@@ -1913,25 +1879,3 @@ Upgrading 5.0 → 5.1 (all verified on 5.0.4 vs 5.1.6):
 - [ ] Type tests with `@ts-expect-error` (not `@ts-ignore`)
 - [ ] Editor uses the workspace TypeScript 5.1.6
 - [ ] Published packages: `exports` with `types` first, checked by `@arethetypeswrong/cli`; minimum TypeScript version documented
-
-***
-
-[^1]: TypeScript 5.1 release notes (Handbook). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-1.html
-[^2]: npm registry metadata for `typescript` (publish times of 5.1.0-beta … 5.1.6, 5.2.2, 6.0.3, 7.0.2, 7.1.0-beta; dist-tags). https://registry.npmjs.org/typescript
-[^3]: DefinitelyTyped README — Support Window and `ts<version>` dist-tags. https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^4]: TypeScript wiki — Breaking Changes (TypeScript 5.1) and API Breaking Changes. https://github.com/microsoft/TypeScript/wiki/Breaking-Changes#typescript-51
-[^5]: TypeScript 5.1.6 GitHub release and the "TypeScript 5.1.5" / "TypeScript 5.1.6" milestones (fixed issues). https://github.com/microsoft/TypeScript/releases/tag/v5.1.6 , https://github.com/microsoft/TypeScript/issues?q=milestone%3A%22TypeScript+5.1.5%22+is%3Aclosed , https://github.com/microsoft/TypeScript/issues?q=milestone%3A%22TypeScript+5.1.6%22+is%3Aclosed
-[^6]: TypeScript 5.0 release notes (decorators, const type parameters, bundler resolution, verbatimModuleSyntax, enums, deprecations). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html
-[^7]: microsoft/TypeScript PR #53607 — Allow implicit return with explicit undefined return type (issue #36288). https://github.com/microsoft/TypeScript/pull/53607
-[^8]: microsoft/TypeScript PR #53417 — Allow unrelated types for getters and setters. https://github.com/microsoft/TypeScript/pull/53417
-[^9]: microsoft/TypeScript PR #51328 — `JSX.ElementType`. https://github.com/microsoft/TypeScript/pull/51328
-[^10]: microsoft/TypeScript PR #51715 — typeRoots in module resolution / no upward walk. https://github.com/microsoft/TypeScript/pull/51715
-[^11]: Node.js release schedule (end-of-life dates). https://github.com/nodejs/Release/blob/main/schedule.json
-[^12]: microsoft/tslib PR #202 — Reverse order of decorator-injected initializers (released in tslib 2.5.1). https://github.com/microsoft/tslib/pull/202
-[^13]: microsoft/TypeScript issue #53286 — "Property is used before its initialization" only reported for ESNext, not ES2022; fixed by PR #53885. https://github.com/microsoft/TypeScript/issues/53286
-[^14]: typescript-eslint — Dependency Versions; npm metadata for `@typescript-eslint/parser` 8.72.0. https://typescript-eslint.io/users/dependency-versions/
-[^15]: TypeScript 5.2–5.9 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html (and the 5-3 … 5-9 pages)
-[^16]: Announcing TypeScript 5.1 (Microsoft DevBlogs, 2023-06-01). https://devblogs.microsoft.com/typescript/announcing-typescript-5-1/
-[^17]: Node.js documentation — Modules: TypeScript (type stripping) and ECMAScript modules (import attributes). https://nodejs.org/api/typescript.html , https://nodejs.org/api/esm.html#import-attributes
-[^18]: TSConfig reference — `useDefineForClassFields`, `verbatimModuleSyntax`, `moduleResolution`, `typeRoots`. https://www.typescriptlang.org/tsconfig/
-[^19]: TC39 decorators proposal. https://github.com/tc39/proposal-decorators

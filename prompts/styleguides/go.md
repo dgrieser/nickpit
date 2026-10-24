@@ -6,32 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [Version-Aware Go](#version-aware-go)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers](#pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics](#generics)
-11. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-12. [Strings](#strings)
-13. [Error Handling](#error-handling)
-14. [Structured Logging with log/slog](#structured-logging-with-logslog)
-15. [Concurrency](#concurrency)
-16. [Context Package](#context-package)
-17. [File I/O & Streaming](#file-io--streaming)
-18. [Testing & Benchmarking](#testing--benchmarking)
-19. [CLI Development](#cli-development)
-20. [Performance Caveats](#performance-caveats)
-21. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### Version-Aware Go
 
 Check the module's `go` directive before reviewing language semantics or

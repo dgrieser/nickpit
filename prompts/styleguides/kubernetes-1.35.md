@@ -8,43 +8,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [Version-aware review](#version-aware-review)
-2. [What's New in Kubernetes 1.35](#whats-new-in-kubernetes-135)
-3. [API versions and feature gates on a 1.35 cluster](#api-versions-and-feature-gates-on-a-135-cluster)
-4. [Do not use or recommend (1.36+ features)](#do-not-use-or-recommend-136-features)
-5. [Deprecated and removed — what 1.35 code must not rely on](#deprecated-and-removed--what-135-code-must-not-rely-on)
-6. [Foundational Principles](#foundational-principles)
-7. [Project Layout & Tooling](#project-layout--tooling)
-8. [Naming Conventions](#naming-conventions)
-9. [CRD & API Design](#crd--api-design)
-10. [CEL Validation Rules in CRDs](#cel-validation-rules-in-crds)
-11. [Spec vs. Status](#spec-vs-status)
-12. [Status Conditions](#status-conditions)
-13. [Versioning & API Evolution](#versioning--api-evolution)
-14. [Controller / Reconciler Patterns](#controller--reconciler-patterns)
-15. [Server-Side Apply from Controllers](#server-side-apply-from-controllers)
-16. [Watches & Predicates](#watches--predicates)
-17. [Finalizers](#finalizers)
-18. [Owner References & Garbage Collection](#owner-references--garbage-collection)
-19. [Events (events.k8s.io)](#events-eventsk8sio)
-20. [Admission: CEL Policies and Webhooks](#admission-cel-policies-and-webhooks)
-21. [RBAC & Least Privilege](#rbac--least-privilege)
-22. [Workload Manifests: Pods](#workload-manifests-pods)
-23. [Workload Manifests: Controllers (Deployment, StatefulSet, Job, HPA)](#workload-manifests-controllers-deployment-statefulset-job-hpa)
-24. [Networking: Services & NetworkPolicy](#networking-services--networkpolicy)
-25. [Security Hardening](#security-hardening)
-26. [client-go & apimachinery in v0.35](#client-go--apimachinery-in-v035)
-27. [Observability](#observability)
-28. [Error Handling & Requeue Strategy](#error-handling--requeue-strategy)
-29. [Testing](#testing)
-30. [kubectl 1.35 and Manifest Tooling](#kubectl-135-and-manifest-tooling)
-31. [Removed / Changed in 1.35 — Migration Notes](#removed--changed-in-135--migration-notes)
-32. [Production / Review Checklist](#production--review-checklist)
-
----
-
 #### Version-aware review
 
 The target is a **1.35 control plane** and **k8s.io/\* v0.35.x** client libraries. Before claiming that a field, API version or library function is "not available", check it against the pinned version:
@@ -2312,21 +2275,3 @@ cfg, err := env.Start()
 - [ ] New CRD fields optional; no fields removed or renamed in served versions
 - [ ] `deprecationWarning` set on deprecated CRD versions; conversion webhook when schemas diverge
 - [ ] `storage: true` on exactly one version; stored objects migrated and `status.storedVersions` cleaned before dropping a version
-
----
-
-[^1]: Kubernetes v1.35: Timbernetes (The World Tree Release) — release announcement, 2025-12-17. https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/
-[^2]: Kubernetes release schedule and patch releases (data/releases/schedule.yaml: 1.35 release date, patch dates, maintenance mode and end-of-life dates); GitHub release v1.35.9. https://kubernetes.io/releases/patch-releases/ , https://github.com/kubernetes/kubernetes/releases/tag/v1.35.9
-[^3]: CHANGELOG-1.35 (v1.35.0 urgent upgrade notes, API changes, features, deprecations; patch notes v1.35.1–v1.35.9). https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.35.md
-[^4]: Go module proxy listings for k8s.io/client-go v0.35.x, sigs.k8s.io/controller-runtime v0.23.x (go.mod requires k8s.io/* v0.35.0, go 1.25.0), sigs.k8s.io/controller-tools v0.20.x. https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3 , https://pkg.go.dev/k8s.io/client-go@v0.35.9
-[^5]: Kubebuilder v4.11–v4.16 scaffold versions (pkg/plugins/golang/v4/scaffolds/init.go: ControllerRuntimeVersion v0.23.x, ControllerToolsVersion v0.20.x). https://github.com/kubernetes-sigs/kubebuilder/releases
-[^6]: KEP-3136: Beta APIs Off by Default. https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default
-[^7]: Deprecated API Migration Guide. https://kubernetes.io/docs/reference/using-api/deprecation-guide/
-[^8]: Kubernetes v1.36 release announcement (2026-04-22) and CHANGELOG-1.36. https://kubernetes.io/blog/2026/04/22/kubernetes-v1-36-release/ , https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md
-[^9]: Kubernetes v1.37 release announcement (2026-08-26) and CHANGELOG-1.37. https://kubernetes.io/blog/2026/08/26/kubernetes-v1-37-release/ , https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md
-[^10]: controller-runtime v0.23.0 release notes (events API migration, generic webhooks, priority queue default, subresource apply, FieldOwner/FieldValidation client options). https://github.com/kubernetes-sigs/controller-runtime/releases/tag/v0.23.0
-[^11]: Go 1.25 release notes — container-aware GOMAXPROCS. https://go.dev/doc/go1.25#container-aware-gomaxprocs
-[^12]: Kubernetes 1.35: In-Place Pod Resize Graduates to Stable (2025-12-19); Resize CPU and Memory Resources assigned to Containers. https://kubernetes.io/blog/2025/12/19/kubernetes-v1-35-in-place-pod-resize-ga/ , https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/
-[^13]: KEP-5504: Comparable resource versions; apimachinery `pkg/util/resourceversion`. https://github.com/kubernetes/enhancements/issues/5504 , https://pkg.go.dev/k8s.io/apimachinery/pkg/util/resourceversion
-[^14]: Kubernetes API reference: CustomResourceDefinition validation rules (CEL), validation ratcheting, selectable fields. https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/
-[^15]: Validating Admission Policy and Mutating Admission Policy documentation. https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/ , https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/

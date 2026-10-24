@@ -8,32 +8,6 @@
 
 ---
 
-#### Table of Contents
-
-1. Version-Aware Review
-2. Code Style and Project Conventions
-3. `tsconfig.json` Hygiene and Strictness Flags
-4. Types: Fundamentals
-5. Narrowing and Control-Flow Analysis
-6. Generics and Inference
-7. Enums, Unions and Erasable Syntax
-8. Utility, Conditional, Mapped and Template Literal Types
-9. Classes and Decorators
-10. Modules, Module Resolution and ESM/CommonJS Interop
-11. Declaration Files and Library Publishing
-12. Async Code and Promises
-13. Error Handling
-14. Runtime Validation at Trust Boundaries and Security
-15. Immutability and Resource Management
-16. Library Typings vs. Runtime APIs
-17. Testing and Type Tests
-18. Linting and Tooling
-19. Performance and Observability
-20. Upgrading Across Versions — Migration Notes
-21. Production / Review Checklist
-
----
-
 #### Version-Aware Review
 
 ##### Determine the version before judging
@@ -1726,14 +1700,3 @@ TypeScript minor releases routinely add errors. Pin the compiler, upgrade one li
 - [ ] `tsc --noEmit` (or `tsc -b`) runs in CI separately from tests and bundling
 - [ ] typescript-eslint type-aware rules enabled, running on a supported TypeScript (≤ 6.0)
 - [ ] Editor uses the workspace TypeScript version
-
-***
-
-[^1]: TypeScript release notes (per version) and the TypeScript blog. https://www.typescriptlang.org/docs/handbook/release-notes/overview.html , https://devblogs.microsoft.com/typescript/
-[^2]: npm registry — `typescript` versions and publish dates (`npm view typescript time`). https://www.npmjs.com/package/typescript?activeTab=versions
-[^3]: DefinitelyTyped README — "Support window" (TypeScript versions younger than two years) and `tsX.Y` dist-tags. https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^4]: TypeScript 6.0 release notes — new defaults, deprecations, `ignoreDeprecations`, `--stableTypeOrdering`. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
-[^5]: Announcing TypeScript 7.0 — native compiler, removed options, no API, `@typescript/typescript6`. https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/
-[^6]: TSConfig reference — `esModuleInterop`, `module`, `moduleResolution`, `verbatimModuleSyntax`, `useDefineForClassFields`. https://www.typescriptlang.org/tsconfig/
-[^7]: typescript-eslint — Dependency Versions (supported TypeScript range). https://typescript-eslint.io/users/dependency-versions/
-[^8]: Node.js documentation — Modules: TypeScript (type stripping and its limitations). https://nodejs.org/api/typescript.html

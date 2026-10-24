@@ -6,38 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.26](#whats-new-in-go-126)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers — new(expr)](#pointers--newexpr)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics — Recursive Type Constraints](#generics--recursive-type-constraints)
-11. [Iterators — iter package](#iterators--iter-package)
-12. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-13. [Strings & Bytes](#strings--bytes)
-14. [Error Handling — errors.AsType](#error-handling--errorsastype)
-15. [Structured Logging with log/slog](#structured-logging-with-logslog)
-16. [Concurrency](#concurrency)
-17. [Memory Management: Cleanup, Weak & unique](#memory-management-cleanup-weak--unique)
-18. [Context Package](#context-package)
-19. [File I/O & Filesystem](#file-io--filesystem)
-20. [JSON — v1 and experimental v2](#json--v1-and-experimental-v2)
-21. [HTTP Servers](#http-servers)
-22. [Cryptography](#cryptography)
-23. [Testing & Benchmarking](#testing--benchmarking)
-24. [CLI Development & Toolchain](#cli-development--toolchain)
-25. [Performance Caveats & PGO](#performance-caveats--pgo)
-26. [Observability: Tracing, Profiling & Goroutine Leaks](#observability-tracing-profiling--goroutine-leaks)
-27. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.26
 
 Go 1.26.0 shipped 2026-02-10. It has **two language changes**, makes the **Green Tea GC default**, slashes **cgo call overhead by ~30%**, ships the new **`go fix` modernizer**, adds **`errors.AsType`**, introduces experimental **SIMD** and **`runtime/secret`** packages, adds an experimental **goroutine leak pprof profile**, a new **`crypto/hpke`** package, and makes most crypto APIs **reader-less** (random `io.Reader` parameters now ignored).

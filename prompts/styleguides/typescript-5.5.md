@@ -7,43 +7,6 @@
 
 ***
 
-#### Table of Contents
-
-1. What's New in TypeScript 5.5
-2. Do Not Use or Recommend
-3. Version-Aware Review
-4. Toolchain Compatibility and Release Facts
-5. tsconfig for 5.5
-6. Modules and Module Resolution
-7. Core Types and Inference
-8. Narrowing and Control-Flow Analysis
-9. Strictness Flags Explained
-10. Iterators, Generators and Collections in 5.5
-11. Numbers, BigInt and Dates
-12. Node.js APIs with TypeScript
-13. JSX and React
-14. Objects, Interfaces, Classes
-15. Generics and Type-Level Programming
-16. Enums, Namespaces and Non-Erasable Syntax
-17. Functions, Overloads and `this`
-18. Errors and Exceptions
-19. Async Code and Promises
-20. Resource Management (`using`)
-21. Decorators
-22. Idioms and Things to Avoid (BAD/GOOD)
-23. Runtime Validation and Untrusted Data
-24. Security
-25. Declaration Files and Library Authoring
-26. JavaScript Projects (`checkJs`, JSDoc)
-27. Performance (Compiler and Runtime)
-28. Testing
-29. Tooling, Linting and Formatting
-30. Observability and Debugging
-31. Removed / Changed in 5.5 — Migration Notes
-32. Production / Review Checklist
-
-***
-
 #### What's New in TypeScript 5.5
 
 TypeScript 5.5 is a type-checker and tooling release. It has no new runtime syntax. Its headline changes are:[^1]
@@ -1673,21 +1636,3 @@ Upgrading from 5.4 to 5.5 (all verified on 5.4.5 vs 5.5.4):
 - [ ] `@ts-expect-error` with a reason instead of `@ts-ignore`
 - [ ] Editor uses the workspace TypeScript 5.5, not the bundled newer version
 - [ ] Source maps enabled and `--enable-source-maps` used in production Node processes
-
-***
-
-[^1]: TypeScript 5.5 release notes (Microsoft). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html ; Announcing TypeScript 5.5 (June 20, 2024). https://devblogs.microsoft.com/typescript/announcing-typescript-5-5/
-[^2]: npm registry, `typescript` package version history and dist-tags (`npm view typescript time`). https://www.npmjs.com/package/typescript?activeTab=versions ; GitHub release v5.5.4. https://github.com/microsoft/TypeScript/releases/tag/v5.5.4
-[^3]: Announcing TypeScript 7.0 / TypeScript 7.0 released (July 2026). https://devblogs.microsoft.com/typescript/ ; InfoWorld, "Go-based TypeScript 7.0 arrives". https://www.infoworld.com/article/4196378/go-based-typescript-7-0-arrives.html
-[^4]: DefinitelyTyped README — Support Window and `ts<version>` dist-tags. https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^5]: TypeScript 5.0–5.4 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html (and the linked 5.0–5.3 pages)
-[^6]: microsoft/TypeScript PR #57465 — Infer type predicates from function bodies; Dan Vanderkam, "The Making of a TypeScript Feature: Inferring Type Predicates". https://github.com/microsoft/TypeScript/pull/57465 , https://effectivetypescript.com/2024/04/16/inferring-a-type-predicate/
-[^7]: TC39 proposal-set-methods (ES2025). https://github.com/tc39/proposal-set-methods
-[^8]: Isolated Declarations: State of the Feature (microsoft/TypeScript #58944). https://github.com/microsoft/TypeScript/issues/58944
-[^9]: microsoft/TypeScript PR #58042 — `${configDir}` substitution in tsconfig. https://github.com/microsoft/TypeScript/pull/58042
-[^10]: TypeScript Flag Deprecation Plan (#51000) and 5.0 deprecations (#51909). https://github.com/microsoft/TypeScript/issues/51000 , https://github.com/microsoft/TypeScript/issues/51909
-[^11]: TypeScript 5.6, 5.7, 5.8, 5.9 and 6.0 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
-[^12]: Node.js documentation — Modules: TypeScript (type stripping history and limitations). https://nodejs.org/api/typescript.html
-[^13]: TypeScript handbook — Modules reference (module, moduleResolution, nodenext, bundler). https://www.typescriptlang.org/docs/handbook/modules/reference.html
-[^14]: TSConfig reference. https://www.typescriptlang.org/tsconfig/
-[^15]: typescript-eslint — supported TypeScript versions and rules. https://typescript-eslint.io/users/dependency-versions/ , https://typescript-eslint.io/rules/

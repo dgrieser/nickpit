@@ -6,34 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.23](#whats-new-in-go-123)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers](#pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics](#generics)
-11. [Iterators — iter package](#iterators--iter-package)
-12. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-13. [Strings](#strings)
-14. [Error Handling](#error-handling)
-15. [Structured Logging with log/slog](#structured-logging-with-logslog)
-16. [Concurrency](#concurrency)
-17. [Context Package](#context-package)
-18. [File I/O & Streaming](#file-io--streaming)
-19. [HTTP Servers](#http-servers)
-20. [Testing & Benchmarking](#testing--benchmarking)
-21. [CLI Development](#cli-development)
-22. [Performance Caveats & PGO](#performance-caveats--pgo)
-23. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.23
 
 Go 1.23.0 shipped 2024-08-13. Its headline feature is **range-over-function iterators**, which reached stable language status after previewing in 1.22. The release also ships the new `iter`, `unique`, and `structs` packages, significant timer behaviour fixes, and important compiler improvements.

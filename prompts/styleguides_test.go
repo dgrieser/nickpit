@@ -39,3 +39,26 @@ func TestStyleGuideMarkdownStartsWithSectionHeading(t *testing.T) {
 		}
 	}
 }
+
+func TestStyleGuideCitationsSitNextToTheirGuide(t *testing.T) {
+	names, err := fs.Glob(FS, "styleguides/*.citations.md")
+	if err != nil {
+		t.Fatalf("glob citations: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("no citation files found")
+	}
+	for _, name := range names {
+		guide := strings.TrimSuffix(name, ".citations.md") + ".md"
+		if _, err := fs.Stat(FS, guide); err != nil {
+			t.Errorf("%s: no matching guide %s", name, guide)
+		}
+		data, err := FS.ReadFile(guide)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "\n[^") {
+			t.Errorf("%s: footnote definitions belong in %s", guide, name)
+		}
+	}
+}

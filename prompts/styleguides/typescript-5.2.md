@@ -7,37 +7,6 @@
 
 ---
 
-#### Table of Contents
-
-1. What's New in TypeScript 5.2
-2. Version-Aware Review — Do Not Use or Recommend
-3. Ecosystem Compatibility of a 5.2 Toolchain
-4. Explicit Resource Management: `using` / `await using` [New in 5.2]
-5. Decorator Metadata [New in 5.2]
-6. Smaller Language and Library Additions in 5.2
-7. Breaking Changes and Correctness Fixes in 5.2
-8. tsconfig.json: Defaults, Profiles and Strictness
-9. The 5.0 Deprecations (still accepted with `ignoreDeprecations: "5.0"`)
-10. Modules and Module Resolution
-11. Types: Fundamentals
-12. Narrowing and Control-Flow Analysis
-13. Generics, Inference and `satisfies`
-14. Advanced Types: Conditional, Mapped, Template Literal
-15. Classes and Decorators
-16. Enums and Namespaces
-17. Error Handling
-18. Async Code and Promises
-19. Declaration Files and Library Publishing
-20. JavaScript Checking (`checkJs`, JSDoc)
-21. Security-Relevant Patterns
-22. Performance of the Compiler and of Emitted Code
-23. Testing and Type Tests
-24. Tooling
-25. Removed / Changed in 5.2 — Migration Notes
-26. Production / Review Checklist
-
----
-
 #### What's New in TypeScript 5.2
 
 TypeScript 5.2 is a feature release with one large addition — **explicit resource management** (`using` and `await using`) — plus decorator metadata, several type-system relaxations, new library typings and four breaking changes.[^1][^2]
@@ -1778,26 +1747,3 @@ export const wrong: number = "x";
 - [ ] Prototype-pollution-safe merges; parameterised SQL; no `shell: true` with user input
 - [ ] DTOs mapped explicitly before serialisation
 - [ ] Errors logged with `name`, `message`, `cause` and stack; no secrets in logs or public source maps
-
-***
-
-[^1]: Announcing TypeScript 5.2 (Microsoft DevBlogs, 2023-08-24). https://devblogs.microsoft.com/typescript/announcing-typescript-5-2/
-[^2]: TypeScript 5.2 release notes (TypeScript Handbook). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html
-[^3]: npm registry — `typescript` package versions and publish times (5.2.0-beta, 5.2.1-rc, 5.2.2, 5.3.2, 6.0.3, 7.0.2, 7.1.0-beta). https://www.npmjs.com/package/typescript?activeTab=versions
-[^4]: DefinitelyTyped README — support window ("only tests packages on versions of TypeScript that are less than 2 years old"). https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^5]: TypeScript 5.0 release notes (decorators, const type parameters, bundler resolution, verbatimModuleSyntax, deprecations). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html
-[^6]: TypeScript 5.1 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-1.html
-[^7]: TypeScript 5.3 release notes (import attributes, switch (true) narrowing). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-3.html
-[^8]: TypeScript 5.4 release notes (preserved narrowing in closures, NoInfer, Object.groupBy, module preserve). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html
-[^9]: TypeScript 5.5 release notes (inferred type predicates, regex checking, isolatedDeclarations, removal of 5.0 deprecations). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html
-[^10]: TypeScript 5.6 release notes (truthy/nullish checks, iterator helpers, noUncheckedSideEffectImports). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html
-[^11]: TypeScript 5.7 release notes (rewriteRelativeImportExtensions, es2024, JSON imports under nodenext). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html
-[^12]: TypeScript 5.8 and 5.9 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html
-[^13]: Announcing TypeScript 6.0 / 7.0 (Microsoft DevBlogs). https://devblogs.microsoft.com/typescript/
-[^14]: ECMAScript Explicit Resource Management proposal. https://github.com/tc39/proposal-explicit-resource-management
-[^15]: ECMAScript Decorator Metadata proposal. https://github.com/tc39/proposal-decorator-metadata
-[^16]: TSConfig reference (target, module, moduleResolution, useDefineForClassFields, esModuleInterop defaults). https://www.typescriptlang.org/tsconfig/
-[^17]: Node.js ECMAScript modules — import attributes and JSON modules. https://nodejs.org/api/esm.html#import-attributes
-[^18]: tslib releases (2.6.0 adds `__addDisposableResource`/`__disposeResources`). https://github.com/microsoft/tslib/releases
-[^19]: typescript-eslint — supported TypeScript versions. https://typescript-eslint.io/users/dependency-versions
-[^20]: Zod documentation — requirements ("tested against TypeScript v5.5 and later"). https://zod.dev/
