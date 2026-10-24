@@ -1,45 +1,9 @@
 ### C# Style Guide
 
-> **Version**: This is the **version-independent** C# guide. It applies when the project's C# language version or target framework cannot be determined. It covers C# 7.3 through C# 15 and .NET Framework 4.x, .NET Core 3.1 and .NET 5–11. The newest stable release is **.NET 10 (LTS) with C# 14**, released November 11, 2025; its latest patch is **10.0.13 (October 13, 2026)**, SDK 10.0.402, and it is supported until **November 14, 2028**.[^1][^2] **.NET 8 (LTS) and .NET 9 (STS) both reach end of support on November 10, 2026.** **.NET 11 / C# 15 is not released**: 11.0.0-rc.2 (SDK 11.0.100-rc.2.26504.105) shipped on October 13, 2026 with a go-live license; general availability is planned for November 2026.[^2][^3]
+> **Version**: This is the **version-independent** C# guide. It applies when the project's C# language version or target framework cannot be determined. It covers C# 7.3 through C# 15 and .NET Framework 4.x, .NET Core 3.1 and .NET 5–11. The newest stable release is **.NET 10 (LTS) with C# 14**, released November 11, 2025; its latest patch is **10.0.13 (October 13, 2026)**, SDK 10.0.402, and it is supported until **November 14, 2028**. **.NET 8 (LTS) and .NET 9 (STS) both reach end of support on November 10, 2026.** **.NET 11 / C# 15 is not released**: 11.0.0-rc.2 (SDK 11.0.100-rc.2.26504.105) shipped on October 13, 2026 with a go-live license; general availability is planned for November 2026.
 > **Scope**: Version-independent review rules for production C#: nullable reference types, types and records, pattern matching, exceptions, async/await and cancellation, `IDisposable`/`IAsyncDisposable`, collections, LINQ, strings and culture, dates and numbers, dependency injection and configuration, logging, `HttpClient`, JSON, ASP.NET Core security, EF Core, cryptography and injection risks, performance, testing and analyzers.
 > **Version rule**: Every feature tied to a language or runtime version is labelled with the version that introduced it, for example "file-scoped namespaces (C# 10)", "`ArgumentNullException.ThrowIfNull` (.NET 6)", "primary constructors (C# 12)", "`field` keyword (C# 14)". Before suggesting such a feature, check the project's `LangVersion` and `TargetFramework` (see [Determine the Version First](#determine-the-version-first)). Never recommend a feature the project's version does not have.
 > **Note**: This document is self-contained. Every example was compiled and run with SDK 10.0.402 / runtime 10.0.13 (C# 14, `net10.0`, Linux x64). Language-version boundaries were checked by compiling probes with `LangVersion` N−1 and N (SDK 10.0.402 for C# 7.3–14, SDK 11.0.100-rc.2 for C# 15); API boundaries were checked against the reference assemblies of .NET Framework 4.8, .NET Standard 2.0/2.1, .NET Core 3.1 and .NET 5–10. Windows-only behaviour (NLS globalization, WinForms/WPF, .NET Framework runtime behaviour) was not executed.
-
----
-
-#### Table of Contents
-
-1. [Determine the Version First](#determine-the-version-first)
-2. [Release and Support Status (October 2026)](#release-and-support-status-october-2026)
-3. [C# Language Features by Version](#c-language-features-by-version)
-4. [.NET APIs by Version](#net-apis-by-version)
-5. [Do Not Use or Recommend Without a Version Check](#do-not-use-or-recommend-without-a-version-check)
-6. [Deprecated, Obsolete and Removed APIs](#deprecated-obsolete-and-removed-apis)
-7. [Project Setup, Build and Analyzers](#project-setup-build-and-analyzers)
-8. [Naming and Code Style](#naming-and-code-style)
-9. [Nullable Reference Types](#nullable-reference-types)
-10. [Types: Classes, Records, Structs](#types-classes-records-structs)
-11. [Pattern Matching](#pattern-matching)
-12. [Exceptions](#exceptions)
-13. [Async/Await](#asyncawait)
-14. [Cancellation and Concurrency](#cancellation-and-concurrency)
-15. [IDisposable and IAsyncDisposable](#idisposable-and-iasyncdisposable)
-16. [Collections](#collections)
-17. [LINQ](#linq)
-18. [Strings, Culture and Encoding](#strings-culture-and-encoding)
-19. [Numbers, Dates and Times](#numbers-dates-and-times)
-20. [Dependency Injection, Options and Hosting](#dependency-injection-options-and-hosting)
-21. [Logging and Observability](#logging-and-observability)
-22. [HttpClient](#httpclient)
-23. [JSON Serialization](#json-serialization)
-24. [ASP.NET Core](#aspnet-core)
-25. [EF Core](#ef-core)
-26. [Security](#security)
-27. [Performance](#performance)
-28. [Testing](#testing)
-29. [Trimming and Native AOT](#trimming-and-native-aot)
-30. [Upgrade Pitfalls Across Versions — Migration Notes](#upgrade-pitfalls-across-versions--migration-notes)
-31. [Production / Review Checklist](#production--review-checklist)
 
 ---
 
@@ -56,7 +20,7 @@ The C# language version and the .NET API surface are two separate axes. A review
 5. **Package versions**: `Microsoft.AspNetCore.*`, `Microsoft.EntityFrameworkCore.*` and `Microsoft.Extensions.*` major versions normally match the target framework (EF Core 8 ↔ `net8.0`).
 6. **Old-style projects** (`<Project ToolsVersion=...>` with `<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>`, `packages.config`) are .NET Framework projects: C# 7.3 by default, no `ImplicitUsings`, no nullable context unless enabled.
 
-Default language version per target framework (verified with SDK 11.0.100-rc.2 and SDK 10.0.402, `dotnet msbuild -getProperty:LangVersion`):[^4]
+Default language version per target framework (verified with SDK 11.0.100-rc.2 and SDK 10.0.402, `dotnet msbuild -getProperty:LangVersion`):
 
 | Target framework | Default C# |
 | --- | --- |
@@ -75,17 +39,17 @@ Default language version per target framework (verified with SDK 11.0.100-rc.2 a
 - **Label every version-specific suggestion.** Write "use file-scoped namespaces (C# 10)" or "`ArgumentNullException.ThrowIfNull` (.NET 6+)", never an unqualified "use X".
 - **When the version is unknown, prefer the portable form** and mention the modern alternative with its version: `if (x is null) throw new ArgumentNullException(nameof(x));` works everywhere (`is null` needs C# 7.0); `ArgumentNullException.ThrowIfNull(x)` needs .NET 6.
 - **Language features and APIs are independent.** `<LangVersion>12</LangVersion>` on `netstandard2.0` enables collection expressions, primary constructors, type aliases and default lambda parameters (pure syntax, verified) but not `required` members, `init` accessors or positional `record` types without polyfill types (CS0518/CS0656; a non-positional `record` with `set` accessors compiles) (`IsExternalInit`, `RequiredMemberAttribute`, `CompilerFeatureRequiredAttribute`, `SetsRequiredMembersAttribute`), and never features that need runtime support: default interface methods (C# 8), static abstract interface members (C# 11), `ref` fields (C# 11) and inline arrays (C# 12) require .NET Core 3.0+, .NET 7+, .NET 7+ and .NET 8+ respectively.
-- **A newer C# version than the target framework's default is unsupported by Microsoft**, even though it often compiles. It can change overload resolution: C# 14's first-class span conversions bind `array.Reverse()` to the `void`-returning, in-place `MemoryExtensions.Reverse(Span<T>)` on `netcoreapp2.1`–`net9.0` (and on any target that references `System.Memory`); `net10.0` adds an `Enumerable.Reverse(T[])` overload that restores the old binding.[^5][^6]
-- **`<LangVersion>latest</LangVersion>` or `preview` makes the language version depend on whichever SDK builds the code.** Microsoft's own documentation warns against `latest`; flag `preview` in production code.[^5]
+- **A newer C# version than the target framework's default is unsupported by Microsoft**, even though it often compiles. It can change overload resolution: C# 14's first-class span conversions bind `array.Reverse()` to the `void`-returning, in-place `MemoryExtensions.Reverse(Span<T>)` on `netcoreapp2.1`–`net9.0` (and on any target that references `System.Memory`); `net10.0` adds an `Enumerable.Reverse(T[])` overload that restores the old binding.
+- **`<LangVersion>latest</LangVersion>` or `preview` makes the language version depend on whichever SDK builds the code.** Microsoft's own documentation warns against `latest`; flag `preview` in production code.
 - **Verify an API exists in the pinned target framework before recommending it, and before calling it "unavailable".** Say "not available in .NET X" only when the target framework's reference assemblies prove it (the tables below were verified that way). Many APIs reach older targets through NuGet packages (`System.Text.Json`, `Microsoft.Bcl.AsyncInterfaces`, `System.Threading.Channels`, `Microsoft.Bcl.TimeProvider`, `System.Collections.Immutable`).
 - **`#if` guards in multi-targeted libraries**: `#if NET6_0_OR_GREATER` / `NET8_0_OR_GREATER` / `NETSTANDARD2_0` / `NETFRAMEWORK` are SDK-defined symbols; code using a new API in a multi-targeted project must be guarded or the older target fails to build.
-- `#error version` in a source file makes the compiler print its version and the selected language version (CS8304) — a quick way to confirm in doubt.[^5]
+- `#error version` in a source file makes the compiler print its version and the selected language version (CS8304) — a quick way to confirm in doubt.
 
 ---
 
 #### Release and Support Status (October 2026)
 
-Status as of October 22, 2026 (dates from Microsoft's release metadata and lifecycle pages):[^2][^7][^8]
+Status as of October 22, 2026 (dates from Microsoft's release metadata and lifecycle pages):
 
 | Platform | C# default | Released | Latest patch (date) | Support status |
 | --- | --- | --- | --- | --- |
@@ -105,17 +69,17 @@ Status as of October 22, 2026 (dates from Microsoft's release metadata and lifec
 
 Notes:
 
-- **C# 7.3** shipped with Visual Studio 2017 version 15.7 (May 2018); **C# 8.0** with .NET Core 3.0 and Visual Studio 2019 16.3 (September 2019).[^9] C# versions after 8 ship with the .NET SDK of the same release.
-- STS releases are supported for 24 months since .NET 9 (previously 18), which is why .NET 9 ends on the same day as .NET 8.[^7]
-- The October 2026 Patch Tuesday releases (8.0.32, 9.0.21, 10.0.13) fix dozens of CVEs (10.0.13 alone fixes 44); a Dockerfile or `global.json` pinned to an older patch is a security finding.[^2]
+- **C# 7.3** shipped with Visual Studio 2017 version 15.7 (May 2018); **C# 8.0** with .NET Core 3.0 and Visual Studio 2019 16.3 (September 2019). C# versions after 8 ship with the .NET SDK of the same release.
+- STS releases are supported for 24 months since .NET 9 (previously 18), which is why .NET 9 ends on the same day as .NET 8.
+- The October 2026 Patch Tuesday releases (8.0.32, 9.0.21, 10.0.13) fix dozens of CVEs (10.0.13 alone fixes 44); a Dockerfile or `global.json` pinned to an older patch is a security finding.
 - **Upgrade recommendation**: projects on .NET Core 3.1, .NET 5, 6 or 7 are unpatched and should move to **.NET 10 (LTS)**. Do not recommend .NET 8 or 9 as an upgrade target (they leave support in November 2026) and do not recommend .NET 11 for production before GA. .NET Framework applications are supported on 4.8/4.8.1 but receive no new features; recommend porting only when there is a reason to (new features, Linux, performance), and flag 4.6.2 or older targets.
-- .NET Framework 4.8.1 is the last .NET Framework version; Microsoft states that new development should use modern .NET.[^8]
+- .NET Framework 4.8.1 is the last .NET Framework version; Microsoft states that new development should use modern .NET.
 
 ---
 
 #### C# Language Features by Version
 
-Every row was checked by compiling a probe with the listed `LangVersion` (succeeds) and the previous one (fails with "Feature '…' is not available in C# N"). Use this table to decide whether a suggestion compiles in the project.[^9][^10]
+Every row was checked by compiling a probe with the listed `LangVersion` (succeeds) and the previous one (fails with "Feature '…' is not available in C# N"). Use this table to decide whether a suggestion compiles in the project.
 
 | Version | Features a reviewer is likely to suggest | Runtime/library requirement |
 | --- | --- | --- |
@@ -161,7 +125,7 @@ Verified by compiling against the reference assemblies of each target framework.
 
 These are the suggestions reviewers most often get wrong. Each is correct **only** from the stated version on.
 
-- **C# 15 / .NET 11 (pre-release, October 2026)**: union types, `closed` classes, `[with(...), ..xs]` collection expression arguments, extension indexers, labeled `break`/`continue`, `Enumerable.FullJoin`, `Process.Run*`, `JsonNamingPolicy.PascalCase`. Never suggest these for production code; .NET 11 is a release candidate.[^3]
+- **C# 15 / .NET 11 (pre-release, October 2026)**: union types, `closed` classes, `[with(...), ..xs]` collection expression arguments, extension indexers, labeled `break`/`continue`, `Enumerable.FullJoin`, `Process.Run*`, `JsonNamingPolicy.PascalCase`. Never suggest these for production code; .NET 11 is a release candidate.
 - **C# 14 / .NET 10**: `field` in accessors, `extension(...)` blocks, `a?.B = x`, `nameof(List<>)`, `(s, out r) =>` lambdas, `operator +=` declarations, `LeftJoin`/`RightJoin`, `Shuffle`, in-box `AsyncEnumerable`, `JsonSerializerOptions.Strict`, `AddValidation()`.
 - **C# 13 / .NET 9**: `params ReadOnlySpan<T>`, `System.Threading.Lock`, `\e`, partial properties, `Task.WhenEach`, `CountBy`, `Index()`, `Guid.CreateVersion7()`, `X509CertificateLoader`, `JsonSerializerOptions.Web`.
 - **C# 12 / .NET 8**: primary constructors on classes, collection expressions (`int[] a = [1, 2];`), `TimeProvider`, frozen collections, `SearchValues`, `ThrowIfNullOrWhiteSpace`, `ThrowIfNegative`, keyed services, `IExceptionHandler`, `AddStandardResilienceHandler`.
@@ -175,7 +139,7 @@ These are the suggestions reviewers most often get wrong. Each is correct **only
 
 #### Deprecated, Obsolete and Removed APIs
 
-These apply to every modern .NET version; flag them regardless of the detected version (with the version where they became obsolete):[^11][^12]
+These apply to every modern .NET version; flag them regardless of the detected version (with the version where they became obsolete):
 
 | API | Status | Replacement |
 | --- | --- | --- |
@@ -225,9 +189,9 @@ Review rules:
 - **`Nullable` enabled for all new code.** `#nullable disable` regions and blanket `<NoWarn>CS8600;CS8602;...</NoWarn>` need a justification. For a legacy code base, enabling per file (`#nullable enable`) or `<Nullable>warnings</Nullable>` are valid migration steps.
 - **Pin the SDK** with `global.json` (`"rollForward": "latestPatch"` or `"latestFeature"`); without it, the build uses whatever SDK the machine has — including a preview SDK with a newer compiler and new warnings.
 - **Central package management** (`Directory.Packages.props` with `ManagePackageVersionsCentrally`, NuGet 6.2+), lock files (`RestorePackagesWithLockFile` + `--locked-mode` in CI), and `packageSourceMapping` in `nuget.config` against dependency confusion.
-- **NuGet Audit** (NuGet 6.8 / .NET 8 SDK) reports vulnerable packages at restore; the .NET 10 SDK audits transitive packages by default. Do not suppress NU1901–NU1904 globally.[^13]
+- **NuGet Audit** (NuGet 6.8 / .NET 8 SDK) reports vulnerable packages at restore; the .NET 10 SDK audits transitive packages by default. Do not suppress NU1901–NU1904 globally.
 - `NoWarn` on security analyzers (CA2100 SQL injection, CA3075 insecure DTD processing, CA5350/CA5351 weak crypto, CA2300–CA2330 insecure deserialization) needs a written reason.
-- `AnalysisLevel` values: `latest`, `preview`, a version (`8.0`), optionally with a mode suffix: `-none`, `-default`, `-minimum`, `-recommended`, `-all`.[^14]
+- `AnalysisLevel` values: `latest`, `preview`, a version (`8.0`), optionally with a mode suffix: `-none`, `-default`, `-minimum`, `-recommended`, `-all`.
 - `IDE*` style rules fail the build only with `EnforceCodeStyleInBuild=true`.
 - Package major versions follow the framework: mixing `Microsoft.Extensions.*` 8.x and 10.x in one app produces NU1605 downgrade errors or `MissingMethodException` at run time.
 
@@ -437,7 +401,7 @@ public sealed class Person
 }
 ```
 
-Upgrading to C# 14 changes the meaning of the identifier `field` inside accessors: in a type that has a member named `field`, `get { return field; }` now reads the synthesized backing field. The compiler only warns (CS9258). Verified: with `LangVersion` 13 such a property returns the member's value (1); with 14 it returns 0. Use `this.field` or rename the member; treat CS9258 as an error when moving to C# 14.[^6]
+Upgrading to C# 14 changes the meaning of the identifier `field` inside accessors: in a type that has a member named `field`, `get { return field; }` now reads the synthesized backing field. The compiler only warns (CS9258). Verified: with `LangVersion` 13 such a property returns the member's value (1); with 14 it returns 0. Use `this.field` or rename the member; treat CS9258 as an error when moving to C# 14.
 
 ##### Structs
 
@@ -684,7 +648,7 @@ static async IAsyncEnumerable<int> CountAsync([EnumeratorCancellation] Cancellat
 }
 ```
 
-Without `[EnumeratorCancellation]`, `WithCancellation(token)` never reaches the iterator body (warning CS8425). LINQ over `IAsyncEnumerable<T>` is built in from .NET 10 (`System.Linq.AsyncEnumerable` class); earlier targets get the same API from Microsoft's `System.Linq.AsyncEnumerable` NuGet package or the older community `System.Linq.Async` package. `System.Linq.Async` 6.x conflicts with the in-box class on .NET 10: remove it or upgrade to 7.0.0, and use `<ExcludeAssets>compile</ExcludeAssets>` when it arrives transitively.[^15]
+Without `[EnumeratorCancellation]`, `WithCancellation(token)` never reaches the iterator body (warning CS8425). LINQ over `IAsyncEnumerable<T>` is built in from .NET 10 (`System.Linq.AsyncEnumerable` class); earlier targets get the same API from Microsoft's `System.Linq.AsyncEnumerable` NuGet package or the older community `System.Linq.Async` package. `System.Linq.Async` 6.x conflicts with the in-box class on .NET 10: remove it or upgrade to 7.0.0, and use `<ExcludeAssets>compile</ExcludeAssets>` when it arrives transitively.
 
 ---
 
@@ -906,7 +870,7 @@ Review rules:
 
 #### Strings, Culture and Encoding
 
-Strings are immutable UTF-16. Many string APIs are **culture-sensitive by default**, and the culture comes from the machine or thread. On Linux and macOS .NET always uses ICU; on Windows, .NET 5+ uses ICU on Windows 10 May 2019 Update and later, while .NET Framework and .NET Core 3.1 use NLS. Results can even differ between ICU library versions: Microsoft's .NET 5 documentation shows `"\r\n".IndexOf("\n")` returning -1 under ICU, while the same call returns 1 on .NET 6, 8 and 10 with the ICU 74 of Ubuntu 24.04 (verified). The same code can therefore behave differently after an upgrade, between developer machines and containers, or after a base-image update.[^16]
+Strings are immutable UTF-16. Many string APIs are **culture-sensitive by default**, and the culture comes from the machine or thread. On Linux and macOS .NET always uses ICU; on Windows, .NET 5+ uses ICU on Windows 10 May 2019 Update and later, while .NET Framework and .NET Core 3.1 use NLS. Results can even differ between ICU library versions: Microsoft's .NET 5 documentation shows `"\r\n".IndexOf("\n")` returning -1 under ICU, while the same call returns 1 on .NET 6, 8 and 10 with the ICU 74 of Ubuntu 24.04 (verified). The same code can therefore behave differently after an upgrade, between developer machines and containers, or after a base-image update.
 
 ```csharp
 using System.Globalization;
@@ -1059,7 +1023,7 @@ public sealed class EmailOptions
 
 - `IOptions<T>` is a singleton snapshot read once; `IOptionsSnapshot<T>` is scoped (re-read per request, not injectable into singletons); `IOptionsMonitor<T>` supports change notifications in singletons.
 - Without validation, a misconfigured value surfaces on the first request that reads `.Value`. Use `ValidateDataAnnotations()` + `ValidateOnStart()` (.NET 6) or `IValidateOptions<T>`.
-- Options classes declare nullable or `required` properties honestly; a non-nullable `string` property that configuration never sets stays `null` (and .NET 10's binder writes explicit JSON `null` values into properties).[^17]
+- Options classes declare nullable or `required` properties honestly; a non-nullable `string` property that configuration never sets stays `null` (and .NET 10's binder writes explicit JSON `null` values into properties).
 - **Secrets never go into `appsettings.json` in source control.** Use environment variables (`ConnectionStrings__Default`), user secrets (Development only), or a secret store (Azure Key Vault, AWS Secrets Manager, Kubernetes secrets). Do not log bound options objects that contain secrets.
 
 ##### Hosted and background services
@@ -1107,10 +1071,10 @@ sealed class QueueWorker : BackgroundService
 ```
 
 - Since .NET 6, an unhandled exception in `ExecuteAsync` **stops the host** (`BackgroundServiceExceptionBehavior.StopHost`); on .NET Core 3.1/.NET 5 it was silently ignored. Catch and log per iteration; do not switch to `Ignore` to hide failures.
-- Before .NET 10, the synchronous part of `ExecuteAsync` (before the first `await`) runs on the startup path and blocks other services from starting; from .NET 10 the whole method runs on a background thread.[^17] Long synchronous work at the top of `ExecuteAsync` is a finding on every version.
+- Before .NET 10, the synchronous part of `ExecuteAsync` (before the first `await`) runs on the startup path and blocks other services from starting; from .NET 10 the whole method runs on a background thread. Long synchronous work at the top of `ExecuteAsync` is a finding on every version.
 - Use `PeriodicTimer` (.NET 6) or `Task.Delay` loops with the stopping token; `System.Threading.Timer` callbacks can overlap and swallow exceptions.
 - Container orchestrators send SIGTERM and wait for a grace period (Kubernetes: 30 s by default); keep `HostOptions.ShutdownTimeout` below it. The default shutdown timeout is 30 s from .NET 6 (5 s before).
-- Console apps **without** the Generic Host on .NET 10 no longer get a default SIGTERM handler; `AppDomain.ProcessExit` cleanup does not run on `docker stop`. Use the Generic Host or `PosixSignalRegistration` (.NET 6).[^17]
+- Console apps **without** the Generic Host on .NET 10 no longer get a default SIGTERM handler; `AppDomain.ProcessExit` cleanup does not run on `docker stop`. Use the Generic Host or `PosixSignalRegistration` (.NET 6).
 
 ---
 
@@ -1214,7 +1178,7 @@ record Person(string Name);
 
 - **Cache `JsonSerializerOptions`** in a `static readonly` field or DI. Creating options per call rebuilds the metadata cache every time — a severe performance problem (CA1869).
 - ASP.NET Core and `JsonSerializerDefaults.Web` use camelCase and case-insensitive matching and accept numbers in strings; plain `JsonSerializer` calls do not. Mixing them causes "all fields are default" bugs.
-- Strict input: `UnmappedMemberHandling.Disallow` (.NET 8), `RespectNullableAnnotations` and `RespectRequiredConstructorParameters` (.NET 9), `AllowDuplicateProperties = false` and `JsonSerializerOptions.Strict` (.NET 10). Duplicate keys are a parser-differential attack vector (one component checks the first `"role"`, another uses the last).[^18]
+- Strict input: `UnmappedMemberHandling.Disallow` (.NET 8), `RespectNullableAnnotations` and `RespectRequiredConstructorParameters` (.NET 9), `AllowDuplicateProperties = false` and `JsonSerializerOptions.Strict` (.NET 10). Duplicate keys are a parser-differential attack vector (one component checks the first `"role"`, another uses the last).
 - Polymorphism: System.Text.Json only via `[JsonPolymorphic]`/`[JsonDerivedType]` allow-lists (.NET 7). **Newtonsoft.Json `TypeNameHandling` other than `None` on untrusted input is remote code execution**; so is a custom `SerializationBinder` that allows arbitrary types.
 - Use `SerializeAsync`/`DeserializeAsync` with streams for large payloads instead of `ReadAsStringAsync` + `Deserialize`.
 - Keep `MaxDepth` at its default (64) for untrusted input.
@@ -1226,7 +1190,7 @@ record Person(string Name);
 
 #### ASP.NET Core
 
-Minimal APIs are .NET 6; `TypedResults` and route groups (`MapGroup`) .NET 7; `IExceptionHandler` .NET 8; built-in minimal API validation (`AddValidation()`) .NET 10.[^19]
+Minimal APIs are .NET 6; `TypedResults` and route groups (`MapGroup`) .NET 7; `IExceptionHandler` .NET 8; built-in minimal API validation (`AddValidation()`) .NET 10.
 
 ```csharp
 using System.ComponentModel.DataAnnotations;
@@ -1277,15 +1241,15 @@ Security review points (all versions):
 - **Open redirects**: validate `returnUrl` with `Url.IsLocalUrl` or use `LocalRedirect`.
 - **Rate limiting** (`AddRateLimiter`, .NET 7; a package or custom middleware before) on login, sign-up, password reset and expensive endpoints; request body size limits for uploads.
 - **File uploads**: never trust `IFormFile.FileName` or `ContentType`; generate server-side names, check size and content, store outside the web root.
-- **Kestrel patch level**: CVE-2025-55315 (HTTP request smuggling, October 2025) is fixed in 8.0.21, 9.0.10 and 10.0.0-rc.2 (October 14, 2025) and later; unsupported versions (.NET 6/7, .NET Core 3.1) received no fix.[^20]
-- Cookie authentication returns 401/403 instead of login redirects for API endpoints from .NET 10; SPAs that relied on following redirects need updating.[^19]
+- **Kestrel patch level**: CVE-2025-55315 (HTTP request smuggling, October 2025) is fixed in 8.0.21, 9.0.10 and 10.0.0-rc.2 (October 14, 2025) and later; unsupported versions (.NET 6/7, .NET Core 3.1) received no fix.
+- Cookie authentication returns 401/403 instead of login redirects for API endpoints from .NET 10; SPAs that relied on following redirects need updating.
 - `WebHostBuilder`/`IWebHost` (obsolete in .NET 10) and `Startup` classes still work; do not demand a rewrite to minimal hosting in a review unless the project is migrating anyway.
 
 ---
 
 #### EF Core
 
-EF Core versions follow .NET: EF Core 8 targets `net8.0`, EF Core 9 `net8.0`, EF Core 10 `net10.0`, EF Core 3.1 `netstandard2.0`. Version-specific APIs: split queries and filtered `Include` (EF Core 5), `ExecuteUpdate`/`ExecuteDelete`, `FromSql` and scalar `SqlQuery<T>` (EF Core 7), complex types and `SqlQuery<T>` for unmapped types (EF Core 8), `LeftJoin`/`RightJoin` translation and `ExecuteUpdate` with statement lambdas (EF Core 10).[^21]
+EF Core versions follow .NET: EF Core 8 targets `net8.0`, EF Core 9 `net8.0`, EF Core 10 `net10.0`, EF Core 3.1 `netstandard2.0`. Version-specific APIs: split queries and filtered `Include` (EF Core 5), `ExecuteUpdate`/`ExecuteDelete`, `FromSql` and scalar `SqlQuery<T>` (EF Core 7), complex types and `SqlQuery<T>` for unmapped types (EF Core 8), `LeftJoin`/`RightJoin` translation and `ExecuteUpdate` with statement lambdas (EF Core 10).
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -1348,7 +1312,7 @@ Query pitfalls:
 - Pagination: `Skip`/`Take` need a deterministic `OrderBy`; prefer keyset pagination for deep pages.
 - `.Count()` on `IQueryable` runs `SELECT COUNT(*)`; `.ToList().Count` loads everything.
 - Long-lived contexts accumulate tracked entities (memory, slow `DetectChanges`); keep units of work short.
-- `Contains` over a local collection: EF Core 8+ sends the list as one JSON parameter (SQL Server/SQLite), EF Core 10 as multiple scalar parameters by default; very large lists can hit parameter limits (2,100 on SQL Server).[^21]
+- `Contains` over a local collection: EF Core 8+ sends the list as one JSON parameter (SQL Server/SQLite), EF Core 10 as multiple scalar parameters by default; very large lists can hit parameter limits (2,100 on SQL Server).
 
 Raw SQL:
 
@@ -1371,7 +1335,7 @@ Model and migrations:
 
 ##### Deserialization
 
-- `BinaryFormatter`, `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter` on untrusted data are remote code execution on every platform, including .NET Framework where they still work. On .NET 9+ `BinaryFormatter` always throws.[^11]
+- `BinaryFormatter`, `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter` on untrusted data are remote code execution on every platform, including .NET Framework where they still work. On .NET 9+ `BinaryFormatter` always throws.
 - Newtonsoft.Json `TypeNameHandling.All/Auto/Objects/Arrays`, `JavaScriptSerializer` with a type resolver, and `XmlSerializer`/`DataContractSerializer` constructed from a type name read from input are equally dangerous.
 - System.Text.Json polymorphism only through `[JsonDerivedType]` allow-lists.
 
@@ -1506,8 +1470,8 @@ public static class PriceCalculator
 ```
 
 - Name tests `Method_Scenario_Expected` or similar; Arrange/Act/Assert; table-driven `[Theory]`/`[TestCase]`/`[DataRow]` for rule-heavy code.
-- **Always `await` async assertions** (`await Assert.ThrowsAsync<T>(...)`); an un-awaited assertion task never fails the test. xUnit analyzers report xUnit2021. NUnit 5 (September 2026) changed `Assert.ThrowsAsync` to return a `Task` that must be awaited.[^22]
-- Framework versions as of October 2026: xUnit v2 (2.9.x) and xUnit v3 (xunit.v3 4.0.x), MSTest 4.x, NUnit 4.x/5.0. Do not mix xUnit v2 and v3 APIs; v3 test projects are executables and offer `TestContext.Current.CancellationToken`.[^22]
+- **Always `await` async assertions** (`await Assert.ThrowsAsync<T>(...)`); an un-awaited assertion task never fails the test. xUnit analyzers report xUnit2021. NUnit 5 (September 2026) changed `Assert.ThrowsAsync` to return a `Task` that must be awaited.
+- Framework versions as of October 2026: xUnit v2 (2.9.x) and xUnit v3 (xunit.v3 4.0.x), MSTest 4.x, NUnit 4.x/5.0. Do not mix xUnit v2 and v3 APIs; v3 test projects are executables and offer `TestContext.Current.CancellationToken`.
 - Tests must not depend on order, shared static state, the current culture, the local time zone or the wall clock. Use `TimeProvider`/`FakeTimeProvider` (.NET 8) or an injected clock; set `CultureInfo` explicitly in culture-sensitive tests.
 - No `Thread.Sleep`/`Task.Delay` to wait for background work; await the work or poll with a timeout.
 - Mock interfaces you own (Moq, NSubstitute, FakeItEasy). Do not mock `HttpClient` — mock `HttpMessageHandler` or run a fake server; do not mock `DbContext` — use SQLite in-memory or a real database via Testcontainers.
@@ -1534,13 +1498,13 @@ Trimming is .NET 6+ (production-ready), Native AOT .NET 7+ (console) and .NET 8+
 Behaviour that changes silently when a project moves between versions. Check these when a diff changes `TargetFramework`, `LangVersion`, the SDK or the base image:
 
 1. **.NET Framework → .NET Core/.NET 5+**: no `AppDomain`s, remoting, WCF server, Web Forms or CAS; `BinaryFormatter` disabled/removed; `Encoding.Default` becomes UTF-8; code pages need `CodePagesEncodingProvider`; `HttpWebRequest` is a wrapper over `HttpClient`; `System.Drawing.Common` is Windows-only from .NET 6; configuration moves from `web.config`/`ConfigurationManager` to `Microsoft.Extensions.Configuration`; `Dictionary` allows `Remove` during enumeration.
-2. **.NET Core 3.1 → .NET 5+ on Windows**: ICU replaces NLS — culture-sensitive `IndexOf`/`StartsWith`/`Compare` results change (Microsoft's documented example: `"\r\n".IndexOf("\n")` returned -1). Base-image updates that bring a new ICU version can change such results again; ordinal comparison is immune.[^16]
+2. **.NET Core 3.1 → .NET 5+ on Windows**: ICU replaces NLS — culture-sensitive `IndexOf`/`StartsWith`/`Compare` results change (Microsoft's documented example: `"\r\n".IndexOf("\n")` returned -1). Base-image updates that bring a new ICU version can change such results again; ordinal comparison is immune.
 3. **.NET 5 → 6**: unhandled `BackgroundService` exceptions stop the host; `ImplicitUsings` and the minimal hosting model in templates; default shutdown timeout 30 s; `WebRequest` obsolete (SYSLIB0014); with `InvariantGlobalization`, creating a non-invariant culture throws (predefined cultures only).
 4. **.NET 6 → 7/8**: `Rfc2898DeriveBytes` constructors without a hash algorithm obsolete (SYSLIB0041) and `HashAlgorithm.Create(string)` obsolete (SYSLIB0045) in .NET 7; from .NET 8, container images listen on port 8080 instead of 80 and ship a non-root `app` user, the `AesGcm` constructor without tag size is obsolete (SYSLIB0053) and the whole `BinaryFormatter` type is obsolete.
 5. **.NET 8 → 9**: `BinaryFormatter` removed; `X509Certificate2` constructors obsolete (SYSLIB0057); `ServicePointManager` obsolete (SYSLIB0014); `System.Threading.Lock` available; STS support extended to 24 months.
-6. **.NET 9 → 10 / C# 13 → 14**: `field` inside accessors rebinds (CS9258); first-class span conversions change overload resolution (covariant arrays can throw `ArrayTypeMismatchException`; expression trees contain `MemoryExtensions.Contains`); `extension` becomes a contextual keyword; configuration binding preserves `null`; no default SIGTERM handler for non-host apps; `BackgroundService.ExecuteAsync` fully on a background thread; `System.Linq.Async` conflicts with in-box `AsyncEnumerable`; cookie auth returns 401/403 for API endpoints; `Rfc2898DeriveBytes` constructors obsolete (SYSLIB0060).[^6][^17]
-7. **Raising `LangVersion` without changing the target framework** is unsupported; C# 14 with `net8.0`/`net9.0` binds `array.Reverse()` to the in-place `MemoryExtensions.Reverse`. `var y = x.Reverse();` and `foreach (var i in x.Reverse())` stop compiling (CS0815/CS1579), but a bare statement `x.Reverse();` — a no-op with `Enumerable.Reverse` — now silently reverses the array in place (verified on `net8.0`: C# 12 prints `1,2,3`, C# 14 prints `3,2,1`).[^6]
-8. **EF Core major upgrades**: 3.0 stopped client evaluation; 5 introduced split queries (opt-in); 7 changed SQL Server `Encrypt` default to `true` (Microsoft.Data.SqlClient 4); 8 changed `Contains` translation to JSON parameters; 10 changed it to multiple parameters and simplified parameter names. Read the breaking-changes page of every major version.[^21]
+6. **.NET 9 → 10 / C# 13 → 14**: `field` inside accessors rebinds (CS9258); first-class span conversions change overload resolution (covariant arrays can throw `ArrayTypeMismatchException`; expression trees contain `MemoryExtensions.Contains`); `extension` becomes a contextual keyword; configuration binding preserves `null`; no default SIGTERM handler for non-host apps; `BackgroundService.ExecuteAsync` fully on a background thread; `System.Linq.Async` conflicts with in-box `AsyncEnumerable`; cookie auth returns 401/403 for API endpoints; `Rfc2898DeriveBytes` constructors obsolete (SYSLIB0060).
+7. **Raising `LangVersion` without changing the target framework** is unsupported; C# 14 with `net8.0`/`net9.0` binds `array.Reverse()` to the in-place `MemoryExtensions.Reverse`. `var y = x.Reverse();` and `foreach (var i in x.Reverse())` stop compiling (CS0815/CS1579), but a bare statement `x.Reverse();` — a no-op with `Enumerable.Reverse` — now silently reverses the array in place (verified on `net8.0`: C# 12 prints `1,2,3`, C# 14 prints `3,2,1`).
+8. **EF Core major upgrades**: 3.0 stopped client evaluation; 5 introduced split queries (opt-in); 7 changed SQL Server `Encrypt` default to `true` (Microsoft.Data.SqlClient 4); 8 changed `Contains` translation to JSON parameters; 10 changed it to multiple parameters and simplified parameter names. Read the breaking-changes page of every major version.
 9. **Test framework majors** (xUnit v2 → v3, NUnit 4 → 5, MSTest 3 → 4) have their own breaking changes; un-awaited async assertions are the most dangerous.
 
 Example of a C# 14 upgrade break (C# 13 prints `IEnumerable`, C# 14 throws):
@@ -1620,28 +1584,3 @@ static class C
 - [ ] Tests await async assertions, avoid sleeps and shared state, use real providers for data access
 - [ ] Constant log templates, exceptions passed as the first argument, no PII; bounded metric tag cardinality
 - [ ] Trim/AOT warnings fixed, not suppressed
-
----
-
-[^1]: Announcing .NET 10. .NET Blog, November 11, 2025. https://devblogs.microsoft.com/dotnet/announcing-dotnet-10/
-[^2]: .NET release metadata (releases-index.json and per-version releases.json: release dates, latest patches, SDKs, CVEs, end-of-support dates). https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json ; https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.13/10.0.13.md
-[^3]: .NET 11 Release Candidate 2 is now available. .NET Blog, October 13, 2026. https://devblogs.microsoft.com/dotnet/dotnet-11-rc-2/ ; What's new in C# 15. https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-15
-[^4]: C# language versioning — defaults per target framework. https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-versioning
-[^5]: Configure language version (LangVersion values, "using a C# version newer than the TFM's default isn't supported", warning against `latest`, `#error version`). https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/configure-language-version
-[^6]: C# compiler breaking changes since C# 13 (field keyword, first-class spans, `Enumerable.Reverse`). https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/breaking-changes/compiler%20breaking%20changes%20-%20dotnet%2010
-[^7]: .NET and .NET Core Support Policy (LTS/STS, 24-month STS since .NET 9). https://dotnet.microsoft.com/platform/support/policy/dotnet-core
-[^8]: Microsoft .NET Framework lifecycle (4.8.1, 4.6.2 end of support January 12, 2027; 4.5.2/4.6/4.6.1 retired April 26, 2022; 3.5 SP1 until January 9, 2029). https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework ; https://dotnet.microsoft.com/platform/support/policy/dotnet-framework
-[^9]: The history of C# (features per version, release dates and Visual Studio versions). https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-version-history
-[^10]: Roslyn Language Feature Status. https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md
-[^11]: BinaryFormatter migration guide (obsolete in .NET 5, removed in .NET 9). https://learn.microsoft.com/en-us/dotnet/standard/serialization/binaryformatter-migration-guide/
-[^12]: Obsolete features in .NET 5+ (SYSLIB0001 onward). https://learn.microsoft.com/en-us/dotnet/fundamentals/syslib-diagnostics/obsoletions-overview
-[^13]: Auditing package dependencies for security vulnerabilities (NuGet Audit). https://learn.microsoft.com/en-us/nuget/concepts/auditing-packages
-[^14]: Code analysis in .NET — AnalysisLevel and AnalysisMode. https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview
-[^15]: Breaking change: System.Linq.AsyncEnumerable in .NET 10. https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/10.0/asyncenumerable
-[^16]: Behavior changes when comparing strings on .NET 5+ (ICU on Windows). https://learn.microsoft.com/en-us/dotnet/standard/base-types/string-comparison-net-5-plus ; .NET globalization and ICU. https://learn.microsoft.com/en-us/dotnet/core/extensions/globalization-icu
-[^17]: Breaking changes in .NET 10 (configuration null values, SIGTERM handler, BackgroundService). https://learn.microsoft.com/en-us/dotnet/core/compatibility/10
-[^18]: What's new in .NET libraries for .NET 10 (JsonSerializerOptions.Strict, AllowDuplicateProperties). https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/libraries
-[^19]: What's new in ASP.NET Core in .NET 10 (minimal API validation, 401/403 for API endpoints). https://learn.microsoft.com/en-us/aspnet/core/release-notes/aspnetcore-10.0
-[^20]: Microsoft Security Advisory CVE-2025-55315: .NET Security Feature Bypass Vulnerability (GHSA-5rrx-jjjq-q2r5, Kestrel request smuggling). https://github.com/dotnet/aspnetcore/security/advisories/GHSA-5rrx-jjjq-q2r5
-[^21]: EF Core breaking changes per release (EF Core 3.0 … 10). https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-10.0/breaking-changes ; https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/breaking-changes ; https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-3.x/breaking-changes
-[^22]: xUnit.net v3 release notes; NUnit framework release notes (5.0.0, September 27, 2026). https://xunit.net/releases/ ; https://docs.nunit.org/articles/nunit/release-notes/framework.html

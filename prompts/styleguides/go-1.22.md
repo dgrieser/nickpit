@@ -6,33 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.22](#whats-new-in-go-122)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers](#pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics](#generics)
-11. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-12. [Strings](#strings)
-13. [Error Handling](#error-handling)
-14. [Structured Logging with log/slog](#structured-logging-with-logslog)
-15. [Concurrency](#concurrency)
-16. [Context Package](#context-package)
-17. [File I/O & Streaming](#file-io--streaming)
-18. [HTTP Servers](#http-servers)
-19. [Testing & Benchmarking](#testing--benchmarking)
-20. [CLI Development](#cli-development)
-21. [Performance Caveats & PGO](#performance-caveats--pgo)
-22. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.22
 
 Go 1.22.0 shipped 2024-02-06. It brings **two significant language changes** to `for` loops, the **first v2 standard library package** (`math/rand/v2`), enhanced HTTP routing in `net/http.ServeMux`, and a range of library and performance improvements.

@@ -1,13 +1,13 @@
 ### TypeScript 5.7: The Complete Production Developer Guide
 
 > **Version**: TypeScript 5.7. The 5.7.2 stable release came out on 2024-11-22. The latest and final patch is **5.7.3 (2025-01-08)**.
-> **Support status (October 2026)**: unmaintained. TypeScript has no LTS lines, and the team does not backport fixes to older minors. 5.7 has had no release since 5.7.3. Newer lines: 5.8 (2025-02-28), 5.9 (2025-07-31), 6.0 (2026-03-23, latest 6.0.3), and **7.0, the native Go compiler, which is the newest stable release (7.0.2, 2026-07-08)**. 7.1 is in beta (2026-10-20).[^1][^2][^3]
+> **Support status (October 2026)**: unmaintained. TypeScript has no LTS lines, and the team does not backport fixes to older minors. 5.7 has had no release since 5.7.3. Newer lines: 5.8 (2025-02-28), 5.9 (2025-07-31), 6.0 (2026-03-23, latest 6.0.3), and **7.0, the native Go compiler, which is the newest stable release (7.0.2, 2026-07-08)**. 7.1 is in beta (2026-10-20).
 > **Scope**: the full TypeScript language and type system as usable in 5.7, the compiler options, module resolution for Node.js and bundlers, the 5.7-specific changes compared with 5.6, the bugs a reviewer must catch, tsconfig recommendations, tooling, and a review checklist.
 > **Note**: This document is self-contained. Everything from TypeScript 4.x and 5.0–5.6 that matters is carried forward here. Sections that cover 5.7-specific behaviour are marked **New in 5.7**. Every example was compiled with `tsc` 5.7.3. Unless a block says otherwise, the settings were `strict`, `target`/`lib` `es2024`, `module` `nodenext`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `verbatimModuleSyntax`, and `@types/node`. Each line marked `// error` fails with that error; every other line compiles.
 
 #### Overview
 
-TypeScript 5.7 is a small, mostly "plumbing" release.[^1] It adds:
+TypeScript 5.7 is a small, mostly "plumbing" release. It adds:
 
 - **Checks for never-initialized variables**: a variable that is never assigned is now reported even when it is read inside a nested function.
 - **`--rewriteRelativeImportExtensions`**: write `import "./foo.ts"`, run the source directly, and still emit correct `.js` output.
@@ -44,7 +44,7 @@ Global truths about TypeScript 5.7:
 - **The type system is deliberately unsound in known places.** These include `any`, type assertions, non-null assertions (`!`), method-parameter bivariance, array covariance, index access without `noUncheckedIndexedAccess`, and definite-assignment assertions. Review these spots hardest.
 - **`tsc` is a type checker and a (mostly) syntax-lowering transpiler.** It does not polyfill. `--lib` describes what the runtime provides; it adds nothing to the runtime. Calling `Promise.withResolvers` on Node.js 20 type-checks under `lib: ["es2024"]` and fails at runtime.
 - **The module format of each output file is decided at compile time** by `module`, the file extension (`.mts`/`.cts`), and the nearest `package.json` `"type"` field (under `node16`/`nodenext`).
-- **Every `strict` sub-flag matters.** In 5.7, `strict` turns on `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitThis`, `useUnknownInCatchVariables`, `alwaysStrict` and `strictBuiltinIteratorReturn`.[^4]
+- **Every `strict` sub-flag matters.** In 5.7, `strict` turns on `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitThis`, `useUnknownInCatchVariables`, `alwaysStrict` and `strictBuiltinIteratorReturn`.
 
 ***
 
@@ -66,7 +66,7 @@ Global truths about TypeScript 5.7:
 
 ##### New in 5.7: Checks for Never-Initialized Variables
 
-TypeScript has long reported reads of a variable that is not definitely assigned on every path *in the same function*. Reads inside a nested function (closure, callback, hoisted helper) were optimistically accepted, because the checker cannot know when the inner function runs. Since 5.7 the checker reports the read when the variable is **never assigned anywhere**.[^1] It is still lenient when the variable is assigned on *some* path.
+TypeScript has long reported reads of a variable that is not definitely assigned on every path *in the same function*. Reads inside a nested function (closure, callback, hoisted helper) were optimistically accepted, because the checker cannot know when the inner function runs. Since 5.7 the checker reports the read when the variable is **never assigned anywhere**. It is still lenient when the variable is assigned on *some* path.
 
 ```ts
 declare function someCondition(): boolean;
@@ -111,7 +111,7 @@ Tools that run TypeScript in place need `.ts` in relative import specifiers:
 - Bun
 - tsx
 
-`--allowImportingTsExtensions` (5.0) allowed such specifiers, but only with `noEmit` or `emitDeclarationOnly`, because the emitted `.js` would still say `./foo.ts`. With `--rewriteRelativeImportExtensions`, `tsc` rewrites **relative** specifiers that end in `.ts`, `.tsx`, `.mts` or `.cts` (and are not declaration files) to `.js`, `.jsx`, `.mjs` or `.cjs` on emit.[^1][^5] The option also permits the `.ts` specifiers themselves, so `allowImportingTsExtensions` is not needed in addition.
+`--allowImportingTsExtensions` (5.0) allowed such specifiers, but only with `noEmit` or `emitDeclarationOnly`, because the emitted `.js` would still say `./foo.ts`. With `--rewriteRelativeImportExtensions`, `tsc` rewrites **relative** specifiers that end in `.ts`, `.tsx`, `.mts` or `.cts` (and are not declaration files) to `.js`, `.jsx`, `.mjs` or `.cjs` on emit. The option also permits the `.ts` specifiers themselves, so `allowImportingTsExtensions` is not needed in addition.
 
 ```ts
 // src/main.ts, compiled with --module nodenext --rewriteRelativeImportExtensions
@@ -136,7 +136,7 @@ error TS2877: This import uses a '.ts' extension to resolve to an input TypeScri
 file, but will not be rewritten during emit because it is not a relative path.
 ```
 
-For workspaces where packages import each other's sources, use conditional `exports` with a **scoped** custom condition (`"@my-org/source": "./src/index.ts"`) and run with `node --conditions=@my-org/source`, or set `customConditions` for type checking. An unscoped `"development"` condition collides with dependencies that ship their own.[^1]
+For workspaces where packages import each other's sources, use conditional `exports` with a **scoped** custom condition (`"@my-org/source": "./src/index.ts"`) and run with `node --conditions=@my-org/source`, or set `customConditions` for type checking. An unscoped `"development"` condition collides with dependencies that ship their own.
 
 `tsc` in 5.7 cannot reject TypeScript syntax that Node.js type stripping refuses. Node.js errors at runtime with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` on:
 
@@ -146,7 +146,7 @@ For workspaces where packages import each other's sources, use conditional `expo
 - `import x = require()` / `import x = N.y` aliases
 - `export =`
 
-Node.js also does not apply `paths`, and decorators are a plain `SyntaxError` there. The `--erasableSyntaxOnly` check that catches these at compile time is **5.8**. On 5.7 such code type-checks and then crashes under `node file.ts`. In a project that runs `.ts` directly, a reviewer must flag those constructs by hand or with lint rules: typescript-eslint `no-namespace`, `parameter-properties` with `prefer: "class-property"`, `no-require-imports`, plus `no-restricted-syntax` for `TSEnumDeclaration`.[^6]
+Node.js also does not apply `paths`, and decorators are a plain `SyntaxError` there. The `--erasableSyntaxOnly` check that catches these at compile time is **5.8**. On 5.7 such code type-checks and then crashes under `node file.ts`. In a project that runs `.ts` directly, a reviewer must flag those constructs by hand or with lint rules: typescript-eslint `no-namespace`, `parameter-properties` with `prefer: "class-property"`, `no-require-imports`, plus `no-restricted-syntax` for `TSEnumDeclaration`.
 
 ##### New in 5.7: `--target es2024` and `--lib es2024`
 
@@ -196,7 +196,7 @@ Verified details:
 | Node.js 22.23 (maintenance LTS until 2027-04-30) | yes | yes | yes | `es2024` |
 | Node.js 24.22 (LTS, maintenance since 2026-10-20) | yes | yes | yes | `es2024` (`using` runs natively only with `target: esnext`, see below) |
 
-A project that declares `"engines": { "node": ">=20" }` but compiles with `lib: ["es2024"]` type-checks `Object.groupBy` and crashes on Node.js 20 with `TypeError: Object.groupBy is not a function`. Flag that mismatch.[^7]
+A project that declares `"engines": { "node": ">=20" }` but compiles with `lib: ["es2024"]` type-checks `Object.groupBy` and crashes on Node.js 20 with `TypeError: Object.groupBy is not a function`. Flag that mismatch.
 
 ##### New in 5.7: TypedArrays Are Generic Over `ArrayBufferLike`
 
@@ -238,7 +238,7 @@ Review guidance:
 
 ##### New in 5.7: Validated JSON Imports Under `--module nodenext`
 
-Node.js requires the `type: "json"` import attribute for JSON in ES modules, and JSON modules have only a default export. Under `--module nodenext`, 5.7 enforces both rules in ESM files:[^1][^8]
+Node.js requires the `type: "json"` import attribute for JSON in ES modules, and JSON modules have only a default export. Under `--module nodenext`, 5.7 enforces both rules in ESM files:
 
 ```ts
 // tsconfig: module nodenext, resolveJsonModule; package.json "type": "module"
@@ -260,7 +260,7 @@ Verified boundaries:
 
 ##### New in 5.7: Index Signatures From Non-Literal Computed Method Names
 
-A class method whose computed name has a non-literal type (`symbol`, `string`, `number`, not a `unique symbol` or a literal) now contributes an index signature, matching object-literal behaviour. Previously the member was invisible to the type system.[^1]
+A class method whose computed name has a non-literal type (`symbol`, `string`, `number`, not a `unique symbol` or a literal) now contributes an index signature, matching object-literal behaviour. Previously the member was invisible to the type system.
 
 ```ts
 declare const symbolMethodName: symbol;
@@ -289,18 +289,18 @@ Fix: annotate (`(): null => null`) or, better, enable `strict`. With `strictNull
 
 ##### New in 5.7: Editor Project Ownership
 
-- **Ancestor `tsconfig.json` search.** When TSServer opens a file, it no longer stops at the first `tsconfig.json` that does not include the file. It keeps walking up the directory tree and can pick a solution-style root config that references the right project.[^1] Layouts such as `src/tsconfig.json` + `src/tsconfig.test.json` + a root `tsconfig.json` with `"files": []` and `references` no longer need the `tsconfig.src.json` renaming trick.
+- **Ancestor `tsconfig.json` search.** When TSServer opens a file, it no longer stops at the first `tsconfig.json` that does not include the file. It keeps walking up the directory tree and can pick a solution-style root config that references the right project. Layouts such as `src/tsconfig.json` + `src/tsconfig.test.json` + a root `tsconfig.json` with `"files": []` and `references` no longer need the `tsconfig.src.json` renaming trick.
 - **Composite probing.** When checking whether a referenced `composite` project owns a file, the editor looks only at the project's root file set and no longer loads the project's entire import graph.
 
 Both affect editor behaviour only, not `tsc` output. A file that is not in any project's `include` is still not type-checked by `tsc -b`.
 
 ##### New in 5.7: V8 Compile Caching
 
-`lib/tsc.js` in 5.7 is a shim that calls `require("node:module").enableCompileCache()` (when present, Node.js ≥ 22.1) before loading `_tsc.js`. The V8 code cache goes to `$TMPDIR/node-compile-cache` (verified: the directory is created on first run with 5.7.3 and not with 5.6.3). The team measured `tsc --version` dropping from about 122 ms to 48 ms.[^1] It needs no configuration. Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out, for example on read-only or shared temp directories.[^9]
+`lib/tsc.js` in 5.7 is a shim that calls `require("node:module").enableCompileCache()` (when present, Node.js ≥ 22.1) before loading `_tsc.js`. The V8 code cache goes to `$TMPDIR/node-compile-cache` (verified: the directory is created on first run with 5.7.3 and not with 5.6.3). The team measured `tsc --version` dropping from about 122 ms to 48 ms. It needs no configuration. Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out, for example on read-only or shared temp directories.
 
 ##### `lib.d.ts` (DOM) Updates
 
-The DOM declarations were regenerated for 5.7 and can introduce new errors in browser code.[^1] Do not pin DOM types by vendoring `lib.dom.d.ts`. If a specific DOM version is needed, 5.7 still supports `@typescript/lib-dom` replacement packages (`"@typescript/lib-dom": "npm:@types/web@…"`). The `--libReplacement` switch to turn that lookup off is 5.8.
+The DOM declarations were regenerated for 5.7 and can introduce new errors in browser code. Do not pin DOM types by vendoring `lib.dom.d.ts`. If a specific DOM version is needed, 5.7 still supports `@typescript/lib-dom` replacement packages (`"@typescript/lib-dom": "npm:@types/web@…"`). The `--libReplacement` switch to turn that lookup off is 5.8.
 
 ***
 
@@ -308,7 +308,7 @@ The DOM declarations were regenerated for 5.7 and can introduce new errors in br
 
 The project's compiler is 5.7.3. A reviewer must never suggest the following. They fail to compile, are silently ignored, or describe behaviour 5.7 does not have.
 
-##### TypeScript 5.8 (2025-02-28)[^10]
+##### TypeScript 5.8 (2025-02-28)
 
 | Feature | What happens on 5.7 |
 |---|---|
@@ -321,7 +321,7 @@ The project's compiler is 5.7.3. A reviewer must never suggest the following. Th
 | TS2880 for `import … assert { … }` under `nodenext` | not reported. See the JSON import section |
 | `lib` types for `Float16Array`, `Math.f16round`, `Promise.try` (5.8 `esnext`) | not declared even with `lib: ["esnext"]` (TS2552 for `Float16Array`, TS2551 for `Math.f16round`, TS2339 for `Promise.try`, verified) |
 
-##### TypeScript 5.9 (2025-07-31)[^11]
+##### TypeScript 5.9 (2025-07-31)
 
 | Feature | What happens on 5.7 |
 |---|---|
@@ -331,7 +331,7 @@ The project's compiler is 5.7.3. A reviewer must never suggest the following. Th
 | `Error.isError`, `Atomics.pause` lib types (`esnext`) | not in 5.7 libs |
 | `ArrayBuffer` no longer a supertype of TypedArrays / `Buffer` (5.9 `lib.d.ts`) | 5.7 still accepts some assignments 5.9 rejects. Do not "fix" 5.9 errors in a 5.7 project |
 
-##### TypeScript 6.0 (2026-03-23)[^12]
+##### TypeScript 6.0 (2026-03-23)
 
 - No `es2025` `target`/`lib`.
 - No `Temporal` types.
@@ -346,7 +346,7 @@ The project's compiler is 5.7.3. A reviewer must never suggest the following. Th
 
 ##### TypeScript 7.0 (2026-07-08)
 
-7.0 is the native (Go) compiler, shipped in the `typescript` npm package as `tsc`. It removes everything 6.0 deprecated and ships without a programmatic API: tools that need one keep using the 6.0 API (`@typescript/typescript6`), and a new API is expected in 7.1.[^13] A 5.7 project upgrades through 5.8 → 5.9 → 6.0 (fixing deprecations) before 7.0. Do not recommend `tsgo`/`@typescript/native-preview` commands for a 5.7 build.
+7.0 is the native (Go) compiler, shipped in the `typescript` npm package as `tsc`. It removes everything 6.0 deprecated and ships without a programmatic API: tools that need one keep using the 6.0 API (`@typescript/typescript6`), and a new API is expected in 7.1. A 5.7 project upgrades through 5.8 → 5.9 → 6.0 (fixing deprecations) before 7.0. Do not recommend `tsgo`/`@typescript/native-preview` commands for a 5.7 build.
 
 ##### Removed Before 5.7 (Do Not Accept in Configs)
 
@@ -366,8 +366,8 @@ Also obsolete for years: TSLint (deprecated since 2019; use typescript-eslint) a
 - Distinguish **compiler version** from **`lib`/`target` choice**. `Object.groupBy` exists in 5.7 but only with `lib` ≥ `es2024` (or `esnext`). Missing `lib` entries are a config problem, not a version problem.
 - Distinguish **types** from **runtime**. Even when the types exist, check the deployment runtime: Node.js version in `engines`, Dockerfile, CI, or the browserslist.
 - `package.json` ranges such as `"typescript": "~5.7.2"` pin 5.7. `"^5.7.2"` allows 5.8 and 5.9 to install. Then the guidance of a newer version applies, and a lockfile shows which one is real.
-- typescript-eslint officially supports TypeScript 5.7 from **8.16.0** (2024-11-25). Older 8.x releases print an "unsupported TypeScript version" warning and may misparse.[^14]
-- DefinitelyTyped tests `@types/*` only on TypeScript versions younger than two years.[^15] 5.7 (November 2024) leaves that window in November 2026. New `@types/*` releases may start using syntax or lib types that 5.7 does not understand. Pin `@types/node` and other critical `@types` packages, and prefer `skipLibCheck: true` in applications.
+- typescript-eslint officially supports TypeScript 5.7 from **8.16.0** (2024-11-25). Older 8.x releases print an "unsupported TypeScript version" warning and may misparse.
+- DefinitelyTyped tests `@types/*` only on TypeScript versions younger than two years. 5.7 (November 2024) leaves that window in November 2026. New `@types/*` releases may start using syntax or lib types that 5.7 does not understand. Pin `@types/node` and other critical `@types` packages, and prefer `skipLibCheck: true` in applications.
 
 ***
 
@@ -1525,7 +1525,7 @@ Libraries usually target an older baseline (`es2022`) so consumers on older runt
 }
 ```
 
-Node.js's own documentation recommends `erasableSyntaxOnly`, which **does not exist in 5.7**. Enforce the erasable subset by review and lint instead: no `enum`, runtime `namespace`, parameter properties, `import =`/`export =`, decorators, or `paths`.[^6]
+Node.js's own documentation recommends `erasableSyntaxOnly`, which **does not exist in 5.7**. Enforce the erasable subset by review and lint instead: no `enum`, runtime `namespace`, parameter properties, `import =`/`export =`, decorators, or `paths`.
 
 ##### Strictness Flags Reference
 
@@ -1671,7 +1671,7 @@ Libraries such as `expect-type` (`expectTypeOf(x).toEqualTypeOf<…>()`), Vitest
 
 #### Tooling and Linting
 
-- **typescript-eslint** ≥ **8.16.0** for TypeScript 5.7 (8.15 supports up to 5.6). Use the flat config with `tseslint.configs.strictTypeChecked` (or `recommendedTypeChecked`) and `parserOptions: { projectService: true }`.[^14] High-value rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `switch-exhaustiveness-check`, `no-unnecessary-condition`, `strict-boolean-expressions`, `no-unsafe-*` (argument, assignment, call, member-access, return), `consistent-type-imports`, `no-import-type-side-effects`, `only-throw-error`, `prefer-promise-reject-errors`, `use-unknown-in-catch-callback-variable`, `restrict-template-expressions`, `no-deprecated` (reports uses of `@deprecated` APIs), `ban-ts-comment`, `no-explicit-any`, `unbound-method`, `method-signature-style`.
+- **typescript-eslint** ≥ **8.16.0** for TypeScript 5.7 (8.15 supports up to 5.6). Use the flat config with `tseslint.configs.strictTypeChecked` (or `recommendedTypeChecked`) and `parserOptions: { projectService: true }`. High-value rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `switch-exhaustiveness-check`, `no-unnecessary-condition`, `strict-boolean-expressions`, `no-unsafe-*` (argument, assignment, call, member-access, return), `consistent-type-imports`, `no-import-type-side-effects`, `only-throw-error`, `prefer-promise-reject-errors`, `use-unknown-in-catch-callback-variable`, `restrict-template-expressions`, `no-deprecated` (reports uses of `@deprecated` APIs), `ban-ts-comment`, `no-explicit-any`, `unbound-method`, `method-signature-style`.
 - **Formatting**: Prettier, dprint or Biome. If Biome also replaces ESLint, check that its rule set covers the type-aware rules the project relies on (floating promises, unsafe `any`). Do not debate formatting in review once a formatter is configured.
 - **Runners**: `tsx` (esbuild-based, no type-check), `ts-node` (type-checks unless `transpileOnly`; ESM support is fragile), Node.js type stripping (22.18+/23.6+ by default, erasable syntax only), Bun and Deno (native). All of them skip type-checking or do it partially. `tsc --noEmit` stays the source of truth.
 - **Library checks**: `@arethetypeswrong/cli`, `publint`, and `api-extractor` (for `.d.ts` rollups and API reports).
@@ -1702,7 +1702,7 @@ Libraries such as `expect-type` (`expectTypeOf(x).toEqualTypeOf<…>()`), Vitest
 7. **Non-strict code bases** (`noImplicitAny` without `strictNullChecks`) get TS7011 on `() => null` callbacks. Annotate them, or better, enable `strictNullChecks`.
 8. **`rewriteRelativeImportExtensions` adoption.** Switch relative imports to `.ts` specifiers. Remove `allowImportingTsExtensions` if it was only there for type stripping. Make sure no `paths` or `#imports` specifiers carry `.ts` (TS2877). A non-literal `import()` gets an inlined runtime helper. 5.7.3 inlines it even with `importHelpers: true` (verified with tslib 2.8.0 installed), so no tslib upgrade is needed for it.
 9. **Editor ownership**: solution-style configs no longer need the `tsconfig.src.json` rename. No build impact.
-10. **Tooling**: bump typescript-eslint to ≥ 8.16. Check that other tools embedding TypeScript (ts-jest, ts-loader, fork-ts-checker, vue-tsc, Angular CLI) support 5.7. Angular supports TypeScript 5.7 only in 19.1.x and 19.2.x. Angular 20+ requires TypeScript ≥ 5.8, so an Angular upgrade forces a TypeScript upgrade.[^16]
+10. **Tooling**: bump typescript-eslint to ≥ 8.16. Check that other tools embedding TypeScript (ts-jest, ts-loader, fork-ts-checker, vue-tsc, Angular CLI) support 5.7. Angular supports TypeScript 5.7 only in 19.1.x and 19.2.x. Angular 20+ requires TypeScript ≥ 5.8, so an Angular upgrade forces a TypeScript upgrade.
 
 Nothing was removed from the language in 5.7, and no compiler option was deprecated.
 
@@ -1755,22 +1755,3 @@ Nothing was removed from the language in 5.7, and no compiler option was depreca
 - [ ] Type tests for public generic APIs (`expect-type`/`tsd`)
 - [ ] Source maps emitted and enabled at runtime (`--enable-source-maps`). Errors carry `cause` and a `name`
 - [ ] Build performance watched (`--extendedDiagnostics`). `skipLibCheck`/`incremental`/project references used appropriately
-
-***
-
-[^1]: TypeScript 5.7 Release Notes (TypeScript handbook). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html
-[^2]: Announcing TypeScript 5.7 (Microsoft DevBlogs, 2024-11-22). https://devblogs.microsoft.com/typescript/announcing-typescript-5-7/
-[^3]: typescript on npm — version history and publish times (5.7.2 2024-11-22, 5.7.3 2025-01-08, 5.8.2 2025-02-28, 5.9.2 2025-07-31, 6.0.2 2026-03-23, 6.0.3 2026-04-16, 7.0.2 2026-07-08, 7.1.0-beta 2026-10-20). https://www.npmjs.com/package/typescript?activeTab=versions ; GitHub release v5.7.3: https://github.com/microsoft/TypeScript/releases/tag/v5.7.3
-[^4]: TSConfig Reference — strict and its sub-options, defaults for target/module/moduleResolution. https://www.typescriptlang.org/tsconfig/
-[^5]: microsoft/TypeScript PR #59767 — rewriteRelativeImportExtensions. https://github.com/microsoft/TypeScript/pull/59767
-[^6]: Node.js documentation — Modules: TypeScript (type stripping history, unsupported syntax, recommended tsconfig). https://nodejs.org/api/typescript.html
-[^7]: Node.js release schedule (EOL dates for 18, 20, 22, 24, 26). https://github.com/nodejs/Release/blob/main/schedule.json
-[^8]: Node.js documentation — Modules: ECMAScript modules, JSON modules and import attributes. https://nodejs.org/api/esm.html#json-modules
-[^9]: Node.js documentation — module.enableCompileCache() and NODE_DISABLE_COMPILE_CACHE. https://nodejs.org/api/module.html#module-compile-cache
-[^10]: TypeScript 5.8 Release Notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html
-[^11]: TypeScript 5.9 Release Notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html
-[^12]: TypeScript 6.0 Release Notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
-[^13]: Announcing TypeScript 7.0 (Microsoft DevBlogs, 2026-07-08). https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/
-[^14]: typescript-eslint — supported TypeScript versions (8.16.0: `>=4.8.4 <5.8.0`) and shared configs. https://typescript-eslint.io/users/dependency-versions/ ; https://typescript-eslint.io/users/configs/
-[^15]: DefinitelyTyped README — Support window ("only tests packages on versions of TypeScript that are less than 2 years old"). https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^16]: Angular version compatibility table (TypeScript ranges per Angular release). https://angular.dev/reference/versions

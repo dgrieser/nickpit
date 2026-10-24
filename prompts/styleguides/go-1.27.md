@@ -6,40 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.27](#whats-new-in-go-127)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers — new(expr)](#pointers--newexpr)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods — Promoted-Field Literal Keys](#structs--methods--promoted-field-literal-keys)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics — Generic Methods & Inference](#generics--generic-methods--inference)
-11. [Iterators — iter package](#iterators--iter-package)
-12. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-13. [Strings & Bytes — CutLast](#strings--bytes--cutlast)
-14. [Error Handling — errors.AsType](#error-handling--errorsastype)
-15. [Structured Logging with log/slog](#structured-logging-with-logslog)
-16. [Concurrency](#concurrency)
-17. [Memory Management: Cleanup, Weak & unique](#memory-management-cleanup-weak--unique)
-18. [Context Package](#context-package)
-19. [File I/O & Filesystem](#file-io--filesystem)
-20. [JSON — encoding/json/v2 is GA](#json--encodingjsonv2-is-ga)
-21. [UUIDs — uuid package](#uuids--uuid-package)
-22. [HTTP Clients & Servers](#http-clients--servers)
-23. [Cryptography](#cryptography)
-24. [Testing & Benchmarking](#testing--benchmarking)
-25. [CLI Development & Toolchain](#cli-development--toolchain)
-26. [GODEBUG Removals](#godebug-removals)
-27. [Performance Caveats, SIMD & PGO](#performance-caveats-simd--pgo)
-28. [Observability: Tracing, Profiling & Goroutine Leaks](#observability-tracing-profiling--goroutine-leaks)
-29. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.27
 
 Go 1.27.0 shipped 2026-08-19. It has **three language changes**: **generic methods**, **promoted fields as struct-literal keys**, and **function type inference in every assignment context**. It makes **`encoding/json/v2` generally available** (and re-implements `encoding/json` on top of it), adds the **`uuid`** and **`crypto/mldsa`** packages, an experimental portable **`simd`** package, makes the **goroutine leak profile GA**, ships **size-specialised small-object allocation**, runs the **`stdversion` vet check under `go test`**, and **permanently removes seven GODEBUG settings** (including `asynctimerchan`).

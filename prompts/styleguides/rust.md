@@ -1,42 +1,9 @@
 ### Rust Style Guide
 
-> **Version**: This is the **edition- and version-independent** Rust guide. It applies when a Rust change is reviewed but the project's edition or compiler version cannot be determined. It covers Rust 1.31 (the first release with edition 2018) through Rust 1.99 and the editions 2015, 2018, 2021 and 2024. The newest stable release is **Rust 1.99.0 (October 1, 2026)**; its latest patch is **1.99.1 (October 15, 2026)**. Rust **1.100.0 is in beta** (1.100.0-beta.7, October 2026) and is scheduled for November 12, 2026. The newest stable edition is **Rust 2024** (stabilised in 1.85.0, February 20, 2025); no later edition is stable.[^1][^2][^3][^18]
+> **Version**: This is the **edition- and version-independent** Rust guide. It applies when a Rust change is reviewed but the project's edition or compiler version cannot be determined. It covers Rust 1.31 (the first release with edition 2018) through Rust 1.99 and the editions 2015, 2018, 2021 and 2024. The newest stable release is **Rust 1.99.0 (October 1, 2026)**; its latest patch is **1.99.1 (October 15, 2026)**. Rust **1.100.0 is in beta** (1.100.0-beta.7, October 2026) and is scheduled for November 12, 2026. The newest stable edition is **Rust 2024** (stabilised in 1.85.0, February 20, 2025); no later edition is stable.
 > **Scope**: Version-independent review rules for production Rust: ownership, borrowing and lifetimes, error handling, panics, `unsafe` and soundness, FFI, threads and atomics, async (Tokio), traits and generics, iterators, collections, strings and paths, integer arithmetic and casts, allocation and performance, public API design and semver, Cargo (features, resolver, workspaces, lockfiles, build scripts), testing (unit, integration, doc tests, property tests, Miri, loom), Clippy, rustfmt, and supply-chain security.
 > **Version rule**: Every feature tied to an edition or a compiler release is labelled with it, for example "`let`-`else` (1.65)", "let chains (1.88, edition 2024 only)", "`LazyLock` (1.80)", "C-string literals `c"..."` (1.77, edition 2021+)". Before suggesting such a feature, check `edition` and `rust-version` in `Cargo.toml` (and the workspace root) and the channel in `rust-toolchain.toml` (see [Determine the Version First](#determine-the-version-first)). Never recommend a feature the project's edition or minimum supported Rust version (MSRV) does not have.
 > **Note**: This document is self-contained. Every example was compiled (and, where it has a `main`, run) with **rustc 1.99.1** and checked with **Clippy 0.1.99** on x86_64 Linux, edition 2024 unless the block says otherwise. Edition boundaries were checked with `--edition` flags on 1.99.1 and with the toolchains that introduced each edition (1.31.0, 1.56.0, 1.85.0); release boundaries come from the official release notes and were bracketed by compiling probes on 1.56.0, 1.85.0, 1.98.0 and 1.99.1. Blocks marked `compile_fail` are expected to be rejected; blocks marked `ignore` need external crates (`tokio` 1.54, `thiserror` 2.0, `anyhow` 1.0, `proptest` 1.12) and were built in a Cargo project.
-
----
-
-#### Table of Contents
-
-1. [Determine the Version First](#determine-the-version-first)
-2. [Release and Support Status (October 2026)](#release-and-support-status-october-2026)
-3. [Editions](#editions)
-4. [Review-Relevant Stabilisations 1.56 – 1.99](#review-relevant-stabilisations-156--199)
-5. [Do Not Use or Recommend Without a Version Check](#do-not-use-or-recommend-without-a-version-check)
-6. [Deprecated, Removed and Changed Behaviour](#deprecated-removed-and-changed-behaviour)
-7. [Formatting and Naming](#formatting-and-naming)
-8. [Ownership, Borrowing and Lifetimes](#ownership-borrowing-and-lifetimes)
-9. [Error Handling](#error-handling)
-10. [Panics](#panics)
-11. [Traits, Generics and Trait Objects](#traits-generics-and-trait-objects)
-12. [Iterators and Closures](#iterators-and-closures)
-13. [Collections](#collections)
-14. [Strings, UTF-8, `OsStr` and `Path`](#strings-utf-8-osstr-and-path)
-15. [Integers, Overflow, Casts and Floats](#integers-overflow-casts-and-floats)
-16. [Unsafe Code and Soundness](#unsafe-code-and-soundness)
-17. [FFI](#ffi)
-18. [Concurrency: Threads, Locks and Atomics](#concurrency-threads-locks-and-atomics)
-19. [Async Rust and Tokio](#async-rust-and-tokio)
-20. [Public API Design and Semver](#public-api-design-and-semver)
-21. [Cargo: Manifests, Features, Workspaces, Lockfiles, Build Scripts](#cargo-manifests-features-workspaces-lockfiles-build-scripts)
-22. [Performance and Allocation](#performance-and-allocation)
-23. [Testing](#testing)
-24. [Lints: rustc, Clippy, rustfmt](#lints-rustc-clippy-rustfmt)
-25. [Security and Supply Chain](#security-and-supply-chain)
-26. [Logging and Observability](#logging-and-observability)
-27. [Edition Migration Notes](#edition-migration-notes)
-28. [Production / Review Checklist](#production--review-checklist)
 
 ---
 
@@ -85,7 +52,7 @@ components = ["clippy", "rustfmt"]
 
 #### Release and Support Status (October 2026)
 
-- Rust ships a new stable minor release **every six weeks** from `master` via the nightly → beta → stable train. Each release is backwards compatible with earlier releases of the same edition, apart from documented soundness fixes and bug fixes listed under "Compatibility Notes".[^1]
+- Rust ships a new stable minor release **every six weeks** from `master` via the nightly → beta → stable train. Each release is backwards compatible with earlier releases of the same edition, apart from documented soundness fixes and bug fixes listed under "Compatibility Notes".
 - **Only the latest stable release is supported.** There is no LTS: fixes, including security fixes, ship in the next stable or in a point release of the current one (for example 1.99.1). Projects stay current by moving to each new stable; `rust-version` documents how far back they still compile.
 - Editions are not support channels: every current compiler supports all editions (2015, 2018, 2021, 2024), and crates on different editions link together.
 
@@ -95,13 +62,13 @@ components = ["clippy", "rustfmt"]
 | Beta | 1.100.0 (1.100.0-beta.7) | stable release scheduled for 2026-11-12 |
 | Previous stable | 1.98.1 | 2026-09-03 (1.98.0 on 2026-08-20) |
 
-Recent point releases fix miscompilations: 1.99.1 fixes an x86_64 miscompilation of FFI `bool` return values (upper bits of the return register were left unspecified), 1.98.1 a vtable miscompilation, 1.97.1 an LLVM miscompilation, 1.96.1 a MIR-optimisation miscompilation plus libssh2 CVEs in Cargo.[^1][^3] CI pinned to an `x.y.0` release should move to the latest patch.
+Recent point releases fix miscompilations: 1.99.1 fixes an x86_64 miscompilation of FFI `bool` return values (upper bits of the return register were left unspecified), 1.98.1 a vtable miscompilation, 1.97.1 an LLVM miscompilation, 1.96.1 a MIR-optimisation miscompilation plus libssh2 CVEs in Cargo. CI pinned to an `x.y.0` release should move to the latest patch.
 
 ***
 
 #### Editions
 
-An edition changes how the compiler parses and interprets a crate; it never changes the standard library's API set. `cargo fix --edition` migrates code to the next edition, after which `edition` is bumped by hand.[^4]
+An edition changes how the compiler parses and interprets a crate; it never changes the standard library's API set. `cargo fix --edition` migrates code to the next edition, after which `edition` is bumped by hand.
 
 | Edition | Stable since | Key changes a reviewer must know |
 |---|---|---|
@@ -116,7 +83,7 @@ No edition after 2024 is stable as of rustc 1.99.1: `--edition` accepts `2015|20
 
 #### Review-Relevant Stabilisations 1.56 – 1.99
 
-Release dates and items come from the official release notes.[^1] An item works in every edition unless an edition is named.
+Release dates and items come from the official release notes. An item works in every edition unless an edition is named.
 
 | Release (date) | Language / tooling | Library |
 |---|---|---|
@@ -247,7 +214,7 @@ Behaviour changes that break code silently:
 
 #### Formatting and Naming
 
-- Code is formatted by `rustfmt` (`cargo fmt`; CI runs `cargo fmt --check`). Do not hand-align or argue about formatting that rustfmt owns. A `rustfmt.toml` with `style_edition = "2024"` (rustfmt in 1.85+) opts into the 2024 style (version-sorted imports, raw identifiers sorted by name); without it the style edition follows the crate edition.[^5]
+- Code is formatted by `rustfmt` (`cargo fmt`; CI runs `cargo fmt --check`). Do not hand-align or argue about formatting that rustfmt owns. A `rustfmt.toml` with `style_edition = "2024"` (rustfmt in 1.85+) opts into the 2024 style (version-sorted imports, raw identifiers sorted by name); without it the style edition follows the crate edition.
 - Naming (RFC 430, enforced by the `non_snake_case`, `non_camel_case_types`, `non_upper_case_globals` lints):
 
 | Item | Convention | Example |
@@ -431,7 +398,7 @@ fn main() {
 
 ##### `thiserror` (libraries) and `anyhow` (applications)
 
-`thiserror` 2.x derives the boilerplate above; `#[from]` generates a `From` impl **and** marks the field as `source`; `#[error(transparent)]` forwards `Display` and `source` to the inner error.[^6]
+`thiserror` 2.x derives the boilerplate above; `#[from]` generates a `From` impl **and** marks the field as `source`; `#[error(transparent)]` forwards `Display` and `source` to the inner error.
 
 ```rust,ignore
 use thiserror::Error;
@@ -609,7 +576,7 @@ fn main() {
 
 ##### Return-position `impl Trait` and lifetime capture
 
-In **edition 2024**, `-> impl Trait` captures **all** in-scope generic parameters, including lifetimes. In editions 2015–2021, it captures type parameters but **not** lifetime parameters unless they appear in the bounds. `+ use<..>` (1.82) states the captures explicitly in every edition.[^4]
+In **edition 2024**, `-> impl Trait` captures **all** in-scope generic parameters, including lifetimes. In editions 2015–2021, it captures type parameters but **not** lifetime parameters unless they appear in the bounds. `+ use<..>` (1.82) states the captures explicitly in every edition.
 
 ```rust
 // Edition 2024: the hidden type may borrow from `v`; callers cannot drop `v`
@@ -900,7 +867,7 @@ fn main() {
 
 A function or module is **sound** if no safe caller can cause undefined behaviour (UB) through it. An unsound safe API is a critical finding even if current callers use it correctly.
 
-##### Undefined behaviour categories (Rust Reference)[^7]
+##### Undefined behaviour categories (Rust Reference)
 
 - **Data races** (unsynchronised concurrent access where at least one is a write).
 - **Dangling or misaligned access**: reading/writing through a pointer that is dangling, null, or not aligned for the type.
@@ -1245,7 +1212,7 @@ fn main() {
 ##### Model
 
 - `async fn` returns a `Future` that does nothing until polled. Dropping a future cancels it at its current `.await` point; there is no other cancellation mechanism.
-- A runtime (Tokio, the de-facto standard; current release 1.54.1, MSRV 1.85, LTS lines 1.51.x until March 2027 and 1.53.x until September 2027) drives futures on worker threads.[^8] Do not mix runtimes (`async-std` is discontinued; `smol` is an alternative).
+- A runtime (Tokio, the de-facto standard; current release 1.54.1, MSRV 1.85, LTS lines 1.51.x until March 2027 and 1.53.x until September 2027) drives futures on worker threads. Do not mix runtimes (`async-std` is discontinued; `smol` is an alternative).
 - `#[tokio::main]` uses the multi-thread runtime; `#[tokio::main(flavor = "current_thread")]` a single thread; `#[tokio::test]` defaults to `current_thread`.
 - Futures that are `.await`ed run **sequentially**; use `tokio::join!`/`try_join!` for concurrency within a task and `tokio::spawn`/`JoinSet` for parallelism across worker threads.
 
@@ -1332,7 +1299,7 @@ async fn pump(
 }
 ```
 
-- Check the "Cancel safety" section of each method used in a `select!` branch. Not cancel-safe in Tokio: `AsyncReadExt::read_exact`, `read_to_end`, `read_to_string`, `AsyncWriteExt::write_all`, `tokio::sync::Mutex::lock` (loses queue position), `Semaphore::acquire` (loses queue position), and any hand-written `async fn` that awaits more than once while holding partial state.[^9]
+- Check the "Cancel safety" section of each method used in a `select!` branch. Not cancel-safe in Tokio: `AsyncReadExt::read_exact`, `read_to_end`, `read_to_string`, `AsyncWriteExt::write_all`, `tokio::sync::Mutex::lock` (loses queue position), `Semaphore::acquire` (loses queue position), and any hand-written `async fn` that awaits more than once while holding partial state.
 - Re-creating a non-cancel-safe future on every loop iteration of `select!` silently loses data. Create it once outside the loop, pin it (`tokio::pin!(fut)` or `std::pin::pin!`, 1.68), and poll `&mut fut` in the branch.
 - `select!` picks a random ready branch by default; add `biased;` for priority (shutdown first).
 - `select!` branches whose pattern does not match (`Some(msg) = rx.recv()` when the channel is closed) are disabled; add an `else => break` branch or the loop can spin or panic when every branch is disabled.
@@ -1354,7 +1321,7 @@ async fn pump(
 
 #### Public API Design and Semver
 
-Cargo assumes SemVer: for `1.x.y`, any `1.*` release must be compatible; for `0.x.y`, the **minor** number is the compatibility boundary (`0.4.1` → `0.5.0` may break). The Cargo book's SemVer chapter lists what is breaking.[^10]
+Cargo assumes SemVer: for `1.x.y`, any `1.*` release must be compatible; for `0.x.y`, the **minor** number is the compatibility boundary (`0.4.1` → `0.5.0` may break). The Cargo book's SemVer chapter lists what is breaking.
 
 | Change to a published library | Classification |
 |---|---|
@@ -1373,7 +1340,7 @@ Cargo assumes SemVer: for `1.x.y`, any `1.*` release must be compatible; for `0.
 
 Practices:
 
-- Run **`cargo-semver-checks`** (0.51.0, Oct 2026) in CI before publishing; it compares the rustdoc JSON of the new version against the last published one and reports breaking changes such as removed items, newly required trait items, lost auto traits and enum variants added to exhaustive enums.[^11]
+- Run **`cargo-semver-checks`** (0.51.0, Oct 2026) in CI before publishing; it compares the rustdoc JSON of the new version against the last published one and reports breaking changes such as removed items, newly required trait items, lost auto traits and enum variants added to exhaustive enums.
 - Mark public enums that will grow (`ErrorKind`, config options) and structs with public fields `#[non_exhaustive]` from the first release.
 - Keep fields private and expose constructors/builders; accept `impl Into<…>`/`impl AsRef<…>` at the edges, return concrete types.
 - Do not expose third-party types in the public API unless you intend to follow their major versions (re-export them, `pub use dep;`, if you do).
@@ -1499,14 +1466,14 @@ workspace = true
 
 ##### Lockfile policy
 
-- `cargo new` creates projects with `Cargo.lock` tracked; the Cargo FAQ (since 2023) recommends deciding per project rather than "binaries commit, libraries don't". Applications and anything deployed **must** commit `Cargo.lock`. Libraries usually commit it too and add a CI job that tests the latest compatible versions (`cargo update` then test) and one that tests minimal versions.[^12]
+- `cargo new` creates projects with `Cargo.lock` tracked; the Cargo FAQ (since 2023) recommends deciding per project rather than "binaries commit, libraries don't". Applications and anything deployed **must** commit `Cargo.lock`. Libraries usually commit it too and add a CI job that tests the latest compatible versions (`cargo update` then test) and one that tests minimal versions.
 - `Cargo.lock` does not affect downstream users of a library; only the version requirements in `Cargo.toml` do.
 - CI and release builds use `--locked` (fail if the lockfile would change); `cargo install --locked` for tools. Review `Cargo.lock` diffs: a PR that changes many unrelated versions or adds unknown crates deserves scrutiny.
 - Lockfile v4 (stabilised in 1.78, written by default since 1.83) cannot be read by Cargo < 1.78; Cargo keeps writing v3 while `rust-version` is below 1.83, so declaring the real MSRV keeps the lockfile readable by old toolchains; without `rust-version`, CI on a pre-1.78 MSRV toolchain fails on a v4 lockfile.
 
 ##### Build scripts and proc macros
 
-- `build.rs` and procedural macros run **arbitrary code at build time** with the developer's and CI's privileges. Treat new ones in dependencies as security-relevant (the arrayref incident of August 2026 used a malicious build script).[^13]
+- `build.rs` and procedural macros run **arbitrary code at build time** with the developer's and CI's privileges. Treat new ones in dependencies as security-relevant (the arrayref incident of August 2026 used a malicious build script).
 - Build scripts write only to `OUT_DIR`, never to the source tree.
 - Emit precise rerun directives (`cargo::rerun-if-changed=path`, `cargo::rerun-if-env-changed=VAR`); without any, the script reruns whenever any file in the package changes. The `cargo::` prefix needs Cargo 1.77; use `cargo:` (single colon) for an older MSRV.
 - Prefer `pkg-config`/`cc`/`bindgen` crates over hand-written compiler invocations; respect `TARGET` and `HOST` for cross-compilation.
@@ -1620,7 +1587,7 @@ Property tests (`proptest` 1.12, `quickcheck`) suit parsers, encoders, and anyth
 
 ##### Miri and loom
 
-- **Miri** interprets the program and reports UB: out-of-bounds and use-after-free, invalid values, uninitialised reads, aliasing violations (Stacked/Tree Borrows), data races, memory leaks, misaligned access. It requires nightly: `rustup +nightly component add miri` then `cargo +nightly miri test`. It is slow; mark tests that do I/O or heavy computation `#[cfg_attr(miri, ignore)]`. Any crate with `unsafe` should run its tests under Miri in CI. Miri used to store all environment variables in `target/`; do not expose secrets to jobs that run Miri and cache `target/` (fixed in nightly 2026-09-22).[^14]
+- **Miri** interprets the program and reports UB: out-of-bounds and use-after-free, invalid values, uninitialised reads, aliasing violations (Stacked/Tree Borrows), data races, memory leaks, misaligned access. It requires nightly: `rustup +nightly component add miri` then `cargo +nightly miri test`. It is slow; mark tests that do I/O or heavy computation `#[cfg_attr(miri, ignore)]`. Any crate with `unsafe` should run its tests under Miri in CI. Miri used to store all environment variables in `target/`; do not expose secrets to jobs that run Miri and cache `target/` (fixed in nightly 2026-09-22).
 - **loom** (0.7) model-checks concurrent code by exploring all interleavings permitted by the memory model. Code under test uses `loom::sync` types under `cfg(loom)` and runs with `RUSTFLAGS="--cfg loom" cargo test --release`. Use it for lock-free structures and custom synchronisation primitives.
 - Sanitizers (`-Zsanitizer=address/thread`) are nightly-only.
 
@@ -1663,7 +1630,7 @@ fn main() {
 | `clippy::nursery` | allow | Unstable lints with false positives |
 | `clippy::cargo` | allow | Manifest metadata and duplicate dependency versions |
 
-`clippy::all` covers correctness, suspicious, style, complexity and perf.[^15] Run `cargo clippy --all-targets --all-features -- -D warnings` in CI; `cargo clippy --fix` applies machine-applicable suggestions (same target selection as `cargo build` since 1.89). Configure `msrv` (or rely on `rust-version`) so Clippy does not suggest newer APIs. Clippy suggestions are not authoritative: a reviewer still checks that a suggested rewrite preserves behaviour and the MSRV.
+`clippy::all` covers correctness, suspicious, style, complexity and perf. Run `cargo clippy --all-targets --all-features -- -D warnings` in CI; `cargo clippy --fix` applies machine-applicable suggestions (same target selection as `cargo build` since 1.89). Configure `msrv` (or rely on `rust-version`) so Clippy does not suggest newer APIs. Clippy suggestions are not authoritative: a reviewer still checks that a suggested rewrite preserves behaviour and the MSRV.
 
 ```rust
 // Clippy flags each of these (default groups):
@@ -1698,11 +1665,11 @@ fn main() {
 
 ##### Dependencies
 
-- **`cargo audit`** (cargo-audit 0.22.2, RustSec advisory database) or **`cargo deny check`** (cargo-deny 0.20.2: advisories, licenses, banned crates, duplicate versions, allowed registries/git sources) in CI on every PR and on a schedule; new advisories appear for unchanged lockfiles.[^16]
+- **`cargo audit`** (cargo-audit 0.22.2, RustSec advisory database) or **`cargo deny check`** (cargo-deny 0.20.2: advisories, licenses, banned crates, duplicate versions, allowed registries/git sources) in CI on every PR and on a schedule; new advisories appear for unchanged lockfiles.
 - New dependencies deserve review: maintenance status, download count, owners, `unsafe` usage (`cargo geiger`), build scripts and proc macros, transitive tree size (`cargo tree -e normal --duplicates`). Prefer well-known crates for crypto, TLS, parsing.
-- Typosquats and compromised accounts are real: the August 20, 2026 incident republished `arrayref` 0.3.10 (and `internment` 0.8.7, `append-only-vec` 0.1.9) depending on a malicious `proc-macro1` crate whose build script downloaded a payload; the versions were online for 86–107 minutes.[^13] `cargo vet`/`cargo crev`, pinning via `Cargo.lock`, and delaying adoption of brand-new versions reduce exposure.
-- Publish from CI with crates.io **Trusted Publishing** (OIDC from GitHub Actions; GitLab.com since January 2026) instead of long-lived API tokens; owners can enforce trusted-publishing-only.[^17] Never pass the token as a `cargo login <token>` argument (deprecated since 1.86; it ends up in shell history) — use `cargo login` from stdin or `CARGO_REGISTRY_TOKEN`.
-- CI jobs that can write caches shared with PR builds must not have secrets in the environment (see the Miri incident).[^14]
+- Typosquats and compromised accounts are real: the August 20, 2026 incident republished `arrayref` 0.3.10 (and `internment` 0.8.7, `append-only-vec` 0.1.9) depending on a malicious `proc-macro1` crate whose build script downloaded a payload; the versions were online for 86–107 minutes. `cargo vet`/`cargo crev`, pinning via `Cargo.lock`, and delaying adoption of brand-new versions reduce exposure.
+- Publish from CI with crates.io **Trusted Publishing** (OIDC from GitHub Actions; GitLab.com since January 2026) instead of long-lived API tokens; owners can enforce trusted-publishing-only. Never pass the token as a `cargo login <token>` argument (deprecated since 1.86; it ends up in shell history) — use `cargo login` from stdin or `CARGO_REGISTRY_TOKEN`.
+- CI jobs that can write caches shared with PR builds must not have secrets in the environment (see the Miri incident).
 
 ##### Code-level security
 
@@ -1868,24 +1835,3 @@ fn main() {
 - [ ] No shell interpolation of input, no SQL string building, no disabled TLS verification
 - [ ] Secrets not `Debug`-printed, logged or kept in CI caches; constant-time comparison for tokens
 - [ ] Libraries use `log`/`tracing` facades only; `#[instrument]` skips secrets and large arguments; errors logged once with their chain
-
-***
-
-[^1]: Rust release notes (RELEASES.md), versions 1.0–1.99.1. https://github.com/rust-lang/rust/blob/master/RELEASES.md and https://doc.rust-lang.org/stable/releases.html
-[^2]: Announcing Rust 1.99.0 (October 1, 2026). https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/
-[^3]: Announcing Rust 1.99.1 (October 15, 2026). https://blog.rust-lang.org/2026/10/15/Rust-1.99.1/
-[^4]: The Rust Edition Guide (Rust 2018, 2021, 2024 chapters). https://doc.rust-lang.org/edition-guide/
-[^5]: rustfmt configuration (`style_edition`) and the Rust Style Guide. https://rust-lang.github.io/rustfmt/ , https://doc.rust-lang.org/style-guide/
-[^6]: thiserror documentation (2.0). https://docs.rs/thiserror ; anyhow documentation. https://docs.rs/anyhow
-[^7]: The Rust Reference — Behavior considered undefined. https://doc.rust-lang.org/reference/behavior-considered-undefined.html ; The Rustonomicon. https://doc.rust-lang.org/nomicon/
-[^8]: Tokio README — supported Rust versions and LTS releases. https://github.com/tokio-rs/tokio#supported-rust-versions
-[^9]: Tokio documentation — `tokio::select!` cancellation safety. https://docs.rs/tokio/latest/tokio/macro.select.html#cancellation-safety
-[^10]: The Cargo Book — SemVer Compatibility. https://doc.rust-lang.org/cargo/reference/semver.html
-[^11]: cargo-semver-checks. https://github.com/obi1kenobi/cargo-semver-checks
-[^12]: The Cargo Book — FAQ: Why have Cargo.lock in version control? https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control ; Resolver versions. https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
-[^13]: Supply chain attack on arrayref (August 20, 2026). https://blog.rust-lang.org/2026/08/20/supply-chain-attack-on-arrayref/
-[^14]: GitHub Actions leaking secrets when Miri output is cached (September 21, 2026). https://blog.rust-lang.org/2026/09/21/github-actions-leaking-secrets-when-miri-output-is-cached/
-[^15]: Clippy README — lint categories. https://github.com/rust-lang/rust-clippy#clippy ; Clippy lint list. https://rust-lang.github.io/rust-clippy/stable/index.html
-[^16]: RustSec advisory database and cargo-audit. https://rustsec.org/ ; cargo-deny. https://embarkstudios.github.io/cargo-deny/
-[^17]: crates.io development updates: Trusted Publishing (July 2025) and GitLab support/enforcement (January 2026). https://blog.rust-lang.org/2025/07/11/crates-io-development-update-2025-07/ , https://blog.rust-lang.org/2026/01/21/crates-io-development-update/
-[^18]: Cargo changelog (Cargo 1.100, 2026-11-12; lockfile v4 default in Cargo 1.83). https://doc.rust-lang.org/nightly/cargo/CHANGELOG.html ; beta channel manifest (rustc 1.100.0-beta.7). https://static.rust-lang.org/dist/channel-rust-beta.toml

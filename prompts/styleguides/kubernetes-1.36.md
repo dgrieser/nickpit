@@ -1,51 +1,16 @@
 ### Kubernetes 1.36: Manifests, Policies and Go Controllers — Complete Review Guide
 
-> **Version**: Kubernetes v1.36.0 "ハル (Haru)", released 2026-04-22. Latest patch as of 2026-10-22: **v1.36.5** (git tag dated 2026-09-23; `dl.k8s.io/release/stable-1.36.txt` reports `v1.36.5`). The release schedule lists v1.36.6 as the next patch (target 2026-10-13); treat it as unreleased until it shows up on `dl.k8s.io`.[^1][^2][^3]
-> **Support**: 1.36 is in standard support. It enters maintenance mode on **2027-04-28** and reaches end of life on **2027-06-28**. The newest minor is **1.37** (v1.37.0 on 2026-08-26, latest patch v1.37.1). Supported minors as of 2026-10-22: 1.37, 1.36, 1.35 (EOL 2027-02-28) and 1.34 (EOL **2026-10-27**).[^2]
-> **Client libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go` and the other staging modules at **v0.36.x** (latest v0.36.5); **controller-runtime v0.24.x** (v0.24.0 on 2026-04-30, v0.24.1 on 2026-05-11) and **controller-tools v0.21.x** pair with 1.36. All of them declare `go 1.26.0` in `go.mod`; Kubernetes 1.36 itself is built with Go 1.26 (1.36.5 uses Go 1.26.8).[^4][^5]
+> **Version**: Kubernetes v1.36.0 "ハル (Haru)", released 2026-04-22. Latest patch as of 2026-10-22: **v1.36.5** (git tag dated 2026-09-23; `dl.k8s.io/release/stable-1.36.txt` reports `v1.36.5`). The release schedule lists v1.36.6 as the next patch (target 2026-10-13); treat it as unreleased until it shows up on `dl.k8s.io`.
+> **Support**: 1.36 is in standard support. It enters maintenance mode on **2027-04-28** and reaches end of life on **2027-06-28**. The newest minor is **1.37** (v1.37.0 on 2026-08-26, latest patch v1.37.1). Supported minors as of 2026-10-22: 1.37, 1.36, 1.35 (EOL 2027-02-28) and 1.34 (EOL **2026-10-27**).
+> **Client libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go` and the other staging modules at **v0.36.x** (latest v0.36.5); **controller-runtime v0.24.x** (v0.24.0 on 2026-04-30, v0.24.1 on 2026-05-11) and **controller-tools v0.21.x** pair with 1.36. All of them declare `go 1.26.0` in `go.mod`; Kubernetes 1.36 itself is built with Go 1.26 (1.36.5 uses Go 1.26.8).
 > **Scope**: Kubernetes manifests (raw YAML, Kustomize output, Helm-rendered YAML), admission policies (ValidatingAdmissionPolicy, MutatingAdmissionPolicy, webhooks), CustomResourceDefinitions with CEL validation, and Go operators/controllers built with controller-runtime, client-go and Kubebuilder that target a 1.36 cluster.
 > **Note**: This document is self-contained. It carries forward every still-correct house rule (operator principles, CRD design, status conditions, finalizers, RBAC, webhooks, observability, testing) and adds the 1.36-specific layer. Sections marked **[NEW in 1.36]** cover behaviour that differs from 1.35. Every manifest in this guide was applied with `kubectl apply --dry-run=server` (or for real) against a v1.36.2 kube-apiserver; boundary claims were re-checked against v1.35.0 and v1.37.0 apiservers; Go snippets compile against k8s.io/* v0.36.5 and controller-runtime v0.24.1 with Go 1.26. Runtime (kubelet) behaviour is sourced from the release notes and documentation, not executed.
 
 ---
 
-#### Table of Contents
-
-1. What's New in 1.36 (overview)
-2. Do Not Use or Recommend (1.37+ features, and what 1.36 removed)
-3. Version-Aware Review
-4. API Versions Served by a 1.36 Cluster
-5. Feature-Gate Defaults That Matter to Authors
-6. Usable Features GA in Earlier Releases (cumulative)
-7. Foundational Principles
-8. Project Layout, Toolchain and Dependency Pinning
-9. Naming Conventions
-10. Workload Manifests (Pods, Deployments, StatefulSets, Jobs, CronJobs, HPA, PDB)
-11. Pod Security: securityContext, Pod Security Admission, User Namespaces
-12. Networking: Services, NetworkPolicy, Ingress and Gateway API
-13. Admission Control: ValidatingAdmissionPolicy, MutatingAdmissionPolicy, Webhooks
-14. CRD & API Design
-15. CEL in CRDs and Policies
-16. Spec vs. Status, Status Conditions
-17. Versioning & API Evolution
-18. Controller / Reconciler Patterns (controller-runtime v0.24)
-19. Watches, Predicates, Caches and Informers (client-go v0.36)
-20. Finalizers
-21. Owner References & Garbage Collection
-22. Validation & Admission Webhooks in Go
-23. RBAC & Least Privilege
-24. Security Hardening
-25. Observability
-26. Error Handling & Requeue Strategy
-27. Testing
-28. kubectl 1.36 for Reviewers
-29. Removed / Changed in 1.36 — Migration Notes
-30. Production / Review Checklist
-
----
-
 #### What's New in 1.36
 
-Kubernetes 1.36 contains 70 enhancements: 18 graduated to Stable, 25 entered Beta and 25 are new Alpha features. It also deprecates Service `.spec.externalIPs` and permanently disables the `gitRepo` volume plugin.[^1] The table lists every change that a manifest, policy or controller author can observe. "Default" means the state on a stock 1.36 control plane (verified on a v1.36.2 kube-apiserver through the `kubernetes_feature_enabled` metric).
+Kubernetes 1.36 contains 70 enhancements: 18 graduated to Stable, 25 entered Beta and 25 are new Alpha features. It also deprecates Service `.spec.externalIPs` and permanently disables the `gitRepo` volume plugin. The table lists every change that a manifest, policy or controller author can observe. "Default" means the state on a stock 1.36 control plane (verified on a v1.36.2 kube-apiserver through the `kubernetes_feature_enabled` metric).
 
 ##### Graduated to Stable (GA) in 1.36
 
@@ -91,11 +56,11 @@ Kubernetes 1.36 contains 70 enhancements: 18 graduated to Stable, 25 entered Bet
 
 ##### New Alpha in 1.36 (off by default — do not rely on in production manifests)
 
-`HPAScaleToZero` improvements (`minReplicas: 0` is still **rejected** on a stock 1.36 cluster), Workload-Aware Scheduling (`scheduling.k8s.io/v1alpha2` Workload/PodGroup, Pod `spec.schedulingGroup.podGroupName` replacing 1.35's alpha `spec.workloadRef`, `GenericWorkload`, `TopologyAwareWorkloadScheduling`, `WorkloadAwarePreemption`, `WorkloadWithJob`; `scheduling.k8s.io/v1alpha1` Workload was removed), `ManifestBasedAdmissionControlConfig` (admission policies loaded from `staticManifestsDir`), `PersistentVolumeClaimUnusedSinceTime` (PVC `Unused` condition), `ShardedListAndWatch`, `NativeHistograms`, `PodLevelResourceManagers`, `CRIListStreaming`, `ImageVolumeWithDigest`, `DRAListTypeAttributes`, `DRANodeAllocatableResources`, `DRAResourcePoolStatus`, `DRAWorkloadResourceClaims`, `PodsAPI` (kubelet gRPC).[^6]
+`HPAScaleToZero` improvements (`minReplicas: 0` is still **rejected** on a stock 1.36 cluster), Workload-Aware Scheduling (`scheduling.k8s.io/v1alpha2` Workload/PodGroup, Pod `spec.schedulingGroup.podGroupName` replacing 1.35's alpha `spec.workloadRef`, `GenericWorkload`, `TopologyAwareWorkloadScheduling`, `WorkloadAwarePreemption`, `WorkloadWithJob`; `scheduling.k8s.io/v1alpha1` Workload was removed), `ManifestBasedAdmissionControlConfig` (admission policies loaded from `staticManifestsDir`), `PersistentVolumeClaimUnusedSinceTime` (PVC `Unused` condition), `ShardedListAndWatch`, `NativeHistograms`, `PodLevelResourceManagers`, `CRIListStreaming`, `ImageVolumeWithDigest`, `DRAListTypeAttributes`, `DRANodeAllocatableResources`, `DRAResourcePoolStatus`, `DRAWorkloadResourceClaims`, `PodsAPI` (kubelet gRPC).
 
 ##### Changed defaults and behaviour in 1.36
 
-- **StatefulSet `maxUnavailable` is OFF again.** `MaxUnavailableStatefulSet` became beta-on in 1.35.0 but is **disabled by default in 1.36** (kubernetes#137904) to work around a 1.35 regression in `podManagementPolicy: Parallel` rollouts (the same change was backported to 1.35.4, kubernetes#137926, so 1.35.4+ also drops the field). The actual Parallel-rollout fix (kubernetes#137666) and the re-enabled default (kubernetes#139466) ship only in 1.37; the 1.37 announcement links kubernetes#137409 for the bug. On a 1.36 apiserver `spec.updateStrategy.rollingUpdate.maxUnavailable` is **silently dropped** on create (verified: the stored object only has `partition: 0`). It is back on by default in 1.37. **[NEW in 1.36]**[^6][^7]
+- **StatefulSet `maxUnavailable` is OFF again.** `MaxUnavailableStatefulSet` became beta-on in 1.35.0 but is **disabled by default in 1.36** (kubernetes#137904) to work around a 1.35 regression in `podManagementPolicy: Parallel` rollouts (the same change was backported to 1.35.4, kubernetes#137926, so 1.35.4+ also drops the field). The actual Parallel-rollout fix (kubernetes#137666) and the re-enabled default (kubernetes#139466) ship only in 1.37; the 1.37 announcement links kubernetes#137409 for the bug. On a 1.36 apiserver `spec.updateStrategy.rollingUpdate.maxUnavailable` is **silently dropped** on create (verified: the stored object only has `partition: 0`). It is back on by default in 1.37. **[NEW in 1.36]**
 - **Service `.spec.externalIPs` is deprecated.** The apiserver returns `Warning: spec.externalIPs is deprecated and may no longer be implemented in some clusters`. Removal is planned for v1.43 (KEP-5707). 1.35 accepts the field silently. **[NEW in 1.36]**
 - **`gitRepo` volumes cannot be enabled anymore.** The `GitRepoVolumeDriver` gate is locked to false (`--feature-gates=GitRepoVolumeDriver=true` makes kube-apiserver 1.36 exit with "feature is locked to false"; 1.35 accepted it). The apiserver **still admits** Pods with `gitRepo` (warning: `deprecated in v1.11, and disabled by default in v1.33+`) — they fail on the node. Reviewers must flag every `gitRepo` volume. **[NEW in 1.36]**
 - **CRD numeric formats are range-checked.** `format: int32`/`int64`/`float`/`double` in a CRD schema now reject out-of-range values (`replicas: 3000000000` with `format: int32` → `Checked value must be of type integer with format int32`). 1.35 stored the value. Existing objects are protected by validation ratcheting. **[NEW in 1.36]**
@@ -105,14 +70,14 @@ Kubernetes 1.36 contains 70 enhancements: 18 graduated to Stable, 25 entered Bet
 - **`kubectl describe`** of multiple objects no longer lists events unless `--show-events` is passed.
 - **Metric renames (ACTION REQUIRED)**: `volume_operation_total_errors` → `volume_operation_errors_total` (kube-controller-manager), `etcd_bookmark_counts` → `etcd_bookmark_total` (kube-apiserver). Update dashboards and alerts.
 - **Audit logging**: `--audit-log-maxage` now defaults to 366 days and `--audit-log-maxbackup` to 100; `--audit-log-maxsize=0` disables rotation.
-- **Ingress NGINX** (the community `kubernetes/ingress-nginx` controller) was retired on **2026-03-24**: no further releases or security fixes. Manifests that depend on its annotations need a migration plan (Gateway API or another controller).[^1][^8]
+- **Ingress NGINX** (the community `kubernetes/ingress-nginx` controller) was retired on **2026-03-24**: no further releases or security fixes. Manifests that depend on its annotations need a migration plan (Gateway API or another controller).
 
 ##### Patch-release fixes that matter (1.36.1–1.36.5)
 
 - 1.36.2: fixed a 1.36 regression that rejected scheduling-directive changes on suspended Jobs before the `JobSuspended` condition was set; fixed a 1.34+ regression with env values from Secrets containing non-UTF-8 data.
 - 1.36.3: fixed a 1.36 **server-side apply** regression where patching a list/map field could fail with `422 required`; fixed a kubelet memory leak introduced in 1.36.
 - 1.36.4: `cache.FakeCustomStore` implements the new `Bookmark` and `LastStoreSyncResourceVersion` methods again; fixed a scheduler preemption race that could leave a preemptor Pod unschedulable; fixed duplicate CDI device IDs after a retried DRA `PrepareResources`; `golang.org/x/net` and `golang.org/x/text` security updates.
-- 1.36.5: built with Go 1.26.8; fixed a kube-scheduler crash in the DRA allocator when a ResourceClaim's device request counts overflow (oversized `firstAvailable` alternatives now fall through); fixed a Windows kube-proxy panic.[^9]
+- 1.36.5: built with Go 1.26.8; fixed a kube-scheduler crash in the DRA allocator when a ResourceClaim's device request counts overflow (oversized `firstAvailable` alternatives now fall through); fixed a Windows kube-proxy panic.
 
 Run **1.36.3 or later** if controllers rely on server-side apply of list or map fields.
 
@@ -147,11 +112,11 @@ A 1.36 apiserver does not know these API versions, fields or behaviours. Never s
 | controller-runtime **v0.25.x**, controller-tools **v0.22+**, k8s.io/* **v0.37.x** | 1.37 line | pair with 1.37; their API types contain fields a 1.36 server drops |
 | client-go `*WithContext` discovery/RESTMapper methods (for example `DeferredDiscoveryRESTMapper.RESTMappingWithContext`) | client-go v0.37 | do not exist in v0.36. (The 1.37 announcement also mentions a `BookmarkFunc` on `ResourceEventHandlerFuncs`; client-go v0.37.1 does not have it — only `cache.FakeCustomStore.BookmarkFunc`.) |
 
-Also deprecated in 1.37 (still fine on 1.36, but do not build new dependencies on them): `kube-dns`, `kubectl run -f`; kube-proxy `ipvs` mode is already deprecated since 1.35 and from 1.37 also logs a startup warning and sits behind the deprecated `KubeProxyIPVS` gate.[^10]
+Also deprecated in 1.37 (still fine on 1.36, but do not build new dependencies on them): `kube-dns`, `kubectl run -f`; kube-proxy `ipvs` mode is already deprecated since 1.35 and from 1.37 also logs a startup warning and sits behind the deprecated `KubeProxyIPVS` gate.
 
 ##### Deprecated or removed as of 1.36 — flag in review
 
-Sources: the 1.36 release notes and the corresponding KEPs.[^6][^19]
+Sources: the 1.36 release notes and the corresponding KEPs.
 
 | Item | Status | Replacement |
 |---|---|---|
@@ -170,7 +135,7 @@ Sources: the 1.36 release notes and the corresponding KEPs.[^6][^19]
 | controller-runtime `scheme.Builder` (`pkg/scheme`) | **Deprecated in v0.24** | `runtime.NewSchemeBuilder` from apimachinery |
 | controller-runtime `client.Apply` patch type (`client.Patch(ctx, obj, client.Apply)`) | Deprecated | `client.Client.Apply()` with apply configurations |
 
-Older removals that still show up in charts and must be rejected: `extensions/v1beta1` and `networking.k8s.io/v1beta1` Ingress (1.22), `batch/v1beta1` CronJob, `policy/v1beta1` PodDisruptionBudget and PodSecurityPolicy (1.25), `autoscaling/v2beta2` HPA (1.26), `flowcontrol.apiserver.k8s.io/v1beta2` (1.29), `flowcontrol.apiserver.k8s.io/v1beta3` (1.32), `storage.k8s.io/v1beta1` CSIStorageCapacity (1.27). All return `no matches for kind` on 1.36 (verified).[^11]
+Older removals that still show up in charts and must be rejected: `extensions/v1beta1` and `networking.k8s.io/v1beta1` Ingress (1.22), `batch/v1beta1` CronJob, `policy/v1beta1` PodDisruptionBudget and PodSecurityPolicy (1.25), `autoscaling/v2beta2` HPA (1.26), `flowcontrol.apiserver.k8s.io/v1beta2` (1.29), `flowcontrol.apiserver.k8s.io/v1beta3` (1.32), `storage.k8s.io/v1beta1` CSIStorageCapacity (1.27). All return `no matches for kind` on 1.36 (verified).
 
 ***
 
@@ -492,7 +457,7 @@ spec:
 ```
 
 Review notes for this template:
-- **Image volumes (GA in 1.36)** mount an OCI image or artifact read-only. They need a container runtime that implements image volumes (check the runtime's release notes; the apiserver accepts the field regardless); pin the `reference` by digest for reproducibility; `pullPolicy` follows the same rules as container images.[^12]
+- **Image volumes (GA in 1.36)** mount an OCI image or artifact read-only. They need a container runtime that implements image volumes (check the runtime's release notes; the apiserver accepts the field regardless); pin the `reference` by digest for reproducibility; `pullPolicy` follows the same rules as container images.
 - **`fileKeyRef`** (beta) reads `KEY='value'` lines from a file in an `emptyDir` that an init container wrote; values must be single-quoted (a POSIX-shell subset since 1.35). An invalid key prevents the Pod from starting. Flag it if the writing init container is missing.
 - **`restartPolicyRules`** requires an explicit container `restartPolicy` (the apiserver rejects rules without it). Only `exitCodes` conditions exist; at most 20 rules.
 - **Pod-level `resources`** (beta) set a budget for the whole Pod; container limits must not exceed it. In 1.36 pod-level CPU/memory can also be resized in place (`InPlacePodLevelResourcesVerticalScaling`, beta).
@@ -750,7 +715,7 @@ spec:
 
 ##### Pod Security Admission
 
-Label every namespace explicitly; pin `enforce-version`[^20] so a control-plane upgrade does not silently change the policy:
+Label every namespace explicitly; pin `enforce-version` so a control-plane upgrade does not silently change the policy:
 
 ```yaml
 apiVersion: v1
@@ -766,9 +731,9 @@ metadata:
 
 ##### User Namespaces (GA in 1.36) **[NEW in 1.36]**
 
-`hostUsers: false` maps container UIDs/GIDs to an unprivileged host range, so root in the container is not root on the node. The API feature is GA and locked on, but nodes need Linux ≥ 6.3 with idmap-mount support on all volume filesystems, containerd ≥ 2.0 or CRI-O ≥ 1.25, and runc ≥ 1.2 or crun ≥ 1.9. Pods using user namespaces may not set `hostNetwork`, `hostIPC` or `hostPID` and may not use `volumeDevices`; NFS volumes cannot be mounted.[^13]
+`hostUsers: false` maps container UIDs/GIDs to an unprivileged host range, so root in the container is not root on the node. The API feature is GA and locked on, but nodes need Linux ≥ 6.3 with idmap-mount support on all volume filesystems, containerd ≥ 2.0 or CRI-O ≥ 1.25, and runc ≥ 1.2 or crun ≥ 1.9. Pods using user namespaces may not set `hostNetwork`, `hostIPC` or `hostPID` and may not use `volumeDevices`; NFS volumes cannot be mounted.
 
-Pod Security Admission relaxes checks for user-namespaced Pods: `runAsNonRoot` and `runAsUser` are not checked under Baseline or Restricted, and Baseline also allows `procMount: Unmasked`. Restricted still requires the default `procMount`.[^13] Verified on 1.36: a root Pod with `hostUsers: false` and no `runAsNonRoot` is admitted by `restricted` with `enforce-version` `v1.35`, `v1.36` or `latest`, but rejected under `v1.34` and older policy versions (`runAsNonRoot != true`). The same Pod with `hostUsers: true` is rejected.
+Pod Security Admission relaxes checks for user-namespaced Pods: `runAsNonRoot` and `runAsUser` are not checked under Baseline or Restricted, and Baseline also allows `procMount: Unmasked`. Restricted still requires the default `procMount`. Verified on 1.36: a root Pod with `hostUsers: false` and no `runAsNonRoot` is admitted by `restricted` with `enforce-version` `v1.35`, `v1.36` or `latest`, but rejected under `v1.34` and older policy versions (`runAsNonRoot != true`). The same Pod with `hostUsers: true` is rejected.
 
 ```yaml
 # Accepted by restricted:v1.36 — root inside a user namespace
@@ -794,7 +759,7 @@ spec:
 ##### SELinux
 
 - `securityContext.seLinuxChangePolicy` (GA in 1.36): `MountOption` (fast, mount with `-o context=`) or `Recursive` (relabel every file). Pods that share a volume on the same node but run with different SELinux labels must use `Recursive`.
-- The cluster-wide switch `SELinuxMount` stays beta/off in 1.36 and becomes GA/on in 1.37 (the 1.36 announcement's wording that mount-option labelling "defaults to all volumes" describes the graduation of `SELinuxChangePolicy`/`SELinuxMountReadWriteOncePod`; the `kubernetes_feature_enabled` metric of a 1.36 apiserver reports `SELinuxMount` beta and disabled). **Use 1.36 to audit**: set `seLinuxChangePolicy: Recursive` on Pods (including Pod templates in Deployments, StatefulSets, DaemonSets and CRDs) that share volumes with differently-labelled Pods before upgrading to 1.37, or they can fail to start.[^14]
+- The cluster-wide switch `SELinuxMount` stays beta/off in 1.36 and becomes GA/on in 1.37 (the 1.36 announcement's wording that mount-option labelling "defaults to all volumes" describes the graduation of `SELinuxChangePolicy`/`SELinuxMountReadWriteOncePod`; the `kubernetes_feature_enabled` metric of a 1.36 apiserver reports `SELinuxMount` beta and disabled). **Use 1.36 to audit**: set `seLinuxChangePolicy: Recursive` on Pods (including Pod templates in Deployments, StatefulSets, DaemonSets and CRDs) that share volumes with differently-labelled Pods before upgrading to 1.37, or they can fail to start.
 
 ##### Fine-Grained Kubelet Authorization (GA in 1.36)
 
@@ -810,7 +775,7 @@ rules:
     verbs: ["get"]
 ```
 
-Kubelet path → subresource mapping: `/stats/*` → `nodes/stats`, `/metrics/*` → `nodes/metrics`, `/logs/*` → `nodes/log`, `/pods` and `/runningPods/` → `nodes/pods` (falls back to `nodes/proxy`), `/healthz` → `nodes/healthz`, `/configz` → `nodes/configz`; everything else needs `nodes/proxy`.[^15] Flag any new `nodes/proxy` grant.
+Kubelet path → subresource mapping: `/stats/*` → `nodes/stats`, `/metrics/*` → `nodes/metrics`, `/logs/*` → `nodes/log`, `/pods` and `/runningPods/` → `nodes/pods` (falls back to `nodes/proxy`), `/healthz` → `nodes/healthz`, `/configz` → `nodes/configz`; everything else needs `nodes/proxy`. Flag any new `nodes/proxy` grant.
 
 ---
 
@@ -894,7 +859,7 @@ spec:
 ##### Ingress and Gateway API
 
 - `networking.k8s.io/v1` Ingress is GA and frozen; new features land in Gateway API (CRDs from `gateway.networking.k8s.io`, not built into the apiserver).
-- **The community Ingress NGINX controller was retired on 2026-03-24** — no releases, bug fixes or security fixes since then. Manifests that rely on `nginx.ingress.kubernetes.io/*` annotations (especially `configuration-snippet`/`server-snippet`, the source of CVE-2025-1974-class issues) need a migration plan to Gateway API or a maintained controller; Ingress2Gateway 1.0 helps translate them.[^8]
+- **The community Ingress NGINX controller was retired on 2026-03-24** — no releases, bug fixes or security fixes since then. Manifests that rely on `nginx.ingress.kubernetes.io/*` annotations (especially `configuration-snippet`/`server-snippet`, the source of CVE-2025-1974-class issues) need a migration plan to Gateway API or a maintained controller; Ingress2Gateway 1.0 helps translate them.
 - Always set `ingressClassName`; the `kubernetes.io/ingress.class` annotation is deprecated.
 
 ```yaml
@@ -927,7 +892,7 @@ Prefer left to right. In-process policies have no network hop, no TLS certificat
 
 ##### MutatingAdmissionPolicy (GA in 1.36) **[NEW in 1.36]**
 
-`admissionregistration.k8s.io/v1` `MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are served and enabled by default on 1.36.[^17] On 1.35 the `v1` kinds do not exist (`no matches for kind "MutatingAdmissionPolicy" in version "admissionregistration.k8s.io/v1"`), and the `v1beta1` API and gate were off by default.
+`admissionregistration.k8s.io/v1` `MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are served and enabled by default on 1.36. On 1.35 the `v1` kinds do not exist (`no matches for kind "MutatingAdmissionPolicy" in version "admissionregistration.k8s.io/v1"`), and the `v1beta1` API and gate were off by default.
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -1016,7 +981,7 @@ Review rules for MutatingAdmissionPolicy:
 
 ##### ValidatingAdmissionPolicy
 
-GA since 1.30.[^18]
+GA since 1.30.
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -1381,13 +1346,13 @@ Always define at least a state column (from a condition) and `Age` from `.metada
 
 ##### Library Availability on 1.36
 
-Everything in this table is available on a 1.36 apiserver (introduction version in parentheses): standard macros and functions; Kubernetes list, regex, URL and authorizer libraries; extended strings library v2 (1.30); quantity library (1.29); CEL optional types and cross-type numeric comparisons (1.29); IP and CIDR libraries (1.31); format library — `format.dns1123Label()`, `format.dns1123Subdomain()`, `format.named(...)` (1.32); two-variable comprehensions `all(i, v, ...)`, `exists(i, v, ...)`, `transformList`, `transformMap` (1.33); semver library — `isSemver`, `semver(...)` (1.34).[^16] All of `isQuantity`, `quantity().isLessThan`, `isURL`, `url().getScheme`, `isCIDR`, `cidr().ip().family`, `format.dns1123Subdomain().validate`, `isSemver(s, true)`/`semver(s, true)` and two-variable `all` were exercised in the CRD above on 1.36.
+Everything in this table is available on a 1.36 apiserver (introduction version in parentheses): standard macros and functions; Kubernetes list, regex, URL and authorizer libraries; extended strings library v2 (1.30); quantity library (1.29); CEL optional types and cross-type numeric comparisons (1.29); IP and CIDR libraries (1.31); format library — `format.dns1123Label()`, `format.dns1123Subdomain()`, `format.named(...)` (1.32); two-variable comprehensions `all(i, v, ...)`, `exists(i, v, ...)`, `transformList`, `transformMap` (1.33); semver library — `isSemver`, `semver(...)` (1.34). All of `isQuantity`, `quantity().isLessThan`, `isURL`, `url().getScheme`, `isCIDR`, `cidr().ip().family`, `format.dns1123Subdomain().validate`, `isSemver(s, true)`/`semver(s, true)` and two-variable `all` were exercised in the CRD above on 1.36.
 
 The `semver(s, true)` / `isSemver(s, true)` "normalize" overload accepts `v` prefixes and missing minor/patch parts. Without `true`, `"1.4"` is not a valid semver.
 
 ##### Transition Rules and Immutability
 
-Semantics are documented in the CRD validation-rules reference.[^21]
+Semantics are documented in the CRD validation-rules reference.
 
 ```yaml
 storageClass:
@@ -2354,27 +2319,3 @@ Upgrading manifests, charts and controllers from 1.35 to 1.36:
 - [ ] Structured `logr` key/value logging from `logf.FromContext(ctx)`; no `fmt.Sprintf` messages
 - [ ] Custom metrics low-cardinality; no duplication of controller-runtime metrics
 - [ ] Dashboards updated for 1.36 metric renames
-
-***
-
-[^1]: Kubernetes v1.36: ハル (Haru) — release announcement (2026-04-22), including graduations, deprecations and the Ingress NGINX note. https://kubernetes.io/blog/2026/04/22/kubernetes-v1-36-release/
-[^2]: Kubernetes releases and patch-release schedule (1.36 maintenance mode 2027-04-28, EOL 2027-06-28; 1.37.0 on 2026-08-26). https://kubernetes.io/releases/ , https://kubernetes.io/releases/patch-releases/ ; schedule data: https://github.com/kubernetes/website/blob/main/data/releases/schedule.yaml ; current patch: https://dl.k8s.io/release/stable-1.36.txt
-[^3]: CHANGELOG-1.36 (v1.36.0 … v1.36.5). https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md
-[^4]: controller-runtime releases v0.24.0 / v0.24.1 (k8s.io/* v0.36, Go 1.26) and v0.23.0 (typed webhooks, events API, subresource apply, priority queue). https://github.com/kubernetes-sigs/controller-runtime/releases/tag/v0.24.0 , https://github.com/kubernetes-sigs/controller-runtime/releases/tag/v0.23.0
-[^5]: Go module metadata for k8s.io/client-go v0.36.x, sigs.k8s.io/controller-runtime v0.24.x and sigs.k8s.io/controller-tools v0.21.0 (go directives, dependency versions, tag dates). https://pkg.go.dev/k8s.io/client-go@v0.36.5 , https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1 , https://pkg.go.dev/sigs.k8s.io/controller-tools@v0.21.0
-[^6]: CHANGELOG-1.36, v1.36.0 "API Change", "Feature", "Deprecation" and "Urgent Upgrade Notes" sections. https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md#v1360
-[^7]: Kubernetes v1.37: Garhwal — release announcement (maxUnavailable for StatefulSets back on by default; kubernetes#137409). https://kubernetes.io/blog/2026/08/26/kubernetes-v1-37-release/
-[^8]: Ingress NGINX Retirement: What You Need to Know; Announcing Ingress2Gateway 1.0. https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/ , https://kubernetes.io/blog/2026/03/20/ingress2gateway-1-0-release/
-[^9]: CHANGELOG-1.36, patch releases v1.36.1–v1.36.5. https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md#v1365
-[^10]: CHANGELOG-1.37 (v1.37.0 API changes, feature graduations, deprecations). https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md
-[^11]: Deprecated API Migration Guide. https://kubernetes.io/docs/reference/using-api/deprecation-guide/
-[^12]: Volumes — `image` volume source. https://kubernetes.io/docs/concepts/storage/volumes/#image ; KEP-4639 OCI VolumeSource. https://github.com/kubernetes/enhancements/issues/4639
-[^13]: User Namespaces (stable since v1.36; requirements, limitations, integration with Pod Security Admission). https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/
-[^14]: SELinux Volume Label Changes goes GA (and likely implications in v1.37). https://kubernetes.io/blog/2026/04/22/breaking-changes-in-selinux-volume-labeling/
-[^15]: Kubelet authentication/authorization — fine-grained authorization (stable since v1.36). https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
-[^16]: Common Expression Language in Kubernetes — library availability table. https://kubernetes.io/docs/reference/using-api/cel/
-[^17]: MutatingAdmissionPolicy. https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/ ; KEP-3962. https://github.com/kubernetes/enhancements/issues/3962
-[^18]: ValidatingAdmissionPolicy. https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
-[^19]: KEP-5707 Deprecate service.spec.externalIPs; KEP-5040 Remove gitRepo volume driver; KEP-4858 IP/CIDR validation; KEP-5440 Mutable Job pod resources. https://github.com/kubernetes/enhancements/issues/5707 , https://github.com/kubernetes/enhancements/issues/5040 , https://github.com/kubernetes/enhancements/issues/4858 , https://github.com/kubernetes/enhancements/issues/5440
-[^20]: Pod Security Standards. https://kubernetes.io/docs/concepts/security/pod-security-standards/
-[^21]: CustomResourceDefinition validation rules (transition rules, optionalOldSelf, messageExpression, reason, fieldPath, ratcheting, selectableFields). https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/

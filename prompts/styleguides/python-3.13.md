@@ -2,9 +2,9 @@
 
 #### Overview
 
-Python 3.13 was released on October 7, 2024.[^1] It is the first release to get the extended lifecycle from the updated PEP 602: **two years of full bugfix support followed by three years of security-only fixes**.[^4] As of October 2026, 3.13 is in its **security-fix-only phase**: 3.13.16 (1 October 2026 per PEP 719) was the final regular bugfix release with binary installers, and source-only security releases continue on an as-needed basis until **end-of-life in October 2029**.[^2] The latest patch release is **3.13.17** (October 21, 2026), a special security release that upgrades the bundled pip (and its certifi CA bundle) after a CA certificate incident.[^3] Always run the latest 3.13.x — many point releases contain security fixes (see the Security section).
+Python 3.13 was released on October 7, 2024. It is the first release to get the extended lifecycle from the updated PEP 602: **two years of full bugfix support followed by three years of security-only fixes**. As of October 2026, 3.13 is in its **security-fix-only phase**: 3.13.16 (1 October 2026 per PEP 719) was the final regular bugfix release with binary installers, and source-only security releases continue on an as-needed basis until **end-of-life in October 2029**. The latest patch release is **3.13.17** (October 21, 2026), a special security release that upgrades the bundled pip (and its certifi CA bundle) after a CA certificate incident. Always run the latest 3.13.x — many point releases contain security fixes (see the Security section).
 
-Python 3.13's headline changes are mostly **interpreter and library** changes, not new syntax:[^1]
+Python 3.13's headline changes are mostly **interpreter and library** changes, not new syntax:
 
 - an **experimental free-threaded build** (`python3.13t`) that can run without the GIL (PEP 703);
 - an **experimental JIT compiler** (PEP 744), off by default and absent from standard builds;
@@ -20,9 +20,9 @@ This guide targets Python 3.13 specifically. Features from earlier versions are 
 **Do not use anything newer than 3.13.** The reviewer must never suggest these, because a 3.13 interpreter does not have them:
 
 - **3.14:** deferred evaluation of annotations and the `annotationlib` module (PEP 649/749 — in 3.13 annotations are still evaluated eagerly, so forward references need quotes or `from __future__ import annotations`); template strings `t"..."` and `string.templatelib` (PEP 750); `except A, B:` without parentheses (PEP 758); the `SyntaxWarning` for `return`/`break`/`continue` in `finally` (PEP 765); `compression.zstd` (PEP 784); `concurrent.interpreters` and `InterpreterPoolExecutor` (PEP 734); `sys.remote_exec()` (PEP 768); `uuid.uuid7()`; `functools.Placeholder`; `pathlib.Path.copy()`/`move()`/`info`; `io.Reader`/`io.Writer`; `operator.is_none()`; `heapq.heapify_max()` and friends; `datetime.date.strptime()`; `os.reload_environ()`; `sys._jit`; officially *supported* (non-experimental) free threading (PEP 779).
-- **3.15:** `lazy import` (PEP 810); unpacking in comprehensions `[*x for x in xs]` (PEP 798); the `frozendict` and `sentinel` built-ins (PEP 814, PEP 661); `typing.TypeForm` (PEP 747), `TypedDict(closed=..., extra_items=...)` (PEP 728), `@typing.disjoint_base` (PEP 800); UTF-8 as the default `open()` encoding (PEP 686).[^28][^29]
+- **3.15:** `lazy import` (PEP 810); unpacking in comprehensions `[*x for x in xs]` (PEP 798); the `frozendict` and `sentinel` built-ins (PEP 814, PEP 661); `typing.TypeForm` (PEP 747), `TypedDict(closed=..., extra_items=...)` (PEP 728), `@typing.disjoint_base` (PEP 800); UTF-8 as the default `open()` encoding (PEP 686).
 
-Changed defaults that arrive in **3.14** and must not be assumed on 3.13: `pickle.DEFAULT_PROTOCOL` is still **4** (5 in 3.14); the default `multiprocessing` start method on Linux is still **`fork`** (`forkserver` in 3.14); `tarfile` extraction still has **no default filter** (it becomes `'data'` in 3.14); `asyncio.get_event_loop()` without a running/set loop still only emits `DeprecationWarning` (it raises `RuntimeError` in 3.14).[^28]
+Changed defaults that arrive in **3.14** and must not be assumed on 3.13: `pickle.DEFAULT_PROTOCOL` is still **4** (5 in 3.14); the default `multiprocessing` start method on Linux is still **`fork`** (`forkserver` in 3.14); `tarfile` extraction still has **no default filter** (it becomes `'data'` in 3.14); `asyncio.get_event_loop()` without a running/set loop still only emits `DeprecationWarning` (it raises `RuntimeError` in 3.14).
 
 Global truths about Python 3.13:
 
@@ -126,7 +126,7 @@ def calculate_discount(price: float, discount_percent: float, min_price: float =
     return max(price * (1 - discount_percent / 100), min_price)
 ```
 
-**New in 3.13: the compiler strips common leading indentation from docstrings.** `__doc__` no longer contains the body's indentation (this shrinks `.pyc` files — by around 5% in the What's New example). Code that post-processes `__doc__` with `inspect.cleandoc()`/`textwrap.dedent()` still works, but code (or tests, or doctest-like tools) that compares the **raw** `__doc__` string against an indented literal breaks.[^1]
+**New in 3.13: the compiler strips common leading indentation from docstrings.** `__doc__` no longer contains the body's indentation (this shrinks `.pyc` files — by around 5% in the What's New example). Code that post-processes `__doc__` with `inspect.cleandoc()`/`textwrap.dedent()` still works, but code (or tests, or doctest-like tools) that compares the **raw** `__doc__` string against an indented literal breaks.
 
 ```python
 def spam():
@@ -148,15 +148,15 @@ Relative indentation is preserved; only the common prefix is removed. Use `inspe
 
 #### New in 3.13: Free-Threaded CPython (PEP 703) — Experimental
 
-Python 3.13 ships an **optional, separate build** of CPython with the GIL disabled, usually installed as `python3.13t` (`python3.13t.exe` on Windows). The standard `python3.13` binary **still has a GIL** — nothing changes for code running on it.[^5][^6]
+Python 3.13 ships an **optional, separate build** of CPython with the GIL disabled, usually installed as `python3.13t` (`python3.13t.exe` on Windows). The standard `python3.13` binary **still has a GIL** — nothing changes for code running on it.
 
 Key facts a reviewer must get right:
 
-- It is **experimental** in 3.13 ("expect some bugs and a substantial single-threaded performance hit"). It only becomes an officially *supported* build in 3.14 (PEP 779) — do not describe 3.13t as production-ready.[^6][^28]
-- The single-threaded overhead in 3.13 is **about 40%** on pyperformance, mainly because the specializing adaptive interpreter (PEP 659) is disabled in the free-threaded build.[^6]
-- It is **a different ABI**: extension modules must be compiled specifically for it (wheel tag `cp313t`, file suffix `.cpython-313t-…`). pip **24.1 or newer** is required to install packages with C extensions into it.[^1]
-- Importing a C extension that has not declared free-threading support **automatically re-enables the GIL** for the whole process (only a `RuntimeWarning` tells you), unless you force it off.[^6]
-- The memory allocator is **mimalloc** (the free-threaded build depends on it); `PYTHONMALLOC=pymalloc` is rejected there with a fatal "unknown allocator" error.[^5][^27]
+- It is **experimental** in 3.13 ("expect some bugs and a substantial single-threaded performance hit"). It only becomes an officially *supported* build in 3.14 (PEP 779) — do not describe 3.13t as production-ready.
+- The single-threaded overhead in 3.13 is **about 40%** on pyperformance, mainly because the specializing adaptive interpreter (PEP 659) is disabled in the free-threaded build.
+- It is **a different ABI**: extension modules must be compiled specifically for it (wheel tag `cp313t`, file suffix `.cpython-313t-…`). pip **24.1 or newer** is required to install packages with C extensions into it.
+- Importing a C extension that has not declared free-threading support **automatically re-enables the GIL** for the whole process (only a `RuntimeWarning` tells you), unless you force it off.
+- The memory allocator is **mimalloc** (the free-threaded build depends on it); `PYTHONMALLOC=pymalloc` is rejected there with a fatal "unknown allocator" error.
 
 ##### Detecting the Build and the GIL State
 
@@ -184,11 +184,11 @@ PYTHON_GIL=0 python3.13t app.py  # keep the GIL OFF even if a legacy extension a
 python3.13 -X gil=0 app.py       # Fatal Python error: config_read_gil: Disabling the GIL is not supported by this build
 ```
 
-`-X gil` takes precedence over `PYTHON_GIL`.[^16] Forcing `PYTHON_GIL=0` with an extension that was not written for free threading is "at your own risk" — expect crashes or memory corruption, not just wrong answers.
+`-X gil` takes precedence over `PYTHON_GIL`. Forcing `PYTHON_GIL=0` with an extension that was not written for free threading is "at your own risk" — expect crashes or memory corruption, not just wrong answers.
 
 ##### What Actually Changes for Python Code
 
-The free-threaded build tries to keep Python-level thread-safety behaviour similar to the GIL build: built-in `dict`, `list` and `set` use internal locks. But Python never *guaranteed* atomicity of compound operations, and the GIL often hid races in practice. Without it, races show up immediately:[^6]
+The free-threaded build tries to keep Python-level thread-safety behaviour similar to the GIL build: built-in `dict`, `list` and `set` use internal locks. But Python never *guaranteed* atomicity of compound operations, and the GIL often hid races in practice. Without it, races show up immediately:
 
 ```python
 import threading
@@ -224,7 +224,7 @@ for t in threads: t.join()
 print(c.n)   # 2000000
 ```
 
-Known limitations of the 3.13 free-threaded build (from the official HOWTO):[^6]
+Known limitations of the 3.13 free-threaded build (from the official HOWTO):
 
 - **Immortalization:** once a second thread starts, module-level functions, method descriptors, code objects, modules and classes become *immortal* (never freed). Numeric and string literals and `sys.intern()`ed strings are immortalized too. Programs that create many functions or classes dynamically (e.g. `exec`-generated code, per-request classes) can grow in memory; the HOWTO expects this to be addressed in 3.14.
 - **Shared iterators are unsafe:** sharing one iterator/generator object between threads may yield duplicates, skip items, or crash. Give each thread its own iterator or hand out work via `queue.Queue`.
@@ -248,7 +248,7 @@ def require_free_threading() -> None:
 
 ##### Extension Modules and the GIL Fallback
 
-C extensions declare free-threading support with the `Py_mod_gil` slot (multi-phase init) or `PyUnstable_Module_SetGIL()` (single-phase init). Without it, importing the module on 3.13t enables the GIL:[^1]
+C extensions declare free-threading support with the `Py_mod_gil` slot (multi-phase init) or `PyUnstable_Module_SetGIL()` (single-phase init). Without it, importing the module on 3.13t enables the GIL:
 
 ```text
 RuntimeWarning: The global interpreter lock (GIL) has been enabled to load module 'legacy',
@@ -267,10 +267,10 @@ and keep the GIL disabled (at your own risk), run with PYTHON_GIL=0 or -Xgil=0.
 
 #### New in 3.13: Experimental JIT Compiler (PEP 744)
 
-CPython 3.13 contains an experimental copy-and-patch JIT. It is **only compiled in when CPython is built with `--enable-experimental-jit`** — the official 3.13 macOS/Windows binaries and typical distro builds do not include it (python.org binaries only do from 3.14); `uv`-managed (python-build-standalone) 3.13 builds compile it in but leave it **off** (`=yes-off`, enable with `PYTHON_JIT=1`) — and even when enabled "performance improvements are modest".[^1][^7][^28]
+CPython 3.13 contains an experimental copy-and-patch JIT. It is **only compiled in when CPython is built with `--enable-experimental-jit`** — the official 3.13 macOS/Windows binaries and typical distro builds do not include it (python.org binaries only do from 3.14); `uv`-managed (python-build-standalone) 3.13 builds compile it in but leave it **off** (`=yes-off`, enable with `PYTHON_JIT=1`) — and even when enabled "performance improvements are modest".
 
 - Build options: `--enable-experimental-jit` (JIT on, disable at runtime with `PYTHON_JIT=0`), `=yes-off` (built but off; enable with `PYTHON_JIT=1`), `=interpreter` (Tier 2 interpreter, no JIT), `=no`.
-- `PYTHON_JIT` has an effect **only on builds where the JIT is available**; setting it on a normal build does nothing.[^16]
+- `PYTHON_JIT` has an effect **only on builds where the JIT is available**; setting it on a normal build does nothing.
 - There is **no `sys._jit` introspection module in 3.13** (added in 3.14). To check whether a build was configured with the JIT, inspect `sysconfig.get_config_var('CONFIG_ARGS')`.
 - Building the JIT needs LLVM at build time (not at runtime).
 
@@ -286,18 +286,18 @@ print('experimental-jit' in config_args)   # False on python.org/distro builds; 
 
 #### New in 3.13: The New Interactive REPL, Colour, and Better Error Messages
 
-The default interactive shell is now a new Python-based REPL (derived from PyPy's):[^1]
+The default interactive shell is now a new Python-based REPL (derived from PyPy's):
 
 - multi-line editing with history that keeps whole blocks;
 - `help`, `exit`, `quit` work **without parentheses**;
 - **F1** help browser, **F2** history browsing without prompts/output, **F3** paste mode for large blocks;
 - coloured prompts and tracebacks.
 
-Controls: `PYTHON_BASIC_REPL=1` restores the old REPL (useful for terminals or tools that script the REPL); `PYTHON_HISTORY` relocates `.python_history`; `PYTHON_COLORS=0`, `NO_COLOR=1` or `FORCE_COLOR=1` control colour for the REPL, tracebacks and doctest output.[^16]
+Controls: `PYTHON_BASIC_REPL=1` restores the old REPL (useful for terminals or tools that script the REPL); `PYTHON_HISTORY` relocates `.python_history`; `PYTHON_COLORS=0`, `NO_COLOR=1` or `FORCE_COLOR=1` control colour for the REPL, tracebacks and doctest output.
 
-**Security note (3.13.1):** the new REPL used to leave the current directory on `sys.path`; 3.13.1 removed it. Run the latest patch release.[^17]
+**Security note (3.13.1):** the new REPL used to leave the current directory on `sys.path`; 3.13.1 removed it. Run the latest patch release.
 
-Error-message improvements that change what you see in logs and CI output:[^1]
+Error-message improvements that change what you see in logs and CI output:
 
 ```python
 # 1. Script shadowing a stdlib module now gets an explicit hint:
@@ -319,7 +319,7 @@ Tests that assert on exact exception messages may need updating when moving to 3
 
 #### New in 3.13: Defined `locals()` Semantics (PEP 667)
 
-PEP 667 standardises what mutating the result of `locals()` does. In **optimized scopes** — functions, generators, coroutines, comprehensions, generator expressions — `locals()` now returns an **independent snapshot on every call**. Module and class scopes are unchanged (`locals()` is still the real namespace there).[^8][^1]
+PEP 667 standardises what mutating the result of `locals()` does. In **optimized scopes** — functions, generators, coroutines, comprehensions, generator expressions — `locals()` now returns an **independent snapshot on every call**. Module and class scopes are unchanged (`locals()` is still the real namespace there).
 
 ```python
 def f() -> None:
@@ -368,7 +368,7 @@ def g() -> None:
 g()
 ```
 
-A related porting note: `locals()` inside a comprehension at module or class scope once more behaves as if the comprehension were a separate nested function (3.12's inlining had changed this).[^1]
+A related porting note: `locals()` inside a comprehension at module or class scope once more behaves as if the comprehension were a separate nested function (3.12's inlining had changed this).
 
 **Review rule:** flag any code that mutates `locals()` expecting an effect, or reads back variables created by `exec()`/`eval()` via `locals()`. Pass explicit dicts.
 
@@ -376,7 +376,7 @@ A related porting note: `locals()` inside a comprehension at module or class sco
 
 #### New in 3.13: Type Parameter Defaults (PEP 696)
 
-`TypeVar`, `ParamSpec` and `TypeVarTuple` can now have **defaults**, both through the `typing` constructors and through **new PEP 695 syntax** `[T = int]`.[^9] The `[T = default]` syntax is a `SyntaxError` on 3.12, and `TypeVar(..., default=...)` raises `TypeError` on 3.12.
+`TypeVar`, `ParamSpec` and `TypeVarTuple` can now have **defaults**, both through the `typing` constructors and through **new PEP 695 syntax** `[T = int]`. The `[T = default]` syntax is a `SyntaxError` on 3.12, and `TypeVar(..., default=...)` raises `TypeError` on 3.12.
 
 ```python
 from typing import TypeVar, ParamSpec, NoDefault
@@ -419,7 +419,7 @@ Use defaults to keep generic APIs ergonomic: e.g. `class Response[T = dict[str, 
 
 #### New in 3.13: `typing.TypeIs` (PEP 742)
 
-`TypeIs[T]` is a return annotation for user-defined type predicates that narrows **in both branches**, like `isinstance()` does. It is the right tool for most "is this a …?" helpers; `TypeGuard` (3.10) remains available (it is not deprecated) for the rarer case of narrowing to a type that is not a subtype of the input.[^10]
+`TypeIs[T]` is a return annotation for user-defined type predicates that narrows **in both branches**, like `isinstance()` does. It is the right tool for most "is this a …?" helpers; `TypeGuard` (3.10) remains available (it is not deprecated) for the rarer case of narrowing to a type that is not a subtype of the input.
 
 ```python
 from typing import TypeGuard, TypeIs
@@ -449,7 +449,7 @@ Rules:
 
 #### New in 3.13: `typing.ReadOnly` for `TypedDict` Items (PEP 705)
 
-`ReadOnly[...]` marks individual `TypedDict` keys as read-only for type checkers. It composes with `Required`/`NotRequired`.[^11]
+`ReadOnly[...]` marks individual `TypedDict` keys as read-only for type checkers. It composes with `Required`/`NotRequired`.
 
 ```python
 from typing import NotRequired, ReadOnly, TypedDict
@@ -478,7 +478,7 @@ Key benefit: a function that accepts `ReadOnly` items can accept TypedDicts whos
 
 #### New in 3.13: `warnings.deprecated()` (PEP 702)
 
-`@warnings.deprecated(msg)` marks functions, methods, overloads and classes as deprecated for **both** type checkers (static error/notice at use sites) and the runtime (a `DeprecationWarning` when used).[^12]
+`@warnings.deprecated(msg)` marks functions, methods, overloads and classes as deprecated for **both** type checkers (static error/notice at use sites) and the runtime (a `DeprecationWarning` when used).
 
 ```python
 import warnings
@@ -519,7 +519,7 @@ Rules:
 
 #### New in 3.13: `copy.replace()` and the `__replace__` Protocol
 
-`copy.replace(obj, **changes)` creates a modified copy of an object. It works for any class defining `__replace__()`, and the stdlib implements it for dataclasses, `collections.namedtuple()` classes, `datetime.date`/`datetime`/`time`, `types.SimpleNamespace`, `inspect.Signature`/`Parameter` and code objects.[^13]
+`copy.replace(obj, **changes)` creates a modified copy of an object. It works for any class defining `__replace__()`, and the stdlib implements it for dataclasses, `collections.namedtuple()` classes, `datetime.date`/`datetime`/`time`, `types.SimpleNamespace`, `inspect.Signature`/`Parameter` and code objects.
 
 ```python
 import copy
@@ -567,7 +567,7 @@ Prefer `copy.replace()` in new code that must work across dataclasses, namedtupl
 
 #### New in 3.13: Queue Shutdown (`queue.Queue` and `asyncio.Queue`)
 
-Both `queue.Queue` (and its subclasses) and `asyncio.Queue` gained `shutdown(immediate=False)`, with new exceptions `queue.ShutDown` and `asyncio.QueueShutDown`. This replaces ad-hoc sentinel values (`None`, `object()`) for stopping consumers.[^14]
+Both `queue.Queue` (and its subclasses) and `asyncio.Queue` gained `shutdown(immediate=False)`, with new exceptions `queue.ShutDown` and `asyncio.QueueShutDown`. This replaces ad-hoc sentinel values (`None`, `object()`) for stopping consumers.
 
 Semantics:
 
@@ -638,7 +638,7 @@ Note the name difference: `queue.ShutDown` vs `asyncio.QueueShutDown`. `multipro
 
 #### New in 3.13: "Dead Batteries" Removed (PEP 594) and `lib2to3` Gone
 
-Nineteen legacy modules deprecated in 3.11 are **removed** in 3.13; importing them raises `ModuleNotFoundError`. `2to3`/`lib2to3` (deprecated in 3.11) and `tkinter.tix` (deprecated in 3.6) are removed too.[^1][^15]
+Nineteen legacy modules deprecated in 3.11 are **removed** in 3.13; importing them raises `ModuleNotFoundError`. `2to3`/`lib2to3` (deprecated in 3.11) and `tkinter.tix` (deprecated in 3.6) are removed too.
 
 | Removed in 3.13 | Replacement |
 |---|---|
@@ -659,7 +659,7 @@ Nineteen legacy modules deprecated in 3.11 are **removed** in 3.13; importing th
 | `lib2to3`, `2to3` | `ast` + `libcst`/`parso` for refactoring tools |
 | `tkinter.tix` | `tkinter.ttk` |
 
-Unmodified copies of most removed modules are republished on PyPI as `standard-<name>` packages (e.g. `standard-telnetlib`, `standard-imghdr`), and `audioop` as `audioop-lts`.[^1] They are a **stop-gap** for unmaintained code, not a recommendation: `crypt`, `cgi` and `telnetlib` were removed partly because they are insecure or unmaintained.
+Unmodified copies of most removed modules are republished on PyPI as `standard-<name>` packages (e.g. `standard-telnetlib`, `standard-imghdr`), and `audioop` as `audioop-lts`. They are a **stop-gap** for unmaintained code, not a recommendation: `crypt`, `cgi` and `telnetlib` were removed partly because they are insecure or unmaintained.
 
 ```python
 import importlib
@@ -690,7 +690,7 @@ import shlex
 print(shlex.quote("it's; rm -rf /"))   # 'it'"'"'s; rm -rf /'
 ```
 
-Other removals that surface on upgrade (all deprecated for years):[^1]
+Other removals that surface on upgrade (all deprecated for years):
 
 - `locale.resetlocale()` → `locale.setlocale(locale.LC_ALL, '')`.
 - `typing.io` and `typing.re` namespaces → import from `typing` (or better, `typing.IO`, `re.Pattern`).
@@ -707,7 +707,7 @@ Other removals that surface on upgrade (all deprecated for years):[^1]
 
 ##### Integers
 
-`int` is arbitrary precision; arithmetic never overflows.[^33]
+`int` is arbitrary precision; arithmetic never overflows.
 
 ```python
 import sys
@@ -740,7 +740,7 @@ print(math.lcm(4, 6, 10))         # 60 (3.9+)
 
 ##### Floats — New in 3.13: `math.fma()`
 
-`math.fma(x, y, z)` computes `x * y + z` with a **single rounding** (fused multiply-add), avoiding intermediate precision loss.[^1]
+`math.fma(x, y, z)` computes `x * y + z` with a **single rounding** (fused multiply-add), avoiding intermediate precision loss.
 
 ```python
 import math
@@ -757,7 +757,7 @@ Use `fma` in numerical kernels (error-compensated summation, polynomial evaluati
 
 ##### `fractions` — New in 3.13: Format Specifications
 
-3.12 added float-style presentation types (`'.3f'`, `'e'`, `'%'`) for `Fraction`. 3.13 adds fill, alignment, sign, width and grouping when formatting **as a fraction** (no presentation type) — on 3.12 those specs raise `ValueError`:[^1]
+3.12 added float-style presentation types (`'.3f'`, `'e'`, `'%'`) for `Fraction`. 3.13 adds fill, alignment, sign, width and grouping when formatting **as a fraction** (no presentation type) — on 3.12 those specs raise `ValueError`:
 
 ```python
 from fractions import Fraction
@@ -781,7 +781,7 @@ with localcontext(prec=6) as ctx:     # keyword arguments to localcontext() sinc
     print(Decimal(1) / Decimal(7))    # 0.142857
 ```
 
-The undocumented C-only `'N'` format specifier for `Decimal` is deprecated in 3.13 (removal planned for 3.18).[^1]
+The undocumented C-only `'N'` format specifier for `Decimal` is deprecated in 3.13 (removal planned for 3.18).
 
 ##### Booleans
 
@@ -921,7 +921,7 @@ class Node: ...
 
 ##### New in 3.13: Typing Additions at a Glance
 
-All of these are documented in the 3.13 `typing` reference.[^18]
+All of these are documented in the 3.13 `typing` reference.
 
 | Feature | Use |
 |---|---|
@@ -1027,7 +1027,7 @@ print(env['color'], env['user'])  # red guest
 
 ##### `itertools` — New in 3.13: `batched(strict=True)`
 
-`itertools.batched()` (3.12) gains `strict=True`, which raises `ValueError` if the final batch is short:[^1]
+`itertools.batched()` (3.12) gains `strict=True`, which raises `ValueError` if the final batch is short:
 
 ```python
 from itertools import batched, pairwise
@@ -1045,7 +1045,7 @@ print(list(pairwise([1, 2, 3])))              # [(1, 2), (2, 3)] (3.10+)
 
 ##### `array`
 
-The `'w'` type code (`Py_UCS4`) is new in 3.13; the `'u'` (`wchar_t`) type code now emits `DeprecationWarning` and is scheduled for removal in 3.16. `array.array` is now registered as a `MutableSequence` (it gained `clear()`).[^1]
+The `'w'` type code (`Py_UCS4`) is new in 3.13; the `'u'` (`wchar_t`) type code now emits `DeprecationWarning` and is scheduled for removal in 3.16. `array.array` is now registered as a `MutableSequence` (it gained `clear()`).
 
 ```python
 from array import array
@@ -1091,7 +1091,7 @@ while chunk := stream.read(65_536):
 
 **Pitfall:** `case name:` with a bare name is a **capture pattern** that matches anything — use dotted names (`case Color.RED:`) or literals for constants.
 
-**3.13 fix:** a `global` declaration inside an `except` block, for a name assigned in the `else` block, no longer raises a spurious `SyntaxError` ("name 'x' is assigned to before global declaration" on 3.12).[^1]
+**3.13 fix:** a `global` declaration inside an `except` block, for a name assigned in the `else` block, no longer raises a spurious `SyntaxError` ("name 'x' is assigned to before global declaration" on 3.12).
 
 **Deprecated (compile-time `SyntaxWarning` in 3.13, planned to become a `SyntaxError`):** numeric literals immediately followed by keywords (`0in x`, `1if x else 2`) — always put a space.
 
@@ -1134,7 +1134,7 @@ print([f() for f in funcs])        # [0, 1, 2]
 
 ##### `functools` — 3.13 Change: `partial` as a Method Emits `FutureWarning`
 
-A `functools.partial` object stored as a class attribute currently does **not** bind `self` (it is not a descriptor). In 3.13, accessing it through an instance emits `FutureWarning`, because a future version will make `partial` a method descriptor:[^1]
+A `functools.partial` object stored as a class attribute currently does **not** bind `self` (it is not a descriptor). In 3.13, accessing it through an instance emits `FutureWarning`, because a future version will make `partial` a method descriptor:
 
 ```python
 import functools
@@ -1213,7 +1213,7 @@ def accumulate() -> Generator[int, int, str]:
 print(list(countdown(3)))   # [3, 2, 1]
 ```
 
-Deprecated: the 3-argument `gen.throw(type, value, tb)` signature — call `gen.throw(exc)`. Assigning a `__code__` object of a different kind (e.g. generator code to a plain function) is deprecated in 3.13.[^1]
+Deprecated: the 3-argument `gen.throw(type, value, tb)` signature — call `gen.throw(exc)`. Assigning a `__code__` object of a different kind (e.g. generator code to a plain function) is deprecated in 3.13.
 
 ***
 
@@ -1332,7 +1332,7 @@ These are useful for tooling (linters, ORMs, serializers). `__static_attributes_
 
 ##### Removed in 3.13: Chained `classmethod` Descriptors
 
-Stacking `@classmethod` on top of `@property` (allowed in 3.9–3.10, deprecated in 3.11) no longer produces a "class property":[^1]
+Stacking `@classmethod` on top of `@property` (allowed in 3.9–3.10, deprecated in 3.11) no longer produces a "class property":
 
 ```python
 class Config:
@@ -1392,7 +1392,7 @@ class Perm(Flag):
 print(Status.ACTIVE == 'active', Perm.READ | Perm.WRITE)
 ```
 
-`enum.EnumDict` (the class namespace used by `EnumType`) is public in 3.13 for metaclass authors.[^1]
+`enum.EnumDict` (the class namespace used by `EnumType`) is public in 3.13 for metaclass authors.
 
 ***
 
@@ -1444,7 +1444,7 @@ except* TypeError as eg:
 
 ##### New in 3.13: `PythonFinalizationError`
 
-A new `RuntimeError` subclass raised when an operation is blocked during interpreter shutdown — starting a thread, `os.fork()`, `os.forkpty()`, or `subprocess.Popen` from a finalizer or `__del__` at exit.[^1]
+A new `RuntimeError` subclass raised when an operation is blocked during interpreter shutdown — starting a thread, `os.fork()`, `os.forkpty()`, or `subprocess.Popen` from a finalizer or `__del__` at exit.
 
 ```python
 import sys
@@ -1560,7 +1560,7 @@ print(p.match('src/**/*.py'))        # False — match() treats ** like *, not r
 print(PurePosixPath('x').parser.__name__)   # posixpath
 ```
 
-Behaviour changes that break or change existing code:[^19][^1]
+Behaviour changes that break or change existing code:
 
 - **`Path.glob('**')` and `rglob('**')` now return files *and* directories** (previously only directories). Add a trailing slash (`'**/'`) to keep the old "directories only" behaviour.
 - `Path.glob()`/`rglob()` accept `recurse_symlinks=` (keyword-only); `is_file()`, `is_dir()`, `owner()`, `group()` accept `follow_symlinks=`.
@@ -1625,15 +1625,15 @@ with tempfile.TemporaryDirectory() as d:
 # NEVER use tempfile.mktemp() — TOCTOU race
 ```
 
-3.13 note: on Windows, `os.mkdir(mode=0o700)` and therefore `tempfile.mkdtemp()` now actually restrict the directory to the current user (CVE-2024-4030 mitigation).[^1]
+3.13 note: on Windows, `os.mkdir(mode=0o700)` and therefore `tempfile.mkdtemp()` now actually restrict the directory to the current user (CVE-2024-4030 mitigation).
 
 ##### `os` and `os.path` Changes in 3.13
 
-- `os.process_cpu_count()` — CPUs usable by *this process* (respects affinity). `concurrent.futures`, `multiprocessing` and `compileall` now size their default worker pools from it. Both `cpu_count()` and `process_cpu_count()` can be overridden with `PYTHON_CPU_COUNT` / `-X cpu_count=N` — useful in containers.[^1]
+- `os.process_cpu_count()` — CPUs usable by *this process* (respects affinity). `concurrent.futures`, `multiprocessing` and `compileall` now size their default worker pools from it. Both `cpu_count()` and `process_cpu_count()` can be overridden with `PYTHON_CPU_COUNT` / `-X cpu_count=N` — useful in containers.
 - Linux timer file descriptors: `os.timerfd_create()`, `timerfd_settime()`, etc.
 - `os.posix_spawn()` accepts `env=None`; `subprocess` uses `posix_spawn()` in more cases (including the default `close_fds=True` on recent Linux/FreeBSD/Solaris).
 - On Windows: `os.path.isabs()` no longer treats `\foo` (one leading slash) as absolute; `os.lchmod()`, `os.fchmod()` and fd/`follow_symlinks` support in `chmod()` are available.
-- **3.13.4:** `os.path.realpath(path, strict=os.path.ALLOW_MISSING)` — resolves symlinks, tolerates a missing final path, but re-raises other errors (added for the tarfile CVE fixes).[^1]
+- **3.13.4:** `os.path.realpath(path, strict=os.path.ALLOW_MISSING)` — resolves symlinks, tolerates a missing final path, but re-raises other errors (added for the tarfile CVE fixes).
 
 ```python
 import os
@@ -1682,11 +1682,11 @@ Rules that still apply in 3.13:
 - Use `asyncio.run()` (or `asyncio.Runner`) as the entry point; inside coroutines use `asyncio.get_running_loop()`.
 - **Keep references to tasks** created with `asyncio.create_task()` — the loop holds only weak references; prefer `TaskGroup`.
 - Always re-raise `CancelledError` after cleanup; never swallow it.
-- `asyncio.get_event_loop()` with no current loop emits `DeprecationWarning` in 3.12/3.13 and raises `RuntimeError` in 3.14 — fix callers now.[^28]
+- `asyncio.get_event_loop()` with no current loop emits `DeprecationWarning` in 3.12/3.13 and raises `RuntimeError` in 3.14 — fix callers now.
 
 ##### New in 3.13: `TaskGroup` Cancellation Fixes
 
-`TaskGroup` handles an **external cancellation colliding with an internal one** correctly: when a task group is cancelled from outside and must also raise an `ExceptionGroup`, it now calls the parent task's `cancel()` so the cancellation is not lost; nested task groups that fail simultaneously no longer hang; and the task's cancellation count (`cancelling()`) is preserved. `TaskGroup.create_task()` on an inactive group now **closes** the coroutine (no "never awaited" warning) and raises `RuntimeError`.[^1]
+`TaskGroup` handles an **external cancellation colliding with an internal one** correctly: when a task group is cancelled from outside and must also raise an `ExceptionGroup`, it now calls the parent task's `cancel()` so the cancellation is not lost; nested task groups that fail simultaneously no longer hang; and the task's cancellation count (`cancelling()`) is preserved. `TaskGroup.create_task()` on an inactive group now **closes** the coroutine (no "never awaited" warning) and raises `RuntimeError`.
 
 ```python
 import asyncio
@@ -1704,11 +1704,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Point releases also fixed `TaskGroup` corner cases (eager tasks: missed cancellations fixed in 3.13.2; reference cycles in raised exceptions fixed in 3.13.1) — another reason to run the latest patch.[^17]
+Point releases also fixed `TaskGroup` corner cases (eager tasks: missed cancellations fixed in 3.13.2; reference cycles in raised exceptions fixed in 3.13.1) — another reason to run the latest patch.
 
 ##### New in 3.13: `as_completed()` Is an Async Iterator
 
-`asyncio.as_completed()` can now be used with `async for`, and it yields the **original task/future objects** you passed in, so you can map results back to their inputs. Plain `for` iteration (yielding new awaitables) still works.[^20]
+`asyncio.as_completed()` can now be used with `async for`, and it yields the **original task/future objects** you passed in, so you can map results back to their inputs. Plain `for` iteration (yielding new awaitables) still works.
 
 ```python
 import asyncio
@@ -1732,7 +1732,7 @@ asyncio.run(main())
 - `Server.close_clients()` and `Server.abort_clients()` close connections forcefully; `loop.create_unix_server()` now removes the socket file on close.
 - `StreamReader.readuntil()` accepts a **tuple of separators**.
 - `DatagramTransport.sendto(b'')` now sends a zero-length datagram.
-- **Point-release regression to know about:** 3.13.3 accidentally changed how `create_task()` passes keyword arguments to custom task factories; **3.13.4 restored the old factory contract**. If you implement a custom task factory, test against ≥ 3.13.4.[^1][^17]
+- **Point-release regression to know about:** 3.13.3 accidentally changed how `create_task()` passes keyword arguments to custom task factories; **3.13.4 restored the old factory contract**. If you implement a custom task factory, test against ≥ 3.13.4.
 - Child watchers (`asyncio.get_child_watcher()`, `SafeChildWatcher`, ...) are deprecated and **removed in 3.14**.
 
 ***
@@ -1770,7 +1770,7 @@ Keep *all* side-effecting module-level code behind `if __name__ == '__main__':`,
 
 ##### `multiprocessing` Start Methods
 
-On Linux the default start method in 3.13 is still **`fork`** (it changes to `forkserver` in 3.14; macOS has used `spawn` since 3.8, Windows always `spawn`). Since 3.12, calling `os.fork()` (including via the `fork` start method) in a process that has **other threads running** emits a `DeprecationWarning` because the child can deadlock.[^31]
+On Linux the default start method in 3.13 is still **`fork`** (it changes to `forkserver` in 3.14; macOS has used `spawn` since 3.8, Windows always `spawn`). Since 3.12, calling `os.fork()` (including via the `fork` start method) in a process that has **other threads running** emits a `DeprecationWarning` because the child can deadlock.
 
 ```python
 import multiprocessing as mp
@@ -1843,7 +1843,7 @@ except ZeroDivisionError:
 
 ##### New in 3.13: Stricter TLS Defaults
 
-`ssl.create_default_context()` now sets **`VERIFY_X509_STRICT`** and **`VERIFY_X509_PARTIAL_CHAIN`** by default. Strict mode rejects malformed or pre-RFC-5280 certificates that OpenSSL would otherwise accept (e.g. certificates missing required extensions — common with home-made internal CAs); partial-chain lets a trusted *intermediate* in the trust store terminate the chain.[^1][^21]
+`ssl.create_default_context()` now sets **`VERIFY_X509_STRICT`** and **`VERIFY_X509_PARTIAL_CHAIN`** by default. Strict mode rejects malformed or pre-RFC-5280 certificates that OpenSSL would otherwise accept (e.g. certificates missing required extensions — common with home-made internal CAs); partial-chain lets a trusted *intermediate* in the trust store terminate the chain.
 
 ```python
 import ssl
@@ -1862,11 +1862,11 @@ legacy_ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT   # ⚠️ document why, scop
 
 `urllib.request`, `http.client` and most libraries that call `create_default_context()` inherit these defaults. **Never** "fix" a 3.13 TLS error with `CERT_NONE`/`check_hostname = False`.
 
-**Point releases:** 3.13.16 makes `SSLContext.wrap_bio()` raise `ValueError` when `check_hostname` is enabled but no `server_hostname` is given (previously the handshake silently skipped the identity check), and `asyncio`'s `start_tls()`/`create_connection()` validate `server_hostname` the same way.[^17]
+**Point releases:** 3.13.16 makes `SSLContext.wrap_bio()` raise `ValueError` when `check_hostname` is enabled but no `server_hostname` is given (previously the handshake silently skipped the identity check), and `asyncio`'s `start_tls()`/`create_connection()` validate `server_hostname` the same way.
 
 ##### `tarfile` Extraction Filters
 
-Since 3.12 (and security releases of older versions), `TarFile.extractall()`/`extract()` accept `filter=`. In 3.13, **omitting `filter` emits `DeprecationWarning`** and performs a fully trusting extraction; 3.14 makes `'data'` the default.[^22]
+Since 3.12 (and security releases of older versions), `TarFile.extractall()`/`extract()` accept `filter=`. In 3.13, **omitting `filter` emits `DeprecationWarning`** and performs a fully trusting extraction; 3.14 makes `'data'` the default.
 
 ```python
 import io
@@ -1887,13 +1887,13 @@ with tempfile.TemporaryDirectory() as dest, tarfile.open(fileobj=io.BytesIO(buf.
         print('blocked:', type(e).__name__)
 ```
 
-The `data` filter blocks absolute paths, `..` escapes, links outside the destination, device files, and strips dangerous permission bits. Multiple bypasses of these filters were fixed in point releases — **3.13.4** (CVE-2024-12718, CVE-2025-4138, CVE-2025-4330, CVE-2025-4435, CVE-2025-4517; adds `tarfile.LinkFallbackError` and `os.path.ALLOW_MISSING`), and further hardening in **3.13.14, 3.13.15 and 3.13.16** (symlink/hardlink tricks, directories created outside the destination). Filters are only as good as the patch level you run.[^1][^17]
+The `data` filter blocks absolute paths, `..` escapes, links outside the destination, device files, and strips dangerous permission bits. Multiple bypasses of these filters were fixed in point releases — **3.13.4** (CVE-2024-12718, CVE-2025-4138, CVE-2025-4330, CVE-2025-4435, CVE-2025-4517; adds `tarfile.LinkFallbackError` and `os.path.ALLOW_MISSING`), and further hardening in **3.13.14, 3.13.15 and 3.13.16** (symlink/hardlink tricks, directories created outside the destination). Filters are only as good as the patch level you run.
 
-For ZIP files, `zipfile.ZipFile.extractall()` sanitizes member names, but still validate sizes (zip bombs) for untrusted input; `shutil.unpack_archive()` on Windows had a drive-prefix traversal fixed in 3.13.14.[^17]
+For ZIP files, `zipfile.ZipFile.extractall()` sanitizes member names, but still validate sizes (zip bombs) for untrusted input; `shutil.unpack_archive()` on Windows had a drive-prefix traversal fixed in 3.13.14.
 
 ##### Security Fixes in 3.13 Point Releases (selection)
 
-From the official changelog:[^17]
+From the official changelog:
 
 - **3.13.1:** new REPL no longer puts the current directory on `sys.path`; IPv4-mapped `IPv6Address` properties (`is_global`, `is_private`, ...) fixed.
 - **3.13.2:** `urlsplit()`/`urlparse()` reject square brackets in non-IPv6 hosts; `email` header folding of quoted strings fixed (header spoofing); `imaplib` memory DoS fixed.
@@ -1906,7 +1906,7 @@ From the official changelog:[^17]
 - **3.13.14:** `shutil.move()` symlink guard bypass, `configparser` ReDoS, `unicodedata.normalize()` quadratic DoS, CR/LF injection in `HTTPConnection.set_tunnel()`, `http.cookies` `js_output()` injection, bundled libexpat 2.8.x.
 - **3.13.15:** `http.client` caps chunked trailers and 1xx responses at 100 (infinite-stream hang), `configparser` multi-line value line endings normalized, IMAP command injection (CR/LF/NUL) rejected, `html.parser` quadratic DoS.
 - **3.13.16:** `ssl.wrap_bio()` hostname check (above), `tarfile` hard-link-to-symlink escape (CVE-2026-82049), `zipfile` bounded decompression for bzip2/LZMA members, `urllib.request` HTTP credentials scoped to the URL scheme, `ssl` SNI-callback crash.
-- **3.13.17:** bundled pip upgraded (certifi CA bundle update). Upgrade pip/uv inside existing virtual environments too.[^3]
+- **3.13.17:** bundled pip upgraded (certifi CA bundle update). Upgrade pip/uv inside existing virtual environments too.
 
 ##### Input Validation and Path Traversal
 
@@ -1968,7 +1968,7 @@ print(result.stdout.strip())
 # ❌ subprocess.run(f'ls {user_input}', shell=True) — command injection
 ```
 
-For untrusted XML use `defusedxml`. The bundled libexpat in 3.13 has protections against billion-laughs (expat ≥ 2.4.1) and gets hash-flooding hardening with expat ≥ 2.8.0 (3.13.14+), but external entity and DTD processing rules still differ per API — `defusedxml` remains the reviewer-safe default for untrusted input.[^17]
+For untrusted XML use `defusedxml`. The bundled libexpat in 3.13 has protections against billion-laughs (expat ≥ 2.4.1) and gets hash-flooding hardening with expat ≥ 2.8.0 (3.13.14+), but external entity and DTD processing rules still differ per API — `defusedxml` remains the reviewer-safe default for untrusted input.
 
 ***
 
@@ -2068,7 +2068,7 @@ The internal `sre_compile`, `sre_constants` and `sre_parse` modules are deprecat
 
 ##### New in 3.13: `python -m random` CLI
 
-The `random` module gained a command-line interface for quick choices and numbers.[^26]
+The `random` module gained a command-line interface for quick choices and numbers.
 
 ```bash
 python -m random -c red green blue   # random choice
@@ -2120,13 +2120,13 @@ with contextlib.closing(sqlite3.connect(':memory:', timeout=5.0)) as conn:   # k
     print(dump[1])                               # CREATE TABLE t (x INTEGER);
 ```
 
-- **`with conn:` manages a transaction, it does not close the connection** — combine with `contextlib.closing()` or call `close()`; 3.13 now warns (`ResourceWarning`) when a connection is garbage-collected unclosed.[^32]
+- **`with conn:` manages a transaction, it does not close the connection** — combine with `contextlib.closing()` or call `close()`; 3.13 now warns (`ResourceWarning`) when a connection is garbage-collected unclosed.
 - **Deprecated in 3.13** (become errors in 3.15): more than one positional argument to `sqlite3.connect()` (`connect(db, 5.0)` → use `timeout=5.0`); passing `name`/`narg`/`func` by keyword to `create_function()`/`create_aggregate()`; passing the callback by keyword to `set_authorizer()`, `set_progress_handler()`, `set_trace_callback()`.
 - Deprecated (removed in 3.14): `sqlite3.version`/`version_info` (the module version, not SQLite's — use `sqlite3.sqlite_version`), and named placeholders (`:name`) with a sequence of parameters.
 
 ##### New in 3.13: `dbm.sqlite3` Is the Default `dbm` Backend
 
-`dbm.open(path, 'c')` creates a new **SQLite**-backed database by default (previously `dbm.gnu`/`dbm.ndbm`/`dbm.dumb` depending on the platform). Existing files are still opened with whatever format `dbm.whichdb()` detects.[^23]
+`dbm.open(path, 'c')` creates a new **SQLite**-backed database by default (previously `dbm.gnu`/`dbm.ndbm`/`dbm.dumb` depending on the platform). Existing files are still opened with whatever format `dbm.whichdb()` detects.
 
 ```python
 import dbm
@@ -2149,7 +2149,7 @@ Consequences: files are no longer interchangeable with the same code on 3.12 (a 
 
 ##### New in 3.13: `deprecated=` for Options, Positionals and Subcommands
 
-`add_argument()` and `add_parser()` accept `deprecated=True`; using the option or subcommand prints a warning to stderr but still parses it.[^25]
+`add_argument()` and `add_parser()` accept `deprecated=True`; using the option or subcommand prints a warning to stderr but still parses it.
 
 ```python
 import argparse
@@ -2173,7 +2173,7 @@ Other notes:
 
 - The `type`, `choices` and `metavar` parameters of `argparse.BooleanOptionalAction` are deprecated (removed in 3.14).
 - Nesting argument groups / mutually exclusive groups is deprecated.
-- **`optparse` and `getopt` are not deprecated** (any more): 3.13.2 dropped the "soft deprecated" marking. `argparse` remains the recommended choice for new applications, but `optparse` is legitimate where its stricter POSIX behaviour matters.[^17]
+- **`optparse` and `getopt` are not deprecated** (any more): 3.13.2 dropped the "soft deprecated" marking. `argparse` remains the recommended choice for new applications, but `optparse` is legitimate where its stricter POSIX behaviour matters.
 - `argparse` features like `suggest_on_error=` and colourised help are 3.14 — not available.
 
 ***
@@ -2208,10 +2208,10 @@ print(ref() is None)                    # True — collected (refcount reached z
 
 3.13 facts:
 
-- The **incremental garbage collector was reverted before 3.13.0** (in 3.13.0rc3) — 3.13 uses the classic generational collector. (3.14.0–3.14.4 shipped an incremental GC, which was reverted again in 3.14.5.) Don't attribute GC pause behaviour in 3.13 to an incremental collector, and don't recommend tuning for one.[^17][^28]
-- CPython **bundles mimalloc** in 3.13. The default build still uses `pymalloc` by default; `PYTHONMALLOC=mimalloc` opts in. The free-threaded build always uses mimalloc.[^27]
+- The **incremental garbage collector was reverted before 3.13.0** (in 3.13.0rc3) — 3.13 uses the classic generational collector. (3.14.0–3.14.4 shipped an incremental GC, which was reverted again in 3.14.5.) Don't attribute GC pause behaviour in 3.13 to an incremental collector, and don't recommend tuning for one.
+- CPython **bundles mimalloc** in 3.13. The default build still uses `pymalloc` by default; `PYTHONMALLOC=mimalloc` opts in. The free-threaded build always uses mimalloc.
 - In the free-threaded build, some objects become immortal (see the free-threading section) — monitor memory if you generate functions/classes dynamically.
-- The `IOBase` finalizer now reports exceptions from `close()` via `sys.unraisablehook` instead of silently ignoring them — unclosed file objects whose `close()` fails now produce visible "Exception ignored" messages.[^1]
+- The `IOBase` finalizer now reports exceptions from `close()` via `sys.unraisablehook` instead of silently ignoring them — unclosed file objects whose `close()` fails now produce visible "Exception ignored" messages.
 
 ***
 
@@ -2236,7 +2236,7 @@ VALID = frozenset({'admin', 'editor'})   # O(1) membership
 parts = ''.join(str(i) for i in range(10))   # join, never += in loops
 ```
 
-What 3.13 changes for performance:[^1]
+What 3.13 changes for performance:
 
 - **Import time:** `typing` imports about a third faster; `email.utils`, `enum`, `functools`, `importlib.metadata`, `threading` also faster to import.
 - `textwrap.indent()` ~30% faster for large input; `subprocess` uses `posix_spawn()` more often (faster process launch, notably FreeBSD/Solaris).
@@ -2290,7 +2290,7 @@ def test_warns_deprecated() -> None:
         old()
 ```
 
-3.13 testing notes:[^1]
+3.13 testing notes:
 
 - **Run the suite with warnings as errors** (`python -W error::DeprecationWarning -m pytest`, or pytest's `filterwarnings = ["error"]`) — 3.13 adds many new `DeprecationWarning`s (`re` positional args, `sqlite3` positional args, `ast` node constructors, `NamedTuple` keywords) that become errors in 3.14, 3.15 or later.
 - **Docstring dedent** changes `__doc__`; tests asserting on raw docstrings need updating.
@@ -2315,7 +2315,7 @@ uv pip install -r requirements.txt
 uv python install 3.13t            # experimental free-threaded interpreter
 ```
 
-**New in 3.13: `venv` writes a `.gitignore`** containing `*` into the environment directory, so the venv is ignored by Git even without a project-level ignore rule. Opt out with `--without-scm-ignore-files`; the `venv.EnvBuilder(scm_ignore_files=...)` API is opt-in.[^24]
+**New in 3.13: `venv` writes a `.gitignore`** containing `*` into the environment directory, so the venv is ignored by Git even without a project-level ignore rule. Opt out with `--without-scm-ignore-files`; the `venv.EnvBuilder(scm_ignore_files=...)` API is opt-in.
 
 ```text
 $ python3.13 -m venv .venv && cat .venv/.gitignore
@@ -2326,8 +2326,8 @@ $ python3.13 -m venv .venv && cat .venv/.gitignore
 Other packaging facts for 3.13:
 
 - `distutils` is gone (removed in 3.12): use `setuptools` (which provides its own `distutils` shim) or another PEP 517 backend. `imp`, `asynchat`, `asyncore` and `smtpd` were also removed in 3.12 — a codebase jumping from 3.11 to 3.13 hits those *and* the PEP 594 removals.
-- `.pth` files are now decoded as UTF-8 first (locale encoding as fallback), and `.pth` files whose names start with a dot (hidden files) are skipped.[^1]
-- Free-threaded wheels use the `cp313t` ABI tag; a `cp313` wheel will not install into `python3.13t`. The free-threaded build does **not** support the Limited C API / stable ABI, so `abi3` wheels cannot serve it — projects need separate `cp313t` builds.[^34]
+- `.pth` files are now decoded as UTF-8 first (locale encoding as fallback), and `.pth` files whose names start with a dot (hidden files) are skipped.
+- Free-threaded wheels use the `cp313t` ABI tag; a `cp313` wheel will not install into `python3.13t`. The free-threaded build does **not** support the Limited C API / stable ABI, so `abi3` wheels cannot serve it — projects need separate `cp313t` builds.
 - The `PYTHON_CPU_COUNT` / `-X cpu_count` override helps CI containers that report the host CPU count.
 
 ##### `pyproject.toml`
@@ -2399,7 +2399,7 @@ Ruff's `UP` (pyupgrade) rules rewrite `Optional[X]` → `X | None`, `typing.List
 
 #### Platform Support Changes in 3.13
 
-- **iOS (PEP 730)** and **Android (PEP 738)** are officially supported at **tier 3** (iOS: `arm64-apple-ios`, `arm64-apple-ios-simulator`; Android: `aarch64-linux-android`, `x86_64-linux-android`).[^30]
+- **iOS (PEP 730)** and **Android (PEP 738)** are officially supported at **tier 3** (iOS: `arm64-apple-ios`, `arm64-apple-ios-simulator`; Android: `aarch64-linux-android`, `x86_64-linux-android`).
 - `wasm32-wasi` is now **tier 2**; `wasm32-emscripten` is **no longer** officially supported (it returns as tier 3 in 3.14).
 - Building CPython requires a C11 compiler with atomics; SQLite ≥ 3.15.2 for `sqlite3`.
 - Many modules are unavailable on mobile/WASM (`subprocess`, `multiprocessing`, `curses`, ...) — guard optional imports if you target them, and check `sys.platform` (`'ios'`; on Android it is now `'android'` instead of `'linux'`).
@@ -2408,7 +2408,7 @@ Ruff's `UP` (pyupgrade) rules rewrite `Optional[X]` → `X | None`, `typing.List
 
 #### Removed and Changed in 3.13 — Migration Notes
 
-**Removed modules (import fails):** `aifc`, `audioop`, `cgi`, `cgitb`, `chunk`, `crypt`, `imghdr`, `mailcap`, `msilib`, `nis`, `nntplib`, `ossaudiodev`, `pipes`, `sndhdr`, `spwd`, `sunau`, `telnetlib`, `uu`, `xdrlib`, `lib2to3` (and the `2to3` tool), `tkinter.tix`.[^1]
+**Removed modules (import fails):** `aifc`, `audioop`, `cgi`, `cgitb`, `chunk`, `crypt`, `imghdr`, `mailcap`, `msilib`, `nis`, `nntplib`, `ossaudiodev`, `pipes`, `sndhdr`, `spwd`, `sunau`, `telnetlib`, `uu`, `xdrlib`, `lib2to3` (and the `2to3` tool), `tkinter.tix`.
 
 **Removed APIs:**
 
@@ -2427,7 +2427,7 @@ Ruff's `UP` (pyupgrade) rules rewrite `Optional[X]` → `X | None`, `typing.List
 | `webbrowser.MacOSX` | `webbrowser.MacOSXOSAScript` |
 | `turtle.RawTurtle.settiltangle()` | `tiltangle()` |
 
-**Behaviour changes to know:**[^1]
+**Behaviour changes to know:**
 
 - `locals()` in functions returns snapshots; `exec()`/`eval()` without an explicit namespace can't modify function locals (PEP 667).
 - Docstrings have common indentation stripped.
@@ -2464,7 +2464,7 @@ with gzip.GzipFile(fileobj=io.BytesIO(), mode='wb') as g:
 
 ##### Deprecations to Fix Now (Removed in 3.14)
 
-These all emit `DeprecationWarning` in 3.13 and are **gone in 3.14**:[^1][^28]
+These all emit `DeprecationWarning` in 3.13 and are **gone in 3.14**:
 
 | Deprecated (3.13 warns) | Fix |
 |---|---|
@@ -2561,40 +2561,3 @@ print(now.tzinfo, ts.isoformat())          # UTC 1970-01-01T00:00:00+00:00
 - [ ] `logger.exception()` inside `except` blocks; bare `raise` to re-raise
 - [ ] Custom exceptions inherit from `Exception`; context added with `add_note()`
 - [ ] Colour output disabled in log collectors that can't render ANSI (`NO_COLOR=1` / `PYTHON_COLORS=0`)
-
-***
-
-[^1]: What's New In Python 3.13. Python Software Foundation. https://docs.python.org/3.13/whatsnew/3.13.html
-[^2]: PEP 719 – Python 3.13 Release Schedule (bugfix releases through 3.13.16; security fixes until October 2029). https://peps.python.org/pep-0719/
-[^3]: Python 3.13.17 release page (special security release, October 21, 2026) and Python downloads status table. https://www.python.org/downloads/release/python-31317/ and https://www.python.org/downloads/
-[^4]: PEP 602 – Annual Release Cycle for Python (updated: two years of bugfix support from 3.13 on). https://peps.python.org/pep-0602/
-[^5]: PEP 703 – Making the Global Interpreter Lock Optional in CPython. https://peps.python.org/pep-0703/
-[^6]: Python experimental support for free threading (3.13 HOWTO). https://docs.python.org/3.13/howto/free-threading-python.html
-[^7]: PEP 744 – JIT Compilation. https://peps.python.org/pep-0744/
-[^8]: PEP 667 – Consistent views of namespaces. https://peps.python.org/pep-0667/
-[^9]: PEP 696 – Type Defaults for Type Parameters. https://peps.python.org/pep-0696/
-[^10]: PEP 742 – Narrowing types with TypeIs. https://peps.python.org/pep-0742/
-[^11]: PEP 705 – TypedDict: Read-only items. https://peps.python.org/pep-0705/
-[^12]: PEP 702 – Marking deprecations using the type system; warnings.deprecated. https://peps.python.org/pep-0702/ and https://docs.python.org/3.13/library/warnings.html#warnings.deprecated
-[^13]: copy — Shallow and deep copy operations (copy.replace). https://docs.python.org/3.13/library/copy.html
-[^14]: queue — A synchronized queue class (Queue.shutdown); asyncio Queues. https://docs.python.org/3.13/library/queue.html and https://docs.python.org/3.13/library/asyncio-queue.html
-[^15]: PEP 594 – Removing dead batteries from the standard library. https://peps.python.org/pep-0594/
-[^16]: Command line and environment (PYTHON_GIL, PYTHON_JIT, PYTHON_BASIC_REPL, PYTHON_COLORS, PYTHON_CPU_COUNT, PYTHONMALLOC). https://docs.python.org/3.13/using/cmdline.html
-[^17]: Python 3.13 changelog (security and bugfix entries per point release). https://docs.python.org/3.13/whatsnew/changelog.html
-[^18]: typing — Support for type hints (3.13). https://docs.python.org/3.13/library/typing.html
-[^19]: pathlib — Object-oriented filesystem paths (3.13). https://docs.python.org/3.13/library/pathlib.html
-[^20]: asyncio — Coroutines and Tasks (as_completed, TaskGroup). https://docs.python.org/3.13/library/asyncio-task.html
-[^21]: ssl — TLS/SSL wrapper (create_default_context, VERIFY_X509_STRICT). https://docs.python.org/3.13/library/ssl.html
-[^22]: tarfile — Extraction filters. https://docs.python.org/3.13/library/tarfile.html#tarfile-extraction-filter
-[^23]: dbm — Interfaces to Unix "databases" (dbm.sqlite3). https://docs.python.org/3.13/library/dbm.html
-[^24]: venv — Creation of virtual environments (scm_ignore_files). https://docs.python.org/3.13/library/venv.html
-[^25]: argparse — deprecated parameter of add_argument()/add_parser(). https://docs.python.org/3.13/library/argparse.html
-[^26]: random — Command-line usage. https://docs.python.org/3.13/library/random.html#command-line-usage
-[^27]: Memory Management — default allocators and the mimalloc allocator (3.13). https://docs.python.org/3.13/c-api/memory.html
-[^28]: What's New In Python 3.14 (boundary: features and default changes NOT in 3.13). https://docs.python.org/3.14/whatsnew/3.14.html
-[^29]: What's New In Python 3.15 (boundary: features NOT in 3.13). https://docs.python.org/3.15/whatsnew/3.15.html
-[^30]: PEP 730 – Adding iOS as a supported platform; PEP 738 – Adding Android as a supported platform. https://peps.python.org/pep-0730/ and https://peps.python.org/pep-0738/
-[^31]: multiprocessing — Contexts and start methods (3.13). https://docs.python.org/3.13/library/multiprocessing.html#contexts-and-start-methods
-[^32]: sqlite3 — DB-API 2.0 interface for SQLite databases (3.13). https://docs.python.org/3.13/library/sqlite3.html
-[^33]: Built-in Types — Numeric types (3.13). https://docs.python.org/3.13/library/stdtypes.html#numeric-types-int-float-complex
-[^34]: C API Extension Support for Free Threading (3.13) — Limited C API and Stable ABI not supported. https://docs.python.org/3.13/howto/free-threading-extensions.html

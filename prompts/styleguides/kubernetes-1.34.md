@@ -1,47 +1,16 @@
 ### Kubernetes 1.34 — Manifests, CRDs and Go Controllers
 
-> **Version**: Kubernetes v1.34 ("Of Wind & Will", O' WaW), released **2025-08-27**.[^1] Latest patch: **v1.34.12, published 2026-09-23** (it was scheduled for 2026-09-15; the October patch v1.34.13, scheduled for 2026-10-13, has not been tagged as of late October 2026).[^2][^3]
-> **Support status (October 2026)**: 1.34 entered **maintenance mode on 2026-08-27** and reaches **end of life on 2026-10-27**. After that date no further patches are planned. The newest minor is **1.37** (released 2026-08-26, latest patch v1.37.1 on 2026-09-23); 1.36 (2026-04-22) and 1.35 (2025-12-17) are also supported; 1.38 is at alpha (v1.38.0-alpha.2).[^3][^4]
-> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.34.x** (latest v0.34.12, 2026-09-23); **controller-runtime v0.22.x** (latest v0.22.5, 2026-01-19); **controller-tools (controller-gen) v0.19.x**; Kubebuilder **v4.9.x/v4.10.x** scaffolds controller-runtime v0.22 and controller-tools v0.19.[^5][^6]
+> **Version**: Kubernetes v1.34 ("Of Wind & Will", O' WaW), released **2025-08-27**. Latest patch: **v1.34.12, published 2026-09-23** (it was scheduled for 2026-09-15; the October patch v1.34.13, scheduled for 2026-10-13, has not been tagged as of late October 2026).
+> **Support status (October 2026)**: 1.34 entered **maintenance mode on 2026-08-27** and reaches **end of life on 2026-10-27**. After that date no further patches are planned. The newest minor is **1.37** (released 2026-08-26, latest patch v1.37.1 on 2026-09-23); 1.36 (2026-04-22) and 1.35 (2025-12-17) are also supported; 1.38 is at alpha (v1.38.0-alpha.2).
+> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.34.x** (latest v0.34.12, 2026-09-23); **controller-runtime v0.22.x** (latest v0.22.5, 2026-01-19); **controller-tools (controller-gen) v0.19.x**; Kubebuilder **v4.9.x/v4.10.x** scaffolds controller-runtime v0.22 and controller-tools v0.19.
 > **Scope**: Kubernetes YAML manifests and Helm-rendered output applied to a 1.34 cluster, CustomResourceDefinitions with CEL validation, admission policies, and Go operators/controllers (controller-runtime, client-go, Kubebuilder) built against `k8s.io/*` v0.34.x.
 > **Note**: This document is self-contained. It carries forward the general operator, CRD, RBAC, security and testing rules and adds the 1.34-specific layer. Sections marked **[NEW in 1.34]** cover behaviour that is new or changed in this release. Server-side behaviour in this guide was checked against a real kube-apiserver v1.34.1 (envtest build) with boundary checks on v1.33.0 and v1.35.0; Go snippets compile against k8s.io/* v0.34.12 and controller-runtime v0.22.5. Pod *runtime* behaviour (kubelet, scheduler, container runtime) is sourced from the release notes and documentation, not executed.
 
 ---
 
-#### Table of Contents
-
-1. What's New in 1.34
-2. Version-Aware Review & "Do Not Use" List
-3. API Versions Served by 1.34
-4. Feature-Gate Defaults that Change What Manifests Mean
-5. Foundational Principles
-6. Project Layout, Toolchain & Dependency Pinning
-7. Naming Conventions
-8. CRD & API Design (CEL in 1.34)
-9. Spec vs. Status, Conditions, observedGeneration
-10. Versioning & API Evolution
-11. Controller / Reconciler Patterns (controller-runtime v0.22)
-12. Server-Side Apply from Go
-13. Watches, Predicates, Indexes
-14. Finalizers, Owner References & Garbage Collection
-15. Admission: CEL Policies and Webhooks
-16. Workload Manifests in 1.34
-17. Dynamic Resource Allocation (resource.k8s.io/v1)
-18. RBAC & Least Privilege
-19. Security Hardening & Pod Security Admission
-20. client-go Specifics for v0.34
-21. Observability
-22. Error Handling & Requeue Strategy
-23. Testing (fake client, envtest 1.34)
-24. Helm and Rendered Manifests
-25. Removed / Changed in 1.34 — Migration Notes
-26. Production / Review Checklists
-
----
-
 #### What's New in 1.34
 
-Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered beta, 13 entered alpha.[^1] The changes that matter to people writing manifests, CRDs, policies and controllers:
+Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered beta, 13 entered alpha. The changes that matter to people writing manifests, CRDs, policies and controllers:
 
 ##### Graduated to GA (stable) in 1.34
 
@@ -95,14 +64,14 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered bet
 
 ##### Behaviour changes, deprecations and removals in 1.34
 
-- **Pod Security Standards**: the **Baseline and Restricted** levels now forbid setting `host` on probe and lifecycle `httpGet`/`tcpSocket` handlers (KEP-4940). Namespaces pinned to `pod-security.kubernetes.io/enforce-version: v1.33` or older do not get the new check.[^1][^7]
+- **Pod Security Standards**: the **Baseline and Restricted** levels now forbid setting `host` on probe and lifecycle `httpGet`/`tcpSocket` handlers (KEP-4940). Namespaces pinned to `pod-security.kubernetes.io/enforce-version: v1.33` or older do not get the new check.
 - **AppArmor**: profiles in `securityContext.appArmorProfile` are **no longer copied into the deprecated `container.apparmor.security.beta.kubernetes.io/*` annotations**. Anything that reads those annotations must read the fields.
-- **CRDs**: an **unrecognized OpenAPI `format`** in a CRD schema now produces a warning on write (write still succeeds). v1.34.0 also warned wrongly on `int32`/`int64`/`float`/`double` formats of number/integer properties; fixed in v1.34.1. The changelog also lists new `k8s-short-name`/`k8s-long-name` formats, but they are registered with "introduced in 1.34" and CRD validation uses the n-1 compatibility version, so a 1.34 apiserver still treats them as unrecognized (warning, not enforced); they take effect in 1.35.[^2]
-- **CEL**: the **Kubernetes semver library** (`isSemver()`, `semver()`) is available in CRD rules and admission policies from 1.34.[^8]
-- **API Go types**: zero-valued `metadata.creationTimestamp` is **omitted** from JSON/YAML/CBOR (no more `creationTimestamp: null`); all generated apply configurations implement the new `runtime.ApplyConfiguration` interface; `k8s.io/utils/pointer` usages were replaced by `k8s.io/utils/ptr` across the code base.[^2]
+- **CRDs**: an **unrecognized OpenAPI `format`** in a CRD schema now produces a warning on write (write still succeeds). v1.34.0 also warned wrongly on `int32`/`int64`/`float`/`double` formats of number/integer properties; fixed in v1.34.1. The changelog also lists new `k8s-short-name`/`k8s-long-name` formats, but they are registered with "introduced in 1.34" and CRD validation uses the n-1 compatibility version, so a 1.34 apiserver still treats them as unrecognized (warning, not enforced); they take effect in 1.35.
+- **CEL**: the **Kubernetes semver library** (`isSemver()`, `semver()`) is available in CRD rules and admission policies from 1.34.
+- **API Go types**: zero-valued `metadata.creationTimestamp` is **omitted** from JSON/YAML/CBOR (no more `creationTimestamp: null`); all generated apply configurations implement the new `runtime.ApplyConfiguration` interface; `k8s.io/utils/pointer` usages were replaced by `k8s.io/utils/ptr` across the code base.
 - **DRA**: `resource.k8s.io/v1alpha3` now only contains `DeviceTaintRule`; the v1alpha4 kubelet gRPC API was removed and the v1beta1 kubelet DRA gRPC API is deprecated (v1 is GA).
-- **Kubelet configuration**: `cgroupDriver` in the kubelet config file is deprecated (automatic detection from the CRI is GA); the `--cloud-config` and `--register-schedulable` kubelet flags are removed; `StreamingConnectionIdleTimeout` is deprecated. Kubernetes 1.35 is the last release supporting containerd 1.x.[^1]
-- **Metrics**: many apiserver/etcd metrics changed labels (`resource_prefix`/`type`/`kind` replaced by `group` + `resource`); `apiserver_storage_objects` is deprecated in favour of `apiserver_resource_objects`. Dashboards and alerts must be updated.[^2]
+- **Kubelet configuration**: `cgroupDriver` in the kubelet config file is deprecated (automatic detection from the CRI is GA); the `--cloud-config` and `--register-schedulable` kubelet flags are removed; `StreamingConnectionIdleTimeout` is deprecated. Kubernetes 1.35 is the last release supporting containerd 1.x.
+- **Metrics**: many apiserver/etcd metrics changed labels (`resource_prefix`/`type`/`kind` replaced by `group` + `resource`); `apiserver_storage_objects` is deprecated in favour of `apiserver_resource_objects`. Dashboards and alerts must be updated.
 - **Default APF configuration** no longer has the `endpoint-controller` and `workload-leader-election` FlowSchemas — migrate leader election from `configmapsleases`/`endpointsleases` to `leases`.
 - **Aggregated API servers**: kube-apiserver now proxies using the **EndpointSlices** of the APIService's Service, not Endpoints. Hand-written Endpoints for an aggregated API need a matching EndpointSlice.
 - **`topologySpreadConstraints[].matchLabelKeys`** is merged into `labelSelector` by the apiserver (`MatchLabelKeysInPodTopologySpreadSelectorMerge` beta, on). Upgrade 1.32 → 1.33 → 1.34 one minor at a time.
@@ -112,7 +81,7 @@ Kubernetes 1.34 contains 58 enhancements: 23 graduated to stable, 22 entered bet
 - **kubectl / kubeconfig**: the `preferences` field in kubeconfig is deprecated in favour of `kuberc`; `kubectl api-resources -o json|yaml`, `kubectl autoscale --cpu/--memory` (deprecating `--cpu-percent`) and `kubectl top --show-swap` are new.
 - **etcd**: the default etcd version moves to the **v3.6** line (v3.6.1 at release; etcd client library v3.6.4).
 - **Gates removed** (feature permanently on): `LegacySidecarContainers`, `PodDisruptionConditions`, `DevicePluginCDIDevices`; `JobPodReplacementPolicy`, `AuthorizeWithSelectors`, `RelaxedEnvironmentVariableValidation`, `MultiCIDRServiceAllocator` locked on.
-- **client-go**: API streaming support was removed from typed/dynamic/metadata `List()` (streaming is only through informers/reflector with `WatchListClient`).[^2]
+- **client-go**: API streaming support was removed from typed/dynamic/metadata `List()` (streaming is only through informers/reflector with `WatchListClient`).
 
 ##### Notable 1.34 patch-release fixes (pin at least the listed patch)
 
@@ -165,7 +134,7 @@ The Pod is created without any of these fields and without an error. Other obser
 
 These come from newer releases. In 1.34 they are absent, rejected, or alpha-off-and-dropped:
 
-**From 1.35 (released 2025-12-17)**[^9]
+**From 1.35 (released 2025-12-17)**
 - In-place Pod resize as **GA**, and in-place resize of pod-level resources (`InPlacePodLevelResourcesVerticalScaling`, alpha in 1.35; new Pod `status.resources`/`status.allocatedResources`) — 1.34 has container-level resize as beta only.
 - `restartPolicy`/`restartPolicyRules` on regular containers enabled by default (`ContainerRestartRules` beta/on in 1.35), `env[].valueFrom.fileKeyRef` enabled by default (`EnvFiles`), `spec.hostnameOverride` enabled by default (`HostnameOverride`) — all alpha/off in 1.34.
 - Image volumes (`volumes[].image`) **enabled by default** — in 1.34 `ImageVolume` is beta but **off**, so the volume is dropped.
@@ -179,7 +148,7 @@ These come from newer releases. In 1.34 they are absent, rejected, or alpha-off-
 - `kubectl get -o kyaml` without `KUBECTL_KYAML=true` (1.35 enables it by default). Comparable resource versions: before 1.35 clients may only compare `resourceVersion` for equality.
 - `DynamicResourceAllocation` locked on (in 1.34 it is GA but can still be disabled).
 
-**From 1.36 (2026-04-22) and 1.37 (2026-08-26)**[^10][^11]
+**From 1.36 (2026-04-22) and 1.37 (2026-08-26)**
 - GA of user namespaces, MutatingAdmissionPolicy (`admissionregistration.k8s.io/v1`), image volumes, VolumeGroupSnapshot, DRA admin access / prioritized list (GA), PSI, ProcMount, KYAML (1.37), Pod certificates and ClusterTrustBundles (GA in 1.37), storage version migration GA (1.37), HPA scale-to-zero (beta in 1.37).
 - The gitRepo volume plugin is permanently removed in 1.36; in 1.34 the apiserver still accepts it with `Warning: spec.volumes[0].gitRepo: deprecated in v1.11, and disabled by default in v1.33+` and the kubelet refuses to mount it by default. Do not use it either way.
 - `Service.spec.externalIPs` is deprecated with a warning from 1.36 — in 1.34 it is accepted without warning (except on headless Services); still avoid it (CVE-2020-8554).
@@ -236,7 +205,7 @@ Removed API versions you may still find in old charts (all **rejected** by 1.34)
 | 1.29 | `flowcontrol.apiserver.k8s.io/v1beta2` |
 | 1.32 | `flowcontrol.apiserver.k8s.io/v1beta3` |
 
-No built-in GA API version is removed in 1.34.[^12]
+No built-in GA API version is removed in 1.34.
 
 ---
 
@@ -570,7 +539,7 @@ Observed on 1.34.1 with this CRD: creating an object with `replicas: 1, minRepli
 
 ##### CEL Validation Rules — What 1.34 Supports
 
-Libraries and language features available to `x-kubernetes-validations` (and admission policies) on 1.34:[^8]
+Libraries and language features available to `x-kubernetes-validations` (and admission policies) on 1.34:
 
 | Library / feature | Since | Examples |
 |---|---|---|
@@ -1400,7 +1369,7 @@ Pod Security Admission **enforces** only on Pods. For a Deployment it only *warn
 - Resize through the `resize` subresource: `kubectl patch pod rs --subresource resize -p '{"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"400m"},"limits":{"cpu":"800m"}}}]}}'` (verified on 1.34.1). A normal `PATCH` of `spec.containers[].resources` is rejected ("pod updates may not change fields other than …").
 - Use a **strategic-merge** patch (kubectl's default) or SSA. A JSON merge patch replaces the whole `containers` list and fails validation ("resource requests cannot be removed", "only cpu and memory resources are mutable").
 - `resizePolicy[].restartPolicy`: `NotRequired` (default) or `RestartContainer`. **[NEW in 1.34]** memory limits may be *decreased* with `NotRequired`; the kubelet makes a best-effort check that usage is below the new limit. Guaranteed Pods with the static memory manager policy still cannot resize memory unless `InPlacePodVerticalScalingExclusiveMemory` (alpha) is enabled.
-- Resize progress is reported through Pod conditions `PodResizePending` / `PodResizeInProgress` and, with generation tracking (beta in 1.34), through `status.observedGeneration`.[^14]
+- Resize progress is reported through Pod conditions `PodResizePending` / `PodResizeInProgress` and, with generation tracking (beta in 1.34), through `status.observedGeneration`.
 
 ##### Sidecars, Lifecycle, Probes
 
@@ -1470,7 +1439,7 @@ spec:
 
 #### Dynamic Resource Allocation (resource.k8s.io/v1)
 
-**[NEW in 1.34: GA]**[^13] Write DRA objects with `resource.k8s.io/v1`. The v1 request shape wraps the device selection in `exactly` (or `firstAvailable`) — the flat v1beta1 shape is rejected (`strict decoding error: unknown field "spec.devices.requests[0].deviceClassName"`).
+**[NEW in 1.34: GA]** Write DRA objects with `resource.k8s.io/v1`. The v1 request shape wraps the device selection in `exactly` (or `firstAvailable`) — the flat v1beta1 shape is rejected (`strict decoding error: unknown field "spec.devices.requests[0].deviceClassName"`).
 
 ```yaml
 apiVersion: resource.k8s.io/v1
@@ -2048,27 +2017,3 @@ Upgrade path: 1.33 → 1.34 directly (one minor at a time; never skip from 1.32,
 - [ ] envtest with 1.34 binaries for CRD/CEL/SSA behaviour; fake client only for pure logic
 - [ ] Reconcile idempotency, deletion path, failure status tested
 - [ ] Rendered manifests validated with `--dry-run=server` against 1.34; generated files up to date
-
----
-
-[^1]: Kubernetes v1.34: Of Wind & Will (O' WaW) — release announcement (enhancement counts, GA/beta/alpha features, deprecations). https://kubernetes.io/blog/2025/08/27/kubernetes-v1-34-release/
-[^2]: Kubernetes CHANGELOG-1.34 (v1.34.0 through v1.34.12: API changes, urgent upgrade notes, patch fixes). https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.34.md
-[^3]: Kubernetes patch releases and support periods (maintenance mode 2026-08-27, end of life 2026-10-27; schedule data). https://kubernetes.io/releases/patch-releases/ , https://github.com/kubernetes/website/blob/main/data/releases/schedule.yaml
-[^4]: Kubernetes GitHub releases (v1.34.12, v1.35.9, v1.36.5, v1.37.1 published 2026-09-23; v1.38.0-alpha.2). https://github.com/kubernetes/kubernetes/releases
-[^5]: controller-runtime releases and compatibility (v0.22.x ↔ k8s.io/* v0.34). https://github.com/kubernetes-sigs/controller-runtime/releases ; controller-tools releases: https://github.com/kubernetes-sigs/controller-tools/releases
-[^6]: Kubebuilder v4 scaffold versions (v4.9.0: controller-runtime v0.22.1; v4.10.0: v0.22.4; controller-tools v0.19.0). https://github.com/kubernetes-sigs/kubebuilder/blob/v4.10.0/pkg/plugins/golang/v4/scaffolds/init.go
-[^7]: Pod Security Standards (probe and lifecycle host restriction). https://kubernetes.io/docs/concepts/security/pod-security-standards/ ; KEP-4940: https://github.com/kubernetes/enhancements/issues/4940
-[^8]: Common Expression Language in Kubernetes (library availability by version, semver library 1.34+, format library). https://kubernetes.io/docs/reference/using-api/cel/
-[^9]: Kubernetes v1.35 release announcement and CHANGELOG-1.35. https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/ , https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.35.md
-[^10]: Kubernetes v1.36 release announcement. https://kubernetes.io/blog/2026/04/22/kubernetes-v1-36-release/
-[^11]: Kubernetes v1.37 release announcement. https://kubernetes.io/blog/2026/08/26/kubernetes-v1-37-release/
-[^12]: Deprecated API Migration Guide. https://kubernetes.io/docs/reference/using-api/deprecation-guide/
-[^13]: Dynamic Resource Allocation. https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/
-[^14]: Resize CPU and Memory Resources assigned to Containers. https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/
-[^15]: Server-Side Apply. https://kubernetes.io/docs/reference/using-api/server-side-apply/
-[^16]: Validating Admission Policy and Mutating Admission Policy. https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/ , https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/
-[^17]: Extend the Kubernetes API with CustomResourceDefinitions (validation rules, transition rules, ratcheting, selectable fields). https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/
-[^18]: client-go feature gates (WatchListClient, InOrderInformers, CBOR). https://github.com/kubernetes/client-go/blob/v0.34.12/features/known_features.go
-[^19]: Helm built-in objects (.Capabilities) and Chart.yaml kubeVersion. https://helm.sh/docs/chart_template_guide/builtin_objects/ , https://helm.sh/docs/topics/charts/
-[^20]: controller-runtime envtest and setup-envtest. https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest , https://github.com/kubernetes-sigs/controller-runtime/tree/main/tools/setup-envtest
-[^21]: Feature gates reference (stages and defaults per release). https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/

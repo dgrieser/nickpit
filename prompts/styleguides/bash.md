@@ -3,7 +3,7 @@
 > **Target audience:** Senior engineers writing production-grade automation, DevOps tooling, and system scripts.
 > **Scope:** GNU Bash 3.2 → 5.3, with version annotations on every feature that has constraints.
 
-**Release status (October 2026).** Bash **5.3** is the current release. Chet Ramey announced it on July 5, 2025; the latest official patch is **bash53-020, i.e. 5.3.20, published September 14, 2026** (`echo "$BASH_VERSION"` → `5.3.20(1)-release`).[^13][^14] Bash 5.2 ended at 5.2.37 (patch published September 23, 2024), 5.1 at 5.1.16, 5.0 at 5.0.18, 4.4 at 4.4.23 and 3.2 at 3.2.57 (October 2014). GNU Bash publishes no support or EOL calendar; in practice official patches appear only for the newest release series, so 5.2 and older receive fixes only through distribution backports. **There is no Bash 5.4 alpha, beta or release as of October 2026**: the upstream `devel` branch has been versioned `bash-5.4-devel` since August 21, 2026, and some distributions package `5.4_alpha_pre*` git snapshots, but these are development snapshots, not releases.[^19] Never recommend anything from 5.4 development snapshots.
+**Release status (October 2026).** Bash **5.3** is the current release. Chet Ramey announced it on July 5, 2025; the latest official patch is **bash53-020, i.e. 5.3.20, published September 14, 2026** (`echo "$BASH_VERSION"` → `5.3.20(1)-release`). Bash 5.2 ended at 5.2.37 (patch published September 23, 2024), 5.1 at 5.1.16, 5.0 at 5.0.18, 4.4 at 4.4.23 and 3.2 at 3.2.57 (October 2014). GNU Bash publishes no support or EOL calendar; in practice official patches appear only for the newest release series, so 5.2 and older receive fixes only through distribution backports. **There is no Bash 5.4 alpha, beta or release as of October 2026**: the upstream `devel` branch has been versioned `bash-5.4-devel` since August 21, 2026, and some distributions package `5.4_alpha_pre*` git snapshots, but these are development snapshots, not releases. Never recommend anything from 5.4 development snapshots.
 
 This guide is self-contained. It covers **every** Bash version from 3.2 to 5.3 in one document because a shebang carries no version: `#!/usr/bin/env bash` runs whatever Bash is first in `PATH`, which is 3.2.57 for `/bin/bash` on macOS, 5.1 or 5.2 on most LTS Linux distributions and their container images, and 5.3 on Ubuntu 26.04, rolling distributions and the `bash:5.3` image. Every feature that is not available in all of these versions carries an inline annotation such as **(4.3+)** or **New in 5.3**.
 
@@ -16,7 +16,7 @@ This guide is self-contained. It covers **every** Bash version from 3.2 to 5.3 i
 Before flagging a construct as "unavailable" or recommending a newer one, determine the oldest Bash the script must run on. Evidence, in order of strength:
 
 1. An explicit runtime guard (`(( BASH_VERSINFO[0] >= 5 ))`, `${BASH_VERSINFO[*]}` checks) or a `Requires: Bash X.Y+` header.
-2. The execution environment: Dockerfile base image (`FROM bash:5.3`; Debian 12 bookworm ships 5.2.15, Debian 13 trixie 5.2.37, Ubuntu 22.04 5.1, Ubuntu 24.04 5.2.21, Ubuntu 26.04 5.3[^23]; Alpine images have no Bash unless the `bash` package is installed), CI runner images, Ansible/packaging metadata.
+2. The execution environment: Dockerfile base image (`FROM bash:5.3`; Debian 12 bookworm ships 5.2.15, Debian 13 trixie 5.2.37, Ubuntu 22.04 5.1, Ubuntu 24.04 5.2.21, Ubuntu 26.04 5.3; Alpine images have no Bash unless the `bash` package is installed), CI runner images, Ansible/packaging metadata.
 3. Platform: anything that must run on stock macOS uses `/bin/bash` **3.2.57** unless it explicitly finds a Homebrew/MacPorts Bash.
 4. Constructs already used elsewhere in the same script or repository: if the file already uses `declare -n` (4.3+) or `${var@Q}` (4.4+), its floor is at least that version.
 
@@ -29,7 +29,7 @@ Rules for the reviewer:
 
 ##### What's new in Bash 5.3
 
-Sources: the official NEWS and CHANGES files; every non-interactive item was executed on 5.2.37 and 5.3.20 (interactive-only changes such as `read -E` completion and job notifications are taken from the release notes).[^5][^18]
+Sources: the official NEWS and CHANGES files; every non-interactive item was executed on 5.2.37 and 5.3.20 (interactive-only changes such as `read -E` completion and job notifications are taken from the release notes).
 
 | Change | Where | Notes |
 |--------|-------|-------|
@@ -55,7 +55,7 @@ Sources: the official NEWS and CHANGES files; every non-interactive item was exe
 | `exit` with no argument at a trap's top level uses the pre-trap `$?` (POSIX interp. 1602) | §9 | 5.2 used the trap's last status |
 | `BASH_COMPAT=52` restores 5.2 behaviour for `test` parsing, `bind -p/-P` arguments and job notifications while sourcing | §28 | |
 
-Point releases matter: **bash53-007** fixed no-fork command substitutions whose redirections leaked into the enclosing command, and later patches fix a subshell or background job whose `EXIT` trap calls `wait` looping on inherited jobs (010), `mapfile` callbacks that unset the target array (011/014), a subshell running an inherited `EXIT` trap after a fatal signal (012), `read` buffer indexing (015) and, on macOS, a variable name directly followed by a byte ≥ 0x80 (e.g. `"$nameä"`) being misparsed (019).[^14] Prefer 5.3.7 or newer when relying on `${ cmd; }` with redirections.
+Point releases matter: **bash53-007** fixed no-fork command substitutions whose redirections leaked into the enclosing command, and later patches fix a subshell or background job whose `EXIT` trap calls `wait` looping on inherited jobs (010), `mapfile` callbacks that unset the target array (011/014), a subshell running an inherited `EXIT` trap after a fatal signal (012), `read` buffer indexing (015) and, on macOS, a variable name directly followed by a byte ≥ 0x80 (e.g. `"$nameä"`) being misparsed (019). Prefer 5.3.7 or newer when relying on `${ cmd; }` with redirections.
 
 ##### Do not use or recommend (version gates)
 
@@ -71,47 +71,13 @@ Never suggest these to code whose minimum version is below the listed one:
 - **4.1:** `{fd}>file` automatic file-descriptor allocation, `printf -v 'arr[i]'`.
 - **4.0:** associative arrays, `mapfile`/`readarray`, `${var^^}`/`${var,,}`, `declare -l`/`-u`, `&>>`, `|&`, `globstar`, `coproc`, `BASHPID`, fractional `read -t`.
 
-Deprecated or removed: the per-version `shopt` options `compat31` … `compat44` still exist in 5.3 but are deprecated in favour of `BASH_COMPAT` (the only mechanism for levels 50 and later); `BASH_COMPAT` accepts 31–53 in 5.3 (`30` is rejected); `shopt assoc_expand_once` is a deprecated synonym for `array_expand_once` in 5.3.[^6][^17]
-
-***
-
-#### Table of Contents
-
-1. [Shebang & Portability](#1-shebang--portability)
-2. [Strict Mode — `set` Flags](#2-strict-mode--set-flags)
-3. [Variables & Parameter Expansion](#3-variables--parameter-expansion)
-4. [Arrays (Indexed)](#4-arrays-indexed)
-5. [Associative Arrays (Maps)](#5-associative-arrays-maps)
-6. [String Handling & Substitution](#6-string-handling--substitution)
-7. [Whitespace Handling & IFS](#7-whitespace-handling--ifs)
-8. [Functions](#8-functions)
-9. [Traps & Signal Handling](#9-traps--signal-handling)
-10. [Exit Codes](#10-exit-codes)
-11. [Logging](#11-logging)
-12. [Input / Output & Redirection](#12-input--output--redirection)
-13. [`exec` & File Descriptors](#13-exec--file-descriptors)
-14. [Piping & Process Substitution](#14-piping--process-substitution)
-15. [Here-Docs & Here-Strings](#15-here-docs--here-strings)
-16. [`read` Builtin](#16-read-builtin)
-17. [Environment Handling](#17-environment-handling)
-18. [Conditionals & Tests](#18-conditionals--tests)
-19. [`sed`](#19-sed)
-20. [`awk`](#20-awk)
-21. [`find`, `grep`, `rg`](#21-find-grep-rg)
-22. [`cat`, `ls` — and when NOT to use them](#22-cat-ls--and-when-not-to-use-them)
-23. [Aliases](#23-aliases)
-24. [Performance](#24-performance)
-25. [POSIX Compliance & Portability](#25-posix-compliance--portability)
-26. [What Not to Do — Anti-Patterns](#26-what-not-to-do--anti-patterns)
-27. [Version Feature Matrix](#27-version-feature-matrix)
-28. [Removed / Changed in 5.3 — Migration Notes & `BASH_COMPAT`](#28-removed--changed-in-53--migration-notes--bash_compat)
-29. [Production / Review Checklist](#29-production--review-checklist)
+Deprecated or removed: the per-version `shopt` options `compat31` … `compat44` still exist in 5.3 but are deprecated in favour of `BASH_COMPAT` (the only mechanism for levels 50 and later); `BASH_COMPAT` accepts 31–53 in 5.3 (`30` is rejected); `shopt assoc_expand_once` is a deprecated synonym for `array_expand_once` in 5.3.
 
 ***
 
 #### 1. Shebang & Portability
 
-Always specify the interpreter. Prefer `#!/usr/bin/env bash` for portability across systems where Bash may not live at `/bin/bash`.[^1]
+Always specify the interpreter. Prefer `#!/usr/bin/env bash` for portability across systems where Bash may not live at `/bin/bash`.
 
 ```bash
 #!/usr/bin/env bash
@@ -133,7 +99,7 @@ Always specify the interpreter. Prefer `#!/usr/bin/env bash` for portability acr
 
 #### 2. Strict Mode — `set` Flags
 
-Add to the very top of every non-interactive production script.[^2]
+Add to the very top of every non-interactive production script.
 
 ```bash
 #!/usr/bin/env bash
@@ -143,10 +109,10 @@ set -euo pipefail
 | Flag | Meaning | Notes |
 |------|---------|-------|
 | `-e` | Exit immediately on non-zero exit code | Ignored in `if`/`while`/`until` conditions, in every command of an `&&`/`\|\|` list except the last, after `!`, and in **everything** (including function bodies) called from those contexts |
-| `-u` | Treat unset variables as errors | Catches typos like `$USRNAME` vs `$USERNAME`[^2] |
-| `-o pipefail` | Pipeline fails if **any** command in it fails | Without this, `false \| true` returns 0[^2] |
+| `-u` | Treat unset variables as errors | Catches typos like `$USRNAME` vs `$USERNAME` |
+| `-o pipefail` | Pipeline fails if **any** command in it fails | Without this, `false \| true` returns 0 |
 | `-x` | Trace every command (debug) | Use in CI or dev, not production by default |
-| `-E` | Inherit `ERR` trap in functions/subshells | Required for `trap ... ERR` to propagate into functions[^3] |
+| `-E` | Inherit `ERR` trap in functions/subshells | Required for `trap ... ERR` to propagate into functions |
 | `-T` | Inherit `DEBUG`/`RETURN` traps in functions | Like `-E`, but for `DEBUG`/`RETURN` traps |
 | `-C` | `noclobber`: refuse to overwrite files with `>` | Force with `>\|`; see §12 |
 | `-n` | `noexec`: parse but do not execute | `bash -n script.sh` = syntax check in CI |
@@ -357,7 +323,7 @@ esac
 
 ##### `&` in the replacement of `${var/pat/rep}` — Bash 5.2+
 
-See the pattern-substitution rules in the manual.[^24]
+See the pattern-substitution rules in the manual.
 
 Since **5.2** the `patsub_replacement` option is **on by default**: an unquoted
 `&` in the replacement string expands to the matched text (like `sed`). Code that
@@ -421,7 +387,7 @@ On 3.2–4.2 use `printf -v "$name" '%s' "$value"` (3.1+) to assign indirectly a
 
 #### 4. Arrays (Indexed)
 
-Indexed arrays are available since Bash **2.0**. Always use `"${arr[@]}"` (not `*`) to iterate safely.[^4]
+Indexed arrays are available since Bash **2.0**. Always use `"${arr[@]}"` (not `*`) to iterate safely.
 
 ```bash
 # Declaration
@@ -502,7 +468,7 @@ process_list fruits
 
 #### 5. Associative Arrays (Maps)
 
-Requires Bash **4.0+**. Not available in `/bin/bash` on macOS (Bash 3.2).[^5]
+Requires Bash **4.0+**. Not available in `/bin/bash` on macOS (Bash 3.2).
 
 ```bash
 # Declaration — -A is mandatory
@@ -556,7 +522,7 @@ declare -rA CONSTANTS=([VERSION]="1.2.3" [APP]="myapp")
 declare -p config    # prints: declare -A config=([host]="localhost" ...)
 ```
 
-**Pitfall:** Empty strings cannot be used as associative array keys (`m[""]=1` → "bad array subscript" in every version up to 5.3); guard data-derived keys with `[[ -n $key ]]`.[^4]
+**Pitfall:** Empty strings cannot be used as associative array keys (`m[""]=1` → "bad array subscript" in every version up to 5.3); guard data-derived keys with `[[ -n $key ]]`.
 
 ##### Untrusted data in array subscripts and arithmetic (command injection)
 
@@ -587,7 +553,7 @@ expanded twice up to 5.1, so a key like `x$(cmd)` ran `cmd`; 5.0/5.1 need
 named `array_expand_once` in 5.3, with `assoc_expand_once` kept as a deprecated
 synonym). `test -v "A[$key]"` and `[ -v "A[$key]" ]` **still** execute the
 substitution on 5.3 — use `[[ -v A[$key] ]]` only on 5.2+, or test membership
-with `[[ ${A[$key]+set} ]]`, which is safe on every version from 4.0 on.[^6]
+with `[[ ${A[$key]+set} ]]`, which is safe on every version from 4.0 on.
 
 **Bash 3 workaround** (when you must support macOS or old systems):
 
@@ -718,7 +684,7 @@ trailing newlines. Use `$(< file)` instead of `$(cat file)` (no `cat` process).
 To keep trailing newlines, append a sentinel: `out=$(cmd; printf x); out=${out%x}`.
 
 **New in 5.3** — two forms run the command **in the current shell**, without
-`fork()` and without a pipe:[^15]
+`fork()` and without a pipe:
 
 ```bash
 # ${ cmd; } — captures stdout like $(...), trailing newlines removed
@@ -758,8 +724,8 @@ Semantics the reviewer must check:
   Guard with `(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) ))`
   or keep `$( … )` / `printf -v`.
 - **Use 5.3.7+** if the body uses redirections: bash53-007 fixed redirections
-  in a no-fork substitution leaking into the enclosing command.[^14]
-- ShellCheck 0.11.0 parses both forms.[^22]
+  in a no-fork substitution leaking into the enclosing command.
+- ShellCheck 0.11.0 parses both forms.
 
 On older versions, the fork-free alternatives are `printf -v var …` (3.1+),
 namerefs (4.3+) and functions that set a global such as `REPLY`.
@@ -791,7 +757,7 @@ Changing it affects `read`, `for`, and word splitting.
 global default.** A global `IFS=$'\n\t'` is a common recommendation but changes
 word-splitting everywhere and has surprising effects: `"$*"` and `"${*:2}"` join
 on IFS's **first character**, so under `$'\n\t'` they concatenate with newlines
-instead of spaces. Scope it instead:[^7]
+instead of spaces. Scope it instead:
 
 ```bash
 # Scope IFS to a single command — does NOT persist (best)
@@ -877,7 +843,7 @@ shopt -s failglob             # an unmatched glob is an error instead
 `name`, `numeric` (all-digit names by value, others after them by name),
 `size`, `blocks`, `mtime`, `atime`, `ctime`, or `nosort` (directory order); a
 leading `-` reverses the order (a leading `+` is ignored; `-` alone means
-reverse name order).[^16]
+reverse name order).
 
 ```bash
 GLOBSORT=-mtime               # newest first (5.3+)
@@ -1084,10 +1050,10 @@ trap on_error ERR
 TMPDIR_WORK=$(mktemp -d)
 ```
 
-**Key rules:**[^3]
+**Key rules:**
 
 - `trap ... EXIT` runs on **all** exits including error exits — ideal for cleanup.
-- Listing `trap ... INT TERM EXIT` causes cleanup to run **twice** when INT/TERM received. Use `EXIT` alone for cleanup; use separate INT/TERM traps only for graceful shutdown signaling.[^8]
+- Listing `trap ... INT TERM EXIT` causes cleanup to run **twice** when INT/TERM received. Use `EXIT` alone for cleanup; use separate INT/TERM traps only for graceful shutdown signaling.
 - `trap ... ERR` requires `set -E` to fire inside functions.
 - In cleanup functions: use `set +e` and `|| true` to prevent recursive errors.
 - Initialise the cleanup variable to an empty value before installing the trap (as above) or create the temp dir first, and never name the variable `TMPDIR`: `mktemp` consults `$TMPDIR`, so a trap that fires before the assignment can `rm -rf` the inherited real temp directory.
@@ -1142,7 +1108,7 @@ acquire_lock() {
 
 #### 10. Exit Codes
 
-Exit codes are 8-bit unsigned integers: **0–255**.[^9]
+Exit codes are 8-bit unsigned integers: **0–255**.
 
 | Code | Meaning |
 |------|---------|
@@ -1337,7 +1303,7 @@ safe_move() {
 
 #### 13. `exec` & File Descriptors
 
-`exec` replaces the current shell process or globally redirects file descriptors.[^10]
+`exec` replaces the current shell process or globally redirects file descriptors.
 
 ```bash
 # Replace current process (no fork) — use for wrapping
@@ -1382,7 +1348,7 @@ teardown_logging() {
 the command (a descriptor leak in loops) unless `shopt -s varredir_close` (5.2+)
 is set; close it explicitly with `{var}>&-`. `{var}>&-` with a non-numeric `$var`
 silently closes **stdin** on 5.2 and older; since 5.3 it fails with
-`ambiguous redirect` (status 1) and leaves stdin open.[^18]
+`ambiguous redirect` (status 1) and leaves stdin open.
 
 ***
 
@@ -1520,7 +1486,7 @@ EOF
 ```
 
 **Pitfalls:**
-- `<<-` strips **tabs only** — mixing spaces and tabs causes silent misalignment.[^11]
+- `<<-` strips **tabs only** — mixing spaces and tabs causes silent misalignment.
 - Variables and command substitutions are expanded unless delimiter is quoted.
 - Trailing newline is always included.
 - Expanded data is **not** escaped: `cat <<EOF` around `${user_input}` that
@@ -1529,7 +1495,7 @@ EOF
 - Bash 5.1+ feeds small here-docs/here-strings through a **pipe** instead of a
   temporary file (`BASH_COMPAT=50` restores temp files on 5.2+; 5.1 itself
   ignores that setting); code that seeks on stdin or checks
-  `[[ -f /dev/stdin ]]` behaves differently.[^6]
+  `[[ -f /dev/stdin ]]` behaves differently.
 
 ##### Here-string (Bash 2.05b+)
 
@@ -1596,7 +1562,7 @@ exec 3<&-
 IFS= read -r -d $'\0' content < <(printf '%s\0' "$data")
 ```
 
-**ShellCheck warning SC2162:** Always use `read -r` to avoid mangling backslashes.[^12]
+**ShellCheck warning SC2162:** Always use `read -r` to avoid mangling backslashes.
 
 - `read` returns non-zero at end of file even when it read a final line that
   lacks a trailing newline — use `while IFS= read -r line || [[ -n $line ]]`
@@ -2173,7 +2139,7 @@ When writing scripts targeting `sh` (not Bash), avoid all of the following Bash-
 | `declare -n` nameref | ✅ Bash 4.3+ | ❌ |
 | `printf -v` | ✅ | ❌ |
 | `PIPESTATUS` | ✅ | ❌ |
-| `$'…'` ANSI-C quoting | ✅ | ✅ since POSIX.1-2024 (older `sh` implementations lack it)[^21] |
+| `$'…'` ANSI-C quoting | ✅ | ✅ since POSIX.1-2024 (older `sh` implementations lack it) |
 | `set -o pipefail` | ✅ | ✅ since POSIX.1-2024 (older `sh` implementations lack it) |
 | `${ cmd; }` / `${\| cmd; }` | ✅ Bash 5.3+ | ❌ |
 | `GLOBSORT`, `BASH_*` variables | ✅ (version-specific) | ❌ |
@@ -2206,7 +2172,7 @@ changes in POSIX mode: function names no longer need to be valid identifiers
 PID/job argument is not found (in default mode `kill 123 456` still returns 0
 when one target exists), `test`'s `<`/`>` use the locale, `wait -n` removes the
 reaped job from the job table, and `set -e` exits "as if executing `exit` with
-no arguments".[^20]
+no arguments".
 
 ***
 
@@ -2324,7 +2290,7 @@ GLOBSORT=-mtime; f=(*)      # silently ignored on 5.2 and older
 #### 27. Version Feature Matrix
 
 "≤ 3.2" means available in every version this guide covers. Boundaries for
-4.0–4.3 come from the official NEWS file;[^5] everything else was executed on
+4.0–4.3 come from the official NEWS file; everything else was executed on
 3.2.57, 4.4.23, 5.0.18, 5.1.16, 5.2.37 and 5.3.20.
 
 | Feature | Min. Bash Version | Notes |
@@ -2399,7 +2365,7 @@ choose one minimum version and enforce it once at the top.
 
 #### 28. Removed / Changed in 5.3 — Migration Notes & `BASH_COMPAT`
 
-Upgrading a script's runtime from 5.2 to 5.3 is low-risk, but review these:[^5][^6]
+Upgrading a script's runtime from 5.2 to 5.3 is low-risk, but review these:
 
 | 5.2 behaviour | 5.3 behaviour | Action |
 |---------------|---------------|--------|
@@ -2424,7 +2390,7 @@ double expansion and `unset a[@]` semantics. In 5.3 the variable accepts 31–53
 `shopt compat31` … `compat44` options are deprecated and there are no
 `compat50`+ options. Treat `BASH_COMPAT` as a temporary migration aid — it
 re-enables known-unsafe behaviour (e.g. `BASH_COMPAT=51` brings back double
-expansion of array subscripts) and should not appear in new code.[^17]
+expansion of array subscripts) and should not appear in new code.
 
 **Deprecated / removed across the covered range** (reviewer flags):
 
@@ -2578,32 +2544,3 @@ main() {
 
 main "$@"
 ```
-
-***
-
-#### References
-
-[^1]: GNU Bash Reference Manual — Shell Scripts. https://www.gnu.org/software/bash/manual/html_node/Shell-Scripts.html
-[^2]: GNU Bash Reference Manual — The Set Builtin. https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
-[^3]: GNU Bash Reference Manual — Bourne Shell Builtins (`trap`, `exit`, `cd`, `.`). https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html
-[^4]: GNU Bash Reference Manual — Arrays. https://www.gnu.org/software/bash/manual/html_node/Arrays.html
-[^5]: Bash NEWS — feature list per release (bash-2.0 … bash-5.3). https://git.savannah.gnu.org/cgit/bash.git/plain/NEWS?h=bash-5.3
-[^6]: Bash COMPAT — incompatibilities between versions and the compatibility levels. https://git.savannah.gnu.org/cgit/bash.git/plain/COMPAT?h=bash-5.3
-[^7]: GNU Bash Reference Manual — Word Splitting. https://www.gnu.org/software/bash/manual/html_node/Word-Splitting.html
-[^8]: "trap ... INT TERM EXIT" really necessary? Unix & Linux Stack Exchange. https://unix.stackexchange.com/questions/57940/trap-int-term-exit-really-necessary
-[^9]: GNU Bash Reference Manual — Exit Status. https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html
-[^10]: GNU Bash Reference Manual — Redirections. https://www.gnu.org/software/bash/manual/html_node/Redirections.html
-[^11]: GNU Bash Reference Manual — Redirections: Here Documents. https://www.gnu.org/software/bash/manual/html_node/Redirections.html#Here-Documents
-[^12]: ShellCheck wiki — SC2162: read without -r will mangle backslashes. https://www.shellcheck.net/wiki/SC2162
-[^13]: Chet Ramey, bash-5.3 release announcement ("The first public release of bash-5.3 is now available"), bug-bash mailing list, July 5, 2025. https://lists.gnu.org/archive/html/bug-bash/2025-07/msg00005.html
-[^14]: GNU FTP — official bash-5.3 patches (bash53-001 … bash53-020). https://ftp.gnu.org/gnu/bash/bash-5.3-patches/
-[^15]: GNU Bash Reference Manual — Command Substitution. https://www.gnu.org/software/bash/manual/html_node/Command-Substitution.html
-[^16]: GNU Bash Reference Manual — Bash Variables (`GLOBSORT`, `BASH_TRAPSIG`, `BASH_MONOSECONDS`, `BASH_COMPAT`). https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html
-[^17]: GNU Bash Reference Manual — Shell Compatibility Mode. https://www.gnu.org/software/bash/manual/html_node/Shell-Compatibility-Mode.html
-[^18]: Bash CHANGES — detailed change log bash-5.2 → bash-5.3-rc2. https://git.savannah.gnu.org/cgit/bash.git/plain/CHANGES?h=bash-5.3
-[^19]: Bash git repository — `devel` branch log ("changed version to bash-5.4-devel", August 21, 2026) and release tags. https://git.savannah.gnu.org/cgit/bash.git/log/?h=devel
-[^20]: GNU Bash Reference Manual — Bash POSIX Mode. https://www.gnu.org/software/bash/manual/html_node/Bash-POSIX-Mode.html
-[^21]: POSIX.1-2024 (IEEE Std 1003.1-2024), Shell Command Language — Dollar-Single-Quotes and the `pipefail` option. https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html
-[^22]: ShellCheck v0.11.0 release. https://github.com/koalaman/shellcheck/releases/tag/v0.11.0
-[^23]: Debian sources (bash versions per suite) https://sources.debian.org/src/bash/ and Ubuntu Launchpad (bash source package) https://launchpad.net/ubuntu/+source/bash
-[^24]: GNU Bash Reference Manual — Shell Parameter Expansion. https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html

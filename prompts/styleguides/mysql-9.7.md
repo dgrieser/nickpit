@@ -2,13 +2,13 @@
 
 #### Overview
 
-> **Version**: MySQL 9.7 LTS. 9.7.0 became generally available on **April 21, 2026**.[^1][^2] The latest release is **9.7.4 (October 20, 2026)**. The series so far: 9.7.0 (2026-04-21), 9.7.1 (2026-06-16, Critical Security Patch Update), 9.7.2 (2026-07-28), 9.7.3 (2026-08-18, Critical Security Patch Update for the Docker image only), 9.7.4 (2026-10-20).[^2]
-> **Support**: 9.7 is a Long-Term Support series under the Oracle Lifetime Support Policy: five years of Premier Support and three years of Extended Support,[^3] i.e. Premier Support until **April 2031** and Extended Support until **April 2034**.[^4]
-> **Landscape as of October 2026**: 9.7 is the newest LTS and the **last release line with sequential version numbers**. Releases after it use calendar versions (`YY.M.P`): the Innovation releases **26.7.0** (July 28, 2026), **26.7.1** (August 18, 2026) and **26.10.0** (October 20, 2026) are newer than 9.7 but are *not* 9.7 patches.[^3][^5] The previous LTS, 8.4, is still supported (latest 8.4.13, October 20, 2026); MySQL 8.0 reached End of Life in April 2026 (last release 8.0.46, April 21, 2026).[^6] Supported upgrade path: 8.4 LTS → 9.7 LTS; an LTS series cannot be skipped.[^3]
+> **Version**: MySQL 9.7 LTS. 9.7.0 became generally available on **April 21, 2026**. The latest release is **9.7.4 (October 20, 2026)**. The series so far: 9.7.0 (2026-04-21), 9.7.1 (2026-06-16, Critical Security Patch Update), 9.7.2 (2026-07-28), 9.7.3 (2026-08-18, Critical Security Patch Update for the Docker image only), 9.7.4 (2026-10-20).
+> **Support**: 9.7 is a Long-Term Support series under the Oracle Lifetime Support Policy: five years of Premier Support and three years of Extended Support, i.e. Premier Support until **April 2031** and Extended Support until **April 2034**.
+> **Landscape as of October 2026**: 9.7 is the newest LTS and the **last release line with sequential version numbers**. Releases after it use calendar versions (`YY.M.P`): the Innovation releases **26.7.0** (July 28, 2026), **26.7.1** (August 18, 2026) and **26.10.0** (October 20, 2026) are newer than 9.7 but are *not* 9.7 patches. The previous LTS, 8.4, is still supported (latest 8.4.13, October 20, 2026); MySQL 8.0 reached End of Life in April 2026 (last release 8.0.46, April 21, 2026). Supported upgrade path: 8.4 LTS → 9.7 LTS; an LTS series cannot be skipped.
 > **Scope**: SQL that runs on MySQL 9.7 with InnoDB: schema and index design, migrations and online DDL, queries and DML in application code, transactions and locking, stored programs, security, and everything that changed relative to 8.4 LTS (all of the 9.0–9.6 Innovation releases are folded into 9.7.0). Every example in this guide was executed on **MySQL 9.7.4** (Community Server, official `mysql:9.7` image); boundary claims were checked on **8.4.13**.
 > **Note**: This document is self-contained. Sections that cover behaviour that is new or different compared with 8.4 are marked **New in 9.7** (or with the 9.x release that introduced it).
 
-Apply this guide when a project pins MySQL 9.7.x (`mysql:9.7`, `mysql:9.7.4`, `engine_version = "9.7..."`). A project that pins a 9.0–9.6 Innovation release runs an out-of-support server (an Innovation release is supported only until the next one ships);[^3] most of this guide applies, but check the "Introduced in" column of the tables below before relying on a feature, and recommend moving to 9.7 LTS. **Treat every feature introduced in 26.7 or later as unavailable** (see "Do not use or recommend").
+Apply this guide when a project pins MySQL 9.7.x (`mysql:9.7`, `mysql:9.7.4`, `engine_version = "9.7..."`). A project that pins a 9.0–9.6 Innovation release runs an out-of-support server (an Innovation release is supported only until the next one ships); most of this guide applies, but check the "Introduced in" column of the tables below before relying on a feature, and recommend moving to 9.7 LTS. **Treat every feature introduced in 26.7 or later as unavailable** (see "Do not use or recommend").
 
 Global truths about MySQL 9.7 with InnoDB:
 
@@ -27,36 +27,36 @@ Global truths about MySQL 9.7 with InnoDB:
 
 #### What's New in MySQL 9.7 (since 8.4)
 
-MySQL 9.7.0 is the first LTS after 8.4 and bundles everything from the 9.0–9.6 Innovation releases. LTS rules: features are added and removed only in the first LTS release (9.7.0); later 9.7.x releases contain fixes, and in-place upgrade and downgrade within 9.7.x is supported.[^3] In practice a few 9.7.x patches changed observable behaviour; they are listed separately below. The manual's "What Is New in MySQL 9.7" page only compares 9.7 with 9.6; the full list of changes since 8.4 is spread over the 9.0.0–9.6.0 release notes, summarized here.[^1][^7]
+MySQL 9.7.0 is the first LTS after 8.4 and bundles everything from the 9.0–9.6 Innovation releases. LTS rules: features are added and removed only in the first LTS release (9.7.0); later 9.7.x releases contain fixes, and in-place upgrade and downgrade within 9.7.x is supported. In practice a few 9.7.x patches changed observable behaviour; they are listed separately below. The manual's "What Is New in MySQL 9.7" page only compares 9.7 with 9.6; the full list of changes since 8.4 is spread over the 9.0.0–9.6.0 release notes, summarized here.
 
 ##### Breaking changes for application SQL and migrations [New in 9.7]
 
 | Change | 8.4 behaviour | 9.7 behaviour | Introduced |
 |---|---|---|---|
-| Inline column `REFERENCES` | Parsed and **silently ignored**: no constraint | **Creates and enforces a foreign key** (`INSERT` of an orphan → `ERROR 1452`). `REFERENCES parent` without a column list references the parent's primary key | 9.0.0[^8] |
+| Inline column `REFERENCES` | Parsed and **silently ignored**: no constraint | **Creates and enforces a foreign key** (`INSERT` of an orphan → `ERROR 1452`). `REFERENCES parent` without a column list references the parent's primary key | 9.0.0 |
 | `ALTER TABLE ... ADD COLUMN c INT REFERENCES p (id)` | Instant metadata change; no constraint | Adds a foreign key: `ALGORITHM=INSTANT`/`INPLACE` are rejected (`ERROR 1846 ... Adding foreign keys needs foreign_key_checks=OFF`), without an `ALGORITHM` clause the table is **copied** | 9.0.0 (tested) |
-| `mysql_native_password` | Server plugin present but disabled; `--mysql-native-password=ON` re-enables it | Server plugin **removed**, together with `--mysql-native-password` and `--mysql-native-password-proxy-users`; such accounts cannot log in; the client-side plugin remains | 9.0.0[^8] |
-| `MD5()`, `SHA1()` | Built-in functions | Deprecated in 9.4.0, **moved to the `classic_hashing` component** in 9.6.0: `ERROR 1305 FUNCTION db.MD5 does not exist` until `INSTALL COMPONENT 'file://component_classic_hashing'` | 9.4.0 / 9.6.0[^9][^10] |
-| `EXTERNAL`, `LIBRARY` | Plain identifiers | **Reserved words**: `CREATE TABLE external (...)` / `library (...)` → `ERROR 1064`; quote them (the only differences between the reserved-word lists of 8.4.13 and 9.7.4, tested via `information_schema.keywords`; `CUBE`, `QUALIFY`, `TABLESAMPLE` are reserved in both) | 9.x[^11] |
-| `IGNORE` and `ER_SUBQUERY_NO_1_ROW` | `INSERT/UPDATE/DELETE IGNORE` downgrade "Subquery returns more than 1 row" to a warning | **`ERROR 1242`** even with `IGNORE` | 9.0.0[^8] |
-| Mixing non-transactional (MyISAM, MEMORY) and InnoDB writes in one transaction | Allowed (GTIDs off by default) | With the new default `gtid_mode=ON`/`enforce_gtid_consistency=ON`: `ERROR 1785 Statement violates GTID consistency`; also deprecated (warning 6414) | 9.0.0 / 9.5.0[^8][^12] |
-| `explain_format` / `explain_json_format_version` | `TRADITIONAL` / `1` | **`TREE` / `2`**: plain `EXPLAIN` prints the iterator tree; JSON plans have a different schema (`$.query_plan...`, not `$.query_block...`) | 9.5.0[^12] |
-| `mysql` client `--commands` | Enabled (8.4.6+) | **Disabled by default** (since 9.4.0): `source`, `use` (sent to the server instead), `\G`, `status`, `system`, `tee`, `pager`, `warnings`, `connect`, `quit`, ... become SQL syntax errors; only `delimiter` and `\C` still work | 9.4.0[^9][^13] |
-| Column references through a derived table qualified with the schema (`SELECT db.dt.a FROM (...) AS dt`) | Accepted | `ERROR 1054 Unknown column` | 9.1.0[^14] |
-| Outer references in a window's `PARTITION BY`/`ORDER BY` | Accepted | `ERROR 6432 Outer reference ... in window's ORDER BY or PARTITION BY clause not allowed` | 9.2.0[^15] |
-| Nondeterministic `ORDER BY` with `RANGE` window frames (`ORDER BY RAND() RANGE ...`) | Accepted | Rejected (`ERROR 3587`) | 9.4.0[^9] |
-| `ROLLUP` over an empty input | Empty result | One grand-total row (`NULL`, `0` for `COUNT(*)`) | 9.1.0[^14] |
-| `SUM(DISTINCT b'1100')` | 9 (wrong) | 12 | 9.1.0[^14] |
-| `SELECT (SELECT 1 LIMIT 1 OFFSET 10)` | 1 (wrong) | `NULL` | 9.2.0[^15] |
+| `mysql_native_password` | Server plugin present but disabled; `--mysql-native-password=ON` re-enables it | Server plugin **removed**, together with `--mysql-native-password` and `--mysql-native-password-proxy-users`; such accounts cannot log in; the client-side plugin remains | 9.0.0 |
+| `MD5()`, `SHA1()` | Built-in functions | Deprecated in 9.4.0, **moved to the `classic_hashing` component** in 9.6.0: `ERROR 1305 FUNCTION db.MD5 does not exist` until `INSTALL COMPONENT 'file://component_classic_hashing'` | 9.4.0 / 9.6.0 |
+| `EXTERNAL`, `LIBRARY` | Plain identifiers | **Reserved words**: `CREATE TABLE external (...)` / `library (...)` → `ERROR 1064`; quote them (the only differences between the reserved-word lists of 8.4.13 and 9.7.4, tested via `information_schema.keywords`; `CUBE`, `QUALIFY`, `TABLESAMPLE` are reserved in both) | 9.x |
+| `IGNORE` and `ER_SUBQUERY_NO_1_ROW` | `INSERT/UPDATE/DELETE IGNORE` downgrade "Subquery returns more than 1 row" to a warning | **`ERROR 1242`** even with `IGNORE` | 9.0.0 |
+| Mixing non-transactional (MyISAM, MEMORY) and InnoDB writes in one transaction | Allowed (GTIDs off by default) | With the new default `gtid_mode=ON`/`enforce_gtid_consistency=ON`: `ERROR 1785 Statement violates GTID consistency`; also deprecated (warning 6414) | 9.0.0 / 9.5.0 |
+| `explain_format` / `explain_json_format_version` | `TRADITIONAL` / `1` | **`TREE` / `2`**: plain `EXPLAIN` prints the iterator tree; JSON plans have a different schema (`$.query_plan...`, not `$.query_block...`) | 9.5.0 |
+| `mysql` client `--commands` | Enabled (8.4.6+) | **Disabled by default** (since 9.4.0): `source`, `use` (sent to the server instead), `\G`, `status`, `system`, `tee`, `pager`, `warnings`, `connect`, `quit`, ... become SQL syntax errors; only `delimiter` and `\C` still work | 9.4.0 |
+| Column references through a derived table qualified with the schema (`SELECT db.dt.a FROM (...) AS dt`) | Accepted | `ERROR 1054 Unknown column` | 9.1.0 |
+| Outer references in a window's `PARTITION BY`/`ORDER BY` | Accepted | `ERROR 6432 Outer reference ... in window's ORDER BY or PARTITION BY clause not allowed` | 9.2.0 |
+| Nondeterministic `ORDER BY` with `RANGE` window frames (`ORDER BY RAND() RANGE ...`) | Accepted | Rejected (`ERROR 3587`) | 9.4.0 |
+| `ROLLUP` over an empty input | Empty result | One grand-total row (`NULL`, `0` for `COUNT(*)`) | 9.1.0 |
+| `SUM(DISTINCT b'1100')` | 9 (wrong) | 12 | 9.1.0 |
+| `SELECT (SELECT 1 LIMIT 1 OFFSET 10)` | 1 (wrong) | `NULL` | 9.2.0 |
 | `REPLACE` of a referenced parent row with an unchanged key | Cascades `ON DELETE` to children, or fails with `ERROR 1451` (`NO ACTION`/`RESTRICT`) | Neither: children are kept, statement succeeds (SQL-layer foreign keys) | 9.6.0 (tested) |
-| `GROUPING()` in a query without `ROLLUP` | `ERROR 1111 Invalid use of group function` | Allowed (returns 0) | 9.6.0[^10] |
-| Removed server variables | `default_authentication_plugin`, `innodb_log_file_size`, `innodb_log_files_in_group`, `innodb_undo_tablespaces`, `temptable_use_mmap`, `replica_parallel_type`, `group_replication_allow_local_lower_version_join` exist (deprecated) | `ERROR 1193 Unknown system variable`; a config file that still sets them stops the server from starting. Use `innodb_redo_log_capacity` for redo sizing | 9.0.0–9.5.0[^8][^16][^9][^12] |
-| Removed plugins | `semisync_master`/`semisync_slave`, Version Tokens | Removed (use `semisync_source`/`semisync_replica`) | 9.3.0 / 9.5.0[^16][^12] |
-| `replica_parallel_workers = 0` | Allowed | Minimum is 1 | 9.3.0[^16] |
-| `BINLOG` as an unquoted stored-program label | Allowed | Syntax error | 9.2.0[^15] |
-| `SPATIAL` indexes | — | A 9.2.0 fix for spatial-index corruption requires dropping and re-creating spatial indexes during the upgrade (before the affected tables are used) | 9.2.0[^15] |
-| Foreign-key violations and `AUTO_INCREMENT` | A child insert rejected with `ERROR 1452` still consumes an `AUTO_INCREMENT` value | The SQL layer checks before the row is written: no value is consumed (tested: next id 1 on 9.7.4, 2 on 8.4.13) | 9.6.0[^46] |
-| Downgrade between Innovation releases | — | Not possible, not even within one Innovation series; within 9.7.x LTS in-place downgrade is supported | 9.3.0[^16][^3] |
+| `GROUPING()` in a query without `ROLLUP` | `ERROR 1111 Invalid use of group function` | Allowed (returns 0) | 9.6.0 |
+| Removed server variables | `default_authentication_plugin`, `innodb_log_file_size`, `innodb_log_files_in_group`, `innodb_undo_tablespaces`, `temptable_use_mmap`, `replica_parallel_type`, `group_replication_allow_local_lower_version_join` exist (deprecated) | `ERROR 1193 Unknown system variable`; a config file that still sets them stops the server from starting. Use `innodb_redo_log_capacity` for redo sizing | 9.0.0–9.5.0 |
+| Removed plugins | `semisync_master`/`semisync_slave`, Version Tokens | Removed (use `semisync_source`/`semisync_replica`) | 9.3.0 / 9.5.0 |
+| `replica_parallel_workers = 0` | Allowed | Minimum is 1 | 9.3.0 |
+| `BINLOG` as an unquoted stored-program label | Allowed | Syntax error | 9.2.0 |
+| `SPATIAL` indexes | — | A 9.2.0 fix for spatial-index corruption requires dropping and re-creating spatial indexes during the upgrade (before the affected tables are used) | 9.2.0 |
+| Foreign-key violations and `AUTO_INCREMENT` | A child insert rejected with `ERROR 1452` still consumes an `AUTO_INCREMENT` value | The SQL layer checks before the row is written: no value is consumed (tested: next id 1 on 9.7.4, 2 on 8.4.13) | 9.6.0 |
+| Downgrade between Innovation releases | — | Not possible, not even within one Innovation series; within 9.7.x LTS in-place downgrade is supported | 9.3.0 |
 
 ```sql
 -- MySQL 9.7.4 (8.4.13 results in the comments where they differ)
@@ -79,32 +79,32 @@ SELECT @@innodb_log_file_size;    -- ERROR 1193 (HY000): Unknown system variable
 
 | Feature | Introduced | Edition |
 |---|---|---|
-| `VECTOR(n)` data type; `STRING_TO_VECTOR()`/`TO_VECTOR()`, `VECTOR_TO_STRING()`/`FROM_VECTOR()`, `VECTOR_DIM()` | 9.0.0[^8] | All |
-| Enforced inline `REFERENCES`; `REFERENCES parent` without a column list | 9.0.0[^8] | All |
-| `EXPLAIN ANALYZE FORMAT=JSON INTO @var` (requires `explain_json_format_version=2`, now the default) | 9.0.0[^8] | All |
-| `PREPARE` of `CREATE EVENT`, `ALTER EVENT`, `DROP EVENT` (no `?` placeholders) | 9.0.0[^8] | All |
-| Correlated subqueries with `LIMIT 1` can be transformed into derived tables | 9.0.0[^8] | All |
-| `CREATE VIEW IF NOT EXISTS` (not combinable with `OR REPLACE`) | 9.1.0[^14] | All |
-| `GROUP BY ROLLUP (a, b)` syntax (also on 8.4.x) | 9.1.0[^14] | All |
-| `table_open_cache_triggers`: triggers are parsed only for statements that modify data | 9.1.0[^14] | All |
-| Max `INSTANT` row versions per table raised from 64 to **255** | 9.1.0[^14] | All |
-| `CREATE_SPATIAL_REFERENCE_SYSTEM` privilege (instead of `SUPER`) | 9.2.0[^15] | All |
-| `subquery_to_derived` handles all `>ANY`/`<ALL`/... quantified comparisons, also in the `SELECT` list | 9.3.0[^16] | All |
-| `mysqldump --users` (dumps `CREATE USER`/`GRANT`) | 9.3.0[^16] | All |
-| `CREATE JSON DUALITY VIEW`, `JSON_DUALITY_OBJECT()`, `ETAG()`; DML on duality views | 9.4.0 (DML in Community: 9.7.0)[^9][^1] | All |
-| `activate_mandatory_roles` (default `ON`) | 9.5.0[^12] | All |
-| `INTERPRET_UTF8_AS_UTF8MB4` SQL mode | 9.5.0[^12] | All |
-| `GROUPING()` without `ROLLUP` | 9.6.0[^10] | All |
-| SQL-layer foreign keys (InnoDB handling only with the read-only startup option `innodb_native_foreign_keys=ON`) | 9.6.0[^10] | All |
-| **Hypergraph optimizer** (`optimizer_switch='hypergraph_optimizer=on'`) and therefore **`QUALIFY`** | 9.7.0[^1] | All (opt-in) |
-| `enable_cascade_triggers` (FK `CASCADE`/`SET NULL` fire child triggers) | 9.7.0[^1] | All |
-| `sql_require_primary_key` / `sql_generate_invisible_primary_key` accept a `UNIQUE NOT NULL` key as primary-key equivalent | 9.7.0[^1] | All |
-| `caching_sha2_password_storage_format` (`CRYPT5` default, `PBKDF2` with SHA-512), `caching_sha2_password_enforce_storage_format` | 9.7.0[^1][^17] | All |
-| `replica_allow_higher_version_source` | 9.7.0[^1] | All |
-| Telemetry component, Replication Applier Metrics and Group Replication resource-manager / flow-control / primary-election components (previously Enterprise) | 9.7.0[^1] | All |
-| `VERSION_WITH_UPDATE()`, `@@version_with_update` (four-part version, e.g. `9.7.4.0`) | **9.7.4**[^2] | All |
-| JavaScript stored programs (`LANGUAGE JAVASCRIPT`), `CREATE LIBRARY` / `USING (lib)`, WebAssembly libraries (`LANGUAGE WASM`) | 9.0.0 / 9.2.0 / 9.4.0[^8][^15][^9] | **Enterprise only** (MLE component) |
-| Dynamic data masking (`CREATE MASKING POLICY`, needs the `object_policy` component); `CURRENT_ROLE_IN()`, `CURRENT_USER_IN()` | 9.7.0[^1] | Masking policies: **Enterprise only**; the two functions also exist in Community |
+| `VECTOR(n)` data type; `STRING_TO_VECTOR()`/`TO_VECTOR()`, `VECTOR_TO_STRING()`/`FROM_VECTOR()`, `VECTOR_DIM()` | 9.0.0 | All |
+| Enforced inline `REFERENCES`; `REFERENCES parent` without a column list | 9.0.0 | All |
+| `EXPLAIN ANALYZE FORMAT=JSON INTO @var` (requires `explain_json_format_version=2`, now the default) | 9.0.0 | All |
+| `PREPARE` of `CREATE EVENT`, `ALTER EVENT`, `DROP EVENT` (no `?` placeholders) | 9.0.0 | All |
+| Correlated subqueries with `LIMIT 1` can be transformed into derived tables | 9.0.0 | All |
+| `CREATE VIEW IF NOT EXISTS` (not combinable with `OR REPLACE`) | 9.1.0 | All |
+| `GROUP BY ROLLUP (a, b)` syntax (also on 8.4.x) | 9.1.0 | All |
+| `table_open_cache_triggers`: triggers are parsed only for statements that modify data | 9.1.0 | All |
+| Max `INSTANT` row versions per table raised from 64 to **255** | 9.1.0 | All |
+| `CREATE_SPATIAL_REFERENCE_SYSTEM` privilege (instead of `SUPER`) | 9.2.0 | All |
+| `subquery_to_derived` handles all `>ANY`/`<ALL`/... quantified comparisons, also in the `SELECT` list | 9.3.0 | All |
+| `mysqldump --users` (dumps `CREATE USER`/`GRANT`) | 9.3.0 | All |
+| `CREATE JSON DUALITY VIEW`, `JSON_DUALITY_OBJECT()`, `ETAG()`; DML on duality views | 9.4.0 (DML in Community: 9.7.0) | All |
+| `activate_mandatory_roles` (default `ON`) | 9.5.0 | All |
+| `INTERPRET_UTF8_AS_UTF8MB4` SQL mode | 9.5.0 | All |
+| `GROUPING()` without `ROLLUP` | 9.6.0 | All |
+| SQL-layer foreign keys (InnoDB handling only with the read-only startup option `innodb_native_foreign_keys=ON`) | 9.6.0 | All |
+| **Hypergraph optimizer** (`optimizer_switch='hypergraph_optimizer=on'`) and therefore **`QUALIFY`** | 9.7.0 | All (opt-in) |
+| `enable_cascade_triggers` (FK `CASCADE`/`SET NULL` fire child triggers) | 9.7.0 | All |
+| `sql_require_primary_key` / `sql_generate_invisible_primary_key` accept a `UNIQUE NOT NULL` key as primary-key equivalent | 9.7.0 | All |
+| `caching_sha2_password_storage_format` (`CRYPT5` default, `PBKDF2` with SHA-512), `caching_sha2_password_enforce_storage_format` | 9.7.0 | All |
+| `replica_allow_higher_version_source` | 9.7.0 | All |
+| Telemetry component, Replication Applier Metrics and Group Replication resource-manager / flow-control / primary-election components (previously Enterprise) | 9.7.0 | All |
+| `VERSION_WITH_UPDATE()`, `@@version_with_update` (four-part version, e.g. `9.7.4.0`) | **9.7.4** | All |
+| JavaScript stored programs (`LANGUAGE JAVASCRIPT`), `CREATE LIBRARY` / `USING (lib)`, WebAssembly libraries (`LANGUAGE WASM`) | 9.0.0 / 9.2.0 / 9.4.0 | **Enterprise only** (MLE component) |
+| Dynamic data masking (`CREATE MASKING POLICY`, needs the `object_policy` component); `CURRENT_ROLE_IN()`, `CURRENT_USER_IN()` | 9.7.0 | Masking policies: **Enterprise only**; the two functions also exist in Community |
 
 ```sql
 -- MySQL 9.7.4
@@ -129,19 +129,19 @@ The rows down to `mysql` client options were observed on 8.4.13 and 9.7.4 in the
 
 | Variable / option | 8.4 | 9.7 | Changed in |
 |---|---|---|---|
-| `explain_format` | `TRADITIONAL` | `TREE` | 9.5.0[^12] |
-| `explain_json_format_version` | 1 | 2 | 9.5.0[^12] |
-| `gtid_mode` / `enforce_gtid_consistency` | `OFF` / `OFF` | `ON` / `ON` | 9.5.0[^12] |
-| `innodb_change_buffering` | `none` | `all` | 9.5.0[^12] |
-| `innodb_change_buffer_max_size` | 25 | 5 | 9.4.0[^9] |
-| `caching_sha2_password_digest_rounds` | 5000 | 10000 | 9.5.0[^12] |
-| `activate_mandatory_roles` | — | `ON` (mandatory roles become active at login) | 9.5.0[^12] |
-| `binlog_transaction_dependency_history_size` | 25000 | 10000000 (the 9.5.0 release note says 1,000,000; the manual and the server say 10,000,000) | 9.5.0[^12][^18] |
-| `SOURCE_SSL` (`CHANGE REPLICATION SOURCE TO`), `group_replication_ssl_mode`, `group_replication_recovery_use_ssl` | 0 / `DISABLED` / `OFF` | 1 / `REQUIRED` / `ON` | 9.5.0[^12] |
-| `innodb_log_writer_threads` | `ON` | `OFF` unless the server has more than 32 logical CPUs with binary logging on (more than 4 without) | 9.1.0 / 9.5.0[^14][^12] |
-| `back_log` | 151 | 10000 | 9.4.0[^9] |
-| `mysql` client `--commands` / `--system-command` | `ON` / `ON` (8.4.13 client) | `OFF` / `OFF` | 9.4.0 / 9.1.0[^9][^14] |
-| InnoDB sizing (`innodb_buffer_pool_instances`, `innodb_page_cleaners`, `innodb_purge_threads`, `innodb_read_io_threads`, `temptable_max_ram`, ...) | From host CPUs/RAM | Derived from the *available* logical CPUs and memory (9.3.0; `cpuset` affinity counted since 9.7.0), but cgroup CPU/memory **limits are ignored unless the server runs with `--container-aware=ON`** (9.6.0, default `OFF`; tested: 9.7.4 logs `Server ignores the discovered container restrictions as --container_aware is OFF`) | 9.3.0 / 9.6.0 / 9.7.0[^16][^10][^1] |
+| `explain_format` | `TRADITIONAL` | `TREE` | 9.5.0 |
+| `explain_json_format_version` | 1 | 2 | 9.5.0 |
+| `gtid_mode` / `enforce_gtid_consistency` | `OFF` / `OFF` | `ON` / `ON` | 9.5.0 |
+| `innodb_change_buffering` | `none` | `all` | 9.5.0 |
+| `innodb_change_buffer_max_size` | 25 | 5 | 9.4.0 |
+| `caching_sha2_password_digest_rounds` | 5000 | 10000 | 9.5.0 |
+| `activate_mandatory_roles` | — | `ON` (mandatory roles become active at login) | 9.5.0 |
+| `binlog_transaction_dependency_history_size` | 25000 | 10000000 (the 9.5.0 release note says 1,000,000; the manual and the server say 10,000,000) | 9.5.0 |
+| `SOURCE_SSL` (`CHANGE REPLICATION SOURCE TO`), `group_replication_ssl_mode`, `group_replication_recovery_use_ssl` | 0 / `DISABLED` / `OFF` | 1 / `REQUIRED` / `ON` | 9.5.0 |
+| `innodb_log_writer_threads` | `ON` | `OFF` unless the server has more than 32 logical CPUs with binary logging on (more than 4 without) | 9.1.0 / 9.5.0 |
+| `back_log` | 151 | 10000 | 9.4.0 |
+| `mysql` client `--commands` / `--system-command` | `ON` / `ON` (8.4.13 client) | `OFF` / `OFF` | 9.4.0 / 9.1.0 |
+| InnoDB sizing (`innodb_buffer_pool_instances`, `innodb_page_cleaners`, `innodb_purge_threads`, `innodb_read_io_threads`, `temptable_max_ram`, ...) | From host CPUs/RAM | Derived from the *available* logical CPUs and memory (9.3.0; `cpuset` affinity counted since 9.7.0), but cgroup CPU/memory **limits are ignored unless the server runs with `--container-aware=ON`** (9.6.0, default `OFF`; tested: 9.7.4 logs `Server ignores the discovered container restrictions as --container_aware is OFF`) | 9.3.0 / 9.6.0 / 9.7.0 |
 
 Unchanged and still relevant for review: `transaction_isolation=REPEATABLE-READ`, `binlog_format=ROW` (the variable is deprecated: warning 1287 on every read), `innodb_autoinc_lock_mode=2`, `innodb_lock_wait_timeout=50`, `lock_wait_timeout=31536000` (one year), `explicit_defaults_for_timestamp=ON`, `local_infile=OFF`, `activate_all_roles_on_login=OFF`, `group_concat_max_len=1024`, `cte_max_recursion_depth=1000`, `block_encryption_mode=aes-128-ecb`, `innodb_adaptive_hash_index=OFF`, `restrict_fk_on_non_standard_key=ON`, `temptable_max_mmap=0`, `optimizer_switch` with `hypergraph_optimizer=off`.
 
@@ -149,11 +149,11 @@ Unchanged and still relevant for review: `transaction_isolation=REPEATABLE-READ`
 
 | Release | Change |
 |---|---|
-| 9.7.0 | Stricter InnoDB row-size calculation: some `CREATE`/`ALTER TABLE` statements that exceed documented limits are rejected (`ER_TOO_BIG_ROWSIZE`)[^1] |
-| 9.7.1 | Critical Security Patch Update only[^2] |
-| 9.7.2 | `CUBE` becomes a reserved word (with `EXTERNAL`, `QUALIFY`, `TABLESAMPLE`; `MANUAL` and `PARALLEL` become non-reserved), so an unquoted `cube` identifier that worked on 9.7.0/9.7.1 fails; `POW(x, NULL)` returns `NULL` instead of 1; `IN` lists of `DATE`/`TIME` constants no longer match unrelated strings; fix: adding an `AUTO_INCREMENT` column to an existing table could skip records and assign inaccurate values; fixes for wrong results with reverse range scans + `ORDER BY ... LIMIT`, `UNION` with pushed-down `IS NULL` conditions, nested merged views with outer joins, and `JSON_VALUE(... RETURNING DATETIME DEFAULT ...)` in a `DATE` context; hypergraph: `ORDER BY RAND()` or side-effecting functions are evaluated once per row; `thread_pool_max_unused_threads` default 2 → 32 (Enterprise thread pool); `group_replication_communication_stack` and `group_replication_ip_allowlist` deprecated[^19] |
-| 9.7.3 | Critical Security Patch Update for the Docker image only[^2] |
-| 9.7.4 | Four-part version (`VERSION_WITH_UPDATE()`); the 9.7.0 row-size check is relaxed back to the legacy calculation except for `ALTER TABLE ... ALGORITHM=INSTANT`; `ALTER TABLE ... EXCHANGE PARTITION` validates rows against the destination's `CHECK` constraints in both directions even `WITHOUT VALIDATION` (`ERROR 3819`) and rejects tables whose generated columns differ; fixes: hypergraph single-table `UPDATE`/`DELETE` with `ORDER BY` and a semijoin/antijoin subquery could **modify the wrong rows**; `index_merge_union=off` plans could drop a disjunct and return incomplete results[^20] |
+| 9.7.0 | Stricter InnoDB row-size calculation: some `CREATE`/`ALTER TABLE` statements that exceed documented limits are rejected (`ER_TOO_BIG_ROWSIZE`) |
+| 9.7.1 | Critical Security Patch Update only |
+| 9.7.2 | `CUBE` becomes a reserved word (with `EXTERNAL`, `QUALIFY`, `TABLESAMPLE`; `MANUAL` and `PARALLEL` become non-reserved), so an unquoted `cube` identifier that worked on 9.7.0/9.7.1 fails; `POW(x, NULL)` returns `NULL` instead of 1; `IN` lists of `DATE`/`TIME` constants no longer match unrelated strings; fix: adding an `AUTO_INCREMENT` column to an existing table could skip records and assign inaccurate values; fixes for wrong results with reverse range scans + `ORDER BY ... LIMIT`, `UNION` with pushed-down `IS NULL` conditions, nested merged views with outer joins, and `JSON_VALUE(... RETURNING DATETIME DEFAULT ...)` in a `DATE` context; hypergraph: `ORDER BY RAND()` or side-effecting functions are evaluated once per row; `thread_pool_max_unused_threads` default 2 → 32 (Enterprise thread pool); `group_replication_communication_stack` and `group_replication_ip_allowlist` deprecated |
+| 9.7.3 | Critical Security Patch Update for the Docker image only |
+| 9.7.4 | Four-part version (`VERSION_WITH_UPDATE()`); the 9.7.0 row-size check is relaxed back to the legacy calculation except for `ALTER TABLE ... ALGORITHM=INSTANT`; `ALTER TABLE ... EXCHANGE PARTITION` validates rows against the destination's `CHECK` constraints in both directions even `WITHOUT VALIDATION` (`ERROR 3819`) and rejects tables whose generated columns differ; fixes: hypergraph single-table `UPDATE`/`DELETE` with `ORDER BY` and a semijoin/antijoin subquery could **modify the wrong rows**; `index_merge_union=off` plans could drop a disjunct and return incomplete results |
 
 Run the latest 9.7.x. In particular, do not enable the hypergraph optimizer on anything older than 9.7.4.
 
@@ -169,7 +169,7 @@ Run the latest 9.7.x. In particular, do not enable the hypergraph optimizer on a
 
 ##### Do not use or recommend (features newer than 9.7)
 
-The server does not have these. Never suggest them for code that runs on 9.7, and flag them as bugs when they appear:[^5][^21]
+The server does not have these. Never suggest them for code that runs on 9.7, and flag them as bugs when they appear:
 
 | Feature | Introduced | On 9.7.4 |
 |---|---|---|
@@ -190,15 +190,15 @@ Not available on 9.7.4 at all (verified): `INSERT ... RETURNING`, `IS [NOT] DIST
 
 These still work on 9.7.4 (most print a warning) but will break on a later release:
 
-- `FLUSH PRIVILEGES` (warning 1681 since 9.2.0), the `FLUSH_PRIVILEGES` privilege, `mysqladmin flush-privileges`/`reload`. `CREATE USER`, `GRANT`, `ALTER USER` never needed it.[^15]
-- `enable_cascade_triggers`: introduced *and* deprecated in 9.7.0; every `SET` prints warning 1681 (and 4166 when it is reset).[^22]
-- `MD5()` / `SHA1()` (deprecated in 9.4.0; only available through the `classic_hashing` component).[^9][^10]
-- Transactions that update both transactional (InnoDB) and non-transactional (MyISAM) tables (warning 6414, since 9.0.0).[^8]
-- `CREATE SPATIAL REFERENCE SYSTEM` under `SUPER` (use `CREATE_SPATIAL_REFERENCE_SYSTEM`).[^15]
-- Plugins replaced by components: keyring plugins (`keyring_aws`, `keyring_hashicorp`, `keyring_okv`), connection-control plugins, firewall plugin, audit log plugin; `--early-plugin-load`.[^14][^15][^16][^9][^12]
+- `FLUSH PRIVILEGES` (warning 1681 since 9.2.0), the `FLUSH_PRIVILEGES` privilege, `mysqladmin flush-privileges`/`reload`. `CREATE USER`, `GRANT`, `ALTER USER` never needed it.
+- `enable_cascade_triggers`: introduced *and* deprecated in 9.7.0; every `SET` prints warning 1681 (and 4166 when it is reset).
+- `MD5()` / `SHA1()` (deprecated in 9.4.0; only available through the `classic_hashing` component).
+- Transactions that update both transactional (InnoDB) and non-transactional (MyISAM) tables (warning 6414, since 9.0.0).
+- `CREATE SPATIAL REFERENCE SYSTEM` under `SUPER` (use `CREATE_SPATIAL_REFERENCE_SYSTEM`).
+- Plugins replaced by components: keyring plugins (`keyring_aws`, `keyring_hashicorp`, `keyring_okv`), connection-control plugins, firewall plugin, audit log plugin; `--early-plugin-load`.
 - Carried over from 8.4 and still deprecated with warnings: `VALUES(col)` in `ON DUPLICATE KEY UPDATE` (1287), `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()` (1287), `&&`/`||`/`!` as logical operators (1287), user-variable assignment in expressions (1287), integer display width/`ZEROFILL`/`FLOAT(M,D)` (1681), `utf8`/`utf8mb3` (3719), `$` as the first character of an unquoted identifier (1681), `@@binlog_format` (1287), `INFORMATION_SCHEMA.PROCESSLIST` (1287), `restrict_fk_on_non_standard_key=OFF` (4166), wildcards in database names of `GRANT`, `DISABLE ON SLAVE`.
-- `performance_schema.variables_info.MIN_VALUE`/`MAX_VALUE` (use `variables_metadata`, 9.0.0), SCRAM-SHA-1 for LDAP SASL (9.5.0; `authentication_ldap_sasl_auth_method_name` now defaults to `SCRAM-SHA-256`), `group_replication_communication_stack`, `group_replication_ip_allowlist` (9.7.2).[^8][^12][^7][^19]
-- `innodb_native_foreign_keys` (the startup option that restores InnoDB-native foreign keys) is itself deprecated: starting with it logs `The syntax '--innodb_native_foreign_keys' is deprecated and will be removed in a future release` (tested on 9.7.4). Treat it as a temporary migration aid only.[^46]
+- `performance_schema.variables_info.MIN_VALUE`/`MAX_VALUE` (use `variables_metadata`, 9.0.0), SCRAM-SHA-1 for LDAP SASL (9.5.0; `authentication_ldap_sasl_auth_method_name` now defaults to `SCRAM-SHA-256`), `group_replication_communication_stack`, `group_replication_ip_allowlist` (9.7.2).
+- `innodb_native_foreign_keys` (the startup option that restores InnoDB-native foreign keys) is itself deprecated: starting with it logs `The syntax '--innodb_native_foreign_keys' is deprecated and will be removed in a future release` (tested on 9.7.4). Treat it as a temporary migration aid only.
 
 ***
 
@@ -241,7 +241,7 @@ SELECT BIN_TO_UUID(id, 1), meta, body, created FROM exd;
 
 Expression defaults (`DEFAULT (expr)`, with parentheses) work for `BLOB`/`TEXT`/`JSON` columns too; a literal default on those types does not.
 
-A table without a primary key gets a hidden 6-byte row ID, cannot be replicated efficiently with row-based replication and is rejected by many managed services. Two server settings help, and **9.7.0 changed both** to treat a `UNIQUE` key over `NOT NULL` columns as a primary-key equivalent:[^1]
+A table without a primary key gets a hidden 6-byte row ID, cannot be replicated efficiently with row-based replication and is rejected by many managed services. Two server settings help, and **9.7.0 changed both** to treat a `UNIQUE` key over `NOT NULL` columns as a primary-key equivalent:
 
 ```sql
 SET SESSION sql_require_primary_key = ON;
@@ -312,7 +312,7 @@ INSERT INTO en VALUES ('huge');     -- ERROR 1265 (01000): Data truncated for co
 
 ##### VECTOR [New in 9.7]
 
-`VECTOR(n)` (9.0.0) stores up to `n` 4-byte floats (default 2048, maximum 16383). It is a storage type only in MySQL Server: there is no vector index, no distance function and no comparison other than equality.[^8][^23]
+`VECTOR(n)` (9.0.0) stores up to `n` 4-byte floats (default 2048, maximum 16383). It is a storage type only in MySQL Server: there is no vector index, no distance function and no comparison other than equality.
 
 ```sql
 CREATE TABLE emb (id INT PRIMARY KEY, v VECTOR(3));
@@ -387,11 +387,11 @@ INSERT INTO cj VALUES (1, '{"x":1}');      -- ERROR 3819 (HY000): Check constrai
 INSERT INTO cj VALUES (2, '{"name":"a"}'); -- OK
 ```
 
-Since 9.7.4, `ALTER TABLE ... EXCHANGE PARTITION` checks the swapped rows against the destination's `CHECK` constraints even with `WITHOUT VALIDATION`.[^20]
+Since 9.7.4, `ALTER TABLE ... EXCHANGE PARTITION` checks the swapped rows against the destination's `CHECK` constraints even with `WITHOUT VALIDATION`.
 
 ##### Foreign keys [New in 9.7]
 
-Three things changed since 8.4: inline `REFERENCES` is enforced (9.0.0), foreign keys are implemented in the SQL layer (9.6.0), and cascades can optionally fire triggers (9.7.0).[^8][^10][^1]
+Three things changed since 8.4: inline `REFERENCES` is enforced (9.0.0), foreign keys are implemented in the SQL layer (9.6.0), and cascades can optionally fire triggers (9.7.0).
 
 1. **Inline `REFERENCES` creates a constraint.** All of these forms now create an enforced foreign key named `<table>_ibfk_<n>`:
 
@@ -420,7 +420,7 @@ ALTER TABLE dd ADD COLUMN owner INT REFERENCES person (id);
 ```
 
 3. **The referenced columns must form a `PRIMARY KEY` or `UNIQUE` key** (`restrict_fk_on_non_standard_key=ON`, unchanged from 8.4). Referencing a table without a primary key via the implicit form fails: `ERROR 1239 Incorrect foreign key definition ... Key reference and table reference don't match`.
-4. **Cascaded changes do not fire triggers by default.** `ON DELETE CASCADE` / `ON UPDATE CASCADE` / `SET NULL` change child rows without running the child table's triggers. 9.7.0 adds the session variable `enable_cascade_triggers` (default `OFF`), but it is already deprecated: every `SET` raises warning 1681.[^1][^22] Do not build audit logic on it; audit at the parent or in the application.
+4. **Cascaded changes do not fire triggers by default.** `ON DELETE CASCADE` / `ON UPDATE CASCADE` / `SET NULL` change child rows without running the child table's triggers. 9.7.0 adds the session variable `enable_cascade_triggers` (default `OFF`), but it is already deprecated: every `SET` raises warning 1681. Do not build audit logic on it; audit at the parent or in the application.
 
 ```sql
 CREATE TABLE audit (id INT AUTO_INCREMENT PRIMARY KEY, what VARCHAR(50));
@@ -440,7 +440,7 @@ DELETE FROM p2 WHERE id = 2;
 SELECT (SELECT COUNT(*) FROM c2) AS children, (SELECT COUNT(*) FROM audit) AS audit_rows;   -- 0 | 1
 ```
 
-5. **SQL-layer foreign keys** (9.6.0): constraint checks and cascades are executed by the server instead of InnoDB, so cascaded child-row changes are written to the binary log (tested: a cascading `DELETE` logs `Delete_rows` events for the child table with the flag `USE_SQL_FOREIGN_KEY_F`; with `--innodb-native-foreign-keys=ON`, as on 8.4, only the parent row is logged). `innodb_native_foreign_keys` is a read-only, already deprecated startup option (default `OFF`) that restores the InnoDB implementation; `SET GLOBAL innodb_native_foreign_keys = ON` fails with `ERROR 1238`.[^10] Other documented differences of the SQL layer:[^46] a child insert rejected with `ERROR 1452` no longer consumes an `AUTO_INCREMENT` value (tested), a cascade may traverse at most 15 levels (`ER_FK_DEPTH_EXCEEDED`), and when one statement violates several constraints a different constraint may be named in the error than on 8.4 — do not match error texts on constraint names.
+5. **SQL-layer foreign keys** (9.6.0): constraint checks and cascades are executed by the server instead of InnoDB, so cascaded child-row changes are written to the binary log (tested: a cascading `DELETE` logs `Delete_rows` events for the child table with the flag `USE_SQL_FOREIGN_KEY_F`; with `--innodb-native-foreign-keys=ON`, as on 8.4, only the parent row is logged). `innodb_native_foreign_keys` is a read-only, already deprecated startup option (default `OFF`) that restores the InnoDB implementation; `SET GLOBAL innodb_native_foreign_keys = ON` fails with `ERROR 1238`. Other documented differences of the SQL layer: a child insert rejected with `ERROR 1452` no longer consumes an `AUTO_INCREMENT` value (tested), a cascade may traverse at most 15 levels (`ER_FK_DEPTH_EXCEEDED`), and when one statement violates several constraints a different constraint may be named in the error than on 8.4 — do not match error texts on constraint names.
 6. **`REPLACE` on a parent table** cascades (or fails) only when the replaced row's referenced key value changes; with an unchanged key, 9.7 keeps the children and skips the `RESTRICT`/`NO ACTION` check (8.4 cascaded or failed). See Writes.
 7. **`SET foreign_key_checks = 0` lets orphans in.** Adding a foreign key with checks disabled does not validate existing rows (that is why `ALGORITHM=INPLACE` is only allowed then). Run an orphan query before re-enabling.
 8. Foreign keys are not supported on partitioned InnoDB tables, and the referencing columns get an index automatically if none exists.
@@ -479,7 +479,7 @@ INSERT INTO m3 VALUES ('a😀b');      -- Warning 1366; stored as 'a?b'  (silent
 SET SESSION sql_mode = DEFAULT;
 ```
 
-**New in 9.5**: the `INTERPRET_UTF8_AS_UTF8MB4` SQL mode (off by default) makes `utf8` and `utf8_*` collation names in statements mean `utf8mb4`:[^12]
+**New in 9.5**: the `INTERPRET_UTF8_AS_UTF8MB4` SQL mode (off by default) makes `utf8` and `utf8_*` collation names in statements mean `utf8mb4`:
 
 ```sql
 SET SESSION sql_mode = CONCAT(@@sql_mode, ',INTERPRET_UTF8_AS_UTF8MB4');
@@ -494,7 +494,7 @@ SET SESSION sql_mode = DEFAULT;
 
 ##### `utf8mb4_0900_ai_ci` semantics
 
-The default collation is case-insensitive, accent-insensitive and **NO PAD** (trailing spaces are significant). Older collations (`utf8mb4_general_ci`, `utf8mb4_unicode_ci`, `utf8mb4_bin`) are `PAD SPACE`.[^24]
+The default collation is case-insensitive, accent-insensitive and **NO PAD** (trailing spaces are significant). Older collations (`utf8mb4_general_ci`, `utf8mb4_unicode_ci`, `utf8mb4_bin`) are `PAD SPACE`.
 
 ```sql
 SET NAMES utf8mb4;
@@ -534,14 +534,14 @@ SELECT * FROM ca JOIN cb ON ca.s = cb.s;
 ```
 
   Specify collations explicitly at database or table level in migrations so new tables match old ones.
-- 9.4.0 changed collation derivation so that an expression with derivation `NONE` (for example `IFNULL()` of mixed collations) yields to the other operand instead of raising `ER_CANT_AGGREGATE_2COLLATIONS` in `LIKE`; `COERCIBILITY()` values shifted accordingly.[^9]
+- 9.4.0 changed collation derivation so that an expression with derivation `NONE` (for example `IFNULL()` of mixed collations) yields to the other operand instead of raising `ER_CANT_AGGREGATE_2COLLATIONS` in `LIKE`; `COERCIBILITY()` values shifted accordingly.
 - `ALTER TABLE ... CONVERT TO CHARACTER SET` rewrites the whole table (`ALGORITHM=COPY`) and may change index lengths and uniqueness; review it as a heavy migration.
 
 ***
 
 #### SQL Mode and Strictness
 
-The server's default `sql_mode` is strict:[^25]
+The server's default `sql_mode` is strict:
 
 ```sql
 SELECT @@sql_mode;
@@ -577,7 +577,7 @@ Review rules:
 
 - **BAD**: application code or ORMs that set `sql_mode=''` or drop `STRICT_TRANS_TABLES`/`ONLY_FULL_GROUP_BY` to make legacy queries pass. Fix the query.
 - **BAD**: `INSERT IGNORE` as an "upsert" or "skip duplicates" shortcut. It also hides truncation, out-of-range values, invalid dates, `CHECK` violations and **foreign-key violations** (see Writes). Use `INSERT ... ON DUPLICATE KEY UPDATE id = id` or catch error 1062 when only duplicates should be skipped.
-- **New in 9.0**: `IGNORE` no longer suppresses "Subquery returns more than 1 row"; the statement fails:[^8]
+- **New in 9.0**: `IGNORE` no longer suppresses "Subquery returns more than 1 row"; the statement fails:
 
 ```sql
 CREATE TABLE ig2 (id INT PRIMARY KEY, v INT NOT NULL);
@@ -585,7 +585,7 @@ INSERT IGNORE INTO ig2 VALUES (1, (SELECT y FROM sales));
 -- ERROR 1242 (21000): Subquery returns more than 1 row   (8.4: warning, row inserted with v = 0)
 ```
 
-- **New in 9.5**: invalid temporal values sent *with a temporal type* through the binary (prepared-statement) protocol are rejected even in a non-strict `sql_mode`; they used to be adjusted silently. Values bound as strings still follow `sql_mode` (see Application Code).[^12]
+- **New in 9.5**: invalid temporal values sent *with a temporal type* through the binary (prepared-statement) protocol are rejected even in a non-strict `sql_mode`; they used to be adjusted silently. Values bound as strings still follow `sql_mode` (see Application Code).
 - Strict mode applies to values stored in columns; it does not validate values that never reach a column (e.g. `SELECT` expressions):
 
 ```sql
@@ -688,7 +688,7 @@ SELECT CAST(ts AT TIME ZONE '+00:00' AS DATETIME) AS utc, ts FROM tt WHERE id = 
 -- 2024-06-01 12:00:00 | 2024-06-01 14:00:00
 ```
 
-`CAST(... AT TIME ZONE ...)` only accepts a `TIMESTAMP` value and the zone `'+00:00'`/`'UTC'`. Named zones (`'Europe/Berlin'`) in `CONVERT_TZ()` and `SET time_zone` need the time-zone tables to be loaded[^26] (`mysql_tzinfo_to_sql`); otherwise `CONVERT_TZ()` returns `NULL` without a warning, and `SET time_zone = 'Europe/Berlin'` fails with `ERROR 1298 Unknown or incorrect time zone`. The official Docker image ships them loaded; many installations do not. Check `SELECT COUNT(*) FROM mysql.time_zone_name` when code relies on named zones.
+`CAST(... AT TIME ZONE ...)` only accepts a `TIMESTAMP` value and the zone `'+00:00'`/`'UTC'`. Named zones (`'Europe/Berlin'`) in `CONVERT_TZ()` and `SET time_zone` need the time-zone tables to be loaded (`mysql_tzinfo_to_sql`); otherwise `CONVERT_TZ()` returns `NULL` without a warning, and `SET time_zone = 'Europe/Berlin'` fails with `ERROR 1298 Unknown or incorrect time zone`. The official Docker image ships them loaded; many installations do not. Check `SELECT COUNT(*) FROM mysql.time_zone_name` when code relies on named zones.
 
 ```sql
 SELECT CONVERT_TZ('2024-03-31 01:30:00', 'UTC', 'Europe/Berlin');   -- 2024-03-31 03:30:00 (tables loaded)
@@ -701,7 +701,7 @@ SELECT UNIX_TIMESTAMP('2038-01-19 03:14:08'), FROM_UNIXTIME(2147483648);   -- 64
 
 ##### Temporal function fixes in 9.7.0 [New in 9.7]
 
-9.7.0 (WL #16895) fixed a batch of temporal edge cases; queries that depended on the old results change behaviour after the upgrade:[^1]
+9.7.0 (WL #16895) fixed a batch of temporal edge cases; queries that depended on the old results change behaviour after the upgrade:
 
 ```sql
 -- MySQL 9.7.4 (8.4.13 in the comments where it differs)
@@ -722,7 +722,7 @@ SELECT i FROM dt2i;                                        -- 20240506  (8.4: 20
 
 ##### What InnoDB indexes can and cannot do
 
-MySQL 9.7 InnoDB has B-tree indexes (`PRIMARY`, `UNIQUE`, secondary), `FULLTEXT` and `SPATIAL` (R-tree) indexes, plus functional and multi-valued B-tree indexes.[^27] It has **no** partial (`WHERE`) indexes, no `INCLUDE` columns, no GIN/GiST/BRIN, no vector indexes, no hash indexes on InnoDB (`USING HASH` is accepted with Note 3502 and a B-tree is built instead), no `CREATE INDEX CONCURRENTLY` and no `CREATE INDEX IF NOT EXISTS`. Advice written for PostgreSQL does not translate; the MySQL equivalents are:
+MySQL 9.7 InnoDB has B-tree indexes (`PRIMARY`, `UNIQUE`, secondary), `FULLTEXT` and `SPATIAL` (R-tree) indexes, plus functional and multi-valued B-tree indexes. It has **no** partial (`WHERE`) indexes, no `INCLUDE` columns, no GIN/GiST/BRIN, no vector indexes, no hash indexes on InnoDB (`USING HASH` is accepted with Note 3502 and a B-tree is built instead), no `CREATE INDEX CONCURRENTLY` and no `CREATE INDEX IF NOT EXISTS`. Advice written for PostgreSQL does not translate; the MySQL equivalents are:
 
 | PostgreSQL idea | MySQL 9.7 equivalent |
 |---|---|
@@ -830,7 +830,7 @@ EXPLAIN SELECT id FROM users WHERE email LIKE '%42@example.com';
 --     -> Covering index scan on users using uq_users_email  (rows=99733)
 ```
 
-**`OR` across different columns** may use `index_merge` (union) or fall back to a scan; check the plan, and consider `UNION ALL` of two indexed queries. Run 9.7.4 or later if you rely on `index_merge_union=off`: earlier 9.7 releases could drop a disjunct and return incomplete results with that setting.[^20]
+**`OR` across different columns** may use `index_merge` (union) or fall back to a scan; check the plan, and consider `UNION ALL` of two indexed queries. Run 9.7.4 or later if you rely on `index_merge_union=off`: earlier 9.7 releases could drop a disjunct and return incomplete results with that setting.
 
 **Collation mismatch** between join columns (see Character Sets) also defeats indexes.
 
@@ -848,7 +848,7 @@ Use a prefix index (`KEY (s(191))`) only for non-unique lookups: a prefix `UNIQU
 
 ##### Functional indexes and JSON
 
-A functional index is used only when the query contains the **same expression with the same type and collation**. JSON extraction is the classic trap: `->>` returns `utf8mb4_bin`, while `CAST(... AS CHAR)` produces the connection collation, so an index on the plain cast is not used by `doc->>'$.name' = ?`.[^27]
+A functional index is used only when the query contains the **same expression with the same type and collation**. JSON extraction is the classic trap: `->>` returns `utf8mb4_bin`, while `CAST(... AS CHAR)` produces the connection collation, so an index on the plain cast is not used by `doc->>'$.name' = ?`.
 
 ```sql
 CREATE TABLE docs (id INT AUTO_INCREMENT PRIMARY KEY, doc JSON NOT NULL);
@@ -914,11 +914,11 @@ ALTER TABLE users ALTER INDEX `PRIMARY` INVISIBLE;
 - Descending indexes matter for mixed-direction sorts (`ORDER BY a ASC, b DESC`); for a single-direction sort a backward scan of an ascending index works too.
 - Making an index invisible is a metadata change; an invisible index is still maintained on writes and still enforces `UNIQUE`.
 - Flag redundant indexes: `KEY (a)` next to `KEY (a, b)`, or `KEY (user_id)` next to the FK index. `sys.schema_redundant_indexes` lists them.
-- Flag over-indexing on write-heavy tables: every secondary index costs a B-tree update per write. 9.5.0 turned change buffering back on (`innodb_change_buffering=all`, buffer capped at 5% of the buffer pool), which softens but does not remove that cost.[^12][^9]
+- Flag over-indexing on write-heavy tables: every secondary index costs a B-tree update per write. 9.5.0 turned change buffering back on (`innodb_change_buffering=all`, buffer capped at 5% of the buffer pool), which softens but does not remove that cost.
 
 ##### Histograms
 
-For non-indexed columns used in filters and joins, a histogram gives the optimizer selectivity estimates without index maintenance cost, and can refresh automatically:[^28]
+For non-indexed columns used in filters and joins, a histogram gives the optimizer selectivity estimates without index maintenance cost, and can refresh automatically:
 
 ```sql
 ANALYZE TABLE orders UPDATE HISTOGRAM ON total WITH 32 BUCKETS AUTO UPDATE;
@@ -933,7 +933,7 @@ ANALYZE TABLE orders DROP HISTOGRAM ON total;
 
 #### Reading Plans: EXPLAIN and EXPLAIN ANALYZE [New in 9.7]
 
-9.5.0 changed the defaults: plain `EXPLAIN` now prints the iterator **tree** (`explain_format=TREE`), and `FORMAT=JSON` uses **version 2** (access-path based).[^12][^29]
+9.5.0 changed the defaults: plain `EXPLAIN` now prints the iterator **tree** (`explain_format=TREE`), and `FORMAT=JSON` uses **version 2** (access-path based).
 
 ```sql
 EXPLAIN SELECT id, created_at FROM orders WHERE user_id = 42 ORDER BY created_at DESC LIMIT 10;
@@ -958,7 +958,7 @@ SELECT JSON_EXTRACT(@plan, '$.query_plan.inputs[0].index_name');             -- 
 ```
 
 - Tree conditions are printed with spaces around `=` (`(user_id = 42)`; 8.4: `(user_id=42)`). Golden-file tests that compare plan text break.
-- `EXPLAIN ANALYZE` **executes** the query and reports actual rows, loops and time per iterator. `EXPLAIN ANALYZE FORMAT=JSON INTO @var` (9.0.0) stores the measured plan; it needs `explain_json_format_version=2` (`ERROR 6412` with version 1) and `INTO` only works with `FORMAT=JSON` (`ERROR 6007 EXPLAIN INTO does not support FORMAT=TREE`).[^8]
+- `EXPLAIN ANALYZE` **executes** the query and reports actual rows, loops and time per iterator. `EXPLAIN ANALYZE FORMAT=JSON INTO @var` (9.0.0) stores the measured plan; it needs `explain_json_format_version=2` (`ERROR 6412` with version 1) and `INTO` only works with `FORMAT=JSON` (`ERROR 6007 EXPLAIN INTO does not support FORMAT=TREE`).
 
 ```sql
 EXPLAIN ANALYZE FORMAT=JSON INTO @ap SELECT id FROM orders WHERE status = 'paid' LIMIT 5;
@@ -985,7 +985,7 @@ EXPLAIN ANALYZE SELECT id, total FROM orders WHERE status = 'paid' ORDER BY crea
 
 `LIMIT n OFFSET m` reads and discards `m` rows (40,020 rows read above to return 20). Use keyset (seek) pagination with a deterministic order that ends in a unique column.
 
-**MySQL 9.7 does not use range access for row-constructor inequalities** like `(created_at, id) > (?, ?)`, with either optimizer. The predicate becomes a `Filter` over an index scan that starts at the beginning of the index — as slow as `OFFSET` for later pages. Write the expanded `OR` form, which becomes a range scan:[^30]
+**MySQL 9.7 does not use range access for row-constructor inequalities** like `(created_at, id) > (?, ?)`, with either optimizer. The predicate becomes a `Filter` over an index scan that starts at the beginning of the index — as slow as `OFFSET` for later pages. Write the expanded `OR` form, which becomes a range scan:
 
 ```sql
 -- BAD: reads from the start of the index and filters (56,040 rows read)
@@ -1084,9 +1084,9 @@ ORDER BY user_id, created_at;
 
 - Always give `ROW_NUMBER()` a total order (add the primary key as a tie-breaker), otherwise results change between runs.
 - The default frame with `ORDER BY` is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, which includes peers with equal sort keys; write `ROWS ...` for running totals.
-- **New in 9.x**: a window's `PARTITION BY`/`ORDER BY` may no longer reference columns of an outer query (`ERROR 6432`, 9.2.0), and `RANGE` frames reject nondeterministic `ORDER BY` expressions (`ERROR 3587`, 9.4.0).[^15][^9]
+- **New in 9.x**: a window's `PARTITION BY`/`ORDER BY` may no longer reference columns of an outer query (`ERROR 6432`, 9.2.0), and `RANGE` frames reject nondeterministic `ORDER BY` expressions (`ERROR 3587`, 9.4.0).
 
-**`QUALIFY` [New in 9.7]**: the clause is reserved since 8.4 but only executes when the **hypergraph optimizer** is enabled, which Community Server allows since 9.7.0:[^1]
+**`QUALIFY` [New in 9.7]**: the clause is reserved since 8.4 but only executes when the **hypergraph optimizer** is enabled, which Community Server allows since 9.7.0:
 
 ```sql
 SELECT y, c, amt FROM sales QUALIFY ROW_NUMBER() OVER (PARTITION BY y ORDER BY amt DESC) = 1;
@@ -1098,7 +1098,7 @@ FROM sales QUALIFY ROW_NUMBER() OVER (PARTITION BY y ORDER BY amt DESC) = 1;
 ```
 
 - **BAD**: `QUALIFY` in application SQL that runs with the default optimizer (it fails), or that enables the hypergraph optimizer only to get `QUALIFY` without testing every other query under it. Prefer a derived table or CTE that filters on the window result; it works with both optimizers and on 8.4.
-- The hypergraph optimizer is opt-in (`hypergraph_optimizer=off` by default). Enabling it globally changes plans for every query; 9.7.2 and 9.7.4 fixed hypergraph bugs that evaluated `ORDER BY RAND()` more than once per row and that made `UPDATE`/`DELETE ... ORDER BY` with semijoin subqueries **modify the wrong rows**.[^19][^20] Require ≥ 9.7.4, a measured benefit and a regression run of the query workload before enabling it, preferably per statement (`SET_VAR` hint) or per session.
+- The hypergraph optimizer is opt-in (`hypergraph_optimizer=off` by default). Enabling it globally changes plans for every query; 9.7.2 and 9.7.4 fixed hypergraph bugs that evaluated `ORDER BY RAND()` more than once per row and that made `UPDATE`/`DELETE ... ORDER BY` with semijoin subqueries **modify the wrong rows**. Require ≥ 9.7.4, a measured benefit and a regression run of the query workload before enabling it, preferably per statement (`SET_VAR` hint) or per session.
 
 ##### CTEs and recursion
 
@@ -1126,7 +1126,7 @@ SELECT * FROM (VALUES ROW(1, 'a'), ROW(2, 'b')) AS v (id, name);   -- VALUES nee
 SELECT y, c, SUM(amt) FROM sales GROUP BY ROLLUP (y, c);           -- same as GROUP BY y, c WITH ROLLUP
 ```
 
-`UNION` removes duplicates (extra sort/hash); use `UNION ALL` unless de-duplication is intended. **New in 9.1**: `ROLLUP` over an empty input returns one grand-total row instead of an empty result — code that treated "no rows" as "no data" must check the aggregate instead.[^14]
+`UNION` removes duplicates (extra sort/hash); use `UNION ALL` unless de-duplication is intended. **New in 9.1**: `ROLLUP` over an empty input returns one grand-total row instead of an empty result — code that treated "no rows" as "no data" must check the aggregate instead.
 
 ##### GROUP_CONCAT truncation
 
@@ -1157,7 +1157,7 @@ SELECT jt.* FROM JSON_TABLE(
 -- 1 | 1 | a ;  2 | 2 | b ;  3 | 0 | NULL
 ```
 
-`->` and `->>` only accept a column on the left (`CAST('{"a":1}' AS JSON) ->> '$.a'` is `ERROR 1064`); use `JSON_EXTRACT()`/`JSON_UNQUOTE()` for expressions. Distinguish JSON `null` from a missing key when validating input. Run ≥ 9.7.2 if code uses `JSON_VALUE(... RETURNING DATETIME DEFAULT ...)` in a `DATE` context (earlier releases could return an invalid constant date).[^19]
+`->` and `->>` only accept a column on the left (`CAST('{"a":1}' AS JSON) ->> '$.a'` is `ERROR 1064`); use `JSON_EXTRACT()`/`JSON_UNQUOTE()` for expressions. Distinguish JSON `null` from a missing key when validating input. Run ≥ 9.7.2 if code uses `JSON_VALUE(... RETURNING DATETIME DEFAULT ...)` in a `DATE` context (earlier releases could return an invalid constant date).
 
 ##### Optimizer hints and index hints
 
@@ -1173,7 +1173,7 @@ EXPLAIN SELECT /*+ INDEX(orders ix_orders_status_created) */ id FROM orders WHER
 --     -> Index lookup on orders using ix_orders_status_created (status = 'paid')  (rows=99755)
 ```
 
-- Hints (`/*+ ... */`)[^31] are preferred over `USE/FORCE/IGNORE INDEX`: they are scoped to a query block and can name join orders (`JOIN_ORDER`), index choice (`INDEX`, `NO_INDEX`), and session variables (`SET_VAR`, including `optimizer_switch`). Every hint is a maintenance liability. An optimizer hint naming a missing index only raises `Warning 3128` and is ignored, while `FORCE INDEX (missing)` makes the query fail with `ERROR 1176 Key 'ix_gone' doesn't exist in table`. Search the code for index hints before dropping or renaming an index, and require a comment explaining the measured plan for every hint.
+- Hints (`/*+ ... */`) are preferred over `USE/FORCE/IGNORE INDEX`: they are scoped to a query block and can name join orders (`JOIN_ORDER`), index choice (`INDEX`, `NO_INDEX`), and session variables (`SET_VAR`, including `optimizer_switch`). Every hint is a maintenance liability. An optimizer hint naming a missing index only raises `Warning 3128` and is ignored, while `FORCE INDEX (missing)` makes the query fail with `ERROR 1176 Key 'ix_gone' doesn't exist in table`. Search the code for index hints before dropping or renaming an index, and require a comment explaining the measured plan for every hint.
 - `MAX_EXECUTION_TIME` / `max_execution_time` apply to read-only `SELECT` only; `SLEEP()` returns 1 when interrupted rather than erroring.
 - Some clients and proxies strip comments, and with them the hints.
 
@@ -1184,7 +1184,7 @@ EXPLAIN SELECT /*+ INDEX(orders ix_orders_status_created) */ id FROM orders WHER
 - `DISTINCT` to fix duplicate rows from a join usually hides a wrong join; fix the join (or use `EXISTS`).
 - Prefer explicit `JOIN ... ON` over comma joins.
 - Large `DELETE`/`UPDATE` in one statement create a long transaction, a huge undo log and replica lag; batch by primary-key ranges (see Writes).
-- Internal temporary tables use the TempTable engine with `temptable_max_ram` sized from available memory (cgroup limits count only with `--container-aware=ON`) and no mmap spill files (`temptable_max_mmap=0`; `temptable_use_mmap` was removed in 9.4.0).[^9]
+- Internal temporary tables use the TempTable engine with `temptable_max_ram` sized from available memory (cgroup limits count only with `--container-aware=ON`) and no mmap spill files (`temptable_max_mmap=0`; `temptable_use_mmap` was removed in 9.4.0).
 
 ***
 
@@ -1196,7 +1196,7 @@ Multi-row `INSERT ... VALUES (...), (...)` in transactions of a few thousand row
 
 ##### INSERT ... ON DUPLICATE KEY UPDATE
 
-Use the row-alias syntax; `VALUES(col)` in the update clause is deprecated:[^32]
+Use the row-alias syntax; `VALUES(col)` in the update clause is deprecated:
 
 ```sql
 CREATE TABLE inv (sku VARCHAR(20) PRIMARY KEY, qty INT NOT NULL, id INT AUTO_INCREMENT UNIQUE);
@@ -1294,7 +1294,7 @@ Multi-table `UPDATE ... JOIN` and `DELETE t1 FROM t1 JOIN t2 ...` are the MySQL 
 
 ##### Consistent reads vs current reads
 
-Under REPEATABLE READ, the snapshot is taken at the **first read** in the transaction, not at `START TRANSACTION` (use `START TRANSACTION WITH CONSISTENT SNAPSHOT` to take it immediately). Plain `SELECT` reads the snapshot; `UPDATE`, `DELETE`, `INSERT ... SELECT` and locking reads see the latest committed data.[^33] Read-modify-write in application code therefore loses updates:
+Under REPEATABLE READ, the snapshot is taken at the **first read** in the transaction, not at `START TRANSACTION` (use `START TRANSACTION WITH CONSISTENT SNAPSHOT` to take it immediately). Plain `SELECT` reads the snapshot; `UPDATE`, `DELETE`, `INSERT ... SELECT` and locking reads see the latest committed data. Read-modify-write in application code therefore loses updates:
 
 ```sql
 -- Session A                                        -- Session B
@@ -1318,7 +1318,7 @@ REPEATABLE READ in MySQL does **not** detect write skew or raise serialization e
 
 ##### Locks taken by locking reads and writes
 
-InnoDB locks **every index record it scans**, plus the gap before it (next-key locks) under REPEATABLE READ.[^34]
+InnoDB locks **every index record it scans**, plus the gap before it (next-key locks) under REPEATABLE READ.
 
 ```sql
 CREATE TABLE acct (id INT PRIMARY KEY, owner INT NOT NULL, bal INT NOT NULL, note VARCHAR(10), KEY ix_owner (owner));
@@ -1420,7 +1420,7 @@ SELECT * FROM par WHERE id = 2;  -- 2 | two   (the insert was committed)
 
 DDL, `LOCK TABLES`, `START TRANSACTION` (inside another transaction), `SET autocommit = 1`, user/privilege statements and others implicitly commit. Do not mix DDL into transactional application logic or tests that rely on rollback. `CREATE TEMPORARY TABLE` does not commit.
 
-With `gtid_mode=ON` and `enforce_gtid_consistency=ON` (the 9.5.0 defaults), **writing a non-transactional table (MyISAM, MEMORY) inside a transaction that also writes InnoDB fails** — on every server, replicas or not:[^12]
+With `gtid_mode=ON` and `enforce_gtid_consistency=ON` (the 9.5.0 defaults), **writing a non-transactional table (MyISAM, MEMORY) inside a transaction that also writes InnoDB fails** — on every server, replicas or not:
 
 ```sql
 CREATE TABLE my (id INT PRIMARY KEY) ENGINE=MyISAM;
@@ -1464,7 +1464,7 @@ ALTER TABLE orders
 
 ##### Migration scripts and the `mysql` client [New in 9.7]
 
-Since 9.4.0 the `mysql` client starts with `--commands=OFF`.[^9][^13] In a script piped into the 9.7 client:
+Since 9.4.0 the `mysql` client starts with `--commands=OFF`. In a script piped into the 9.7 client:
 
 ```sql
 -- migrate.sql, run as: mysql -u... app < migrate.sql
@@ -1487,7 +1487,7 @@ USE mysql;
 
 ##### ALGORITHM and LOCK
 
-Specify `ALGORITHM` (and `LOCK` for `INPLACE`) on every `ALTER TABLE` against a large table. Without it MySQL silently picks the "best" algorithm, which may be a full table copy that blocks writes for hours. With it, an unsupported combination fails immediately.[^35]
+Specify `ALGORITHM` (and `LOCK` for `INPLACE`) on every `ALTER TABLE` against a large table. Without it MySQL silently picks the "best" algorithm, which may be a full table copy that blocks writes for hours. With it, an unsupported combination fails immediately.
 
 Verified on 9.7.4:
 
@@ -1524,7 +1524,7 @@ Even `INPLACE, LOCK=NONE` operations rebuild the table (I/O, temporary disk spac
 
 ##### INSTANT row-version limit [New in 9.1]
 
-Each `INSTANT` `ADD COLUMN`/`DROP COLUMN` increments the table's row version; 9.1.0 raised the limit from 64 to **255**:[^14][^35]
+Each `INSTANT` `ADD COLUMN`/`DROP COLUMN` increments the table's row version; 9.1.0 raised the limit from 64 to **255**:
 
 ```sql
 -- after 255 instant add/drop operations:
@@ -1538,7 +1538,7 @@ Without an explicit `ALGORITHM=INSTANT`, the change after the limit quietly beco
 
 ##### Metadata locks: the most common migration outage
 
-Every DDL, even `ALGORITHM=INSTANT`, needs an exclusive metadata lock (MDL) on the table for a moment. It waits for **every open transaction that has touched the table** — including an idle transaction that only ran a `SELECT`. While it waits, **every new query on the table queues behind it**:[^36]
+Every DDL, even `ALGORITHM=INSTANT`, needs an exclusive metadata lock (MDL) on the table for a moment. It waits for **every open transaction that has touched the table** — including an idle transaction that only ran a `SELECT`. While it waits, **every new query on the table queues behind it**:
 
 ```sql
 -- Session A (e.g. a pooled connection left in a transaction)
@@ -1579,7 +1579,7 @@ Review checklist for migrations: explicit `ALGORITHM`/`LOCK`, short `lock_wait_t
 - Renaming columns or tables breaks running application versions; use expand/contract: add the new column, dual-write, backfill in batches, switch reads, drop the old column in a later release.
 - Converting an existing nullable column to `NOT NULL` rebuilds and fails on existing `NULL`s (backfill first).
 - Dropping a column that code still names explicitly breaks the old release during a rolling deploy (making it `INVISIBLE` does not help: invisible columns are still returned when named).
-- Adding an `AUTO_INCREMENT` column to an existing table could assign wrong values before 9.7.2; require ≥ 9.7.2 for such migrations.[^19]
+- Adding an `AUTO_INCREMENT` column to an existing table could assign wrong values before 9.7.2; require ≥ 9.7.2 for such migrations.
 - `RENAME TABLE a TO a_old, a_new TO a` is atomic and is the swap step of copy-based tools.
 
 ##### Partitioning
@@ -1598,7 +1598,7 @@ CREATE TABLE pt (id INT, s VARCHAR(20), PRIMARY KEY (id, s(5))) PARTITION BY KEY
 
 ##### Stored functions and binary logging
 
-With binary logging enabled (the default), creating a stored function requires a characteristic that declares it safe:[^37]
+With binary logging enabled (the default), creating a stored function requires a characteristic that declares it safe:
 
 ```sql
 DELIMITER //
@@ -1650,7 +1650,7 @@ PREPARE ps2 FROM 'SELECT COUNT(*) FROM ?';
 
 ##### JavaScript stored programs and libraries [New in 9.7, Enterprise]
 
-`CREATE FUNCTION/PROCEDURE ... LANGUAGE JAVASCRIPT AS $$ ... $$`, `CREATE LIBRARY ... LANGUAGE JAVASCRIPT|WASM` and `USING (lib)` need the Multilingual Engine (MLE) component, which ships only with **MySQL Enterprise Edition** (and HeatWave).[^8][^15][^9][^38] On Community 9.7.4 the DDL is accepted and only the call fails:
+`CREATE FUNCTION/PROCEDURE ... LANGUAGE JAVASCRIPT AS $$ ... $$`, `CREATE LIBRARY ... LANGUAGE JAVASCRIPT|WASM` and `USING (lib)` need the Multilingual Engine (MLE) component, which ships only with **MySQL Enterprise Edition** (and HeatWave). On Community 9.7.4 the DDL is accepted and only the call fails:
 
 ```sql
 CREATE FUNCTION gcd(a INT, b INT) RETURNS INT NO SQL LANGUAGE JAVASCRIPT AS $$ return a $$;
@@ -1674,7 +1674,7 @@ Views, routines, triggers and events run with the privileges of their `DEFINER` 
 - Triggers do not fire for foreign-key cascades unless the session sets the deprecated `enable_cascade_triggers=ON` (see Foreign keys), and are skipped by `TRUNCATE TABLE`.
 - Row-by-row triggers multiply the cost of bulk statements; complex business logic in triggers is invisible to application reviewers. Keep them small (auditing, denormalized counters) and covered by tests.
 - A trigger cannot modify the table that fired it (`ERROR 1442`).
-- Since 9.1.0 trigger bodies are parsed only when a statement modifies the table (`table_open_cache_triggers`); a trigger with a body the server can no longer parse shows up only on the first write, not on `SELECT`.[^14]
+- Since 9.1.0 trigger bodies are parsed only when a statement modifies the table (`table_open_cache_triggers`); a trigger with a body the server can no longer parse shows up only on the first write, not on `SELECT`.
 
 ##### Views
 
@@ -1682,7 +1682,7 @@ MySQL Server has no materialized views. The syntax exists for HeatWave (9.5.0+),
 
 ##### JSON duality views [New in 9.7]
 
-A JSON duality view (9.4.0) exposes relational rows as JSON documents; since 9.7.0 Community Server also accepts `INSERT`/`UPDATE`/`DELETE` through them.[^9][^1][^39] Writes are translated into DML on the base tables, and every document carries an ETAG for optimistic concurrency:
+A JSON duality view (9.4.0) exposes relational rows as JSON documents; since 9.7.0 Community Server also accepts `INSERT`/`UPDATE`/`DELETE` through them. Writes are translated into DML on the base tables, and every document carries an ETAG for optimistic concurrency:
 
 ```sql
 CREATE TABLE customer (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50) NOT NULL);
@@ -1726,7 +1726,7 @@ The event scheduler (`event_scheduler=ON` by default) runs events with the defin
 
 ##### SQL injection: parameters for values, allow-lists for identifiers
 
-Every value must be sent as a bound parameter. Identifiers (table, column, `ORDER BY` column, `ASC`/`DESC`) cannot be parameters and must come from a fixed allow-list in code. Verified with Go `database/sql` and `github.com/go-sql-driver/mysql` v1.10.1 against 9.7.4:[^40]
+Every value must be sent as a bound parameter. Identifiers (table, column, `ORDER BY` column, `ASC`/`DESC`) cannot be parameters and must come from a fixed allow-list in code. Verified with Go `database/sql` and `github.com/go-sql-driver/mysql` v1.10.1 against 9.7.4:
 
 ```go
 // BAD: string concatenation — the input "x' OR '1'='1" matches every row
@@ -1775,7 +1775,7 @@ The default escape character is `\` (unless `NO_BACKSLASH_ESCAPES` is set; then 
 
 ##### Authentication: caching_sha2_password only [New in 9.7]
 
-The server-side `mysql_native_password` plugin was removed in 9.0.0, together with `--mysql-native-password`. Every account must use `caching_sha2_password` (or an external/plugin method), and every client library must support it:[^8][^17]
+The server-side `mysql_native_password` plugin was removed in 9.0.0, together with `--mysql-native-password`. Every account must use `caching_sha2_password` (or an external/plugin method), and every client library must support it:
 
 - **Upgrade blocker**: accounts that still use `mysql_native_password` on 8.4 cannot authenticate after the upgrade to 9.7 (tested: the error log says `The plugin 'mysql_native_password' used to authenticate user 'legacy'@'%' is not loaded. Nobody can currently login using this account.`; the login fails with `ERROR 1524`), and the 8.4 escape hatch (`--mysql-native-password=ON`) no longer exists — a `my.cnf` that sets it prevents the server from starting. Migrate them on 8.4 first: `SELECT user, host FROM mysql.user WHERE plugin = 'mysql_native_password'`, then `ALTER USER ... IDENTIFIED WITH caching_sha2_password BY '...'` (the same statement also repairs such an account after the upgrade).
 - The first login of an account after a server restart or a cache flush needs either a **TLS connection** or RSA public-key exchange; over plain TCP without either, the login fails:
@@ -1787,8 +1787,8 @@ ERROR 2061 (HY000): Authentication plugin 'caching_sha2_password' reported error
 
   This is the classic "works until the database restarts" bug. Use TLS (the server auto-generates certificates; clients default to `PREFERRED`), and for production require it: `require_secure_transport=ON` on the server or `REQUIRE SSL` per account, plus `VERIFY_IDENTITY` in clients. Flag driver options such as `allowPublicKeyRetrieval=true` (JDBC) or `tls=skip-verify` (Go) in production configs: they accept a man-in-the-middle key.
 - Old client libraries (very old PHP `mysqlnd`, `MySQLdb` against libmysqlclient 5.x, the Node `mysql` package) do not support `caching_sha2_password`; `mysql2` and current connectors do.
-- **New in 9.5/9.7**: `caching_sha2_password_digest_rounds` defaults to 10,000 (5,000 on 8.4), and 9.7.0 adds a PBKDF2-with-SHA-512 storage format (`caching_sha2_password_storage_format`, default `CRYPT5`; `caching_sha2_password_enforce_storage_format` forces users with another format to reset their passwords).[^12][^17] Changing the format affects only passwords set afterwards.
-- Account management: `CREATE USER ... IDENTIFIED BY`, `ALTER USER`, password policies (`PASSWORD EXPIRE`, `FAILED_LOGIN_ATTEMPTS n PASSWORD_LOCK_TIME d`; 9.6.0 adds `performance_schema.temporary_account_locks` to see locked accounts).[^10] `GRANT` does not create users, `PASSWORD()` does not exist, and **`FLUSH PRIVILEGES` is deprecated** (warning 1681) and never needed after account statements.
+- **New in 9.5/9.7**: `caching_sha2_password_digest_rounds` defaults to 10,000 (5,000 on 8.4), and 9.7.0 adds a PBKDF2-with-SHA-512 storage format (`caching_sha2_password_storage_format`, default `CRYPT5`; `caching_sha2_password_enforce_storage_format` forces users with another format to reset their passwords). Changing the format affects only passwords set afterwards.
+- Account management: `CREATE USER ... IDENTIFIED BY`, `ALTER USER`, password policies (`PASSWORD EXPIRE`, `FAILED_LOGIN_ATTEMPTS n PASSWORD_LOCK_TIME d`; 9.6.0 adds `performance_schema.temporary_account_locks` to see locked accounts). `GRANT` does not create users, `PASSWORD()` does not exist, and **`FLUSH PRIVILEGES` is deprecated** (warning 1681) and never needed after account statements.
 
 ##### Least privilege and roles [New in 9.7]
 
@@ -1808,7 +1808,7 @@ SET DEFAULT ROLE ALL TO app2@'%';      -- GOOD: active at login
 --   $ mysql -uapp2 ... t -e 'SELECT CURRENT_ROLE()'  →  `app_read`@`%`
 ```
 
-**New in 9.5**: `activate_mandatory_roles` (default `ON`) activates the roles listed in `mandatory_roles` at login for every account. On 8.4, mandatory roles were granted but inactive unless `activate_all_roles_on_login=ON` or `SET DEFAULT ROLE` was used:[^12]
+**New in 9.5**: `activate_mandatory_roles` (default `ON`) activates the roles listed in `mandatory_roles` at login for every account. On 8.4, mandatory roles were granted but inactive unless `activate_all_roles_on_login=ON` or `SET DEFAULT ROLE` was used:
 
 ```sql
 GRANT SELECT ON t.* TO app_read;
@@ -1819,7 +1819,7 @@ CREATE USER m1@'%' IDENTIFIED BY 'M1-pass-123';
 --   8.4.13: ERROR 1044 (42000): Access denied for user 'm1'@'%' to database 't'
 ```
 
-Review rules:[^41][^42]
+Review rules:
 
 - After an upgrade from 8.4, every account immediately gets the privileges of `mandatory_roles`. Review that list: a broad mandatory role is now a broad grant to everyone, including application and monitoring accounts.
 - Application accounts get DML on their schema only; migrations run under a separate account with DDL privileges. No `ALL PRIVILEGES ON *.*`, no `SUPER`, `FILE`, `PROCESS`, `SYSTEM_USER`, `GRANT OPTION` or `CONNECTION_ADMIN` for applications.
@@ -1840,7 +1840,7 @@ SELECT MD5('a'), SHA1('a');   -- 0cc175b9c0f1b6a831c399e269772661 | 86f7e437faa5
 UNINSTALL COMPONENT 'file://component_classic_hashing';
 ```
 
-  The component functions are UDFs: they work in queries and views, but are rejected in generated columns, `DEFAULT` expressions, `CHECK` constraints and functional indexes even when the component is installed (`ERROR 3763`, `3770`, `3814`, `3758`).[^45] Prefer `SHA2(x, 256)` for checksums and deduplication keys; install the component only as a bridge for queries and track its removal.
+  The component functions are UDFs: they work in queries and views, but are rejected in generated columns, `DEFAULT` expressions, `CHECK` constraints and functional indexes even when the component is installed (`ERROR 3763`, `3770`, `3814`, `3758`). Prefer `SHA2(x, 256)` for checksums and deduplication keys; install the component only as a bridge for queries and track its removal.
 - **Upgrade trap** (tested 8.4.13 → 9.7.4 in place): a table with `MD5()`/`SHA1()` in a `DEFAULT` expression, a functional index or a `CHECK` constraint made the 9.7.4 server **crash during the upgrade's table-definition check** (`Error MY-001305 occurred while checking table-definitions: FUNCTION mysql.md5 does not exist`, `Incorrect information in file: './t/d.frm'`, then `mysqld got signal 6`), also with `--check-table-functions=WARN`; the 8.4.13 server still started on the same data directory afterwards. A table with `MD5()` in a `STORED` generated column upgraded silently but was unusable afterwards: `SELECT`, `INSERT`, `SHOW CREATE TABLE` fail with `ERROR 1305`, and with the component installed with `ERROR 3763`; even `ALTER TABLE ... DROP COLUMN` fails, only `DROP TABLE` works (the data is lost unless exported before the upgrade). A view that calls `MD5()` fails with `ERROR 1356` until the component is installed. Remove every such expression on 8.4 before upgrading (replace with `SHA2()` or a trigger) and test the upgrade on a copy of the data.
 - No SQL hash function is suitable for passwords; hash passwords in the application with bcrypt/scrypt/Argon2.
 - `AES_ENCRYPT()` defaults to `block_encryption_mode=aes-128-ecb`: deterministic, no IV, leaks equal plaintexts. There is no authenticated (GCM) mode. Prefer encrypting in the application; if it must happen in SQL, use a CBC mode with a random IV per value and keep keys out of SQL text (they appear in logs and the processlist):
@@ -1860,14 +1860,14 @@ SET SESSION block_encryption_mode = DEFAULT;
 
 - `local_infile=OFF` (default): keep it off; `LOAD DATA LOCAL` lets a malicious server read client files.
 - `secure_file_priv` restricts `LOAD DATA INFILE` / `SELECT ... INTO OUTFILE` to one directory; an empty value (`""`) allows the whole filesystem.
-- Replication connections are encrypted by default since 9.5.0 (`SOURCE_SSL=1`); do not turn it off in `CHANGE REPLICATION SOURCE TO` scripts.[^12]
+- Replication connections are encrypted by default since 9.5.0 (`SOURCE_SSL=1`); do not turn it off in `CHANGE REPLICATION SOURCE TO` scripts.
 - Logs (general log, slow log, binlog, `performance_schema` digests and history) contain literal values from non-parameterized statements: another reason to bind parameters.
 
 ***
 
 #### Application Code and Drivers
 
-Verified with `github.com/go-sql-driver/mysql` v1.10.1 against 9.7.4; the same concepts apply to other drivers.[^40]
+Verified with `github.com/go-sql-driver/mysql` v1.10.1 against 9.7.4; the same concepts apply to other drivers.
 
 ```go
 cfg := mysql.NewConfig()
@@ -1906,23 +1906,23 @@ if errors.As(err, &me) {
 
 - Use `context` deadlines (`QueryContext`, `ExecContext`). On cancellation the Go driver abandons the connection, but the server may keep executing the statement; bound expensive reads with `MAX_EXECUTION_TIME` as well. Always `defer rows.Close()` and check `rows.Err()`.
 - Transactions: `BeginTx` with `sql.TxOptions{Isolation: sql.LevelReadCommitted}` sets the isolation per transaction. Never run transaction statements (`START TRANSACTION`, `COMMIT`) through `db.Exec` on a pool — they land on different connections.
-- Invalid temporal values sent *with a temporal type* through the binary protocol (prepared statements) are rejected even in non-strict mode since 9.5.0. Parameters bound as strings are unaffected: the Go driver sends a `string` as a string, and `'2024-13-45 00:00:00'` bound to a `DATETIME` column under `sql_mode=''` was still stored as a zero date with a warning on 9.7.4. Use strict mode and validate input.[^12]
+- Invalid temporal values sent *with a temporal type* through the binary protocol (prepared statements) are rejected even in non-strict mode since 9.5.0. Parameters bound as strings are unaffected: the Go driver sends a `string` as a string, and `'2024-13-45 00:00:00'` bound to a `DATETIME` column under `sql_mode=''` was still stored as a zero date with a warning on 9.7.4. Use strict mode and validate input.
 - Drivers that query `@@version` or parse `VERSION()` keep working (three-part `9.7.4`); use `VERSION_WITH_UPDATE()` only on ≥ 9.7.4.
 
 ***
 
 #### Replication and Operations Awareness [New in 9.7]
 
-- **GTIDs are on by default** (9.5.0). Besides the consistency errors above, scripts that set `gtid_next`, use `sql_slave_skip_counter`-style recovery, or restore dumps with `SET @@GLOBAL.GTID_PURGED` need review; `mysqldump` adds `SET @@SESSION.SQL_LOG_BIN=0` and `GTID_PURGED` lines when GTIDs are on.[^12]
-- Use `SOURCE`/`REPLICA` terminology (`CHANGE REPLICATION SOURCE TO`, `START REPLICA`, `SHOW REPLICA STATUS`, `SHOW BINARY LOG STATUS`); the `MASTER`/`SLAVE` statements were removed in 8.4. `replica_parallel_type` is gone (9.5.0) and `replica_parallel_workers` must be ≥ 1 (9.3.0).[^12][^16]
-- Replication connections use TLS by default (`SOURCE_SSL=1`); Group Replication defaults to `group_replication_ssl_mode=REQUIRED`.[^12]
-- `replica_allow_higher_version_source` (9.7.0) controls whether a replica accepts a source with a higher version (for rolling upgrades).[^1]
-- Upgrades: 8.4 → 9.7 in place, by dump/load or via replication; 9.7 → the next LTS later; Innovation releases (26.x) cannot be downgraded in place.[^3][^43] Run MySQL Shell's upgrade checker (`util.checkForServerUpgrade()`) before upgrading.
+- **GTIDs are on by default** (9.5.0). Besides the consistency errors above, scripts that set `gtid_next`, use `sql_slave_skip_counter`-style recovery, or restore dumps with `SET @@GLOBAL.GTID_PURGED` need review; `mysqldump` adds `SET @@SESSION.SQL_LOG_BIN=0` and `GTID_PURGED` lines when GTIDs are on.
+- Use `SOURCE`/`REPLICA` terminology (`CHANGE REPLICATION SOURCE TO`, `START REPLICA`, `SHOW REPLICA STATUS`, `SHOW BINARY LOG STATUS`); the `MASTER`/`SLAVE` statements were removed in 8.4. `replica_parallel_type` is gone (9.5.0) and `replica_parallel_workers` must be ≥ 1 (9.3.0).
+- Replication connections use TLS by default (`SOURCE_SSL=1`); Group Replication defaults to `group_replication_ssl_mode=REQUIRED`.
+- `replica_allow_higher_version_source` (9.7.0) controls whether a replica accepts a source with a higher version (for rolling upgrades).
+- Upgrades: 8.4 → 9.7 in place, by dump/load or via replication; 9.7 → the next LTS later; Innovation releases (26.x) cannot be downgraded in place. Run MySQL Shell's upgrade checker (`util.checkForServerUpgrade()`) before upgrading.
 - Large single transactions (bulk `UPDATE`/`DELETE`, `ALTER TABLE` copies) create replica lag proportional to their duration. Batch them.
 - Statements with nondeterministic results (`LIMIT` without `ORDER BY`, `SYSDATE()`, `UUID()`) are safe only because of row-based logging; keep `binlog_format=ROW` (the variable itself is deprecated).
-- Foreign-key cascades are SQL-layer operations since 9.6.0 and appear as `Delete_rows`/`Update_rows` events for the child tables in the binary log (tested); CDC consumers (Debezium and similar) now receive cascaded child changes that were invisible to them on 8.4, and may need to stop emulating cascades themselves.[^10]
+- Foreign-key cascades are SQL-layer operations since 9.6.0 and appear as `Delete_rows`/`Update_rows` events for the child tables in the binary log (tested); CDC consumers (Debezium and similar) now receive cascaded child changes that were invisible to them on 8.4, and may need to stop emulating cascades themselves.
 - Reads from replicas are eventually consistent; read-your-writes paths must go to the source (or wait with `WAIT_FOR_EXECUTED_GTID_SET()`).
-- Container deployments: InnoDB derives buffer-pool instances, I/O and purge threads, `temptable_max_ram` and (with `--innodb-dedicated-server`) the buffer pool and redo capacity from the available CPUs and memory (9.3.0). The container's cgroup memory and CPU-quota limits are honoured only with `--container-aware=ON` (9.6.0; the default `OFF` ignores them and logs warning MY-015655), while a `cpuset` restriction is counted either way (9.7.0). In a memory-limited container, start the server with `--container-aware=ON` or set the memory-dependent variables explicitly (`innodb_buffer_pool_size`, `temptable_max_ram`); otherwise the server sizes itself for the whole host and can be OOM-killed.[^16][^10][^1]
+- Container deployments: InnoDB derives buffer-pool instances, I/O and purge threads, `temptable_max_ram` and (with `--innodb-dedicated-server`) the buffer pool and redo capacity from the available CPUs and memory (9.3.0). The container's cgroup memory and CPU-quota limits are honoured only with `--container-aware=ON` (9.6.0; the default `OFF` ignores them and logs warning MY-015655), while a `cpuset` restriction is counted either way (9.7.0). In a memory-limited container, start the server with `--container-aware=ON` or set the memory-dependent variables explicitly (`innodb_buffer_pool_size`, `temptable_max_ram`); otherwise the server sizes itself for the whole host and can be OOM-killed.
 
 ***
 
@@ -1947,11 +1947,11 @@ SELECT object_schema, object_name, waiting_pid, blocking_pid FROM sys.schema_tab
 SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;                      -- old transactions
 ```
 
-- The `sys` schema views above are installed by default.[^44]
+- The `sys` schema views above are installed by default.
 - Slow query log: `slow_query_log=OFF` and `long_query_time=10` by default; enable it with a threshold that matches the service's latency budget and analyze with `pt-query-digest` or `mysqldumpslow`.
-- `SUM_ROWS_EXAMINED / SUM_ROWS_SENT` far above 1 indicates a missing or unused index. 9.5.0 improved digests so queries that differ only in `ORDER BY` no longer share a digest; dashboards keyed on digest values change after the upgrade.[^12]
+- `SUM_ROWS_EXAMINED / SUM_ROWS_SENT` far above 1 indicates a missing or unused index. 9.5.0 improved digests so queries that differ only in `ORDER BY` no longer share a digest; dashboards keyed on digest values change after the upgrade.
 - `sys.schema_unused_indexes` counts only since the last restart and only on this server. Make an index invisible before dropping it.
-- **New in 9.7**: the Telemetry component (OpenTelemetry traces, metrics and logs, including slow and general log export) and the replication applier metrics tables (`performance_schema.replication_applier_metrics`, `replication_applier_progress_by_worker`) are available in Community. Both ship as components that must be installed first (`INSTALL COMPONENT 'file://component_telemetry'` / `'file://component_replication_applier_metrics'`; tested: the tables do not exist until then).[^1]
+- **New in 9.7**: the Telemetry component (OpenTelemetry traces, metrics and logs, including slow and general log export) and the replication applier metrics tables (`performance_schema.replication_applier_metrics`, `replication_applier_progress_by_worker`) are available in Community. Both ship as components that must be installed first (`INSTALL COMPONENT 'file://component_telemetry'` / `'file://component_replication_applier_metrics'`; tested: the tables do not exist until then).
 - `EXPLAIN FOR CONNECTION <id>` shows the plan of a running statement.
 
 ***
@@ -1968,9 +1968,9 @@ SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;       
 8. **Removed variables and plugins**: `innodb_log_file_size`, `innodb_log_files_in_group` (use `innodb_redo_log_capacity`), `innodb_undo_tablespaces`, `temptable_use_mmap`, `replica_parallel_type`, `group_replication_allow_local_lower_version_join`, `semisync_master`/`semisync_slave`, Version Tokens. Remove them from `my.cnf`, Helm values and Terraform parameter groups; the server refuses to start with unknown options.
 9. **Changed results**: `IGNORE` with multi-row scalar subqueries now fails; `ROLLUP` on empty input returns a row; schema-qualified derived-table column references fail; outer references in window clauses fail; temporal function edge cases (`TIMEDIFF`, `FROM_DAYS`, `DAYNAME` arithmetic, `DATE` assigned to integer columns) return different values; `REPLACE` on a referenced parent row no longer cascades or fails when the key value is unchanged. Run the test suite against 9.7.
 10. **Roles**: review `mandatory_roles` — they become active for every account at login (`activate_mandatory_roles=ON`).
-11. **Spatial indexes**: drop and re-create `SPATIAL` indexes as part of the upgrade (9.2.0 incompatible change for an index-corruption fix).[^15]
+11. **Spatial indexes**: drop and re-create `SPATIAL` indexes as part of the upgrade (9.2.0 incompatible change for an index-corruption fix).
 12. **Containers**: decide on `--container-aware=ON` or explicit memory settings; the default ignores cgroup memory limits.
-13. **Downgrade**: an in-place downgrade from 9.7 to 8.4 is not supported (only within an LTS series); keep a logical backup from before the upgrade.[^3][^43]
+13. **Downgrade**: an in-place downgrade from 9.7 to 8.4 is not supported (only within an LTS series); keep a logical backup from before the upgrade.
 14. **Keep deprecated features out of new code**: `FLUSH PRIVILEGES`, `enable_cascade_triggers`, `VALUES()` in upserts, `SQL_CALC_FOUND_ROWS`, `utf8mb3`, `&&`/`||`, display widths, `ZEROFILL`, user-variable assignment in expressions, mixed-engine transactions.
 
 ***
@@ -2035,52 +2035,3 @@ SELECT * FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;       
 - [ ] Replication statements and monitoring use `SOURCE`/`REPLICA` terminology; CDC consumers ready for SQL-layer cascade events
 - [ ] Connection pool lifetime below `wait_timeout`; `parseTime`/time-zone settings consistent
 - [ ] Slow query log or `performance_schema` digests reviewed; deadlocks logged (`innodb_print_all_deadlocks`)
-
-***
-
-[^1]: Changes in MySQL 9.7.0 (2026-04-21) — hypergraph optimizer in Community, enable_cascade_triggers, duality-view DML in Community, PBKDF2 storage format, sql_require_primary_key/GIPK with UNIQUE NOT NULL, temporal fixes (WL #16895), cpuset awareness, replica_allow_higher_version_source, components moved to Community. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-0.html
-[^2]: MySQL 9.7 Release Notes (index of 9.0.0–9.7.4 with dates; 9.7.1 and 9.7.3 Critical Security Patch Updates; 9.7.4 four-part version). https://dev.mysql.com/doc/relnotes/mysql/9.7/en/
-[^3]: MySQL 9.7 Reference Manual — MySQL Releases: Innovation and LTS (calendar versioning after 9.7, LTS support policy, upgrade paths). https://dev.mysql.com/doc/refman/9.7/en/mysql-releases.html
-[^4]: endoflife.date — MySQL (9.7: Premier Support until 2031-04-30, Extended Support until 2034-04-30). https://endoflife.date/mysql
-[^5]: MySQL 26.10 Release Notes (26.7.0 2026-07-28, 26.7.1 2026-08-18, 26.10.0 2026-10-20). https://dev.mysql.com/doc/relnotes/mysql/26.10/en/
-[^6]: MySQL 8.4 Release Notes (8.4.13, 2026-10-20) and MySQL 8.0 Release Notes (8.0.46, 2026-04-21). https://dev.mysql.com/doc/relnotes/mysql/8.4/en/ , https://dev.mysql.com/doc/relnotes/mysql/8.0/en/
-[^7]: MySQL 9.7 Reference Manual — What Is New in MySQL 9.7; Server and Status Variables and Options Added, Deprecated, or Removed in MySQL 9.7. https://dev.mysql.com/doc/refman/9.7/en/mysql-nutshell.html , https://dev.mysql.com/doc/refman/9.7/en/added-deprecated-removed.html
-[^8]: Changes in MySQL 9.0.0 (2024-07-01) — VECTOR, inline REFERENCES enforced, mysql_native_password removed, EXPLAIN ANALYZE INTO, prepared event statements, IGNORE and ER_SUBQUERY_NO_1_ROW, mixed-engine transactions deprecated, JavaScript programs. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-0-0.html
-[^9]: Changes in MySQL 9.4.0 (2025-07-22) — JSON duality views, MD5()/SHA1() deprecated, mysql --commands, temptable_use_mmap removed, innodb_change_buffer_max_size, collation derivation change, RANGE frame with nondeterministic ORDER BY rejected, WASM libraries. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-4-0.html
-[^10]: Changes in MySQL 9.6.0 (2026-01-20) — SQL-layer foreign keys (innodb_native_foreign_keys), MD5/SHA1 moved to the classic_hashing component, GROUPING() without ROLLUP, temporary account locks table, container_aware startup option. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-6-0.html
-[^11]: MySQL 9.7 Reference Manual — Keywords and Reserved Words (new keywords compared to 8.4: EXTERNAL (R), LIBRARY (R), DUALITY, MASKING, POLICY, RELATIONAL, VECTOR, ...). https://dev.mysql.com/doc/refman/9.7/en/keywords.html
-[^12]: Changes in MySQL 9.5.0 (2025-10-21) — explain_format/explain_json_format_version, gtid_mode, innodb_change_buffering, caching_sha2_password_digest_rounds, activate_mandatory_roles, INTERPRET_UTF8_AS_UTF8MB4, SOURCE_SSL, binary-protocol temporal validation, removed variables and plugins. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-5-0.html
-[^13]: MySQL 9.7 Reference Manual — mysql Client Options (--commands default FALSE; disabled commands; --system-command). https://dev.mysql.com/doc/refman/9.7/en/mysql-command-options.html
-[^14]: Changes in MySQL 9.1.0 (2024-10-15) — CREATE VIEW IF NOT EXISTS, 255 row versions, derived-table column references, ROLLUP/SUM(DISTINCT) fixes, table_open_cache_triggers, GROUP BY ROLLUP (...) syntax, mysql --system-command. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-1-0.html
-[^15]: Changes in MySQL 9.2.0 (2025-01-21) — CREATE LIBRARY, CREATE_SPATIAL_REFERENCE_SYSTEM, FLUSH PRIVILEGES deprecated, BINLOG label, subquery OFFSET fix, outer references in window clauses rejected. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-2-0.html
-[^16]: Changes in MySQL 9.3.0 (2025-04-15) — removal of innodb_log_file_size, innodb_log_files_in_group, innodb_undo_tablespaces and Version Tokens; replica_parallel_workers minimum 1; --check-table-functions; container-aware InnoDB defaults; no Innovation downgrades. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-3-0.html
-[^17]: MySQL 9.7 Reference Manual — Caching SHA-2 Pluggable Authentication (storage formats CRYPT5/PBKDF2). https://dev.mysql.com/doc/refman/9.7/en/caching-sha2-pluggable-authentication.html
-[^18]: MySQL 9.7 Reference Manual — Binary Logging Options and Variables (binlog_transaction_dependency_history_size default 10000000). https://dev.mysql.com/doc/refman/9.7/en/replication-options-binary-log.html
-[^19]: Changes in MySQL 9.7.2 (2026-07-28) — AUTO_INCREMENT column addition fix, optimizer wrong-result fixes, hypergraph fixes, JSON_VALUE fix, deprecated Group Replication variables. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-2.html
-[^20]: Changes in MySQL 9.7.4 (2026-10-20) — VERSION_WITH_UPDATE(), EXCHANGE PARTITION CHECK validation, relaxed row-size validation, hypergraph UPDATE/DELETE wrong-rows fix, index_merge_union=off fix. https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html
-[^21]: Changes in MySQL 26.7.0 (2026-07-28) and 26.10.0 (2026-10-20) — calendar versioning, Change Stream Applier, PQC TLS, MySQL REST Service component, Health Monitor, duality-view annotations, optimizer_switch parsing. https://dev.mysql.com/doc/relnotes/mysql/26.10/en/news-26-7-0.html , https://dev.mysql.com/doc/relnotes/mysql/26.10/en/news-26-10-0.html
-[^22]: MySQL 9.7 Reference Manual — Server System Variables (enable_cascade_triggers: added and deprecated in 9.7.0). https://dev.mysql.com/doc/refman/9.7/en/added-deprecated-removed.html
-[^23]: MySQL 9.7 Reference Manual — The VECTOR Type; Vector Functions. https://dev.mysql.com/doc/refman/9.7/en/vector.html
-[^24]: MySQL 9.7 Reference Manual — Unicode Character Sets (PAD SPACE vs NO PAD). https://dev.mysql.com/doc/refman/9.7/en/charset-unicode-sets.html
-[^25]: MySQL 9.7 Reference Manual — Server SQL Modes. https://dev.mysql.com/doc/refman/9.7/en/sql-mode.html
-[^26]: MySQL 9.7 Reference Manual — MySQL Server Time Zone Support. https://dev.mysql.com/doc/refman/9.7/en/time-zone-support.html
-[^27]: MySQL 9.7 Reference Manual — CREATE INDEX Statement (functional key parts, multi-valued indexes). https://dev.mysql.com/doc/refman/9.7/en/create-index.html
-[^28]: MySQL 9.7 Reference Manual — Optimizer Statistics (histograms). https://dev.mysql.com/doc/refman/9.7/en/optimizer-statistics.html
-[^29]: MySQL 9.7 Reference Manual — EXPLAIN Statement (formats, EXPLAIN ANALYZE, INTO). https://dev.mysql.com/doc/refman/9.7/en/explain.html
-[^30]: MySQL 9.7 Reference Manual — Row Constructor Expression Optimization. https://dev.mysql.com/doc/refman/9.7/en/row-constructor-optimization.html
-[^31]: MySQL 9.7 Reference Manual — Optimizer Hints. https://dev.mysql.com/doc/refman/9.7/en/optimizer-hints.html
-[^32]: MySQL 9.7 Reference Manual — INSERT ... ON DUPLICATE KEY UPDATE Statement. https://dev.mysql.com/doc/refman/9.7/en/insert-on-duplicate.html
-[^33]: MySQL 9.7 Reference Manual — Consistent Nonlocking Reads. https://dev.mysql.com/doc/refman/9.7/en/innodb-consistent-read.html
-[^34]: MySQL 9.7 Reference Manual — Locks Set by Different SQL Statements in InnoDB. https://dev.mysql.com/doc/refman/9.7/en/innodb-locks-set.html
-[^35]: MySQL 9.7 Reference Manual — Online DDL Operations. https://dev.mysql.com/doc/refman/9.7/en/innodb-online-ddl-operations.html
-[^36]: MySQL 9.7 Reference Manual — Metadata Locking. https://dev.mysql.com/doc/refman/9.7/en/metadata-locking.html
-[^37]: MySQL 9.7 Reference Manual — Stored Program Binary Logging. https://dev.mysql.com/doc/refman/9.7/en/stored-programs-logging.html
-[^38]: MySQL 9.7 Reference Manual — JavaScript Stored Programs / Multilingual Engine Component (MLE), MySQL Enterprise Edition. https://dev.mysql.com/doc/refman/9.7/en/stored-routines-js.html
-[^39]: MySQL 9.7 Reference Manual — JSON Duality Views (CREATE JSON DUALITY VIEW, DML, ETAG concurrency). https://dev.mysql.com/doc/refman/9.7/en/json-duality-views.html
-[^40]: go-sql-driver/mysql — README (DSN parameters parseTime, loc, multiStatements, interpolateParams, clientFoundRows). https://github.com/go-sql-driver/mysql
-[^41]: MySQL 9.7 Reference Manual — Using Roles (mandatory roles, activate_all_roles_on_login, activate_mandatory_roles). https://dev.mysql.com/doc/refman/9.7/en/roles.html
-[^42]: MySQL 9.7 Reference Manual — GRANT Statement (wildcards in database names). https://dev.mysql.com/doc/refman/9.7/en/grant.html
-[^43]: MySQL 9.7 Reference Manual — Upgrade Paths. https://dev.mysql.com/doc/refman/9.7/en/upgrade-paths.html
-[^44]: MySQL 9.7 Reference Manual — The sys Schema. https://dev.mysql.com/doc/refman/9.7/en/sys-schema.html
-[^45]: MySQL 9.7 Reference Manual — Legacy Hashing Component (component_classic_hashing; generated columns using MD5()/SHA1() stop working after upgrading to 9.6+). https://dev.mysql.com/doc/refman/9.7/en/legacy-hashing-component.html
-[^46]: MySQL 9.7 Reference Manual — FOREIGN KEY Constraints (SQL-layer handling, `innodb_native_foreign_keys`, AUTO_INCREMENT on rejected inserts, 15-level cascade limit, REPLACE and cascade triggers) and InnoDB Startup Options (`innodb_native_foreign_keys`: deprecated). https://dev.mysql.com/doc/refman/9.7/en/create-table-foreign-keys.html , https://dev.mysql.com/doc/refman/9.7/en/innodb-parameters.html

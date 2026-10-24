@@ -2,18 +2,18 @@
 
 #### Overview
 
-**Node.js 20 ("Iron")** was released on **April 18, 2023**, entered Active LTS with 20.9.0 on October 24, 2023, moved to Maintenance LTS on October 22, 2024, and reached **end-of-life on April 30, 2026**.[^1][^2] The final release of the line is **20.20.2 (March 24, 2026)**, a security release; no 20.x release has been published since.[^3][^4] As of October 2026 the supported lines are Node.js 26 (Current, 26.12.1 of October 21, 2026, becoming LTS on October 28, 2026), Node.js 24 (Maintenance LTS since October 20, 2026, 24.22.1) and Node.js 22 (Maintenance LTS until April 30, 2027, 22.23.4). Node.js 27 has not been released: under the new one-major-per-year schedule it starts as an alpha channel (planned from October 28, 2026) ahead of an April 2027 release.[^2][^3][^5]
+**Node.js 20 ("Iron")** was released on **April 18, 2023**, entered Active LTS with 20.9.0 on October 24, 2023, moved to Maintenance LTS on October 22, 2024, and reached **end-of-life on April 30, 2026**. The final release of the line is **20.20.2 (March 24, 2026)**, a security release; no 20.x release has been published since. As of October 2026 the supported lines are Node.js 26 (Current, 26.12.1 of October 21, 2026, becoming LTS on October 28, 2026), Node.js 24 (Maintenance LTS since October 20, 2026, 24.22.1) and Node.js 22 (Maintenance LTS until April 30, 2027, 22.23.4). Node.js 27 has not been released: under the new one-major-per-year schedule it starts as an alpha channel (planned from October 28, 2026) ahead of an April 2027 release.
 
-**Node.js 20 receives no more fixes.** The June, July and October 2026 security releases fixed vulnerabilities (several rated High, including TLS hostname-verification bypasses and a Brotli decoder out-of-bounds write) only in 22.x, 24.x and 26.x; the project states that end-of-life lines are always affected by such releases.[^6] A reviewer of a Node 20 project should therefore (1) review the code correctly *for Node 20* — never suggest APIs that 20.20.2 does not have — and (2) flag the runtime itself as an upgrade item: move to Node.js 24 (LTS until April 2028) or at least Node.js 22 (until April 2027).
+**Node.js 20 receives no more fixes.** The June, July and October 2026 security releases fixed vulnerabilities (several rated High, including TLS hostname-verification bypasses and a Brotli decoder out-of-bounds write) only in 22.x, 24.x and 26.x; the project states that end-of-life lines are always affected by such releases. A reviewer of a Node 20 project should therefore (1) review the code correctly *for Node 20* — never suggest APIs that 20.20.2 does not have — and (2) flag the runtime itself as an upgrade item: move to Node.js 24 (LTS until April 2028) or at least Node.js 22 (until April 2027).
 
-Node.js 20 ships **V8 11.3** (Chromium 113), npm 10.8.2 (since 20.17.0), libuv 1.46, OpenSSL 3.0, undici 6.x as the `fetch()` implementation, Ada 2.x as the URL parser and Corepack 0.34.6; 20.20.2 bundles ICU 78.2 / Unicode 17.[^1][^7] JavaScript language features are fixed by the V8 version and do **not** change across 20.x minors; Node.js *runtime* APIs, on the other hand, kept arriving in semver-minor releases until 20.19.0 (March 2025), including large backports from Node.js 22 such as `require()` of ES modules. Every section that covers Node 20-specific behaviour is marked **New in 20** (vs. Node 18/19) or **New in 20.x** with the exact minor.
+Node.js 20 ships **V8 11.3** (Chromium 113), npm 10.8.2 (since 20.17.0), libuv 1.46, OpenSSL 3.0, undici 6.x as the `fetch()` implementation, Ada 2.x as the URL parser and Corepack 0.34.6; 20.20.2 bundles ICU 78.2 / Unicode 17. JavaScript language features are fixed by the V8 version and do **not** change across 20.x minors; Node.js *runtime* APIs, on the other hand, kept arriving in semver-minor releases until 20.19.0 (March 2025), including large backports from Node.js 22 such as `require()` of ES modules. Every section that covers Node 20-specific behaviour is marked **New in 20** (vs. Node 18/19) or **New in 20.x** with the exact minor.
 
 **Scope.** This guide covers JavaScript (CommonJS and ES modules) running on Node.js 20.x, the ECMAScript features its V8 supports, and the Node.js 20 runtime APIs. It is also selected for projects pinned to **Node.js 21.x** (an odd, non-LTS line released October 17, 2023 and end-of-life since June 1, 2024). For 21.x, treat everything below as the upper bound: none of the Node 22+ features exist, and several 20.13–20.19 backports are *missing* from 21.7.3 (see "Node.js 21.x projects"). The guide is self-contained; it does not assume any other style guide.
 
 Global truths about JavaScript on Node.js 20:
 
 - **One thread runs your JavaScript.** The event loop executes callbacks; CPU-bound work blocks every request. Use `worker_threads` for CPU work and keep I/O asynchronous.
-- **Two module systems.** `.cjs` and `.js` under `"type": "commonjs"` (or no `type`) are CommonJS; `.mjs` and `.js` under `"type": "module"` are ES modules. Since **20.19.0**, `require()` can load synchronous ES modules and ambiguous files are syntax-detected (see Modules).[^8]
+- **Two module systems.** `.cjs` and `.js` under `"type": "commonjs"` (or no `type`) are CommonJS; `.mjs` and `.js` under `"type": "module"` are ES modules. Since **20.19.0**, `require()` can load synchronous ES modules and ambiguous files are syntax-detected (see Modules).
 - **Unhandled promise rejections crash the process** (`--unhandled-rejections=throw` is the default since Node 15). A forgotten `await` or missing `.catch()` is a production outage, not a log line.
 - **`fetch`, `Blob`, `File`, Web Streams, `AbortController`, `structuredClone`, `BroadcastChannel`, `CompressionStream` and Web Crypto (`globalThis.crypto`) are globals.** `WebSocket`, `EventSource` and `navigator` are not (flagged or absent in 20).
 - **V8 11.3 = ES2023 plus a few ES2024 pieces.** You have `Array.prototype.toSorted()`/`with()`, `findLast()`, the RegExp `v` flag, `String.prototype.isWellFormed()`, resizable `ArrayBuffer`, `Atomics.waitAsync`. You do **not** have `Object.groupBy`, `Promise.withResolvers`, `Array.fromAsync`, Set methods, iterator helpers or `using` declarations.
@@ -58,16 +58,16 @@ Node.js 20.0.0 also contains all semver-major changes of the non-LTS 19.x line, 
 | `Intl.NumberFormat` v3 (`formatRange`, `roundingIncrement`, …) | ✅ | absent in 18.20.8, present in 19.9.0 |
 | `Array.prototype.findLast()`, `Object.hasOwn()`, `.at()`, error `cause`, class static blocks, `#x in obj`, RegExp `d` flag, top-level `await` (ESM) | ✅ | already in 18 |
 
-##### Runtime highlights of 20.0.0[^1][^9]
+##### Runtime highlights of 20.0.0
 
 - **Stable test runner** (`node:test`, `node --test`).
 - **Experimental Permission Model** (`--experimental-permission`, `--allow-fs-read`, `--allow-fs-write`, `--allow-child-process`, `--allow-worker`).
 - **ESM loader hooks run off the main thread**; `import.meta.resolve()` returns a string synchronously.
 - **Single executable applications** now require a prepared blob (`--experimental-sea-config`).
 - `File` is a stable global; `util.parseArgs()` is stable; `crypto.DEFAULT_ENCODING` removed; `process.exit(code)` / `process.exitCode` reject non-integer values (DEP0164 End-of-Life); `url.parse()` warns on invalid ports (DEP0170); `net` connects with **Happy Eyeballs** (`autoSelectFamily: true`) by default; `new WASI()` requires `version`.
-- From the 19.x line: `http.globalAgent`/`https.globalAgent` use **keep-alive** (5 s timeout) by default; `server.close()` also closes idle connections; Web Crypto `globalThis.crypto` and `CustomEvent` are unflagged globals; `--experimental-specifier-resolution=node` is gone (extensionless ESM imports fail); `fs.writeFile*` no longer coerce objects with a custom `toString()`; `process.config` is frozen; `performance.*` methods must be called with `performance` as receiver.[^10]
+- From the 19.x line: `http.globalAgent`/`https.globalAgent` use **keep-alive** (5 s timeout) by default; `server.close()` also closes idle connections; Web Crypto `globalThis.crypto` and `CustomEvent` are unflagged globals; `--experimental-specifier-resolution=node` is gone (extensionless ESM imports fail); `fs.writeFile*` no longer coerce objects with a custom `toString()`; `process.config` is frozen; `performance.*` methods must be called with `performance` as receiver.
 
-##### Runtime additions in 20.x minors (exact versions)[^7][^11]
+##### Runtime additions in 20.x minors (exact versions)
 
 | Minor (date) | Additions a reviewer will meet |
 |---|---|
@@ -99,7 +99,7 @@ Version metadata gaps: the 20.x docs list `URL.parse()`, `Blob#bytes()` and `t.a
 
 #### Do Not Use or Recommend (Not in Node.js 20)
 
-The project's runtime does not have the following. Each line was checked on 20.20.2 (absent) and on the first release line that has it.[^12][^13]
+The project's runtime does not have the following. Each line was checked on 20.20.2 (absent) and on the first release line that has it.
 
 ##### ECMAScript features newer than V8 11.3
 
@@ -159,7 +159,7 @@ A project on Node 21 (EOL June 1, 2024) has the Node 21 additions above (`Object
 | `--experimental-loader` / `globalPreload` hook | both work on 20 with `ExperimentalWarning`s; `globalPreload` is removed in 21 (ignored with `UnsupportedWarning`) | `--import` + `module.register()` with an `initialize` hook |
 | `--experimental-specifier-resolution=node` | silently ignored since 19; extensionless ESM imports throw `ERR_MODULE_NOT_FOUND` | full relative specifiers with extensions |
 
-Runtime deprecation warnings were captured on 20.20.2 with a probe script; e.g. `[DEP0005] DeprecationWarning: Buffer() is deprecated …`, `[DEP0106] DeprecationWarning: crypto.createCipher is deprecated.`, `[DEP0173] DeprecationWarning: assert.CallTracker is deprecated.`[^14]
+Runtime deprecation warnings were captured on 20.20.2 with a probe script; e.g. `[DEP0005] DeprecationWarning: Buffer() is deprecated …`, `[DEP0106] DeprecationWarning: crypto.createCipher is deprecated.`, `[DEP0173] DeprecationWarning: assert.CallTracker is deprecated.`
 
 ***
 
@@ -215,7 +215,7 @@ Review flags: `parseInt(x)` without radix, `isNaN(x)` instead of `Number.isNaN(x
 
 #### New in 20: Change Array by Copy
 
-`toSorted()`, `toReversed()`, `toSpliced()` and `with()` return a new array and leave the original untouched; the same methods (except `toSpliced`) exist on typed arrays.[^15] They replace the error-prone `[...arr].sort()` copy idiom and are the fix for the common bug of sorting a shared array in place.
+`toSorted()`, `toReversed()`, `toSpliced()` and `with()` return a new array and leave the original untouched; the same methods (except `toSpliced`) exist on typed arrays. They replace the error-prone `[...arr].sort()` copy idiom and are the fix for the common bug of sorting a shared array in place.
 
 ```js
 const prices = [10, 1, 3];
@@ -244,7 +244,7 @@ console.log([, 1].toSorted(), [3, undefined, 1].toSorted()); // [ 1, undefined ]
 
 ##### New in 20: The RegExp `v` Flag
 
-The `v` (unicodeSets) flag is a stricter superset of `u` that adds set subtraction (`--`), intersection (`&&`), nested classes and properties of strings such as `\p{RGI_Emoji}`.[^16]
+The `v` (unicodeSets) flag is a stricter superset of `u` that adds set subtraction (`--`), intersection (`&&`), nested classes and properties of strings such as `\p{RGI_Emoji}`.
 
 ```js
 const upperOrNonAscii = /[\p{L}--[a-z]]/v;              // letters except a-z
@@ -464,7 +464,7 @@ console.log(typeof require.resolve('node:fs')); // string
 
 ##### New in 20.19: `require()` of ES Modules (on by default)
 
-From **20.19.0**, CommonJS can `require()` an ES module whose graph has no top-level `await`. The flag existed from 20.17.0 (`--experimental-require-module`); 20.19.0 enabled it by default and silenced the `ExperimentalWarning` (use `--trace-require-module` to see where it happens). `--no-experimental-require-module` turns it off. Node 18, 19 and **21** throw `ERR_REQUIRE_ESM` instead.[^8][^17]
+From **20.19.0**, CommonJS can `require()` an ES module whose graph has no top-level `await`. The flag existed from 20.17.0 (`--experimental-require-module`); 20.19.0 enabled it by default and silenced the `ExperimentalWarning` (use `--trace-require-module` to see where it happens). `--no-experimental-require-module` turns it off. Node 18, 19 and **21** throw `ERR_REQUIRE_ESM` instead.
 
 ```js
 // main.cjs — requires an ESM-only dependency ("type": "module" package).
@@ -494,11 +494,11 @@ console.log(process.features.require_module);   // true on 20.19+
 }
 ```
 
-Reviewer notes: a dependency upgrade to an ESM-only major works in CommonJS on 20.19+ but **breaks** on 20.0–20.16 and on 21.x, so the `engines` floor must say `>=20.19.0`. Several popular tools already require it (ESLint 10, Vite 7/8 and Mocha 12 declare `^20.19.0` in `engines`; Vitest 5 and undici 8 dropped Node 20 entirely).[^18]
+Reviewer notes: a dependency upgrade to an ESM-only major works in CommonJS on 20.19+ but **breaks** on 20.0–20.16 and on 21.x, so the `engines` floor must say `>=20.19.0`. Several popular tools already require it (ESLint 10, Vite 7/8 and Mocha 12 declare `^20.19.0` in `engines`; Vitest 5 and undici 8 dropped Node 20 entirely).
 
 ##### New in 20.19: ESM Syntax Detection (on by default)
 
-Files ending in `.js` or without extension, whose nearest `package.json` has no `type` field (or that have no `package.json` at all), are first parsed as CommonJS; if that fails because of ESM syntax (`import`, `export`, `import.meta`, top-level `await`), Node re-runs them as ES modules. The flag `--experimental-detect-module` was added in 20.10.0 and became the default in 20.19.0.[^8]
+Files ending in `.js` or without extension, whose nearest `package.json` has no `type` field (or that have no `package.json` at all), are first parsed as CommonJS; if that fails because of ESM syntax (`import`, `export`, `import.meta`, top-level `await`), Node re-runs them as ES modules. The flag `--experimental-detect-module` was added in 20.10.0 and became the default in 20.19.0.
 
 - When a `package.json` without `type` exists, Node prints `[MODULE_TYPELESS_PACKAGE_JSON] Warning: … Reparsing as ES module because module syntax was detected. This incurs a performance overhead.` — the fix is to add `"type": "module"` (or `"type": "commonjs"`).
 - Detection does not make `require` available in an ESM file: a `.js` file that mixes `require()` with `export` runs as ESM and throws `ReferenceError: require is not defined in ES module scope`.
@@ -543,7 +543,7 @@ console.log(import.meta.resolve('./nope.js').startsWith('file://')); // true, ev
 
 ##### Module Customization Hooks: `--import` + `module.register()`
 
-Since 20.0.0 loader hooks run on a separate thread; 20.6.0 added `module.register()` and the `initialize` hook. Use `--import` to register hooks before the entry point; `--experimental-loader` still works but prints an `ExperimentalWarning` telling you to switch, and the `globalPreload` hook is deprecated on 20 and removed in 21.[^19]
+Since 20.0.0 loader hooks run on a separate thread; 20.6.0 added `module.register()` and the `initialize` hook. Use `--import` to register hooks before the entry point; `--experimental-loader` still works but prints an `ExperimentalWarning` telling you to switch, and the `globalPreload` hook is deprecated on 20 and removed in 21.
 
 ```js
 // register-hooks.mjs — loaded with: node --import ./register-hooks.mjs app.mjs
@@ -830,7 +830,7 @@ An `EventEmitter` without an `'error'` listener throws on `emit('error')`, crash
 
 #### Resource Management Without `using`
 
-**New in 20.4/20.5:** Node 20 defines `Symbol.dispose` and `Symbol.asyncDispose` (as Node-provided symbols, e.g. `Symbol(nodejs.dispose)`) and implements them on `FileHandle`, `Readable`, `Writable` (20.16), `net`/`http` servers, sockets, child processes and timers (all marked experimental).[^20] The `using` / `await using` **syntax is not supported** by V8 11.3 (it is a `SyntaxError` until Node 24), and `DisposableStack` does not exist.
+**New in 20.4/20.5:** Node 20 defines `Symbol.dispose` and `Symbol.asyncDispose` (as Node-provided symbols, e.g. `Symbol(nodejs.dispose)`) and implements them on `FileHandle`, `Readable`, `Writable` (20.16), `net`/`http` servers, sockets, child processes and timers (all marked experimental). The `using` / `await using` **syntax is not supported** by V8 11.3 (it is a `SyntaxError` until Node 24), and `DisposableStack` does not exist.
 
 - TypeScript 5.2+ (or Babel) can down-level `using` to `try/finally` that calls `Symbol.dispose`; that output runs on Node 20 (verified with TypeScript 5.4 targeting ES2022) and on 18.20, but fails on 19.9 with `TypeError: Symbol.dispose is not defined`.
 - In plain JavaScript on Node 20, write `try/finally` explicitly.
@@ -997,7 +997,7 @@ try { safeResolve('../../etc/passwd'); } catch (e) { console.log(e.code); } // E
 try { safeResolve('/etc/passwd'); } catch (e) { console.log(e.code); } // EACCES
 ```
 
-Symlinks inside `ROOT` can still point outside; for untrusted trees resolve with `fs.realpath()` before the prefix check. On Windows, `path.normalize()` had device-name traversal bugs fixed in 20.18.2 (CVE-2025-23084) and 20.19.4 (CVE-2025-27210) — another reason Node 20's lack of further fixes matters.[^21]
+Symlinks inside `ROOT` can still point outside; for untrusted trees resolve with `fs.realpath()` before the prefix check. On Windows, `path.normalize()` had device-name traversal bugs fixed in 20.18.2 (CVE-2025-23084) and 20.19.4 (CVE-2025-27210) — another reason Node 20's lack of further fixes matters.
 
 ***
 
@@ -1005,7 +1005,7 @@ Symlinks inside `ROOT` can still point outside; for untrusted trees resolve with
 
 ##### `fetch()` on Node 20
 
-`fetch`, `Request`, `Response`, `Headers` and `FormData` are globals backed by undici (6.24.1 in 20.20.2). In the Node 20 documentation `fetch` is still **Stability 1 – Experimental** (it became stable in 21.0.0), but it is enabled by default and prints no warning.[^22] It is fine for production use on 20, with these rules:
+`fetch`, `Request`, `Response`, `Headers` and `FormData` are globals backed by undici (6.24.1 in 20.20.2). In the Node 20 documentation `fetch` is still **Stability 1 – Experimental** (it became stable in 21.0.0), but it is enabled by default and prints no warning. It is fine for production use on 20, with these rules:
 
 ```js
 import http from 'node:http';
@@ -1084,7 +1084,7 @@ server.listen(0, () => {
 - Defaults on 20: `requestTimeout` 300 s, `headersTimeout` 60 s, `keepAliveTimeout` 5 s. `http.globalAgent` uses keep-alive by default (since 19); a client that disables keep-alive on purpose must pass `agent: false` or its own `Agent`.
 - `net.connect`/`http.request` use Happy Eyeballs (`autoSelectFamily: true`, 250 ms attempt timeout) by default since 20.0.0; a host with broken IPv6 now fails over to IPv4 instead of timing out. `dns.lookup()` keeps the `verbatim` order; `--dns-result-order=ipv4first` remains available and `ipv6first` was added in 20.13.0.
 - Validate `Content-Length`/body size limits in every handler that buffers bodies; Node itself does not cap request body size.
-- `req.headersDistinct` / `trailersDistinct` use null-prototype objects since 20.20.2; a `__proto__` header crashed earlier releases (CVE-2026-21710).[^4]
+- `req.headersDistinct` / `trailersDistinct` use null-prototype objects since 20.20.2; a `__proto__` header crashed earlier releases (CVE-2026-21710).
 
 ***
 
@@ -1151,13 +1151,13 @@ console.log(JSON.stringify(styleText(['bold', 'red'], 'y')));  // "\u001b[1m\u00
 
 ##### The Runtime Itself: End-of-Life
 
-The most important security finding for a Node 20 project is the runtime. 20.20.2 (March 24, 2026) is the last release; it fixed, among others, a V8 HashDoS via integer-like strings (CVE-2026-21717, reachable through `JSON.parse` of attacker-controlled keys), a timing-unsafe HMAC comparison in Web Crypto (CVE-2026-21713), the `__proto__` header crash (CVE-2026-21710) and `SNICallback` exceptions bypassing TLS error handlers (CVE-2026-21637).[^4][^23] Vulnerabilities fixed later in 22.x/24.x/26.x (June, July and October 2026 releases) are not fixed for 20.[^6] Recommend, in this order: upgrade to Node 24 LTS (or 22 at minimum); if impossible right now, pin `20.20.2` exactly (`FROM node:20.20.2-…`, not `node:20`), keep request body and JSON size limits small, and track a commercial extended-support build.
+The most important security finding for a Node 20 project is the runtime. 20.20.2 (March 24, 2026) is the last release; it fixed, among others, a V8 HashDoS via integer-like strings (CVE-2026-21717, reachable through `JSON.parse` of attacker-controlled keys), a timing-unsafe HMAC comparison in Web Crypto (CVE-2026-21713), the `__proto__` header crash (CVE-2026-21710) and `SNICallback` exceptions bypassing TLS error handlers (CVE-2026-21637). Vulnerabilities fixed later in 22.x/24.x/26.x (June, July and October 2026 releases) are not fixed for 20. Recommend, in this order: upgrade to Node 24 LTS (or 22 at minimum); if impossible right now, pin `20.20.2` exactly (`FROM node:20.20.2-…`, not `node:20`), keep request body and JSON size limits small, and track a commercial extended-support build.
 
 Security behaviour that changed inside 20.x and that code may depend on:
 
 - **20.11.1:** `crypto.privateDecrypt()` with `RSA_PKCS1_PADDING` throws `ERR_INVALID_ARG_VALUE` (Marvin attack, CVE-2023-46809) unless OpenSSL supports implicit rejection. Use OAEP (`oaepHash: 'sha256'`).
-- **20.12.2:** on Windows, `child_process.spawn()`/`execFile()` of `.bat`/`.cmd` files without `shell: true` throws `EINVAL` (CVE-2024-27980, "BatBadBut"); passing user input with `shell: true` is still injection.[^24]
-- **20.20.0:** `TLSSocket`s get a default error handler (CVE-2025-59465); callback exceptions in TLS are routed to error handlers (CVE-2026-21637); stack-overflow exceptions in `async_hooks` are rethrown (CVE-2025-59466); the Permission Model blocks `futimes` and requires full read+write for symlink APIs.[^25]
+- **20.12.2:** on Windows, `child_process.spawn()`/`execFile()` of `.bat`/`.cmd` files without `shell: true` throws `EINVAL` (CVE-2024-27980, "BatBadBut"); passing user input with `shell: true` is still injection.
+- **20.20.0:** `TLSSocket`s get a default error handler (CVE-2025-59465); callback exceptions in TLS are routed to error handlers (CVE-2026-21637); stack-overflow exceptions in `async_hooks` are rethrown (CVE-2025-59466); the Permission Model blocks `futimes` and requires full read+write for symlink APIs.
 
 ```js
 const crypto = require('node:crypto');
@@ -1272,7 +1272,7 @@ console.log({}.isAdmin); // undefined
 
 ##### New in 20: The Permission Model (Experimental)
 
-`--experimental-permission` restricts file system, child processes, worker threads, native addons (`--allow-addons`, 20.12+) and WASI (`--allow-wasi`, 20.16+). It does **not** restrict the network on Node 20, and the stable `--permission` spelling does not exist (bad option).[^26]
+`--experimental-permission` restricts file system, child processes, worker threads, native addons (`--allow-addons`, 20.12+) and WASI (`--allow-wasi`, 20.16+). It does **not** restrict the network on Node 20, and the stable `--permission` spelling does not exist (bad option).
 
 ```js
 // Run with:
@@ -1301,7 +1301,7 @@ Observed on 20.20.2: without `--allow-fs-read` covering the entry file, the proc
 #### Performance
 
 - Measure first: `node --cpu-prof` / `--heap-prof` (stable since 20.16.0), `--prof`, Chrome DevTools via `--inspect`, `perf_hooks.monitorEventLoopDelay()`, `performance.eventLoopUtilization()`.
-- `crypto.hash()` (20.12+) beats `createHash().update().digest()` for small, in-memory inputs; `fs.readFileSync(path, 'utf8')` and `fs.writeFileSync` with UTF-8 strings got fast paths in 20.5/20.11.[^7]
+- `crypto.hash()` (20.12+) beats `createHash().update().digest()` for small, in-memory inputs; `fs.readFileSync(path, 'utf8')` and `fs.writeFileSync` with UTF-8 strings got fast paths in 20.5/20.11.
 - Avoid `JSON.parse(JSON.stringify(x))` for cloning (`structuredClone`), `delete` on hot objects (changes hidden classes), and `Array.prototype.includes` inside loops over large arrays (use a `Set`).
 - Stream large payloads instead of buffering (`pipeline`, `for await`).
 - Container memory: set `--max-old-space-size` (in MiB) explicitly to ~75 % of the container limit; `process.constrainedMemory()` reports the cgroup limit and `process.availableMemory()` (20.13+) the free amount.
@@ -1325,7 +1325,7 @@ console.log(process.constrainedMemory() >= 0, typeof process.availableMemory());
 
 #### Testing with `node:test` (Stable in 20)
 
-The built-in runner is stable since 20.0.0 and covers most unit-test needs without dependencies.[^27]
+The built-in runner is stable since 20.0.0 and covers most unit-test needs without dependencies.
 
 ```js
 // test/order.test.mjs — run with: node --test
@@ -1378,7 +1378,7 @@ Verified behaviour on 20.20.2 that reviewers should know:
 - `t.assert` exists (without `snapshot`); snapshot testing, `mock.module()` without `--experimental-test-module-mocks`, and `--experimental-test-isolation` are not available.
 - Useful flags: `--test-name-pattern`, `--test-concurrency` (20.10+), `--test-timeout` (20.11+), `--test-force-exit` (20.14+), `--test-shard` (20.5+), `--watch` with `--test`.
 
-Jest 30 and Vitest 4 still support Node 20 (`engines` include `^20.0.0`); Vitest 5 requires Node 22.12+, so a Vitest major upgrade is blocked on the runtime upgrade.[^18]
+Jest 30 and Vitest 4 still support Node 20 (`engines` include `^20.0.0`); Vitest 5 requires Node 22.12+, so a Vitest major upgrade is blocked on the runtime upgrade.
 
 ***
 
@@ -1433,7 +1433,7 @@ server.close();
 
 #### Single Executable Applications (SEA)
 
-Node 20 can embed one **CommonJS** script (bundle your app first) into a copy of the `node` binary. Since 20.0.0 the script must be prepared as a blob; assets (`sea.getAsset()`, `getAssetAsBlob()`, `getRawAsset()`, `isSea()`) arrive in 20.12.0, `useSnapshot`/`useCodeCache` in 20.6.0. The feature is Experimental (Stability 1.1).[^28]
+Node 20 can embed one **CommonJS** script (bundle your app first) into a copy of the `node` binary. Since 20.0.0 the script must be prepared as a blob; assets (`sea.getAsset()`, `getAssetAsBlob()`, `getRawAsset()`, `isSea()`) arrive in 20.12.0, `useSnapshot`/`useCodeCache` in 20.6.0. The feature is Experimental (Stability 1.1).
 
 ```js
 // app.cjs — the SEA entry (bundle dependencies into this file; require() in a SEA
@@ -1687,34 +1687,3 @@ Because Node 20 is end-of-life, every review should keep the upgrade path open. 
 - [ ] Structured logging with request context from `AsyncLocalStorage`; no secrets in logs
 - [ ] Event-loop delay and memory metrics exported; diagnostic reports/heap snapshots available on demand
 - [ ] `--enable-source-maps` for transpiled code; specific warnings silenced with `--disable-warning=<code>` rather than `--no-warnings`
-
-***
-
-[^1]: Node.js 20 release announcement and v20.0.0 changelog (V8 11.3, Permission Model, stable test runner, SEA blob, semver-major changes). https://nodejs.org/en/blog/announcements/v20-release-announce , https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V20.md#20.0.0
-[^2]: Node.js Release Working Group — release schedule (schedule.json: 20.x start 2023-04-18, LTS 2023-10-24, maintenance 2024-10-22, end 2026-04-30; 21.x end 2024-06-01; 22.x end 2027-04-30; 24.x maintenance 2026-10-20; 26.x LTS 2026-10-28; 27.x alpha 2026-10-28). https://github.com/nodejs/Release/blob/main/schedule.json
-[^3]: Node.js distribution index (release dates and bundled versions: 20.20.2 on 2026-03-24, 26.12.1, 24.22.1, 22.23.4). https://nodejs.org/dist/index.json
-[^4]: Node.js v20.20.2 release notes and the March 2026 security releases. https://nodejs.org/en/blog/release/v20.20.2 , https://nodejs.org/en/blog/vulnerability/march-2026-security-releases
-[^5]: Evolving the Node.js Release Schedule (one major per year from 27.x, alpha channel). https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule
-[^6]: Node.js security releases of June, July and October 2026 (fixed only for 22.x/24.x/26.x; "End-of-Life versions are always affected"). https://nodejs.org/en/blog/vulnerability/june-2026-security-releases , https://nodejs.org/en/blog/vulnerability/july-2026-security-releases , https://nodejs.org/en/blog/vulnerability/october-2026-security-releases
-[^7]: Node.js 20 changelog (all 20.x minors, notable changes and semver-minor commits). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V20.md
-[^8]: Node.js v20.19.0 release notes (require(esm) and module syntax detection enabled by default, module-sync condition). https://nodejs.org/en/blog/release/v20.19.0
-[^9]: Node.js 20 documentation — API "added in"/"changes" metadata (all.json for v20.20.2). https://nodejs.org/docs/v20.20.2/api/all.json
-[^10]: Node.js 19.0.0 changelog (keep-alive default, server.close idle connections, global Web Crypto, removal of --experimental-specifier-resolution). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V19.md#19.0.0
-[^11]: Node.js release posts for 20.6.0, 20.10.0, 20.11.0, 20.12.0, 20.13.0, 20.15.0, 20.16.0, 20.17.0, 20.18.0. https://nodejs.org/en/blog/release/v20.6.0 , https://nodejs.org/en/blog/release/v20.12.0 , https://nodejs.org/en/blog/release/v20.18.0
-[^12]: Node.js 21 changelog (V8 11.8, stable fetch/WebStreams, navigator, test runner globs, globalPreload removal). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V21.md
-[^13]: Node.js 22 documentation (added-in versions of fs.glob, node:sqlite, module.registerHooks, util.getCallSites, --run, --permission, etc.). https://nodejs.org/docs/latest-v22.x/api/
-[^14]: Node.js 20 deprecations list (DEP0005, DEP0040, DEP0106, DEP0147, DEP0164, DEP0169, DEP0170, DEP0173–DEP0185). https://nodejs.org/docs/latest-v20.x/api/deprecations.html
-[^15]: TC39 finished proposals (Change Array by Copy, RegExp v flag, Well-Formed Unicode Strings, Resizable ArrayBuffer, Array Grouping, Promise.withResolvers, Set methods, Iterator helpers). https://github.com/tc39/proposals/blob/main/finished-proposals.md
-[^16]: V8 — RegExp v flag with set notation and properties of strings. https://v8.dev/features/regexp-v-flag
-[^17]: Node.js 20 Modules documentation — Loading ECMAScript modules using require(). https://nodejs.org/docs/latest-v20.x/api/modules.html#loading-ecmascript-modules-using-require
-[^18]: npm registry metadata (engines) for eslint 10.13.0, vite 8.3.5/7.3.7, mocha 12.0.3, vitest 4.1.12/5.0.5, jest 30.5.2, undici 7.30.1/8.12.3, @types/node 20.19.43, @tsconfig/node20 20.1.10, as of October 2026. https://registry.npmjs.org/
-[^19]: Node.js 20 ES modules documentation — customization hooks, import attributes, import.meta.dirname/filename, import.meta.resolve. https://nodejs.org/docs/latest-v20.x/api/esm.html , https://nodejs.org/docs/latest-v20.x/api/module.html#customization-hooks
-[^20]: Node.js 20.4.0 changelog — explicit resource management symbols on Node resources. https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V20.md#20.4.0
-[^21]: Node.js January 2025 and July 2025 security releases (CVE-2025-23084, CVE-2025-27210 path traversal on Windows). https://nodejs.org/en/blog/vulnerability/january-2025-security-releases , https://nodejs.org/en/blog/vulnerability/july-2025-security-releases
-[^22]: Node.js 20 globals documentation (fetch Stability 1 – Experimental, Web Streams, WebSocket, EventSource). https://nodejs.org/docs/latest-v20.x/api/globals.html
-[^23]: HashDoS in V8 array index strings (CVE-2026-21717). https://nodejs.org/en/blog/vulnerability/march-2026-hashdos
-[^24]: Node.js April 2024 security releases (CVE-2024-27980, child_process on Windows). https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
-[^25]: Node.js v20.20.0 release notes (January 2026 security release). https://nodejs.org/en/blog/release/v20.20.0
-[^26]: Node.js 20 Permissions documentation. https://nodejs.org/docs/latest-v20.x/api/permissions.html
-[^27]: Node.js 20 test runner documentation. https://nodejs.org/docs/latest-v20.x/api/test.html
-[^28]: Node.js 20 Single executable applications documentation. https://nodejs.org/docs/latest-v20.x/api/single-executable-applications.html

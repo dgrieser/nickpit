@@ -2,9 +2,9 @@
 
 #### Overview
 
-Python 3.12 was released on October 2, 2023.[^1] It received regular bugfix releases until **3.12.10 (April 8, 2025)**, the last one with binary installers. Since then it is in the **security-fixes-only phase**: source-only releases come out as needed until **October 2028** (five years after 3.12.0), per the release-schedule PEP.[^2] As of October 2026 the latest release is **3.12.15** (October 1, 2026); 3.12.13 (March 2026) and 3.12.14 (August 2026) came before it.[^2] So python.org ships no new Windows/macOS installers for 3.12 any more. Production deployments get patched 3.12 builds from distributions, container images or build tools such as `uv`/`pyenv`. Three newer feature releases exist: 3.13, 3.14 and 3.15 (3.15.0 came out on October 9, 2026).
+Python 3.12 was released on October 2, 2023. It received regular bugfix releases until **3.12.10 (April 8, 2025)**, the last one with binary installers. Since then it is in the **security-fixes-only phase**: source-only releases come out as needed until **October 2028** (five years after 3.12.0), per the release-schedule PEP. As of October 2026 the latest release is **3.12.15** (October 1, 2026); 3.12.13 (March 2026) and 3.12.14 (August 2026) came before it. So python.org ships no new Windows/macOS installers for 3.12 any more. Production deployments get patched 3.12 builds from distributions, container images or build tools such as `uv`/`pyenv`. Three newer feature releases exist: 3.13, 3.14 and 3.15 (3.15.0 came out on October 9, 2026).
 
-The landmark changes of 3.12:[^1]
+The landmark changes of 3.12:
 
 - **PEP 695 type parameter syntax** (`def first[T](xs: list[T]) -> T`, `class Box[T]: ...`) and the **`type` statement** for lazily evaluated type aliases.
 - **PEP 701 f-strings in the grammar**: you can reuse the same quote, use backslashes, write comments and nest f-strings without limit inside replacement fields.
@@ -37,10 +37,10 @@ Global truths about Python 3.12:
 - **Everything is an object.** Integers, functions, classes, modules, type aliases and type variables are all objects.
 - **Indentation is syntax.** Python uses indentation levels to delimit blocks, not braces.
 - **Dynamic typing, static checking.** Annotations are not enforced at runtime. Type checkers (mypy, pyright) enforce them. `override`, `Unpack[TypedDict]` and variance are **type-checker features**. They do nothing at runtime.
-- **Reference counting + cyclic GC.** CPython manages memory with reference counts plus a cyclic garbage collector. Since 3.12, some objects (`None`, `True`, small ints, …) are *immortal*, and their reference count never changes (PEP 683).[^3]
+- **Reference counting + cyclic GC.** CPython manages memory with reference counts plus a cyclic garbage collector. Since 3.12, some objects (`None`, `True`, small ints, …) are *immortal*, and their reference count never changes (PEP 683).
 - **One GIL per process for Python code.** The per-interpreter GIL (PEP 684) is reachable only from the C API in 3.12. Threads in pure Python still serialize on bytecode execution. There is no free-threaded build of 3.12.
 - **Dicts are ordered by insertion.** The language spec guarantees this since Python 3.7.
-- **Invalid escape sequences are now loud.** `"\d"` emits a `SyntaxWarning` at compile time in 3.12 (it was a silent `DeprecationWarning` before). Use raw strings for regexes and Windows paths.[^1]
+- **Invalid escape sequences are now loud.** `"\d"` emits a `SyntaxWarning` at compile time in 3.12 (it was a silent `DeprecationWarning` before). Use raw strings for regexes and Windows paths.
 - **Deprecations in 3.12 are removals soon.** Many 3.12 `DeprecationWarning`s turn into hard errors in 3.13 (the PEP 594 "dead batteries" `cgi`, `telnetlib`, `crypt`, …, plus `lib2to3`) or in 3.14 (`ast.Num` & co., `asyncio` child watchers, the default tar extraction filter changes to `'data'`). Run your test suite with `-W error::DeprecationWarning`.
 
 ***
@@ -162,7 +162,7 @@ class UserService:
 
 #### New in 3.12: Type Parameter Syntax (PEP 695)
 
-This is the headline language change of 3.12. Generic functions, classes and type aliases get a compact, scoped syntax. You no longer declare module-level `TypeVar`s, and variance is inferred instead of declared.[^4][^5]
+This is the headline language change of 3.12. Generic functions, classes and type aliases get a compact, scoped syntax. You no longer declare module-level `TypeVar`s, and variance is inferred instead of declared.
 
 ```python
 from collections.abc import Callable, Hashable, Iterable, Sequence
@@ -228,7 +228,7 @@ print(prepend(1, ('a', 2.0)))    # (1, 'a', 2.0)
 
 ##### The `type` Statement and Lazy Evaluation
 
-`type X = ...` creates a `typing.TypeAliasType`. Its value is **evaluated lazily**, only when `__value__` is accessed. So aliases can refer to names defined later, including themselves (recursive types), without string quotes:[^4][^6]
+`type X = ...` creates a `typing.TypeAliasType`. Its value is **evaluated lazily**, only when `__value__` is accessed. So aliases can refer to names defined later, including themselves (recursive types), without string quotes:
 
 ```python
 type JSON = dict[str, JSON] | list[JSON] | str | int | float | bool | None   # recursive, no quotes
@@ -284,7 +284,7 @@ Rules for reviewers:
 
 ##### Scoping: Annotation Scopes
 
-Type parameters live in a new **annotation scope**. They are visible inside the function or class (including nested methods), but **not** in the enclosing module, and they are not class attributes:[^6]
+Type parameters live in a new **annotation scope**. They are visible inside the function or class (including nested methods), but **not** in the enclosing module, and they are not class attributes:
 
 ```python
 class Box[T]:
@@ -313,7 +313,7 @@ Bounds and constraints are lazy too. `class C[T: NotYetDefined]` compiles, and t
 
 ##### Variance Inference
 
-Type variables declared with the new syntax have `__infer_variance__ = True`. The type checker works out co/contra/invariance from how the parameter is used, so the `T_co`/`T_contra` naming conventions are obsolete in 3.12 code:[^4]
+Type variables declared with the new syntax have `__infer_variance__ = True`. The type checker works out co/contra/invariance from how the parameter is used, so the `T_co`/`T_contra` naming conventions are obsolete in 3.12 code:
 
 ```python
 class ReadOnlyBox[T]:          # only returned → inferred covariant by the type checker
@@ -364,14 +364,14 @@ print(Stack[int])                  # __main__.Stack[int]
 - **Type-parameter defaults (`[T = int]`) are 3.13 (PEP 696).** On 3.12 `def f[T = int](x: T)` is a `SyntaxError` ("expected '('"). Never suggest them for 3.12 code.
 - **3.11 compatibility:** any `type` statement or `[T]` list makes the whole module a `SyntaxError` on 3.11. If `requires-python` still includes 3.11, keep `TypeVar`/`Generic`/`TypeAlias`.
 - **`type` is a soft keyword.** `type = 'admin'` and `type(x)` still work, so existing code is not broken.
-- **Tooling:** mypy enables PEP 695 syntax by default since **mypy 1.12** (it was experimental in 1.11).[^7] Ruff's `UP040` (aliases), `UP046` (generic classes) and `UP047` (generic functions) rewrite old-style code to PEP 695 when `target-version = "py312"`.[^8]
-- **`typing.TypeAlias` is deprecated in documentation** in favor of the `type` statement (no runtime warning). Keep it only for code that must run on 3.11.[^9]
+- **Tooling:** mypy enables PEP 695 syntax by default since **mypy 1.12** (it was experimental in 1.11). Ruff's `UP040` (aliases), `UP046` (generic classes) and `UP047` (generic functions) rewrite old-style code to PEP 695 when `target-version = "py312"`.
+- **`typing.TypeAlias` is deprecated in documentation** in favor of the `type` statement (no runtime warning). Keep it only for code that must run on 3.11.
 
 ***
 
 #### New in 3.12: `@typing.override` (PEP 698)
 
-`@override` tells the type checker that a method is meant to override a base-class method. If the base method is renamed or removed, the checker reports an error instead of silently leaving a dead "override".[^10]
+`@override` tells the type checker that a method is meant to override a base-class method. If the base method is renamed or removed, the checker reports an error instead of silently leaving a dead "override".
 
 ```python
 from typing import override
@@ -398,7 +398,7 @@ print(BadChild().get_colour())            # red — no runtime error
 Reviewer guidance:
 
 - In 3.12 code, put `@override` on every method that overrides a base class method in a hierarchy you own. Pyright's `reportImplicitOverride` and mypy's `--enable-error-code explicit-override` can make it mandatory.
-- Decorator order (PEP 698) only matters for the runtime marker. Type checkers accept either order. Put `@override` **outside** (above) wrapper decorators (anything that returns a new function, e.g. a `functools.wraps`-based decorator or `@functools.lru_cache`), so that `__override__` lands on the outermost wrapper. Put it **inside** (directly above the `def`, below) descriptor decorators such as `@property`, `@classmethod` and `@staticmethod`:[^10]
+- Decorator order (PEP 698) only matters for the runtime marker. Type checkers accept either order. Put `@override` **outside** (above) wrapper decorators (anything that returns a new function, e.g. a `functools.wraps`-based decorator or `@functools.lru_cache`), so that `__override__` lands on the outermost wrapper. Put it **inside** (directly above the `def`, below) descriptor decorators such as `@property`, `@classmethod` and `@staticmethod`:
 
 ```python
 import functools
@@ -434,7 +434,7 @@ print(Child.total.__override__, Child.name.fget.__override__)   # True True
 
 #### New in 3.12: Precise `**kwargs` Typing with `Unpack[TypedDict]` (PEP 692)
 
-Before 3.12, `**kwargs: int` meant that *every* keyword argument is an `int`. PEP 692 lets a `TypedDict` describe each keyword separately. `typing.Unpack` itself has existed since 3.11 (for `TypeVarTuple`). 3.12 standardizes its use on `**kwargs`.[^11]
+Before 3.12, `**kwargs: int` meant that *every* keyword argument is an `int`. PEP 692 lets a `TypedDict` describe each keyword separately. `typing.Unpack` itself has existed since 3.11 (for `TypeVarTuple`). 3.12 standardizes its use on `**kwargs`.
 
 ```python
 from typing import NotRequired, TypedDict, Unpack
@@ -466,7 +466,7 @@ Rules:
 
 #### New in 3.12: f-strings in the Grammar (PEP 701)
 
-f-strings are now parsed by the PEG parser like any other expression. The old restrictions are gone:[^12]
+f-strings are now parsed by the PEG parser like any other expression. The old restrictions are gone:
 
 ```python
 songs = ['Take me back to Eden', 'Alkaline', 'Ascensionism']
@@ -498,7 +498,7 @@ Reviewer guidance:
 
 - **Readability still rules.** Reusing the same quotes is legal but harder to scan in editors and diff tools that are not 3.12-aware. Prefer alternating quotes when that is just as easy. Flag deeply nested f-strings.
 - **Do not use these forms if the project still supports 3.11.** `f"{", ".join(x)}"` and backslashes in replacement fields are a `SyntaxError` on 3.11 and earlier, and that fails the **whole module** at import time.
-- **Tooling impact:** `tokenize` now emits `FSTRING_START`/`FSTRING_MIDDLE`/`FSTRING_END` tokens instead of a single `STRING` token for f-strings. Custom tokenizer-based tools (linters, code generators) must be updated.[^1]
+- **Tooling impact:** `tokenize` now emits `FSTRING_START`/`FSTRING_MIDDLE`/`FSTRING_END` tokens instead of a single `STRING` token for f-strings. Custom tokenizer-based tools (linters, code generators) must be updated.
 - Error messages inside f-strings now point at the exact location in the line.
 - A `:` inside a replacement field still starts the format spec, and `!` still starts a conversion. Wrap lambdas and walrus expressions in parentheses: `f"{(lambda x: x * 2)(3)}"`, `f"{(n := 10)}"`.
 
@@ -506,7 +506,7 @@ Reviewer guidance:
 
 #### New in 3.12: Comprehension Inlining (PEP 709)
 
-List, dict and set comprehensions are now **inlined** into the enclosing function. They no longer create and call a hidden function object, which makes them up to ~2x faster. Generator expressions are **not** inlined.[^13]
+List, dict and set comprehensions are now **inlined** into the enclosing function. They no longer create and call a hidden function object, which makes them up to ~2x faster. Generator expressions are **not** inlined.
 
 Iteration variables stay isolated, as before:
 
@@ -548,7 +548,7 @@ except ZeroDivisionError:
 
 #### New in 3.12: Improved Error Messages
 
-The interpreter's suggestions keep improving. Recognize them in logs and bug reports:[^1]
+The interpreter's suggestions keep improving. Recognize them in logs and bug reports:
 
 ```python
 # NameError for an un-imported stdlib module:
@@ -576,7 +576,7 @@ All of these "Did you …" hints are added only when the traceback is **printed*
 
 #### New in 3.12: The Buffer Protocol from Python (PEP 688)
 
-Pure-Python classes can now expose the buffer protocol by implementing `__buffer__(self, flags)` (and optionally `__release_buffer__(self, view)`). `collections.abc.Buffer` is the standard annotation for "anything `memoryview()` accepts".[^14]
+Pure-Python classes can now expose the buffer protocol by implementing `__buffer__(self, flags)` (and optionally `__release_buffer__(self, view)`). `collections.abc.Buffer` is the standard annotation for "anything `memoryview()` accepts".
 
 ```python
 import inspect
@@ -605,14 +605,14 @@ print(isinstance(p, Buffer), isinstance('text', Buffer))            # True False
 print(repr(inspect.BufferFlags.WRITABLE))                           # <BufferFlags.WRITABLE: 1>
 ```
 
-- **Replace `ByteString` with `Buffer`.** `collections.abc.ByteString` and `typing.ByteString` are deprecated. In 3.12, `isinstance()`/subclassing with them emits a `DeprecationWarning`. In annotations use `Buffer` (or `bytes | bytearray | memoryview`).[^1]
+- **Replace `ByteString` with `Buffer`.** `collections.abc.ByteString` and `typing.ByteString` are deprecated. In 3.12, `isinstance()`/subclassing with them emits a `DeprecationWarning`. In annotations use `Buffer` (or `bytes | bytearray | memoryview`).
 - Always release views (`with memoryview(x) as mv:` or `mv.release()`). A live export blocks resizing of the underlying `bytearray` (`BufferError`).
 
 ***
 
 #### New in 3.12: `sys.monitoring` — Low-Impact Monitoring (PEP 669)
 
-`sys.monitoring` is a new event API for debuggers, profilers and coverage tools. Unlike `sys.settrace()`/`sys.setprofile()`, a tool subscribes only to the events it needs, and a callback can return `sys.monitoring.DISABLE` to switch an event off for that code location. That gives near-zero overhead once the tool has seen a location.[^15]
+`sys.monitoring` is a new event API for debuggers, profilers and coverage tools. Unlike `sys.settrace()`/`sys.setprofile()`, a tool subscribes only to the events it needs, and a callback can return `sys.monitoring.DISABLE` to switch an event off for that code location. That gives near-zero overhead once the tool has seen a location.
 
 ```python
 import sys
@@ -646,7 +646,7 @@ Guidance:
 
 - Application code rarely needs `sys.monitoring` directly. Use it in in-house profilers, tracers and coverage tools. Always free the tool ID in `finally`.
 - Coverage measurement through `sys.monitoring` is much cheaper than through `sys.settrace()`. coverage.py (7.4+) can use it on 3.12 (`COVERAGE_CORE=sysmon`), but check which coverage features are supported in that mode before you switch CI to it.
-- `sys.settrace()`-based debuggers keep working. 3.12 also adds `threading.settrace_all_threads()` and `threading.setprofile_all_threads()` to install a trace/profile function in all running threads.[^1]
+- `sys.settrace()`-based debuggers keep working. 3.12 also adds `threading.settrace_all_threads()` and `threading.setprofile_all_threads()` to install a trace/profile function in all running threads.
 
 ***
 
@@ -654,13 +654,13 @@ Guidance:
 
 ##### Per-Interpreter GIL (PEP 684) — C API Only
 
-Subinterpreters can now be created with their own GIL, but **only through the C API** (`Py_NewInterpreterFromConfig()` with `PyInterpreterConfig_OWN_GIL`). 3.12 has no public Python API for this: `_xxsubinterpreters` is private and unsupported, and the `concurrent.interpreters` module is 3.14. Extension modules must opt in via multi-phase init to be loaded in such interpreters.[^1][^16]
+Subinterpreters can now be created with their own GIL, but **only through the C API** (`Py_NewInterpreterFromConfig()` with `PyInterpreterConfig_OWN_GIL`). 3.12 has no public Python API for this: `_xxsubinterpreters` is private and unsupported, and the `concurrent.interpreters` module is 3.14. Extension modules must opt in via multi-phase init to be loaded in such interpreters.
 
 **Reviewer rule:** in 3.12 application code, CPU parallelism still means `multiprocessing`/`ProcessPoolExecutor` (or native code that releases the GIL). Reject imports of `_xxsubinterpreters`/`_interpreters` in production code.
 
 ##### Immortal Objects (PEP 683)
 
-`None`, `True`, `False`, small integers, and many interned strings and static types are **immortal**: their reference count is fixed and never changes, which avoids cache-line contention.[^3]
+`None`, `True`, `False`, small integers, and many interned strings and static types are **immortal**: their reference count is fixed and never changes, which avoids cache-line contention.
 
 ```python
 import sys
@@ -674,7 +674,7 @@ Tests and leak detectors that assert exact `sys.getrefcount()` values for single
 
 ##### Linux `perf` Profiler Support
 
-CPython 3.12 can emit trampolines so that the Linux `perf` profiler shows **Python function names** in native stack traces.[^17]
+CPython 3.12 can emit trampolines so that the Linux `perf` profiler shows **Python function names** in native stack traces.
 
 ```bash
 # Enable for a whole run
@@ -695,8 +695,8 @@ Use it for whole-process CPU profiling in production-like environments. For the 
 
 ##### Recursion and the Garbage Collector
 
-- `sys.setrecursionlimit()` now limits **Python** frames only. C-level recursion has separate stack-overflow protection, so deep recursion in pure Python still raises `RecursionError` (default limit 1000).[^1]
-- The cyclic GC now runs only at the "eval breaker" checkpoints of the bytecode loop, not during arbitrary object allocations. Long-running C extensions get a chance to run GC via `PyErr_CheckSignals()`.[^1]
+- `sys.setrecursionlimit()` now limits **Python** frames only. C-level recursion has separate stack-overflow protection, so deep recursion in pure Python still raises `RecursionError` (default limit 1000).
+- The cyclic GC now runs only at the "eval breaker" checkpoints of the bytecode loop, not during arbitrary object allocations. Long-running C extensions get a chance to run GC via `PyErr_CheckSignals()`.
 
 ***
 
@@ -704,7 +704,7 @@ Use it for whole-process CPU profiling in production-like environments. For the 
 
 ##### Integers
 
-`int` is arbitrary precision: arithmetic never overflows. **Since 3.11 (and backported to 3.10.7, 3.9.14 and other security releases), converting between `int` and decimal `str` is limited to 4300 digits by default**, a guard against quadratic-time denial of service (CVE-2020-10735):[^18]
+`int` is arbitrary precision: arithmetic never overflows. **Since 3.11 (and backported to 3.10.7, 3.9.14 and other security releases), converting between `int` and decimal `str` is limited to 4300 digits by default**, a guard against quadratic-time denial of service (CVE-2020-10735):
 
 ```python
 import sys
@@ -728,7 +728,7 @@ print((255).bit_count())         # 8 (3.10+)
 
 ##### Floats — New in 3.12: More Accurate `sum()`
 
-`sum()` of floats now uses **Neumaier compensated summation**. Results are more accurate and closer to commutative, but they can **differ in the last bits from 3.11**. Golden-file tests comparing exact float output may need updating.[^1]
+`sum()` of floats now uses **Neumaier compensated summation**. Results are more accurate and closer to commutative, but they can **differ in the last bits from 3.11**. Golden-file tests comparing exact float output may need updating.
 
 ```python
 import math
@@ -754,7 +754,7 @@ assert math.isclose(0.1 + 0.2, 0.3)
 
 ##### Booleans — `~bool` Deprecated
 
-`bool` is a subclass of `int`. **New in 3.12:** bitwise inversion `~` on a `bool` emits `DeprecationWarning`. `~True` is `-2`, which is almost never what the author meant, and it becomes an error in 3.16.[^1]
+`bool` is a subclass of `int`. **New in 3.12:** bitwise inversion `~` on a `bool` emits `DeprecationWarning`. `~True` is `-2`, which is almost never what the author meant, and it becomes an error in 3.16.
 
 ```python
 flag = True
@@ -799,7 +799,7 @@ Always pass `encoding='utf-8'` to `open()`, `Path.read_text()`, `subprocess.run(
 
 ##### New in 3.12: Invalid Escape Sequences Are a `SyntaxWarning`
 
-A backslash followed by a character that is not a valid escape (`\d`, `\s`, `\.`, `\p`, …) now emits a **`SyntaxWarning`** at compile time. It used to be a `DeprecationWarning` that was hidden by default. Users see these warnings (for example when a module is first compiled), and a future version will make them a `SyntaxError`. Octal escapes above `\377` get the same treatment.[^1]
+A backslash followed by a character that is not a valid escape (`\d`, `\s`, `\.`, `\p`, …) now emits a **`SyntaxWarning`** at compile time. It used to be a `DeprecationWarning` that was hidden by default. Users see these warnings (for example when a module is first compiled), and a future version will make them a `SyntaxError`. Octal escapes above `\377` get the same treatment.
 
 ```python
 import re
@@ -923,7 +923,7 @@ print(find({1: 'a'}, 2), Query.all().where('x > 1').filters, open_mode('w'))
 | Narrowing helper | `TypeGuard[...]` (3.10) | `TypeIs` (3.13, not available) |
 | Mark deprecated API | docstring + `warnings.warn(..., DeprecationWarning, stacklevel=2)` | `warnings.deprecated` (3.13, not available) |
 
-`typing.Hashable` and `typing.Sized` are deprecated aliases (use `collections.abc`). `typing.Text` is deprecated (use `str`).[^1][^9]
+`typing.Hashable` and `typing.Sized` are deprecated aliases (use `collections.abc`). `typing.Text` is deprecated (use `str`).
 
 ##### `TypedDict` in 3.12
 
@@ -949,7 +949,7 @@ print(m, p, Page.__orig_bases__)           # since 3.12 also set on call-based T
 
 ##### Protocols — 3.12 Runtime-Check Changes
 
-`isinstance()` against a `@runtime_checkable` protocol now uses `inspect.getattr_static()`. Properties and `__getattr__` are **no longer executed** during the check, and the check is 2–20x faster for small protocols. Some objects may change classification:[^1]
+`isinstance()` against a `@runtime_checkable` protocol now uses `inspect.getattr_static()`. Properties and `__getattr__` are **no longer executed** during the check, and the check is 2–20x faster for small protocols. Some objects may change classification:
 
 ```python
 from typing import Protocol, runtime_checkable
@@ -1027,7 +1027,7 @@ print(matrix)                     # [[99, 0, 0], [0, 0, 0], [0, 0, 0]]
 
 ##### New in 3.12: `itertools.batched()`
 
-`batched(iterable, n)` yields **tuples** of length `n`. The last tuple may be shorter. It replaces the hand-rolled "chunks" helper found in nearly every codebase:[^19]
+`batched(iterable, n)` yields **tuples** of length `n`. The last tuple may be shorter. It replaces the hand-rolled "chunks" helper found in nearly every codebase:
 
 ```python
 from itertools import batched
@@ -1242,7 +1242,7 @@ class Dataset:
 print(fib(50), lookup('x'), Dataset([1.0, 2.0, 3.0]).mean)   # 12586269025 X 2.0
 ```
 
-**Changed in 3.12:** `functools.cached_property` no longer holds a lock. Before 3.12 it held a lock that was shared by **all instances** of a class, which serialized unrelated objects. Now, when two threads race on the same instance, **the getter can run more than once**.[^1] Idempotent getters are fine. If the getter has side effects (opens connections, increments counters, charges an API), add your own per-instance lock:
+**Changed in 3.12:** `functools.cached_property` no longer holds a lock. Before 3.12 it held a lock that was shared by **all instances** of a class, which serialized unrelated objects. Now, when two threads race on the same instance, **the getter can run more than once**. Idempotent getters are fine. If the getter has side effects (opens connections, increments counters, charges an API), add your own per-instance lock:
 
 ```python
 import functools
@@ -1283,7 +1283,7 @@ print(list(chain.from_iterable(batched(range(5), 2))))   # [0, 1, 2, 3, 4]
 total = sum(x * x for x in range(1_000))           # generator expression: O(1) memory
 ```
 
-**Deprecated in 3.12:** the three-argument form `gen.throw(type, value, traceback)` (and the same for coroutines and async generators). Use `gen.throw(exc_instance)`. Also deprecated (removed in 3.14): `copy`/`deepcopy`/`pickle` support for `itertools` objects.[^1]
+**Deprecated in 3.12:** the three-argument form `gen.throw(type, value, traceback)` (and the same for coroutines and async generators). Use `gen.throw(exc_instance)`. Also deprecated (removed in 3.14): `copy`/`deepcopy`/`pickle` support for `itertools` objects.
 
 ***
 
@@ -1363,7 +1363,7 @@ class Good:
     items: list[int] = field(default_factory=list)   # ✅ mutable default via factory
 ```
 
-`@dataclass(slots=True)` builds a **new class**. The `__class__` cell used by zero-argument `super()` still points to the original class, so the call fails. The 3.12 `dataclasses` documentation lists this limitation and the two-argument workaround (gh-90562).[^31] The 3.13.16 and 3.14 interpreters no longer fail, but every 3.12.x does. Reviewers should flag zero-argument `super()` in methods of `slots=True` dataclasses on 3.12.
+`@dataclass(slots=True)` builds a **new class**. The `__class__` cell used by zero-argument `super()` still points to the original class, so the call fails. The 3.12 `dataclasses` documentation lists this limitation and the two-argument workaround (gh-90562). The 3.13.16 and 3.14 interpreters no longer fail, but every 3.12.x does. Reviewers should flag zero-argument `super()` in methods of `slots=True` dataclasses on 3.12.
 
 ***
 
@@ -1448,7 +1448,7 @@ print(repo.save({'a': 1}), repo.exists(0))   # 0 True
 
 ##### `__set_name__` Errors Are No Longer Wrapped (3.12)
 
-Exceptions raised in a descriptor's `__set_name__` now propagate **unchanged**, with a PEP 678 note attached. Before 3.12 they were wrapped in `RuntimeError`. `except RuntimeError` around class creation no longer catches them.[^1]
+Exceptions raised in a descriptor's `__set_name__` now propagate **unchanged**, with a PEP 678 note attached. Before 3.12 they were wrapped in `RuntimeError`. `except RuntimeError` around class creation no longer catches them.
 
 ```python
 class Field:
@@ -1493,7 +1493,7 @@ print(Perm.READ in (Perm.READ | Perm.WRITE))   # True
 print(1 in Color, 3 in Color, 'x' in Color)    # True False False  (3.11: TypeError for non-members)
 ```
 
-- **3.12 behavior change:** `value in SomeEnum` returns `True` when `value` is a member **or the value of a member**. On 3.11 non-member operands raised `TypeError` (with a `DeprecationWarning` announcing this change). Code that relied on the `TypeError` must be updated.[^20]
+- **3.12 behavior change:** `value in SomeEnum` returns `True` when `value` is a member **or the value of a member**. On 3.11 non-member operands raised `TypeError` (with a `DeprecationWarning` announcing this change). Code that relied on the `TypeError` must be updated.
 - `str()`/`format()` of `IntEnum`/`IntFlag` members return the plain value since 3.11 (`str(HttpStatus.OK) == '200'`). Use `.name` for the name.
 - `EnumMeta.__getattr__` was removed in 3.12. Subclassing `EnumType` and relying on it is broken.
 
@@ -1549,7 +1549,7 @@ except* ValueError as eg:
     print([str(e) for e in eg.exceptions])     # ['job a failed', 'job c failed']
 ```
 
-**Changed in 3.12 (also in 3.11.4):** when an `except*` clause handles the whole group and raises **one** new exception, that exception is no longer wrapped in an `ExceptionGroup`:[^1]
+**Changed in 3.12 (also in 3.11.4):** when an `except*` clause handles the whole group and raises **one** new exception, that exception is no longer wrapped in an `ExceptionGroup`:
 
 ```python
 try:
@@ -1577,7 +1577,7 @@ except ExceptionGroup as eg:
 
 ##### Other 3.12 Exception-Related Changes
 
-- `sys.last_exc` holds the last unhandled exception (for post-mortem tools). `sys.last_type`, `sys.last_value` and `sys.last_traceback` are deprecated.[^1]
+- `sys.last_exc` holds the last unhandled exception (for post-mortem tools). `sys.last_type`, `sys.last_value` and `sys.last_traceback` are deprecated.
 - `sys._current_exceptions()` maps thread IDs to exception **instances** instead of `(type, value, tb)` tuples.
 - Re-raise with a bare `raise` (preserves the traceback). Use `logger.exception()` inside `except` to log with the traceback.
 - Use `sys.exception()` (3.11+) instead of `sys.exc_info()[1]`.
@@ -1634,7 +1634,7 @@ with ExitStack() as stack:             # dynamic number of resources
 
 ##### New in 3.12: `datetime.utcnow()` and `utcfromtimestamp()` Are Deprecated
 
-Both return **naive** datetimes that silently represent UTC, a long-standing source of bugs (naive values get interpreted as local time by `.timestamp()` and `.astimezone()`). In 3.12 they emit `DeprecationWarning`. Removal is planned for a future version without a fixed date.[^21]
+Both return **naive** datetimes that silently represent UTC, a long-standing source of bugs (naive values get interpreted as local time by `.timestamp()` and `.astimezone()`). In 3.12 they emit `DeprecationWarning`. Removal is planned for a future version without a fixed date.
 
 ```python
 from datetime import UTC, datetime, timezone
@@ -1703,7 +1703,7 @@ p.unlink(missing_ok=True)                # 3.8+
 
 ##### New in 3.12: `Path.walk()`
 
-`Path.walk()` is the `pathlib` counterpart of `os.walk()`. It yields `(dirpath: Path, dirnames: list[str], filenames: list[str])`:[^22]
+`Path.walk()` is the `pathlib` counterpart of `os.walk()`. It yields `(dirpath: Path, dirnames: list[str], filenames: list[str])`:
 
 ```python
 import tempfile
@@ -1736,7 +1736,7 @@ Differences from `os.walk()` that matter in review:
 
 ##### New in 3.12: Subclassing `pathlib.Path`
 
-`Path`, `PurePath` and their Posix/Windows variants can now be subclassed directly (in 3.11 `class MyPath(Path)` failed with `AttributeError: ... '_flavour'`). To carry extra state through derived paths (`/`, `.parent`, `.with_name()`, `iterdir()`, …), override `with_segments()`:[^22]
+`Path`, `PurePath` and their Posix/Windows variants can now be subclassed directly (in 3.11 `class MyPath(Path)` failed with `AttributeError: ... '_flavour'`). To carry extra state through derived paths (`/`, `.parent`, `.with_name()`, `iterdir()`, …), override `with_segments()`:
 
 ```python
 from pathlib import Path
@@ -1786,7 +1786,7 @@ print(os.path.isjunction('/tmp'), Path('/tmp').is_junction())   # False False
 ```
 
 - **Deprecated in 3.12:** passing additional positional arguments to `PurePath.relative_to()` and `is_relative_to()` (`p.relative_to('a', 'b')`). Join them first.
-- `os` functions **no longer accept bytes-like paths** such as `bytearray`/`memoryview`. Only `str`, `bytes` or `os.PathLike` work (`TypeError` in 3.12, a `DeprecationWarning` before).[^1]
+- `os` functions **no longer accept bytes-like paths** such as `bytearray`/`memoryview`. Only `str`, `bytes` or `os.PathLike` work (`TypeError` in 3.12, a `DeprecationWarning` before).
 - On Windows, `os.stat()` fills `st_birthtime` with the creation time, and `st_ctime` is deprecated there (it will become the metadata-change time).
 
 ##### Temporary Files and `shutil`
@@ -1817,7 +1817,7 @@ shutil.rmtree('/nonexistent/dir', onexc=on_rmtree_error)   # cannot remove /none
 # NEVER use tempfile.mktemp() — TOCTOU race
 ```
 
-**Security note (3.12.4+, Windows):** `os.mkdir(path, mode=0o700)` now applies an access-control list that restricts the directory to the current user. This makes `tempfile.mkdtemp()` private on Windows (fix for CVE-2024-4030). Older 3.12.x releases ignored `mode` on Windows.[^1]
+**Security note (3.12.4+, Windows):** `os.mkdir(path, mode=0o700)` now applies an access-control list that restricts the directory to the current user. This makes `tempfile.mkdtemp()` private on Windows (fix for CVE-2024-4030). Older 3.12.x releases ignored `mode` on Windows.
 
 ***
 
@@ -1844,11 +1844,11 @@ print(asyncio.run(main()))                           # [0, 2, 4]
 - Prefer `TaskGroup` to bare `create_task()` + `gather()`. Errors propagate as an `ExceptionGroup` (handle with `except*`), and no task is left orphaned.
 - **Keep a reference to every task you create outside a `TaskGroup`.** The event loop only holds weak references, so an unreferenced task can be garbage-collected mid-flight.
 - Always re-raise `asyncio.CancelledError` after cleanup.
-- **Changed in 3.12:** `asyncio.wait_for()` is now implemented on top of `asyncio.timeout()`. Both raise `TimeoutError` (`asyncio.TimeoutError` has been an alias of the built-in since 3.11).[^1]
+- **Changed in 3.12:** `asyncio.wait_for()` is now implemented on top of `asyncio.timeout()`. Both raise `TimeoutError` (`asyncio.TimeoutError` has been an alias of the built-in since 3.11).
 
 ##### New in 3.12: Eager Task Execution
 
-With the eager task factory, a new task starts executing its coroutine **synchronously inside `create_task()`**, up to its first suspension point. Coroutines that finish without ever awaiting (cache hits, memoized results) never get scheduled on the loop at all, which is 2–5x faster for some workloads.[^23]
+With the eager task factory, a new task starts executing its coroutine **synchronously inside `create_task()`**, up to its first suspension point. Coroutines that finish without ever awaiting (cache hits, memoized results) never get scheduled on the loop at all, which is 2–5x faster for some workloads.
 
 ```python
 import asyncio
@@ -1877,7 +1877,7 @@ Reviewer rules for eager tasks:
 - **Execution order changes.** Code that relies on `create_task()` *not* running anything until the next `await` breaks. For example, code that sets up state after creating the task, or assumes a lock acquired after `create_task()` is taken first.
 - A task may already be `done()` when `create_task()` returns. Callbacks added later still fire, but code must not assume `pending` status.
 - `asyncio.create_eager_task_factory(custom_task_constructor)` wraps custom task classes. The `asyncio.Task(..., eager_start=True)` constructor parameter exists in 3.12, but the `eager_start=` parameter of **`create_task()` is 3.14**. Do not use it on 3.12.
-- **Run 3.12.9 or later if you use eager tasks with `TaskGroup`.** Earlier 3.12.x releases had an optimization that could miss cancellations of eager tasks in a `TaskGroup` (gh-128550), and created reference cycles for eager tasks (gh-128552).[^24]
+- **Run 3.12.9 or later if you use eager tasks with `TaskGroup`.** Earlier 3.12.x releases had an optimization that could miss cancellations of eager tasks in a `TaskGroup` (gh-128550), and created reference cycles for eager tasks (gh-128552).
 
 ##### New in 3.12: `asyncio.run(loop_factory=...)` and Other Changes
 
@@ -1892,11 +1892,11 @@ print(asyncio.run(main(), loop_factory=asyncio.new_event_loop))   # _UnixSelecto
 # e.g. asyncio.run(main(), loop_factory=uvloop.new_event_loop)
 ```
 
-- **`asyncio.get_event_loop()` deprecation (3.12):** called with no running loop **and no loop ever set** in that thread, it now emits `DeprecationWarning` and still creates a loop. If a loop was set and later cleared (for example after `asyncio.run()` finished), it raises `RuntimeError`. In 3.14 it always raises `RuntimeError` when there is no current loop. Use `asyncio.run()` at entry points and `asyncio.get_running_loop()` inside coroutines.[^1]
-- **Child watchers are deprecated** (`asyncio.set_child_watcher()`, `get_child_watcher()`, `SafeChildWatcher`, `FastChildWatcher`, `MultiLoopChildWatcher`, `AbstractChildWatcher`; all removed in 3.14). The loop now picks `PidfdChildWatcher` on Linux automatically. Delete manual watcher setup.[^1]
+- **`asyncio.get_event_loop()` deprecation (3.12):** called with no running loop **and no loop ever set** in that thread, it now emits `DeprecationWarning` and still creates a loop. If a loop was set and later cleared (for example after `asyncio.run()` finished), it raises `RuntimeError`. In 3.14 it always raises `RuntimeError` when there is no current loop. Use `asyncio.run()` at entry points and `asyncio.get_running_loop()` inside coroutines.
+- **Child watchers are deprecated** (`asyncio.set_child_watcher()`, `get_child_watcher()`, `SafeChildWatcher`, `FastChildWatcher`, `MultiLoopChildWatcher`, `AbstractChildWatcher`; all removed in 3.14). The loop now picks `PidfdChildWatcher` on Linux automatically. Delete manual watcher setup.
 - `asyncio.iscoroutine()` now returns `False` for **generators**. Legacy generator-based coroutines are fully gone.
 - `asyncio.wait()` and `asyncio.as_completed()` accept generators that yield tasks. (Passing bare **coroutines** to `wait()` has been a `TypeError` since 3.11.)
-- Performance: socket writes avoid copies and use `sendmsg()`, `current_task()` is implemented in C (4–6x faster), and task creation defers expensive string formatting. Some benchmarks run up to 75% faster.[^1]
+- Performance: socket writes avoid copies and use `sendmsg()`, `current_task()` is implemented in C (4–6x faster), and task creation defers expensive string formatting. Some benchmarks run up to 75% faster.
 
 ##### Running Blocking Code
 
@@ -1929,7 +1929,7 @@ CPython 3.12 still has one GIL per interpreter, and normal Python code runs in a
 
 ##### `os.fork()` in Multithreaded Processes Now Warns
 
-**New in 3.12 (POSIX):** `os.fork()` (and anything that uses it, such as the `'fork'` start method of `multiprocessing`) emits a **`DeprecationWarning`** when it detects that the process has more than one thread. Forking a threaded process can deadlock the child on locks held by other threads (logging handlers, allocator locks, …).[^1]
+**New in 3.12 (POSIX):** `os.fork()` (and anything that uses it, such as the `'fork'` start method of `multiprocessing`) emits a **`DeprecationWarning`** when it detects that the process has more than one thread. Forking a threaded process can deadlock the child on locks held by other threads (logging handlers, allocator locks, …).
 
 ```python
 import multiprocessing as mp
@@ -1943,7 +1943,7 @@ if __name__ == '__main__':
         print(pool.map(square, range(5)))  # [0, 1, 4, 9, 16]
 ```
 
-- **Linux default start method is still `'fork'` in 3.12. It changes to `'forkserver'` in 3.14.** If code depends on `fork` semantics (inheriting module globals or open objects), request it explicitly with `get_context('fork')` now. Better: make the code work with `spawn`/`forkserver`, which require picklable arguments and `if __name__ == '__main__':` guards.[^1]
+- **Linux default start method is still `'fork'` in 3.12. It changes to `'forkserver'` in 3.14.** If code depends on `fork` semantics (inheriting module globals or open objects), request it explicitly with `get_context('fork')` now. Better: make the code work with `spawn`/`forkserver`, which require picklable arguments and `if __name__ == '__main__':` guards.
 - The same warning appears when `concurrent.futures.ProcessPoolExecutor` forks from a threaded process. Pass `mp_context=mp.get_context('spawn')`.
 
 ##### `concurrent.futures` and `threading`
@@ -1979,7 +1979,7 @@ for t in threads: t.join()
 print(sorted(results))     # [0, 1, 2, 3]
 ```
 
-- The legacy camelCase aliases (`Thread.setDaemon()`, `isDaemon()`, `getName()`, `setName()`, `Event.isSet()`, `Condition.notifyAll()`, `threading.currentThread()`, `activeCount()`) have emitted `DeprecationWarning` since 3.10 and still do in 3.12. Use `daemon`, `name`, `is_set()`, `notify_all()`, `current_thread()` and `active_count()`.[^1]
+- The legacy camelCase aliases (`Thread.setDaemon()`, `isDaemon()`, `getName()`, `setName()`, `Event.isSet()`, `Condition.notifyAll()`, `threading.currentThread()`, `activeCount()`) have emitted `DeprecationWarning` since 3.10 and still do in 3.12. Use `daemon`, `name`, `is_set()`, `notify_all()`, `current_thread()` and `active_count()`.
 - Never pass arguments to `threading.RLock()`. The C implementation silently ignores them on 3.12. The `DeprecationWarning` only arrives in 3.13 (removal in 3.15), even though the 3.12 "What's New" lists this deprecation.
 - `queue.Queue.shutdown()` is **3.13**. In 3.12, signal consumers with a sentinel object.
 
@@ -2013,7 +2013,7 @@ print(sorted(logging.getHandlerNames()))      # ['console'] (frozenset of names)
 print(logging.getLevelNamesMapping()['WARNING'])   # 30
 ```
 
-**New in 3.12: `QueueHandler` configuration in `dictConfig`.** You can now configure a `QueueHandler`/`QueueListener` pair declaratively. The listener is created and attached as `handler.listener`, but `dictConfig()` does **not start it for you** (not on 3.12, and not on later versions either): you must call `start()`. Until you do, records pile up in the queue and nothing is emitted. This setup keeps slow handlers (network, files) off request threads:[^25]
+**New in 3.12: `QueueHandler` configuration in `dictConfig`.** You can now configure a `QueueHandler`/`QueueListener` pair declaratively. The listener is created and attached as `handler.listener`, but `dictConfig()` does **not start it for you** (not on 3.12, and not on later versions either): you must call `start()`. Until you do, records pile up in the queue and nothing is emitted. This setup keeps slow handlers (network, files) off request threads:
 
 ```python
 import atexit
@@ -2046,7 +2046,7 @@ Calling `stop()` on a listener that was never started raises `AttributeError` on
 
 ##### New in 3.12: Tar Extraction Filters (PEP 706) — Always Pass `filter=`
 
-Tar archives can contain absolute paths, `../` components, links that point outside the destination, device files and setuid bits. `TarFile.extract()`/`extractall()` and `shutil.unpack_archive()` take a `filter=` argument that limits what extraction may do:[^26][^27]
+Tar archives can contain absolute paths, `../` components, links that point outside the destination, device files and setuid bits. `TarFile.extract()`/`extractall()` and `shutil.unpack_archive()` take a `filter=` argument that limits what extraction may do:
 
 | Filter | Use for | Behavior |
 |---|---|---|
@@ -2089,7 +2089,7 @@ tarfile.TarFile.extraction_filter = staticmethod(tarfile.data_filter)
 Reviewer rules:
 
 - **Every `extractall()`/`extract()`/`shutil.unpack_archive()` on a tar must pass `filter=`.** Use `'data'` unless there is a documented reason not to. **The default changes to `'data'` in 3.14**, so code that relies on extracting device files, absolute symlinks or setuid bits will break there anyway. The `filter=` argument was also backported to security releases of 3.8–3.11. Shared code that must run on older patch levels should feature-detect with `hasattr(tarfile, 'data_filter')`.
-- Run the **latest 3.12.x**. The filters had several bypasses that were fixed in point releases:[^24]
+- Run the **latest 3.12.x**. The filters had several bypasses that were fixed in point releases:
   - **3.12.11** (June 2025): symlink-target normalization, `os.path.realpath(strict=os.path.ALLOW_MISSING)`, re-applying the filter on link fallbacks (new `tarfile.LinkFallbackError`), no extraction of rejected members when `errorlevel=0`. These fix CVE-2024-12718, CVE-2025-4138, CVE-2025-4330, CVE-2025-4435 and CVE-2025-4517. The 3.12 "What's New" files these under "Notable changes in 3.12.10", but the changelog shows they shipped in **3.12.11** (gh-135034). 3.12.10 is still vulnerable.
   - **3.12.14**: a symlink-outside-destination bypass of CVE-2025-4330, link-target validation, and the filter applied on link-target fallback.
   - **3.12.15**: a hard-link-to-symlink bypass (CVE-2026-82049), and directories created outside the destination via `../x/../dest` names.
@@ -2097,7 +2097,7 @@ Reviewer rules:
 
 ##### Security Fixes in 3.12 Point Releases
 
-3.12 is in security-only maintenance. Pin to the newest patch release and rebuild images when a new one ships. Notable fixes and the version that has them (from the official changelog and "What's New"):[^24][^1]
+3.12 is in security-only maintenance. Pin to the newest patch release and rebuild images when a new one ships. Notable fixes and the version that has them (from the official changelog and "What's New"):
 
 | Release | Fix |
 |---|---|
@@ -2121,7 +2121,7 @@ Point-release API additions that you can only rely on when you require that patc
 
 - `ssl.wrap_socket()` is removed. It sent no SNI and did not verify hostnames (CWE-295). Use `ssl.create_default_context().wrap_socket(sock, server_hostname=host)`.
 - `ssl.match_hostname()` is removed (OpenSSL does hostname matching), and so is `ssl.RAND_pseudo_bytes()` (use `os.urandom()` or `secrets`).
-- The `keyfile`/`certfile` parameters of `ftplib`, `imaplib`, `poplib` and `smtplib`, and `key_file`/`cert_file`/`check_hostname` of `http.client`, are removed. Pass an `ssl.SSLContext` via `context=` (`ssl_context=` in `imaplib`).[^1]
+- The `keyfile`/`certfile` parameters of `ftplib`, `imaplib`, `poplib` and `smtplib`, and `key_file`/`cert_file`/`check_hostname` of `http.client`, are removed. Pass an `ssl.SSLContext` via `context=` (`ssl_context=` in `imaplib`).
 
 ```python
 import socket
@@ -2136,7 +2136,7 @@ def open_tls(host: str, port: int = 443) -> ssl.SSLSocket:
     return ctx.wrap_socket(raw, server_hostname=host)   # ✅ SNI + hostname verification
 ```
 
-`hashlib` in 3.12 uses formally verified HACL\* implementations of MD5, SHA-1, SHA-2 and SHA-3 as fallbacks when OpenSSL does not provide them. The pure-Python `pbkdf2_hmac` fallback was removed (OpenSSL's is always used).[^1]
+`hashlib` in 3.12 uses formally verified HACL\* implementations of MD5, SHA-1, SHA-2 and SHA-3 as fallbacks when OpenSSL does not provide them. The pure-Python `pbkdf2_hmac` fallback was removed (OpenSSL's is always used).
 
 ##### Secrets, SQL, Subprocess, XML
 
@@ -2175,7 +2175,7 @@ print(result.stdout.strip())                        # ok
 
 ##### New in 3.12: `autocommit` — PEP 249-Compliant Transactions
 
-`sqlite3.connect(..., autocommit=...)` and `Connection.autocommit` give explicit, standards-compliant transaction control. The default is `sqlite3.LEGACY_TRANSACTION_CONTROL`, which keeps the old `isolation_level`-based behavior:[^28]
+`sqlite3.connect(..., autocommit=...)` and `Connection.autocommit` give explicit, standards-compliant transaction control. The default is `sqlite3.LEGACY_TRANSACTION_CONTROL`, which keeps the old `isolation_level`-based behavior:
 
 | `autocommit=` | Behavior |
 |---|---|
@@ -2311,7 +2311,7 @@ except re.error as e:
     print(e)                                          # bad character in group name '+1' at position 3
 ```
 
-`re.sub()`/`subn()` with group references in the replacement string is 2–3x faster in 3.12. Since 3.12, group names in **bytes** patterns and replacements may only contain ASCII letters, digits and underscores.[^1]
+`re.sub()`/`subn()` with group references in the replacement string is 2–3x faster in 3.12. Since 3.12, group names in **bytes** patterns and replacements may only contain ASCII letters, digits and underscores.
 
 ***
 
@@ -2367,7 +2367,7 @@ print(gc.isenabled())            # True
 
 #### Performance
 
-What 3.12 gives you for free:[^1]
+What 3.12 gives you for free:
 
 - **Comprehensions** (list/dict/set) are inlined: up to 2x faster (PEP 709).
 - **`super()` method calls and attribute loads** are faster (new `LOAD_SUPER_ATTR` opcode).
@@ -2403,7 +2403,7 @@ print(timeit.timeit('[x * 2 for x in range(100)]', number=1000) > 0)   # True
 
 ##### Removed in 3.12: Deprecated `unittest` Aliases
 
-These `TestCase` aliases, deprecated since 3.1–3.5, are **gone**. Old test suites fail with `AttributeError` on 3.12:[^1]
+These `TestCase` aliases, deprecated since 3.1–3.5, are **gone**. Old test suites fail with `AttributeError` on 3.12:
 
 | Removed alias | Use instead |
 |---|---|
@@ -2465,8 +2465,8 @@ class TestAsync(unittest.IsolatedAsyncioTestCase):
 
 ##### Removed in 3.12: `distutils`; `venv` No Longer Installs `setuptools`
 
-- **`distutils` is gone** (PEP 632). `import distutils` raises `ModuleNotFoundError`, **unless `setuptools` is installed**: setuptools injects its own vendored copy via a `.pth` hook, so the import may "work" in one environment and fail in a clean one. Never rely on that. Migrate `distutils.version.LooseVersion` → `packaging.version.Version`, `distutils.util.strtobool` → your own helper, `distutils.spawn.find_executable` → `shutil.which`, `distutils.dir_util.copy_tree` → `shutil.copytree(..., dirs_exist_ok=True)`, and `distutils.sysconfig` → `sysconfig`.[^29]
-- **`venv` and `ensurepip` no longer pre-install `setuptools`** (gh-95299). In a fresh 3.12 venv, `import setuptools`, `import pkg_resources` and `easy_install` fail. Packages that use `pkg_resources` at runtime must declare `setuptools` as a dependency, and should migrate to `importlib.metadata`/`importlib.resources`. `pip` still provides setuptools in its isolated build environments, so `pip install` of setuptools-based sdists keeps working.[^1]
+- **`distutils` is gone** (PEP 632). `import distutils` raises `ModuleNotFoundError`, **unless `setuptools` is installed**: setuptools injects its own vendored copy via a `.pth` hook, so the import may "work" in one environment and fail in a clean one. Never rely on that. Migrate `distutils.version.LooseVersion` → `packaging.version.Version`, `distutils.util.strtobool` → your own helper, `distutils.spawn.find_executable` → `shutil.which`, `distutils.dir_util.copy_tree` → `shutil.copytree(..., dirs_exist_ok=True)`, and `distutils.sysconfig` → `sysconfig`.
+- **`venv` and `ensurepip` no longer pre-install `setuptools`** (gh-95299). In a fresh 3.12 venv, `import setuptools`, `import pkg_resources` and `easy_install` fail. Packages that use `pkg_resources` at runtime must declare `setuptools` as a dependency, and should migrate to `importlib.metadata`/`importlib.resources`. `pip` still provides setuptools in its isolated build environments, so `pip install` of setuptools-based sdists keeps working.
 - **`imp` is gone.** Use `importlib` (`imp.reload` → `importlib.reload`, `imp.load_source` → `importlib.util.spec_from_file_location` + `module_from_spec` + `loader.exec_module`, `imp.new_module` → `types.ModuleType`, `imp.find_module` → `importlib.util.find_spec`).
 - `pkgutil.find_loader()`/`get_loader()` warn (removed in 3.14). `importlib.abc.ResourceReader`, `Traversable` and `TraversableResources` are deprecated in favor of `importlib.resources.abc`.
 
@@ -2567,7 +2567,7 @@ bandit -r src/                                     # security lint
 python -W error::SyntaxWarning -m compileall -f -q src/   # catch invalid escape sequences
 ```
 
-- Ruff with `target-version = "py312"` offers the `UP040`/`UP046`/`UP047` rewrites to `type` aliases and PEP 695 generics, plus `UP` rules that drop `typing.List`/`Optional`/`Union`. Review these rewrites. A `type` alias is **not** a drop-in replacement where the alias is used at runtime (see the PEP 695 section).[^8]
+- Ruff with `target-version = "py312"` offers the `UP040`/`UP046`/`UP047` rewrites to `type` aliases and PEP 695 generics, plus `UP` rules that drop `typing.List`/`Optional`/`Union`. Review these rewrites. A `type` alias is **not** a drop-in replacement where the alias is used at runtime (see the PEP 695 section).
 - Pyright fully supports PEP 695, 692, 698 and 701. Turn on `reportImplicitOverride` to require `@override`.
 - Use formatter and linter releases that understand PEP 701. Old tokenizer-based tools mis-parse f-strings that reuse quotes.
 
@@ -2621,7 +2621,7 @@ python -W error::SyntaxWarning -m compileall -f -q src/   # catch invalid escape
 
 ##### Deprecated in 3.12 — Removed in 3.13
 
-Importing these modules emits `DeprecationWarning` in 3.12. They are **gone** in 3.13 (PEP 594 and others), so migrate now:[^1][^30]
+Importing these modules emits `DeprecationWarning` in 3.12. They are **gone** in 3.13 (PEP 594 and others), so migrate now:
 
 | Module / API | Replacement |
 |---|---|
@@ -2720,38 +2720,3 @@ Other 3.12 deprecations without a removal date (or later): `datetime.utcnow()`/`
 - [ ] `logger.exception()` inside `except` blocks. Bare `raise` to re-raise
 - [ ] Custom exceptions inherit from `Exception`. Context added with `add_note()`
 - [ ] `QueueListener` from `dictConfig()` explicitly started (`dictConfig()` never starts it) and stopped at shutdown so queued records are flushed
-
-***
-
-[^1]: What's New In Python 3.12. Python Software Foundation. https://docs.python.org/3.12/whatsnew/3.12.html
-[^2]: PEP 693 – Python 3.12 Release Schedule (release dates, security-only phase, end of life October 2028). https://peps.python.org/pep-0693/
-[^3]: PEP 683 – Immortal Objects, Using a Fixed Refcount. https://peps.python.org/pep-0683/
-[^4]: PEP 695 – Type Parameter Syntax. https://peps.python.org/pep-0695/
-[^5]: typing — Generics and type parameter lists (Python 3.12). https://docs.python.org/3.12/library/typing.html#generics
-[^6]: Python 3.12 Language Reference — Type parameter lists, the `type` statement, annotation scopes and lazy evaluation. https://docs.python.org/3.12/reference/compound_stmts.html#type-params and https://docs.python.org/3.12/reference/executionmodel.html#annotation-scopes
-[^7]: mypy changelog — Mypy 1.12: "Enable new type parameter syntax by default". https://mypy.readthedocs.io/en/stable/changelog.html
-[^8]: Ruff rules non-pep695-type-alias (UP040), non-pep695-generic-class (UP046), non-pep695-generic-function (UP047). https://docs.astral.sh/ruff/rules/non-pep695-type-alias/ , https://docs.astral.sh/ruff/rules/non-pep695-generic-class/ , https://docs.astral.sh/ruff/rules/non-pep695-generic-function/
-[^9]: typing — Support for type hints (Python 3.12): `TypeAlias` deprecated in favor of the `type` statement; deprecated aliases. https://docs.python.org/3.12/library/typing.html#typing.TypeAlias
-[^10]: PEP 698 – Override Decorator for Static Typing. https://peps.python.org/pep-0698/
-[^11]: PEP 692 – Using TypedDict for more precise **kwargs typing. https://peps.python.org/pep-0692/
-[^12]: PEP 701 – Syntactic formalization of f-strings. https://peps.python.org/pep-0701/
-[^13]: PEP 709 – Inlined comprehensions. https://peps.python.org/pep-0709/
-[^14]: PEP 688 – Making the buffer protocol accessible in Python. https://peps.python.org/pep-0688/
-[^15]: PEP 669 – Low Impact Monitoring for CPython; `sys.monitoring` documentation. https://peps.python.org/pep-0669/ and https://docs.python.org/3.12/library/sys.monitoring.html
-[^16]: PEP 684 – A Per-Interpreter GIL. https://peps.python.org/pep-0684/
-[^17]: Python support for the Linux perf profiler (Python 3.12 HOWTO). https://docs.python.org/3.12/howto/perf_profiling.html
-[^18]: Integer string conversion length limitation (CVE-2020-10735). https://docs.python.org/3.12/library/stdtypes.html#int-max-str-digits
-[^19]: itertools.batched (Python 3.12). https://docs.python.org/3.12/library/itertools.html#itertools.batched
-[^20]: enum — `EnumType.__contains__` ("Changed in version 3.12"). https://docs.python.org/3.12/library/enum.html#enum.EnumType.__contains__
-[^21]: datetime — `datetime.utcnow()` / `utcfromtimestamp()` deprecated in 3.12. https://docs.python.org/3.12/library/datetime.html#datetime.datetime.utcnow
-[^22]: pathlib (Python 3.12): `Path.walk()`, subclassing and `with_segments()`, `relative_to(walk_up=)`. https://docs.python.org/3.12/library/pathlib.html
-[^23]: asyncio — Eager Task Factory (Python 3.12). https://docs.python.org/3.12/library/asyncio-task.html#eager-task-factory
-[^24]: Python 3.12 changelog (all 3.12.x releases, including the Security sections). https://docs.python.org/3.12/whatsnew/changelog.html
-[^25]: logging.config — configuring QueueHandler and QueueListener (Python 3.12). https://docs.python.org/3.12/library/logging.config.html#configuring-queuehandler-and-queuelistener
-[^26]: PEP 706 – Filter for tarfile.extractall. https://peps.python.org/pep-0706/
-[^27]: tarfile — Extraction filters (Python 3.12). https://docs.python.org/3.12/library/tarfile.html#tarfile-extraction-filter
-[^28]: sqlite3 — Transaction control via the autocommit attribute (Python 3.12). https://docs.python.org/3.12/library/sqlite3.html#sqlite3-transaction-control-autocommit
-[^29]: PEP 632 – Deprecate distutils module (migration advice). https://peps.python.org/pep-0632/
-[^30]: PEP 594 – Removing dead batteries from the standard library; What's New In Python 3.13 (Removed). https://peps.python.org/pep-0594/ and https://docs.python.org/3.13/whatsnew/3.13.html
-[^31]: dataclasses — `slots=True` and zero-argument `super()` warning (gh-90562), Python 3.12. https://docs.python.org/3.12/library/dataclasses.html#dataclasses.dataclass
-

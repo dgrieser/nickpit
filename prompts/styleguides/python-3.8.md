@@ -2,7 +2,7 @@
 
 #### Overview
 
-Python 3.8 was released on October 14, 2019.[^1] It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. Python 3.8 delivered several landmark PEPs — the walrus operator, positional-only parameters, a now-stable `asyncio.run()`, four major typing additions, and a long list of stdlib enhancements — making it one of the most impactful releases in the 3.x line.
+Python 3.8 was released on October 14, 2019. It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. Python 3.8 delivered several landmark PEPs — the walrus operator, positional-only parameters, a now-stable `asyncio.run()`, four major typing additions, and a long list of stdlib enhancements — making it one of the most impactful releases in the 3.x line.
 
 This guide is the reference for projects on Python 3.7 or 3.8. Features introduced in 3.8 (walrus operator, positional-only parameters, f-string `=`, `functools.cached_property`, ...) are marked as such — skip them when targeting 3.7. Where behavior differs from 3.6 or 3.7, the difference is called out explicitly. Do not use anything newer than 3.8: no `str.removeprefix()`/`removesuffix()` or dict `|` merge operator (3.9), no `match` statement or parenthesized context managers (3.10), no `dataclasses.KW_ONLY` (3.10).
 
@@ -13,7 +13,7 @@ A few global truths about Python 3.8 before diving in:
 - **Dynamic typing.** Variables carry no declared type; the type lives in the value.
 - **Reference counting + cyclic GC.** CPython manages memory with reference counts plus a cyclic garbage collector.
 - **`str` is Unicode everywhere.** All string literals are Unicode text; `bytes` is the separate binary type.
-- **Dicts are ordered.** Insertion order is guaranteed by the language spec as of Python 3.7.[^2]
+- **Dicts are ordered.** Insertion order is guaranteed by the language spec as of Python 3.7.
 
 ***
 
@@ -50,7 +50,7 @@ class Base:
 _module_cache = {}
 ```
 
-In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical.[^3] Never write the latter in Python 3 code.
+In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical. Never write the latter in Python 3 code.
 
 ##### Indentation and Line Length
 
@@ -105,7 +105,7 @@ from myapp.utils import format_date
 
 ##### Integers
 
-Python 3.8 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`.[^3] Arithmetic never overflows; Python allocates more memory silently.
+Python 3.8 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`. Arithmetic never overflows; Python allocates more memory silently.
 
 ```python
 import sys
@@ -137,7 +137,7 @@ print(a << 2)  # left shift
 print(a >> 1)  # right shift
 ```
 
-**`pow()` now supports negative exponents (new in 3.8):** For integers, `pow(base, exp, mod)` accepts a negative exponent when `base` and `mod` are coprime, computing the modular inverse:[^1]
+**`pow()` now supports negative exponents (new in 3.8):** For integers, `pow(base, exp, mod)` accepts a negative exponent when `base` and `mod` are coprime, computing the modular inverse:
 
 ```python
 pow(38, -1, 137)   # 119 — modular inverse of 38 mod 137
@@ -146,7 +146,7 @@ pow(38, -1, 137)   # 119 — modular inverse of 38 mod 137
 
 ##### Floats
 
-Floats are C `double` (64-bit IEEE 754).[^3]
+Floats are C `double` (64-bit IEEE 754).
 
 ```python
 x = 3.14
@@ -182,7 +182,7 @@ print(result)  # 0.3
 
 ##### Booleans
 
-`bool` is a subtype of `int`. `True == 1` and `False == 0`.[^3]
+`bool` is a subtype of `int`. `True == 1` and `False == 0`.
 
 ```python
 print(isinstance(True, int))  # True
@@ -190,7 +190,7 @@ print(True + True)            # 2
 print(True * 5)               # 5
 ```
 
-**Falsy values** in Python 3.8:[^3]
+**Falsy values** in Python 3.8:
 
 - `None`
 - `False`
@@ -200,7 +200,7 @@ print(True * 5)               # 5
 - Empty set: `set()`
 - Instances whose `__bool__` returns `False` or `__len__` returns `0`
 
-**`SyntaxWarning` on identity checks with literals (new in 3.8):** Python 3.8 emits a `SyntaxWarning` when you use `is` or `is not` with string or integer literals:[^1]
+**`SyntaxWarning` on identity checks with literals (new in 3.8):** Python 3.8 emits a `SyntaxWarning` when you use `is` or `is not` with string or integer literals:
 
 ```python
 # 3.8 emits: SyntaxWarning: "is" with a literal. Did you mean "=="?
@@ -226,7 +226,7 @@ print(z.conjugate())  # (3-4j)
 
 #### Division
 
-In Python 3, `/` **always performs true (float) division**.[^3]
+In Python 3, `/` **always performs true (float) division**.
 
 ```python
 print(7 / 2)    # 3.5
@@ -245,7 +245,7 @@ print(-7 % 2)    # 1   (satisfies: (a // b) * b + a % b == a)
 
 #### New in 3.8: The Walrus Operator `:=` (PEP 572)
 
-Assignment expressions — the `:=` "walrus operator" — are the headline feature of Python 3.8.[^4] They assign a value to a variable **as part of an expression**, avoiding redundant re-evaluation.
+Assignment expressions — the `:=` "walrus operator" — are the headline feature of Python 3.8. They assign a value to a variable **as part of an expression**, avoiding redundant re-evaluation.
 
 ```python
 # Pattern 1: test-and-use in if/while
@@ -282,7 +282,7 @@ results = [y for x in data if (y := expensive_transform(x)) is not None]
 
 ##### Walrus Operator: Scoping and Pitfalls
 
-**Scope:** An assignment expression in a comprehension binds its target in the **enclosing** function scope, not inside the comprehension:[^4]
+**Scope:** An assignment expression in a comprehension binds its target in the **enclosing** function scope, not inside the comprehension:
 
 ```python
 total = 0
@@ -317,7 +317,7 @@ y := f(x)
 
 #### New in 3.8: Positional-Only Parameters (PEP 570)
 
-The `/` marker in a function signature declares all parameters **to its left** as positional-only — they cannot be passed as keyword arguments.[^5]
+The `/` marker in a function signature declares all parameters **to its left** as positional-only — they cannot be passed as keyword arguments.
 
 ```python
 # a, b are positional-only; c, d are normal; e, f are keyword-only
@@ -366,7 +366,7 @@ class Counter(dict):
 
 ##### The Two Types
 
-- **`str`**: A sequence of Unicode code points. All undecorated string literals are `str`.[^3]
+- **`str`**: A sequence of Unicode code points. All undecorated string literals are `str`.
 - **`bytes`**: A sequence of raw 8-bit values, declared with `b''` prefix. **Never implicitly mixed with `str`.**
 
 ```python
@@ -439,7 +439,7 @@ print('  '.isspace())              # True
 
 ##### f-strings in Python 3.8: The `=` Specifier (new in 3.8)
 
-Python 3.8 adds `{expr=}` to f-strings — a debugging specifier that prints **the expression text, an `=`, and the repr of the value**:[^1]
+Python 3.8 adds `{expr=}` to f-strings — a debugging specifier that prints **the expression text, an `=`, and the repr of the value**:
 
 ```python
 x = 42
@@ -516,7 +516,7 @@ x: int = 'not an int'  # no error at runtime — use mypy/pyright
 
 ##### Python 3.8 Typing Additions: `TypedDict`, `Literal`, `Final`, `Protocol`
 
-These four major constructs entered the standard library `typing` module in Python 3.8.[^6]
+These four major constructs entered the standard library `typing` module in Python 3.8.
 
 ###### `TypedDict` (PEP 589)
 
@@ -553,7 +553,7 @@ print(movie['name'])   # 'Blade Runner'
 **Key rules:**
 
 - `TypedDict` is **a type hint only** — the runtime object is a plain `dict`. No field validation occurs at runtime.
-- `isinstance(movie, Movie)` raises `TypeError`. Never use `isinstance()` with `TypedDict`.[^6]
+- `isinstance(movie, Movie)` raises `TypeError`. Never use `isinstance()` with `TypedDict`.
 - Keys must be string literals — `TypedDict` does not support integer or other-type keys.
 - Type checkers enforce the schema; your code does not.
 
@@ -619,7 +619,7 @@ class Singleton:
 
 ###### `Protocol` (PEP 544) — Structural Subtyping
 
-`Protocol` formalizes duck typing: a class satisfies a `Protocol` if it has the required methods/attributes, **regardless of inheritance**.[^6]
+`Protocol` formalizes duck typing: a class satisfies a `Protocol` if it has the required methods/attributes, **regardless of inheritance**.
 
 ```python
 from typing import Protocol, runtime_checkable
@@ -689,7 +689,7 @@ def find(key: str) -> Optional[str]:
 
 #### Dataclasses (Python 3.7+ — stdlib in 3.8)
 
-`dataclasses` is a full stdlib module in Python 3.7+. No backport needed in 3.8.[^7] Note: `dataclasses.KW_ONLY` and the `slots=True` decorator argument are **3.10+** — not available in 3.8.
+`dataclasses` is a full stdlib module in Python 3.7+. No backport needed in 3.8. Note: `dataclasses.KW_ONLY` and the `slots=True` decorator argument are **3.10+** — not available in 3.8.
 
 ```python
 from dataclasses import dataclass, field
@@ -788,7 +788,7 @@ class Config:
 
 #### Lists
 
-Lists are mutable, ordered, heterogeneous sequences.[^3]
+Lists are mutable, ordered, heterogeneous sequences.
 
 ```python
 lst = [1, 'two', 3.0, [4, 5]]
@@ -865,7 +865,7 @@ print(x)  # 10 — x is unchanged
 
 #### Tuples
 
-Tuples are immutable, ordered sequences.[^3]
+Tuples are immutable, ordered sequences.
 
 ```python
 t = (1, 2, 3)
@@ -882,7 +882,7 @@ head, *middle, tail = [1, 2, 3, 4, 5]
 print(head, middle, tail)  # 1 [2, 3, 4] 5
 ```
 
-**Iterable unpacking in `return` and `yield` (new in 3.8):**[^1] Parentheses are no longer required around starred expressions in `return` and `yield`:
+**Iterable unpacking in `return` and `yield` (new in 3.8):** Parentheses are no longer required around starred expressions in `return` and `yield`:
 
 ```python
 def parse(family: str):
@@ -896,7 +896,7 @@ parse('simpsons homer marge bart')   # ('SIMPSONS', 'homer', 'marge', 'bart')
 
 #### Dictionaries
 
-Dicts in Python 3.7+ are ordered by insertion order — this is a **language guarantee** (not just a CPython implementation detail as it was in 3.6).[^2]
+Dicts in Python 3.7+ are ordered by insertion order — this is a **language guarantee** (not just a CPython implementation detail as it was in 3.6).
 
 ```python
 d = {'name': 'Alice', 'age': 30}
@@ -913,7 +913,7 @@ for k, v in d.items():
     print(k, v)
 ```
 
-**`reversed()` now works on dicts (new in 3.8):**[^1]
+**`reversed()` now works on dicts (new in 3.8):**
 
 ```python
 d = {'a': 1, 'b': 2, 'c': 3}
@@ -982,7 +982,7 @@ od.move_to_end('first', last=False)  # move to front
 
 #### Sets
 
-Sets are mutable, unordered collections of unique, hashable elements.[^3]
+Sets are mutable, unordered collections of unique, hashable elements.
 
 ```python
 s = {1, 2, 3}
@@ -1010,7 +1010,7 @@ unique_squares = {x**2 for x in range(-5, 6)}  # set comprehension
 
 #### `range` in Python 3
 
-`range()` is always a lazy object — no `xrange()` exists.[^3]
+`range()` is always a lazy object — no `xrange()` exists.
 
 ```python
 for i in range(1_000_000):
@@ -1071,7 +1071,7 @@ else:
 
 ##### `continue` now legal in `finally` (new in 3.8)
 
-Prior to 3.8, `continue` inside a `finally` block was a `SyntaxError`. It is now allowed:[^1]
+Prior to 3.8, `continue` inside a `finally` block was a `SyntaxError`. It is now allowed:
 
 ```python
 for i in range(10):
@@ -1165,7 +1165,7 @@ print([f() for f in funcs])  # [0, 1, 2, 3, 4]
 
 ##### `functools.lru_cache` — New Simplified Syntax (new in 3.8)
 
-`@lru_cache` can now be used as a bare decorator without parentheses:[^1]
+`@lru_cache` can now be used as a bare decorator without parentheses:
 
 ```python
 import functools
@@ -1191,7 +1191,7 @@ fibonacci.cache_clear()
 
 ##### `functools.cached_property` (new in 3.8)
 
-`cached_property` computes a property once and caches it on the instance for the object's lifetime:[^13]
+`cached_property` computes a property once and caches it on the instance for the object's lifetime:
 
 ```python
 import functools
@@ -1216,11 +1216,11 @@ print(ds.mean)       # returned from cache — no recomputation
 
 **Pitfall:** `cached_property` stores the value in `instance.__dict__`. It therefore does NOT work with classes that define `__slots__` (no `__dict__`) — accessing the property raises `TypeError`. Use a manual `_cache` attribute pattern for those cases.
 
-**Threading note:** In Python 3.8, `cached_property` **is thread-safe**: it holds an internal lock while computing, so the getter runs at most once per instance even under concurrent access. The catch is that the lock is per-property, shared across **all instances** of the class, so concurrent first-time access on many instances serializes on one lock and can contend badly.[^13] (Python 3.12 later removed this locking entirely — but that does not affect 3.8.) If the cached computation is slow and instances are hit concurrently, compute the value eagerly or manage your own per-instance lock inside the getter.
+**Threading note:** In Python 3.8, `cached_property` **is thread-safe**: it holds an internal lock while computing, so the getter runs at most once per instance even under concurrent access. The catch is that the lock is per-property, shared across **all instances** of the class, so concurrent first-time access on many instances serializes on one lock and can contend badly. (Python 3.12 later removed this locking entirely — but that does not affect 3.8.) If the cached computation is slow and instances are hit concurrently, compute the value eagerly or manage your own per-instance lock inside the getter.
 
 ##### `functools.singledispatchmethod` (new in 3.8)
 
-`singledispatchmethod` extends `singledispatch` to class methods:[^1]
+`singledispatchmethod` extends `singledispatch` to class methods:
 
 ```python
 from functools import singledispatchmethod
@@ -1255,7 +1255,7 @@ print(p.process([1, 2, 3]))  # 1, 2, 3
 
 ##### The Iterator Protocol
 
-An iterator in Python 3 uses `__next__()`:[^3]
+An iterator in Python 3 uses `__next__()`:
 
 ```python
 class CountDown:
@@ -1401,7 +1401,7 @@ class Circle:
 
 ##### `__slots__`
 
-`__slots__` eliminates the per-instance `__dict__`, reducing memory significantly for classes with many instances:[^3]
+`__slots__` eliminates the per-instance `__dict__`, reducing memory significantly for classes with many instances:
 
 ```python
 class Point:
@@ -1593,7 +1593,7 @@ BaseException
       └── ...
 ```
 
-**Python 3.8-specific:** `asyncio.CancelledError` now inherits from `BaseException`, not `Exception`.[^1] This means bare `except Exception:` no longer accidentally swallows task cancellations.
+**Python 3.8-specific:** `asyncio.CancelledError` now inherits from `BaseException`, not `Exception`. This means bare `except Exception:` no longer accidentally swallows task cancellations.
 
 ```python
 # Pre-3.8: CancelledError was an Exception, could be caught by accident
@@ -1743,7 +1743,7 @@ with suppress(FileNotFoundError):
 
 ##### Text Files
 
-Always pass `encoding` explicitly:[^9]
+Always pass `encoding` explicitly:
 
 ```python
 with open('file.txt', 'r', encoding='utf-8') as f:
@@ -1781,7 +1781,7 @@ with open('large.bin', 'rb') as f:
 
 ##### `pathlib` — Preferred Path API
 
-`pathlib.Path` objects implement `os.PathLike` and work with all standard library functions:[^8]
+`pathlib.Path` objects implement `os.PathLike` and work with all standard library functions:
 
 ```python
 from pathlib import Path
@@ -1840,7 +1840,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ##### `asyncio.run()` — Now Stable (new in 3.8)
 
-`asyncio.run()` was added in 3.7 as a provisional API; in Python 3.8 it graduates to stable.[^1] It is the **canonical** entry point for running async programs:
+`asyncio.run()` was added in 3.7 as a provisional API; in Python 3.8 it graduates to stable. It is the **canonical** entry point for running async programs:
 
 ```python
 import asyncio
@@ -1862,7 +1862,7 @@ asyncio.run(main())
 
 ##### Task Naming (new in 3.8)
 
-Tasks can now be named for observability:[^1]
+Tasks can now be named for observability:
 
 ```python
 async def main() -> None:
@@ -2002,7 +2002,7 @@ async def broken4():
 
 ##### Windows asyncio: `ProactorEventLoop` default (new in 3.8)
 
-On Windows, Python 3.8 switches the default event loop to `ProactorEventLoop`, which supports subprocess and IOCP natively.[^1] If your code relied on `SelectorEventLoop` on Windows, add:
+On Windows, Python 3.8 switches the default event loop to `ProactorEventLoop`, which supports subprocess and IOCP natively. If your code relied on `SelectorEventLoop` on Windows, add:
 
 ```python
 import asyncio
@@ -2016,7 +2016,7 @@ if sys.platform == 'win32':
 
 #### New in 3.8: `importlib.metadata`
 
-Python 3.8 introduces `importlib.metadata` (as a provisional API) for reading installed package metadata without importing the package:[^14]
+Python 3.8 introduces `importlib.metadata` (as a provisional API) for reading installed package metadata without importing the package:
 
 ```python
 from importlib.metadata import PackageNotFoundError, requires, version
@@ -2065,7 +2065,7 @@ def _private_helper() -> None:
 
 #### The `secrets` Module
 
-`secrets` provides cryptographically strong random values. Always use it for security-sensitive values:[^10]
+`secrets` provides cryptographically strong random values. Always use it for security-sensitive values:
 
 ```python
 import secrets
@@ -2154,7 +2154,7 @@ def hash_password_scrypt(password: str) -> str:
 
 ##### XML External Entity (XXE) Handling
 
-`xml.etree.ElementTree` has never resolved external entities (it raises a `ParseError` on undefined entities), and since Python 3.7.1 (and 3.6.8) the `xml.sax` and `xml.dom` parsers no longer process external entities by default either (bpo-17239).[^15] Denial-of-service vectors such as entity-expansion bombs ("billion laughs") remain, so for untrusted XML still use `defusedxml`:
+`xml.etree.ElementTree` has never resolved external entities (it raises a `ParseError` on undefined entities), and since Python 3.7.1 (and 3.6.8) the `xml.sax` and `xml.dom` parsers no longer process external entities by default either (bpo-17239). Denial-of-service vectors such as entity-expansion bombs ("billion laughs") remain, so for untrusted XML still use `defusedxml`:
 
 ```python
 # Reasonable for trusted XML
@@ -2185,7 +2185,7 @@ def setup_logging(level: str = 'INFO') -> None:
     )
 ```
 
-**`force=True` in `basicConfig` is new in 3.8.** Previously, once `basicConfig()` had been called, subsequent calls were silently ignored. `force=True` removes existing handlers and reconfigures the root logger — useful in interactive environments and Jupyter notebooks.[^1]
+**`force=True` in `basicConfig` is new in 3.8.** Previously, once `basicConfig()` had been called, subsequent calls were silently ignored. `force=True` removes existing handlers and reconfigures the root logger — useful in interactive environments and Jupyter notebooks.
 
 ```python
 # Use % style in logging calls — NOT f-strings
@@ -2285,7 +2285,7 @@ except subprocess.TimeoutExpired:
 
 ##### The GIL
 
-CPython's Global Interpreter Lock means only one thread executes Python bytecode at a time:[^11]
+CPython's Global Interpreter Lock means only one thread executes Python bytecode at a time:
 
 - `threading` is effective for **I/O-bound** work.
 - `threading` does NOT provide CPU parallelism for pure Python.
@@ -2339,7 +2339,7 @@ q: Queue = Queue(maxsize=100)
 
 ##### `multiprocessing` with Shared Memory (new in 3.8)
 
-Python 3.8 introduces `multiprocessing.shared_memory` — zero-copy shared memory between processes:[^12]
+Python 3.8 introduces `multiprocessing.shared_memory` — zero-copy shared memory between processes:
 
 ```python
 from multiprocessing import Process
@@ -2399,7 +2399,7 @@ if __name__ == '__main__':  # REQUIRED — prevents recursive spawning on Window
     flat = [item for sublist in results for item in sublist]
 ```
 
-**`multiprocessing` macOS behavior change (3.8):** macOS now uses `spawn` instead of `fork` as the default start method.[^1] Code that worked on Linux with `fork` may fail on macOS in 3.8 if it uses resources that cannot be pickled. Always use the `if __name__ == '__main__':` guard and ensure all arguments to worker functions are picklable.
+**`multiprocessing` macOS behavior change (3.8):** macOS now uses `spawn` instead of `fork` as the default start method. Code that worked on Linux with `fork` may fail on macOS in 3.8 if it uses resources that cannot be pickled. Always use the `if __name__ == '__main__':` guard and ensure all arguments to worker functions are picklable.
 
 ***
 
@@ -2527,7 +2527,7 @@ with open('data.pkl', 'rb') as f:
     restored = pickle.load(f)
 ```
 
-**`pickle` now uses Protocol 4 by default in 3.8** (up from Protocol 3).[^1] Protocol 5 (out-of-band buffers, PEP 574) was also added in 3.8 for efficient large-data transfer.
+**`pickle` now uses Protocol 4 by default in 3.8** (up from Protocol 3). Protocol 5 (out-of-band buffers, PEP 574) was also added in 3.8 for efficient large-data transfer.
 
 **SECURITY WARNING:** Never unpickle data from untrusted sources. Pickle can execute arbitrary code during deserialization. For inter-system communication, use JSON, protobuf, or msgpack.
 
@@ -2552,7 +2552,7 @@ import timeit
 elapsed = timeit.timeit('sum(range(1000))', number=10_000)
 ```
 
-**`cProfile.Profile` is now a context manager (new in 3.8).** No more manual `enable()`/`disable()` calls.[^1]
+**`cProfile.Profile` is now a context manager (new in 3.8).** No more manual `enable()`/`disable()` calls.
 
 ##### Common Performance Patterns
 
@@ -2708,7 +2708,7 @@ class TestAsync(unittest.IsolatedAsyncioTestCase):
         await self.conn.close()
 ```
 
-**`AsyncMock` and `IsolatedAsyncioTestCase` are both new in Python 3.8.**[^1] Prior to 3.8, testing async code required third-party packages like `pytest-asyncio` combined with manually crafted mock coroutines. In 3.8, this is covered by the stdlib.
+**`AsyncMock` and `IsolatedAsyncioTestCase` are both new in Python 3.8.** Prior to 3.8, testing async code required third-party packages like `pytest-asyncio` combined with manually crafted mock coroutines. In 3.8, this is covered by the stdlib.
 
 ***
 
@@ -2808,21 +2808,3 @@ black --check myapp/ && isort --check-only myapp/ && flake8 myapp/ && mypy myapp
 - [ ] All custom exceptions inherit from `Exception` (not `BaseException`)
 - [ ] `logger.exception()` used inside `except` blocks to capture tracebacks
 - [ ] Bare `raise` (not `raise e`) to preserve original tracebacks
-
-***
-
-[^1]: Python 3.8 What's New. Python Software Foundation. https://docs.python.org/3/whatsnew/3.8.html
-[^2]: Python 3.7 language guarantee: dict insertion order. https://docs.python.org/3.7/whatsnew/3.7.html
-[^3]: Python 3 Built-in Types. https://docs.python.org/3.8/library/stdtypes.html
-[^4]: PEP 572 – Assignment Expressions. https://peps.python.org/pep-0572/
-[^5]: PEP 570 – Python Positional-Only Parameters. https://peps.python.org/pep-0570/
-[^6]: PEP 544 (Protocol), PEP 586 (Literal), PEP 589 (TypedDict), PEP 591 (Final). https://peps.python.org/
-[^7]: PEP 557 – Data Classes. https://peps.python.org/pep-0557/
-[^8]: Python pathlib module. https://docs.python.org/3.8/library/pathlib.html
-[^9]: Python io module. https://docs.python.org/3.8/library/io.html
-[^10]: Python secrets module. https://docs.python.org/3.8/library/secrets.html
-[^11]: Python GIL. https://docs.python.org/3/glossary.html#term-global-interpreter-lock
-[^12]: multiprocessing.shared_memory. https://docs.python.org/3.8/library/multiprocessing.shared_memory.html
-[^13]: functools.cached_property. https://docs.python.org/3.8/library/functools.html#functools.cached_property (locking behavior: bpo-43468; removed in 3.12)
-[^14]: importlib.metadata (provisional in 3.8). https://docs.python.org/3.8/library/importlib.metadata.html
-[^15]: XML vulnerabilities and bpo-17239 (external entities disabled by default in xml.sax/xml.dom since 3.7.1/3.6.8). https://docs.python.org/3/library/xml.html#xml-vulnerabilities

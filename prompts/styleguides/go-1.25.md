@@ -6,38 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.25](#whats-new-in-go-125)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers & Weak Pointers](#pointers--weak-pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics & Type Aliases](#generics--type-aliases)
-11. [Iterators — iter package](#iterators--iter-package)
-12. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-13. [Strings & Bytes](#strings--bytes)
-14. [Error Handling](#error-handling)
-15. [Structured Logging with log/slog](#structured-logging-with-logslog)
-16. [Concurrency](#concurrency)
-17. [Memory Management: Cleanup, Weak & unique](#memory-management-cleanup-weak--unique)
-18. [Context Package](#context-package)
-19. [File I/O & Filesystem](#file-io--filesystem)
-20. [JSON — v1 and experimental v2](#json--v1-and-experimental-v2)
-21. [HTTP Servers](#http-servers)
-22. [Cryptography](#cryptography)
-23. [Testing & Benchmarking](#testing--benchmarking)
-24. [CLI Development & Tool Directive](#cli-development--tool-directive)
-25. [Performance Caveats & PGO](#performance-caveats--pgo)
-26. [Observability: Tracing & Profiling](#observability-tracing--profiling)
-27. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.25
 
 Go 1.25.0 shipped 2025-08-12. There are **no language syntax changes** — Go 1.25 is a toolchain/runtime/stdlib release. The headline items are: **container-aware `GOMAXPROCS`** (transparent Kubernetes/container CPU limit respect), an experimental **Green Tea garbage collector** (10–40% GC overhead reduction), the now-stable **`testing/synctest`** package, an experimental **`encoding/json/v2`**, DWARF 5 debug info (faster linking, smaller binaries), the expanded **`os.Root`** API, and the new **`sync.WaitGroup.Go`** convenience method.

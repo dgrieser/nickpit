@@ -1,38 +1,10 @@
 ### JavaScript on Node.js 24 (Krypton LTS): The Complete Production Developer Guide
 
-> **Version**: Node.js 24.0.0 was released on 2025-05-06 and became LTS ("Krypton") with 24.11.0 on 2025-10-28. As of October 2026 it is in **Maintenance LTS** (since 2026-10-20) and is supported until **2028-04-30**. Latest patch: **24.22.1 (2026-10-21, security release)**.[^1][^2][^3]
+> **Version**: Node.js 24.0.0 was released on 2025-05-06 and became LTS ("Krypton") with 24.11.0 on 2025-10-28. As of October 2026 it is in **Maintenance LTS** (since 2026-10-20) and is supported until **2028-04-30**. Latest patch: **24.22.1 (2026-10-21, security release)**.
 > **Engine and bundled components (24.22.1)**: V8 13.6.233.17, npm 11.19.1, undici 7.30.1, libuv 1.52.1, OpenSSL 3.5.9, ICU 78.3 (Unicode 17).
-> **Release landscape (2026-10-22)**: Node.js 26.12.1 is the newest release ("Current"; scheduled to enter LTS on 2026-10-28). Node.js 22 ("Jod") is in Maintenance LTS until 2027-04-30. Node.js 25 (odd, never LTS) reached end-of-life on 2026-06-01 with 25.9.0 as its last release. Node.js 27 has no release yet: per the release schedule it starts as an alpha channel on 2026-10-28, and 27.0.0 is planned for 2027-04-22.[^2]
+> **Release landscape (2026-10-22)**: Node.js 26.12.1 is the newest release ("Current"; scheduled to enter LTS on 2026-10-28). Node.js 22 ("Jod") is in Maintenance LTS until 2027-04-30. Node.js 25 (odd, never LTS) reached end-of-life on 2026-06-01 with 25.9.0 as its last release. Node.js 27 has no release yet: per the release schedule it starts as an alpha channel on 2026-10-28, and 27.0.0 is planned for 2027-04-22.
 > **Scope**: The JavaScript language as implemented by Node 24's V8 (ES2025 plus the shipped Stage 3/4 features listed below) and the Node.js 24 runtime APIs: modules, TypeScript type stripping, async patterns, errors, I/O and streams, HTTP/fetch, security, testing, performance, observability and tooling. Projects whose engine is pinned to 25.x are reviewed with this guide too (see "Version-aware review").
 > **Note**: This document is self-contained. Everything from earlier Node/ECMAScript versions that is still correct is carried forward. Sections marked **New in 24** (or **New in 24.x** with the minor that introduced it) cover behavior that is not available on Node 22.
-
----
-
-#### Table of Contents
-
-1. Version-aware review
-2. What's new in Node.js 24 (vs. Node 22)
-3. Do not use or recommend (features from Node 25/26+ and unshipped proposals)
-4. Deprecated and removed APIs
-5. Core language style and idioms
-6. New in 24: Explicit resource management (`using`, `await using`, `DisposableStack`)
-7. New in 24: Other ECMAScript additions (`RegExp.escape`, `Error.isError`, `Float16Array`, `Promise.try`, RegExp modifiers, ...)
-8. Modern built-ins that are safe to use (available since Node 22 or earlier)
-9. Web platform globals on Node 24
-10. Errors and error handling
-11. Asynchronous code and concurrency
-12. Modules: ESM, CommonJS and interop
-13. TypeScript in Node 24 (type stripping)
-14. File system, paths, buffers and streams
-15. HTTP, fetch and networking
-16. Security
-17. `node:sqlite`
-18. Testing with `node:test`
-19. Performance
-20. Observability and diagnostics
-21. Tooling: npm 11, scripts, configuration, linting
-22. Removed / changed in 24 — migration notes
-23. Production / review checklist
 
 ---
 
@@ -71,25 +43,25 @@ All "Node 22" statements below were checked on 22.23.4, the last 22.x release av
 | WebAssembly Memory64 (`new WebAssembly.Memory({ initial: 1n, address: 'i64' })`) | 24.0 | No |
 | WebAssembly JSPI (`WebAssembly.Suspending`, `WebAssembly.promising`) | 24.20.0 | No |
 
-Iterator helpers, `Set` methods, `Array.fromAsync`, `Object.groupBy`/`Map.groupBy`, `Promise.withResolvers`, resizable/transferable `ArrayBuffer`, `String.prototype.isWellFormed`, `JSON.rawJSON` and the `JSON.parse` reviver `context.source` were already in Node 22 and remain available.[^1][^4][^7]
+Iterator helpers, `Set` methods, `Array.fromAsync`, `Object.groupBy`/`Map.groupBy`, `Promise.withResolvers`, resizable/transferable `ArrayBuffer`, `String.prototype.isWellFormed`, `JSON.rawJSON` and the `JSON.parse` reviver `context.source` were already in Node 22 and remain available.
 
 ##### Runtime and APIs
 
-- **`URLPattern` is a global** (24.0); it is not available on 22. `CloseEvent` is also global (since 23.0).[^1]
-- **`AsyncLocalStorage` uses `AsyncContextFrame` by default** (24.0); `--no-async-context-frame` restores the async_hooks-based implementation. New constructor options `name` and `defaultValue` (24.0) and `asyncLocalStorage.withScope()` for `using` (24.20.0, experimental).[^19]
-- **Permission model**: `--permission` is the only spelling (24 rejects `--experimental-permission` as a bad option, 22.23.4 still accepts it). New: the entry point is implicitly readable (24.2), `--allow-inspector` (24.12), `--permission-audit` (24.20), `process.permission.drop()` (24.20), `--allow-openssl-store` (24.21).[^18]
-- **Module system**: `require(esm)` is stable (24.15.0) and `--no-require-module` exists; package `"imports"` may start with `#/` (24.14.0, rejected on 22); WebAssembly source-phase imports (`import source mod from './x.wasm'`) work (rejected on 22); the namespace of an imported CommonJS module has an extra `'module.exports'` key (since 23.0). `module.register()` is documentation-deprecated (DEP0205, 24.15.0) in favour of `module.registerHooks()`.[^15][^16]
-- **TypeScript type stripping is stable** (24.12.0) and no longer prints an experimental warning (24.3.0). It is also enabled by default since 22.18.0 (and runs without a warning on 22.23.4), but is still documented as experimental on the 22 line.[^17][^34]
-- **`node:sqlite`** loads without an experimental warning on 24 (22 warns), is a release candidate (24.15.0) and gained `Session`, `createTagStore()`, `setAuthorizer()`, `limits`, `Symbol.dispose` on databases and statements, and `StatementSync.prototype.close()` (24.22.0).[^21]
-- **Test runner**: subtests are awaited automatically (24.0; on 22 an un-awaited `t.test()` is cancelled), the default reporter is always `spec` (22 prints TAP when stdout is not a TTY), `it.expectFailure`/`{ expectFailure }` (24.14.0), `--test-randomize`/`--test-random-seed` (24.16.0), `--test-rerun-failures` (24.7.0), `--test-global-setup` (24.0), test `tags` with `--experimental-test-tag-filter` (24.19.0).[^20]
-- **undici 7** powers `fetch`, `WebSocket` and friends (undici 7.30.1 in 24.22.1).[^29]
+- **`URLPattern` is a global** (24.0); it is not available on 22. `CloseEvent` is also global (since 23.0).
+- **`AsyncLocalStorage` uses `AsyncContextFrame` by default** (24.0); `--no-async-context-frame` restores the async_hooks-based implementation. New constructor options `name` and `defaultValue` (24.0) and `asyncLocalStorage.withScope()` for `using` (24.20.0, experimental).
+- **Permission model**: `--permission` is the only spelling (24 rejects `--experimental-permission` as a bad option, 22.23.4 still accepts it). New: the entry point is implicitly readable (24.2), `--allow-inspector` (24.12), `--permission-audit` (24.20), `process.permission.drop()` (24.20), `--allow-openssl-store` (24.21).
+- **Module system**: `require(esm)` is stable (24.15.0) and `--no-require-module` exists; package `"imports"` may start with `#/` (24.14.0, rejected on 22); WebAssembly source-phase imports (`import source mod from './x.wasm'`) work (rejected on 22); the namespace of an imported CommonJS module has an extra `'module.exports'` key (since 23.0). `module.register()` is documentation-deprecated (DEP0205, 24.15.0) in favour of `module.registerHooks()`.
+- **TypeScript type stripping is stable** (24.12.0) and no longer prints an experimental warning (24.3.0). It is also enabled by default since 22.18.0 (and runs without a warning on 22.23.4), but is still documented as experimental on the 22 line.
+- **`node:sqlite`** loads without an experimental warning on 24 (22 warns), is a release candidate (24.15.0) and gained `Session`, `createTagStore()`, `setAuthorizer()`, `limits`, `Symbol.dispose` on databases and statements, and `StatementSync.prototype.close()` (24.22.0).
+- **Test runner**: subtests are awaited automatically (24.0; on 22 an un-awaited `t.test()` is cancelled), the default reporter is always `spec` (22 prints TAP when stdout is not a TTY), `it.expectFailure`/`{ expectFailure }` (24.14.0), `--test-randomize`/`--test-random-seed` (24.16.0), `--test-rerun-failures` (24.7.0), `--test-global-setup` (24.0), test `tags` with `--experimental-test-tag-filter` (24.19.0).
+- **undici 7** powers `fetch`, `WebSocket` and friends (undici 7.30.1 in 24.22.1).
 - **Web Locks**: `navigator.locks` and `worker_threads.locks` (24.5.0).
-- **Crypto**: OpenSSL 3.5 (24.5.0); `crypto.argon2()`/`argon2Sync()` (24.7.0); ML-KEM via `crypto.encapsulate()`/`decapsulate()` and ML-DSA/SLH-DSA signing (24.6–24.8); `crypto.randomUUIDv7()` (24.16.0); `crypto.hash()` `outputLength` for XOFs (24.4.0); `crypto.createMac()`/`getMacs()` and `crypto.parsePKCS12()` (24.22.0); Web Crypto gained AES-OCB, ChaCha20-Poly1305, ML-DSA, ML-KEM, SHA-3, SHAKE, Argon2, KMAC and `SubtleCrypto.supports()` (24.7–24.18).[^24]
-- **HTTP**: `res.writeInformation()` for arbitrary 1xx responses (24.18.0); `req.signal` on `IncomingMessage` (24.16.0); `http.setGlobalProxyFromEnv()` (24.14.0); `shouldUpgradeCallback` server option (24.9.0); `optimizeEmptyRequests` server option (24.12.0); `httpValidation` header-validation option (24.19.0). HTTP/2 priority signaling was removed (24.2.0, DEP0194).[^25]
-- **fs**: `fs.mkdtempDisposableSync()`/`fsPromises.mkdtempDisposable()` (24.4.0), `Dir` is (async-)disposable (24.1.0; also backported to 22.23.4), `fs.Utf8Stream` (24.6.0), `fs.watch` `ignore` (24.14.0), `stat` `throwIfNoEntry` for the promise/callback forms (24.15.0) and `signal` (24.16.0), caller-supplied `readFile()` buffers (24.19.0).[^26]
-- **util**: `util.debounce()`/`util.throttle()`/`util.markPromiseAsHandled()` (24.22.0), `MIMEType.parse()` (24.21.0), `util.convertProcessSignalToExitCode()` (24.14.0), `util.deprecate()` options (24.12.0), hex colours in `styleText()` (24.16.0). `util.getCallSite()` was removed in 24.10.0 (use `util.getCallSites()`).[^23]
-- **Buffers**: the default `Buffer.poolSize` grew from 8 KiB to 64 KiB (24.18.0). 24.0.0–24.11.0 had a bug where `Buffer.allocUnsafe()` returned zero-filled memory; 24.11.1 restored the documented (uninitialized) behaviour — never rely on either.[^4]
-- **Streams**: `bytes()` in `node:stream/consumers` (24.14.0), `stream.compose()` stable (24.19.0), `Blob.prototype.textStream()` (24.19.0), `CompressionStream('brotli')` (24.7.0, also backported to 22).[^27]
+- **Crypto**: OpenSSL 3.5 (24.5.0); `crypto.argon2()`/`argon2Sync()` (24.7.0); ML-KEM via `crypto.encapsulate()`/`decapsulate()` and ML-DSA/SLH-DSA signing (24.6–24.8); `crypto.randomUUIDv7()` (24.16.0); `crypto.hash()` `outputLength` for XOFs (24.4.0); `crypto.createMac()`/`getMacs()` and `crypto.parsePKCS12()` (24.22.0); Web Crypto gained AES-OCB, ChaCha20-Poly1305, ML-DSA, ML-KEM, SHA-3, SHAKE, Argon2, KMAC and `SubtleCrypto.supports()` (24.7–24.18).
+- **HTTP**: `res.writeInformation()` for arbitrary 1xx responses (24.18.0); `req.signal` on `IncomingMessage` (24.16.0); `http.setGlobalProxyFromEnv()` (24.14.0); `shouldUpgradeCallback` server option (24.9.0); `optimizeEmptyRequests` server option (24.12.0); `httpValidation` header-validation option (24.19.0). HTTP/2 priority signaling was removed (24.2.0, DEP0194).
+- **fs**: `fs.mkdtempDisposableSync()`/`fsPromises.mkdtempDisposable()` (24.4.0), `Dir` is (async-)disposable (24.1.0; also backported to 22.23.4), `fs.Utf8Stream` (24.6.0), `fs.watch` `ignore` (24.14.0), `stat` `throwIfNoEntry` for the promise/callback forms (24.15.0) and `signal` (24.16.0), caller-supplied `readFile()` buffers (24.19.0).
+- **util**: `util.debounce()`/`util.throttle()`/`util.markPromiseAsHandled()` (24.22.0), `MIMEType.parse()` (24.21.0), `util.convertProcessSignalToExitCode()` (24.14.0), `util.deprecate()` options (24.12.0), hex colours in `styleText()` (24.16.0). `util.getCallSite()` was removed in 24.10.0 (use `util.getCallSites()`).
+- **Buffers**: the default `Buffer.poolSize` grew from 8 KiB to 64 KiB (24.18.0). 24.0.0–24.11.0 had a bug where `Buffer.allocUnsafe()` returned zero-filled memory; 24.11.1 restored the documented (uninitialized) behaviour — never rely on either.
+- **Streams**: `bytes()` in `node:stream/consumers` (24.14.0), `stream.compose()` stable (24.19.0), `Blob.prototype.textStream()` (24.19.0), `CompressionStream('brotli')` (24.7.0, also backported to 22).
 - **Timers**: `clearImmediate()` now only clears immediates; passing a `Timeout` no longer cancels it (verified: 22 cancels, 24 does not).
 - **Other**: `import.meta.main` (24.2.0), `--watch-kill-signal` (24.4.0), `NODE_USE_SYSTEM_CA=1` (24.6.0), `--env-file` stable (24.10.0), module compile cache stable (24.15.0), `--no-require-module` (24.15.0; the old `--no-experimental-require-module` spelling is legacy), built-in proxy support for `http.request()`/`https.request()` under `NODE_USE_ENV_PROXY` (24.5.0; `fetch` since 24.0), `--max-heap-size` (24.15.0), AES-SIV and AES-GCM-SIV in `createCipheriv()` (24.22.0; absent on 22 and 25.9.0). Several of these were backported to 22.x — check before flagging them on a 22-compatible project.
 
@@ -130,7 +102,7 @@ Decorators (`@dec` is a syntax error; TypeScript `experimentalDecorators` code m
 
 #### Deprecated and removed APIs
 
-Node 24 turns several long-standing documentation deprecations into runtime warnings and removes others.[^8] Flag any new use of these:
+Node 24 turns several long-standing documentation deprecations into runtime warnings and removes others. Flag any new use of these:
 
 | API | Status on 24 | Replacement |
 |---|---|---|
@@ -283,7 +255,7 @@ new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Berlin', dateStyle: 'medium
 
 #### New in 24: Explicit resource management
 
-Node 24 ships the TC39 explicit resource management proposal: `using` and `await using` declarations, `DisposableStack`, `AsyncDisposableStack` and `SuppressedError`. On Node 22 `using x = ...` is a `SyntaxError`.[^9][^1]
+Node 24 ships the TC39 explicit resource management proposal: `using` and `await using` declarations, `DisposableStack`, `AsyncDisposableStack` and `SuppressedError`. On Node 22 `using x = ...` is a `SyntaxError`.
 
 ##### Semantics
 
@@ -372,7 +344,7 @@ Use `stack.move()` to build "acquire several, release all on failure" constructo
 - Disposers should be idempotent and should not throw for "already closed".
 - Remove `Symbol.dispose`/`Symbol.asyncDispose` polyfills on 24: the well-known symbols are built in and non-writable (`Object.getOwnPropertyDescriptor(Symbol, 'dispose')` is `{ writable: false, configurable: false }`), so assignments are silently ignored in sloppy mode and throw in strict mode.
 - Libraries that must also support Node 22 cannot use `using` syntax at all (it is a parse error there, so even an unexecuted branch breaks the module); they can still implement `[Symbol.dispose]` methods.
-- Prefer `using` over `AbortSignal` for tearing down long-lived resources: passing a signal to `server.listen({ signal })` to close the server is documentation-deprecated in 24.22.0 (DEP0209). Keep `AbortSignal` for cancelling operations and timeouts.[^8]
+- Prefer `using` over `AbortSignal` for tearing down long-lived resources: passing a signal to `server.listen({ signal })` to close the server is documentation-deprecated in 24.22.0 (DEP0209). Keep `AbortSignal` for cancelling operations and timeouts.
 
 ***
 
@@ -388,7 +360,7 @@ re.test('axb*c(1)');      // false
 RegExp.escape('1abc');    // '\\x31abc' -- a leading digit/letter is hex-escaped so it is safe after \1 or \c
 ```
 
-**BAD**: hand-written `str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')` helpers (they usually miss `-`, `/` or whitespace edge cases) or building a `RegExp` from raw user input (ReDoS and injection). **GOOD**: `RegExp.escape()`.[^10]
+**BAD**: hand-written `str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')` helpers (they usually miss `-`, `/` or whitespace edge cases) or building a `RegExp` from raw user input (ReDoS and injection). **GOOD**: `RegExp.escape()`.
 
 ##### `Error.isError()` (24.0)
 
@@ -401,7 +373,7 @@ Error.isError(Object.create(Error.prototype));  // false -- not a real error
 Error.isError(new DOMException('x'));           // true
 ```
 
-Use `Error.isError(value)` in `catch` blocks and error utilities that may receive values from other realms (`vm` contexts, some test sandboxes); `instanceof Error` is false for those. `util.types.isNativeError()` is documentation-deprecated in its favour (DEP0197).[^11]
+Use `Error.isError(value)` in `catch` blocks and error utilities that may receive values from other realms (`vm` contexts, some test sandboxes); `instanceof Error` is false for those. `util.types.isNativeError()` is documentation-deprecated in its favour (DEP0197).
 
 ##### `Float16Array` and `Math.f16round()` (24.0)
 
@@ -412,7 +384,7 @@ Math.f16round(1.1);     // 1.099609375
 h.BYTES_PER_ELEMENT;    // 2
 ```
 
-Half precision overflows above 65504 and has ~3 significant decimal digits: only use it for ML/graphics interchange formats, never for money or counters. `util.types.isFloat16Array()` and `assert.deepStrictEqual` understand it.[^12]
+Half precision overflows above 65504 and has ~3 significant decimal digits: only use it for ML/graphics interchange formats, never for money or counters. `util.types.isFloat16Array()` and `assert.deepStrictEqual` understand it.
 
 ##### `Promise.try()` (23.0)
 
@@ -428,7 +400,7 @@ function loadConfig(path) {
 await Promise.try((a, b) => a + b, 2, 3); // 5 -- extra arguments are forwarded
 ```
 
-It replaces `new Promise((resolve) => resolve(fn()))` and `Promise.resolve().then(fn)` (which delays `fn` by a microtask).[^13]
+It replaces `new Promise((resolve) => resolve(fn()))` and `Promise.resolve().then(fn)` (which delays `fn` by a microtask).
 
 ##### RegExp modifiers and duplicate named groups (23.0)
 
@@ -441,7 +413,7 @@ date.exec('2026-10').groups;  // { year: '2026', m: '10' }
 date.exec('10/2026').groups;  // { year: '2026', m: '10' }
 ```
 
-Both are syntax errors on Node 22. Supported modifier flags are `i`, `m` and `s`.[^14]
+Both are syntax errors on Node 22. Supported modifier flags are `i`, `m` and `s`.
 
 ##### `Intl.DurationFormat` (23.0) and `Intl.Locale` info methods (24.0)
 
@@ -460,7 +432,7 @@ A CPU hint for spin-wait loops on `SharedArrayBuffer` (returns `undefined`). Use
 
 - Memory64 (24.0): 64-bit memories use BigInt sizes: `new WebAssembly.Memory({ initial: 1n, address: 'i64' })`.
 - JSPI (24.20.0): `WebAssembly.Suspending` and `WebAssembly.promising` let Wasm call async JS functions.
-- ES module integration: `import { add } from './add.wasm'` (instance phase) and `import source mod from './add.wasm'` (source phase, yields a `WebAssembly.Module`; 24 only — a syntax error on 22). Instance-phase `.wasm` imports work without a flag on 24 (unflagged in 24.5.0) and on 22.23.4; the integration still follows an evolving proposal.[^4]
+- ES module integration: `import { add } from './add.wasm'` (instance phase) and `import source mod from './add.wasm'` (source phase, yields a `WebAssembly.Module`; 24 only — a syntax error on 22). Instance-phase `.wasm` imports work without a flag on 24 (unflagged in 24.5.0) and on 22.23.4; the integration still follows an evolving proposal.
 
 ***
 
@@ -510,7 +482,7 @@ Also: `Object.hasOwn`, `Array.prototype.at`, `Error` `cause`, `AggregateError`, 
 
 #### Web platform globals on Node 24
 
-Available without imports on 24.22.1 (verified):[^28] `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket` (client), `URL`, `URLSearchParams`, `URLPattern` (**New in 24**), `AbortController`, `AbortSignal`, `Blob`, `File`, `BroadcastChannel`, `MessageChannel`, `structuredClone`, `TextEncoder`/`TextDecoder` (and stream variants), `CompressionStream`/`DecompressionStream`, `ReadableStream`/`WritableStream`/`TransformStream`, `EventTarget`, `Event`, `CustomEvent`, `CloseEvent`, `DOMException`, `crypto` (Web Crypto, `crypto.subtle`, `crypto.randomUUID()`), `performance`, `queueMicrotask`, `navigator` (`hardwareConcurrency`, `language`, `languages`, `platform`, `userAgent`, `locks`), `WebAssembly`, `Iterator`.
+Available without imports on 24.22.1 (verified): `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket` (client), `URL`, `URLSearchParams`, `URLPattern` (**New in 24**), `AbortController`, `AbortSignal`, `Blob`, `File`, `BroadcastChannel`, `MessageChannel`, `structuredClone`, `TextEncoder`/`TextDecoder` (and stream variants), `CompressionStream`/`DecompressionStream`, `ReadableStream`/`WritableStream`/`TransformStream`, `EventTarget`, `Event`, `CustomEvent`, `CloseEvent`, `DOMException`, `crypto` (Web Crypto, `crypto.subtle`, `crypto.randomUUID()`), `performance`, `queueMicrotask`, `navigator` (`hardwareConcurrency`, `language`, `languages`, `platform`, `userAgent`, `locks`), `WebAssembly`, `Iterator`.
 
 Not available as globals on 24: `EventSource` (needs `--experimental-eventsource`), `localStorage`/`sessionStorage` (need `--experimental-webstorage`), `Worker` (Web Workers are Node 26+; use `node:worker_threads`), `ErrorEvent` (25+), `Temporal` (26+).
 
@@ -661,7 +633,7 @@ async function mapLimit(items, limit, fn) {
 }
 ```
 
-For rate limiting, Node 24.22.0 adds `util.throttle(fn, limit, interval, options)`, and `util.debounce(fn, wait, options)` for coalescing bursts. Both return promise-returning wrappers (verified: three rapid calls to a debounced function resolve to the result of the last call, and `fn` runs once). They are **New in 24.22** (not in 25.9.0 or older 24.x); keep existing libraries when the project must support earlier versions.[^23]
+For rate limiting, Node 24.22.0 adds `util.throttle(fn, limit, interval, options)`, and `util.debounce(fn, wait, options)` for coalescing bursts. Both return promise-returning wrappers (verified: three rapid calls to a debounced function resolve to the result of the last call, and `fn` runs once). They are **New in 24.22** (not in 25.9.0 or older 24.x); keep existing libraries when the project must support earlier versions.
 
 ```js
 import { debounce } from 'node:util';
@@ -759,7 +731,7 @@ http.createServer((req, res) => {
 });
 ```
 
-- Node 24 implements `AsyncLocalStorage` on top of V8's `AsyncContextFrame` by default (`--no-async-context-frame` restores the async_hooks implementation). The common patterns — `run()`, propagation across `await`, timers, promise reactions and event listeners — behaved identically on 22 and 24 in testing. The docs ask users to report flow differences.[^19]
+- Node 24 implements `AsyncLocalStorage` on top of V8's `AsyncContextFrame` by default (`--no-async-context-frame` restores the async_hooks implementation). The common patterns — `run()`, propagation across `await`, timers, promise reactions and event listeners — behaved identically on 22 and 24 in testing. The docs ask users to report flow differences.
 - `defaultValue` and `name` options are **New in 24** (on 22 `getStore()` outside `run()` returns `undefined`).
 - Prefer `run()`. `enterWith()` is experimental and leaks: calling it in an async function before the first `await` changes the **caller's** context (verified: the caller sees the new store after the call returns).
 - `asyncLocalStorage.withScope(store)` (24.20.0, experimental) returns a `RunScope` for `using`; the same leak applies inside async functions before the first `await`. Use it only in synchronous code.
@@ -859,7 +831,7 @@ lib.x;                                // named exports
 
 ##### Module customization hooks
 
-- `module.registerHooks({ resolve, load })` (synchronous, in-thread, works for `require` and `import`; release candidate on 24) is the supported API. `module.register()` (async, off-thread hooks) is documentation-deprecated in 24.15.0 (DEP0205) and runtime-deprecated in 26 — do not add new uses.[^15]
+- `module.registerHooks({ resolve, load })` (synchronous, in-thread, works for `require` and `import`; release candidate on 24) is the supported API. `module.register()` (async, off-thread hooks) is documentation-deprecated in 24.15.0 (DEP0205) and runtime-deprecated in 26 — do not add new uses.
 
 ```js
 import { registerHooks } from 'node:module';
@@ -888,7 +860,7 @@ hooks.deregister();
 
 #### TypeScript in Node 24 (type stripping)
 
-Node 24 runs `.ts`, `.mts` and `.cts` files directly by **erasing** type annotations (stable since 24.12.0; no warning since 24.3.0). There is no type checking at runtime — run `tsc --noEmit` in CI.[^17]
+Node 24 runs `.ts`, `.mts` and `.cts` files directly by **erasing** type annotations (stable since 24.12.0; no warning since 24.3.0). There is no type checking at runtime — run `tsc --noEmit` in CI.
 
 ```ts
 // app.ts  (package.json has "type": "module")
@@ -917,7 +889,7 @@ Verified rules on 24.22.1:
 - Module format follows the same rules as JavaScript: `.ts` uses the nearest `package.json` `"type"`, `.mts` is ESM, `.cts` is CommonJS (and `require('./x.ts')` needs the extension too).
 - `node -e`/`--eval` accepts TypeScript; `--input-type=module-typescript` selects ESM. The REPL and `node --check` do not support TypeScript.
 - `--no-strip-types` disables the feature (then `.ts` is `ERR_UNKNOWN_FILE_EXTENSION`); `process.features.typescript` is `'strip'`.
-- Recommended `tsconfig.json` for code that Node executes directly (TypeScript 5.8+ for `erasableSyntaxOnly`; verified with `tsc` 5.9):[^31]
+- Recommended `tsconfig.json` for code that Node executes directly (TypeScript 5.8+ for `erasableSyntaxOnly`; verified with `tsc` 5.9):
 
 ```json
 {
@@ -1057,7 +1029,7 @@ async function getJson(url, { signal } = {}) {
 - `fetch` does **not** reject on HTTP 4xx/5xx; check `res.ok`/`res.status`.
 - `fetch` has **no default timeout** that fits a server: always pass a `signal` (typically `AbortSignal.timeout()`).
 - Network failures reject with `TypeError: fetch failed`; the real reason is in `err.cause` (`err.cause.code === 'ECONNREFUSED'`, verified). Log the cause.
-- Always consume or cancel the response body (`await res.text()`, `res.body?.cancel()`); unconsumed bodies hold the connection until garbage collection.[^29]
+- Always consume or cancel the response body (`await res.text()`, `res.body?.cancel()`); unconsumed bodies hold the connection until garbage collection.
 - Streaming request bodies need `duplex: 'half'` (verified: without it, `TypeError: RequestInit: duplex option is required when sending a body`).
 - Redirects: `fetch` follows up to 20 by default; for requests carrying credentials to user-controlled URLs use `redirect: 'manual'` or `'error'`.
 - Ports blocked by the Fetch spec (e.g. 9, 25) fail with `cause.message === 'bad port'`.
@@ -1125,7 +1097,7 @@ Verified: after `server.close()` an in-flight request still completes and the `'
 
 ##### `url`
 
-- Use WHATWG `URL`: `new URL(input, base)`, `URL.canParse(input)`, `URL.parse(input)` (returns `null` instead of throwing). `url.parse()` emits DEP0169 on 24 for application code (code in `node_modules` is exempt, verified) — its non-standard parsing has caused host-confusion vulnerabilities and no CVEs are issued for it.[^8]
+- Use WHATWG `URL`: `new URL(input, base)`, `URL.canParse(input)`, `URL.parse(input)` (returns `null` instead of throwing). `url.parse()` emits DEP0169 on 24 for application code (code in `node_modules` is exempt, verified) — its non-standard parsing has caused host-confusion vulnerabilities and no CVEs are issued for it.
 - `URLPattern` (global, **New in 24**) matches URLs against route patterns:
 
 ```js
@@ -1149,7 +1121,7 @@ new URLPattern('/api/*', 'https://x.dev').test('https://x.dev/api/v1/items'); //
 
 ##### Threat model
 
-Node.js trusts the code it runs and the environment it runs in. The permission model, `vm`, workers and SEA are **not** sandboxes for untrusted code.[^32]
+Node.js trusts the code it runs and the environment it runs in. The permission model, `vm`, workers and SEA are **not** sandboxes for untrusted code.
 
 ##### Permission model (`--permission`)
 
@@ -1160,7 +1132,7 @@ node --permission \
   server.js
 ```
 
-- With `--permission`, `fs`, child processes, worker threads, native addons, WASI, the inspector and OpenSSL STORE loaders are denied unless granted with `--allow-fs-read`, `--allow-fs-write`, `--allow-child-process`, `--allow-worker`, `--allow-addons`, `--allow-wasi`, `--allow-inspector` (24.12.0), `--allow-openssl-store` (24.21.0). Violations throw `ERR_ACCESS_DENIED` with `permission` and `resource` properties (verified).[^18]
+- With `--permission`, `fs`, child processes, worker threads, native addons, WASI, the inspector and OpenSSL STORE loaders are denied unless granted with `--allow-fs-read`, `--allow-fs-write`, `--allow-child-process`, `--allow-worker`, `--allow-addons`, `--allow-wasi`, `--allow-inspector` (24.12.0), `--allow-openssl-store` (24.21.0). Violations throw `ERR_ACCESS_DENIED` with `permission` and `resource` properties (verified).
 - **The network is not restricted on 24**: `fetch`, `http`, `net` work under `--permission` (verified); `--allow-net` only exists in 25+.
 - The entry point is readable implicitly (24.2.0). `process.permission.has(scope, ref)` checks at runtime; `process.permission.drop(scope, ref)` (24.20.0) irreversibly drops a grant after startup (drop the same reference that was granted).
 - `--permission-audit` (24.20.0) only reports violations on `diagnostics_channel` (`node:permission-model:fs`, `...:child`, ...) without denying — use it to discover required grants, never in production as protection.
@@ -1186,7 +1158,7 @@ const { stdout } = await execFileAsync('convert', ['--', filename, 'out.png'], {
 ```
 
 - Pass `--` before user-controlled operands so they cannot be parsed as options.
-- On Windows, `.bat`/`.cmd` files cannot be spawned without `shell: true` (Node throws `EINVAL` since the April 2024 fix for CVE-2024-27980); not verified here (Linux-only test environment).[^33]
+- On Windows, `.bat`/`.cmd` files cannot be spawned without `shell: true` (Node throws `EINVAL` since the April 2024 fix for CVE-2024-27980); not verified here (Linux-only test environment).
 - `shell: ''` is documentation-deprecated (DEP0196).
 
 ##### Paths from user input
@@ -1286,7 +1258,7 @@ hash('sha256', data, 'base64url');  // one-shot digest (not for passwords)
 ##### Dependencies and supply chain (npm 11)
 
 - Commit `package-lock.json` and install with `npm ci` in CI/CD.
-- npm 11.19.1 (bundled with 24.22.1) supports `min-release-age=<days>` (only install versions older than N days), `allow-git=none|root`, and an `allowScripts` policy in `package.json` maintained with `npm approve-scripts`; in the current npm 11 releases unreviewed install scripts still run but are reported, and `strict-allow-scripts=true` turns that into an error.[^30]
+- npm 11.19.1 (bundled with 24.22.1) supports `min-release-age=<days>` (only install versions older than N days), `allow-git=none|root`, and an `allowScripts` policy in `package.json` maintained with `npm approve-scripts`; in the current npm 11 releases unreviewed install scripts still run but are reported, and `strict-allow-scripts=true` turns that into an error.
 - `--ignore-scripts` now also skips `prepare` (npm 11.0.0).
 - Run `npm audit` (npm 11 no longer falls back to the old audit endpoint when the bulk advisory request fails).
 
@@ -1294,7 +1266,7 @@ hash('sha256', data, 'base64url');  // one-shot digest (not for passwords)
 
 #### `node:sqlite`
 
-`node:sqlite` is a synchronous, embedded SQLite binding. On 24 it needs no flag, prints no experimental warning (22 does), and is a **release candidate** since 24.15.0 — stable enough for tools, tests, CLIs and small services; keep an abstraction layer in larger applications. It exists only as `node:sqlite` (`require('sqlite')` fails).[^21]
+`node:sqlite` is a synchronous, embedded SQLite binding. On 24 it needs no flag, prints no experimental warning (22 does), and is a **release candidate** since 24.15.0 — stable enough for tools, tests, CLIs and small services; keep an abstraction layer in larger applications. It exists only as `node:sqlite` (`require('sqlite')` fails).
 
 ```js
 import { DatabaseSync } from 'node:sqlite';
@@ -1380,7 +1352,7 @@ describe('mocks', () => {
 });
 ```
 
-Verified on 24.22.1 (`node --test`): all six tests pass; on 22 `it.expectFailure` does not exist.[^20]
+Verified on 24.22.1 (`node --test`): all six tests pass; on 22 `it.expectFailure` does not exist.
 
 - Run with `node --test` (default patterns include `**/*.test.{js,mjs,cjs}`, `**/test/**/*.{js,...}` and — because type stripping is on — the `.ts`/`.mts`/`.cts` equivalents). Pass explicit globs in quotes.
 - **Changed in 24**: subtests are awaited automatically. On 22, `t.test('child', async () => ...)` without `await` is cancelled when the parent finishes (`cancelledByParent`); on 24 it runs to completion (verified). Awaiting is still clearer.
@@ -1449,7 +1421,7 @@ dc.subscribe('http.server.request.start', ({ request }) => metrics.increment('ht
 
 ##### Running scripts
 
-Flags below are documented in the v24 CLI reference.[^22]
+Flags below are documented in the v24 CLI reference.
 
 - `node --run <script>` executes `package.json` scripts with `node_modules/.bin` on `PATH` and much less overhead than `npm run`, but intentionally does **not** run `pre`/`post` scripts. On 24.22.0+ `node --run` without a name lists scripts.
 - `node --watch` (`--watch-path=<dir>`, `--watch-preserve-output`, `--watch-kill-signal`) restarts on changes — development only.
@@ -1461,7 +1433,7 @@ Flags below are documented in the v24 CLI reference.[^22]
 - npm 11 requires Node `^20.17.0 || >=22.9.0`.
 - `npm publish` refuses to tag a lower version as `latest`; publishing a pre-release requires an explicit `--tag`.
 - `--ignore-scripts` applies to all lifecycle scripts including `prepare`.
-- `npm init` asks for `"type"`.[^30]
+- `npm init` asks for `"type"`.
 
 ##### Linting and static analysis
 
@@ -1529,10 +1501,10 @@ Upgrading from Node 22 (all items verified on 22.23.4 vs 24.22.1 unless sourced)
 11. **`node:sqlite`** no longer prints an experimental warning; defensive mode is on by default since 24.14.0 (code that writes `sqlite_schema` directly breaks).
 12. **`Buffer.poolSize`** is 64 KiB on 24.18+; code that assumed small buffers do not share a large `ArrayBuffer` (e.g. transferring `buf.buffer`) must copy first.
 13. **npm 11**: stricter `publish` tagging, `--ignore-scripts` covers `prepare`, `npm hook` removed.
-14. **Platform support** (sourced): macOS 13.5+, Xcode 16.1+, ClangCL required on Windows (MSVC removed), 32-bit armv7 downgraded to experimental, 32-bit ppc/s390 removed.[^1]
-15. **Undici 7** under `fetch`: the bundled behaviour is spec-compliant fetch; direct users of the `undici` package must follow its 7.x migration notes.[^29]
+14. **Platform support** (sourced): macOS 13.5+, Xcode 16.1+, ClangCL required on Windows (MSVC removed), 32-bit armv7 downgraded to experimental, 32-bit ppc/s390 removed.
+15. **Undici 7** under `fetch`: the bundled behaviour is spec-compliant fetch; direct users of the `undici` package must follow its 7.x migration notes.
 
-Upgrading from 24 to 26 later (do not apply on 24): `module.register()` becomes a runtime deprecation, `--experimental-transform-types` and the `_stream_*` modules are removed, `http.ServerResponse#writeHeader()` is removed, `SlowBuffer`/`fs.F_OK`/`assert.CallTracker` are already gone in 25, Corepack is no longer bundled, `localStorage` behaves differently, and V8 14.6 adds `Temporal`.[^5][^6]
+Upgrading from 24 to 26 later (do not apply on 24): `module.register()` becomes a runtime deprecation, `--experimental-transform-types` and the `_stream_*` modules are removed, `http.ServerResponse#writeHeader()` is removed, `SlowBuffer`/`fs.F_OK`/`assert.CallTracker` are already gone in 25, Corepack is no longer bundled, `localStorage` behaves differently, and V8 14.6 adds `Temporal`.
 
 ***
 
@@ -1590,40 +1562,3 @@ Upgrading from 24 to 26 later (do not apply on 24): `module.register()` becomes 
 - [ ] No `.only`; snapshots reviewed; `--test-randomize` used periodically to catch order dependence
 - [ ] Mocks restored (`t.mock` or `mock.restoreAll()`); fake timers reset
 - [ ] Experimental flags (`--experimental-test-module-mocks`, coverage) pinned and documented
-
-***
-
-[^1]: Node.js 24.0.0 release notes (V8 13.6, npm 11, AsyncContextFrame, URLPattern, permission flag, test runner, undici 7, deprecations, platform changes). https://nodejs.org/en/blog/release/v24.0.0
-[^2]: Node.js release schedule (schedule.json: 24 LTS 2025-10-28, maintenance 2026-10-20, end 2028-04-30; 22 end 2027-04-30; 25 end 2026-06-01; 26 LTS 2026-10-28; 27 alpha). https://github.com/nodejs/Release#release-schedule
-[^3]: Node.js 24.22.1 (LTS) security release, 2026-10-21. https://nodejs.org/en/blog/release/v24.22.1
-[^4]: Node.js 24 changelog (24.0.0–24.22.1, notable changes per minor). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V24.md
-[^5]: Node.js 25 changelog (25.0.0: V8 14.1, Uint8Array base64/hex, Web Storage, ErrorEvent, --allow-net, removals). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V25.md
-[^6]: Node.js 26 changelog (26.0.0: Temporal, V8 14.6, upsert, Iterator.concat, undici 8, removals; 26.x additions). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V26.md
-[^7]: Node.js 23 changelog (require(esm) unflagged, Promise.try/V8 12.9, type stripping unflagged in 23.6, util.is* EOL). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V23.md
-[^8]: Node.js v24 documentation — Deprecated APIs (DEP0005–DEP0209). https://nodejs.org/docs/latest-v24.x/api/deprecations.html
-[^9]: TC39 proposal: Explicit Resource Management; V8 feature explainer. https://github.com/tc39/proposal-explicit-resource-management , https://v8.dev/features/explicit-resource-management
-[^10]: TC39 proposal: RegExp.escape. https://github.com/tc39/proposal-regex-escaping
-[^11]: TC39 proposal: Error.isError. https://github.com/tc39/proposal-is-error
-[^12]: TC39 proposal: Float16 on TypedArrays, DataView, Math.f16round. https://github.com/tc39/proposal-float16array
-[^13]: TC39 proposal: Promise.try. https://github.com/tc39/proposal-promise-try
-[^14]: TC39 proposals: RegExp modifiers; duplicate named capturing groups. https://github.com/tc39/proposal-regexp-modifiers , https://github.com/tc39/proposal-duplicate-named-capturing-groups
-[^15]: Node.js v24 documentation — Modules: CommonJS (require(esm)), node:module (registerHooks, register deprecation, compile cache). https://nodejs.org/docs/latest-v24.x/api/modules.html , https://nodejs.org/docs/latest-v24.x/api/module.html
-[^16]: Node.js v24 documentation — ECMAScript modules and Packages (imports/exports, module-sync, #/ imports). https://nodejs.org/docs/latest-v24.x/api/esm.html , https://nodejs.org/docs/latest-v24.x/api/packages.html
-[^17]: Node.js v24 documentation — Modules: TypeScript (type stripping). https://nodejs.org/docs/latest-v24.x/api/typescript.html
-[^18]: Node.js v24 documentation — Permissions (permission model, audit mode, constraints). https://nodejs.org/docs/latest-v24.x/api/permissions.html
-[^19]: Node.js v24 documentation — Asynchronous context tracking (AsyncLocalStorage, withScope, RunScope) and CLI `--no-async-context-frame`. https://nodejs.org/docs/latest-v24.x/api/async_context.html
-[^20]: Node.js v24 documentation — Test runner. https://nodejs.org/docs/latest-v24.x/api/test.html
-[^21]: Node.js v24 documentation — SQLite. https://nodejs.org/docs/latest-v24.x/api/sqlite.html
-[^22]: Node.js v24 documentation — Command-line API. https://nodejs.org/docs/latest-v24.x/api/cli.html
-[^23]: Node.js v24 documentation — util (debounce, throttle, markPromiseAsHandled, MIMEType.parse, styleText, getCallSites). https://nodejs.org/docs/latest-v24.x/api/util.html
-[^24]: Node.js v24 documentation — Crypto (argon2, randomUUIDv7, hash, encapsulate, createMac, parsePKCS12). https://nodejs.org/docs/latest-v24.x/api/crypto.html
-[^25]: Node.js v24 documentation — HTTP (server timeouts, req.signal, writeInformation, setGlobalProxyFromEnv). https://nodejs.org/docs/latest-v24.x/api/http.html
-[^26]: Node.js v24 documentation — File system (glob, mkdtempDisposable, Utf8Stream, stat options). https://nodejs.org/docs/latest-v24.x/api/fs.html
-[^27]: Node.js v24 documentation — Stream and Web Streams. https://nodejs.org/docs/latest-v24.x/api/stream.html , https://nodejs.org/docs/latest-v24.x/api/webstreams.html
-[^28]: Node.js v24 documentation — Globals (URLPattern, navigator, WebSocket, fetch). https://nodejs.org/docs/latest-v24.x/api/globals.html
-[^29]: undici v7.0.0 release notes and README (body consumption). https://github.com/nodejs/undici/releases/tag/v7.0.0 , https://github.com/nodejs/undici#garbage-collection
-[^30]: npm v11.0.0 release notes; npm config documentation (min-release-age, allow-git, allow-scripts, strict-allow-scripts) and npm-approve-scripts as bundled with npm 11.19.1. https://github.com/npm/cli/releases/tag/v11.0.0 , https://docs.npmjs.com/cli/v11/using-npm/config
-[^31]: TypeScript 5.8 release notes (erasableSyntaxOnly) and 5.9 release notes (--module node20). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html
-[^32]: Node.js security policy and threat model. https://github.com/nodejs/node/blob/main/SECURITY.md
-[^33]: Node.js April 2024 security releases (CVE-2024-27980, Windows batch-file command injection). https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
-[^34]: Node.js 22 changelog (22.18.0: type stripping enabled by default; backports of 23/24 features to the 22 line). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V22.md

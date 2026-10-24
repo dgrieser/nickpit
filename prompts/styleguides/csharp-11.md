@@ -2,9 +2,9 @@
 
 #### Overview
 
-**C# 11** shipped with the **.NET 7 SDK** and Visual Studio 2022 17.4 on **November 8, 2022**.[^1][^4] .NET 7 is a **Standard Term Support (STS)** release and is **out of support**: its end of support was **May 14, 2024**. The final servicing release is **.NET 7.0.20** (runtime 7.0.20, ASP.NET Core 7.0.20, SDKs **7.0.410** / 7.0.317 / 7.0.120), published on **May 28, 2024**, two weeks after the end-of-support date, as a security release (CVE-2024-20672, a macOS-only X.509 denial-of-service issue).[^1][^2][^3] No .NET 7 patch has shipped since; every vulnerability disclosed after May 2024 stays unfixed in .NET 7. EF Core 7 and the `Microsoft.Extensions.*` 7.0.x packages reached end of support on the same date.[^2]
+**C# 11** shipped with the **.NET 7 SDK** and Visual Studio 2022 17.4 on **November 8, 2022**. .NET 7 is a **Standard Term Support (STS)** release and is **out of support**: its end of support was **May 14, 2024**. The final servicing release is **.NET 7.0.20** (runtime 7.0.20, ASP.NET Core 7.0.20, SDKs **7.0.410** / 7.0.317 / 7.0.120), published on **May 28, 2024**, two weeks after the end-of-support date, as a security release (CVE-2024-20672, a macOS-only X.509 denial-of-service issue). No .NET 7 patch has shipped since; every vulnerability disclosed after May 2024 stays unfixed in .NET 7. EF Core 7 and the `Microsoft.Extensions.*` 7.0.x packages reached end of support on the same date.
 
-Status of the .NET line as of October 2026:[^2]
+Status of the .NET line as of October 2026:
 
 | Release | Type | Latest patch (date) | End of support |
 | --- | --- | --- | --- |
@@ -16,7 +16,7 @@ Status of the .NET line as of October 2026:[^2]
 
 **Recommendation for every .NET 7 code base: upgrade to .NET 10 (LTS).** Do not upgrade to .NET 8 or .NET 9 as a destination — both leave support in November 2026. A reviewer flags a `net7.0` target as a finding in its own right (unpatched runtime, ASP.NET Core and EF Core), but still reviews the code *as C# 11 on .NET 7*: suggesting a C# 12+ feature or a .NET 8+ API in a fix for a `net7.0` project produces code that does not compile.
 
-This guide targets **C# 11 on .NET 7** specifically. Everything from earlier versions is available and should be used where it fits: nullable reference types, switch expressions, `using` declarations, async streams, indices and ranges (C# 8); records, init-only setters, top-level statements, target-typed `new`, relational and logical patterns (C# 9); record structs, file-scoped namespaces, global usings, extended property patterns, lambda natural types, `CallerArgumentExpression`, constant interpolated strings (C# 10).[^4] Every section that covers a C# 11 or .NET 7 specific change is marked **New in C# 11** or **New in .NET 7**. **Do not use or recommend anything from C# 12 / .NET 8 or later** — see the explicit list below.
+This guide targets **C# 11 on .NET 7** specifically. Everything from earlier versions is available and should be used where it fits: nullable reference types, switch expressions, `using` declarations, async streams, indices and ranges (C# 8); records, init-only setters, top-level statements, target-typed `new`, relational and logical patterns (C# 9); record structs, file-scoped namespaces, global usings, extended property patterns, lambda natural types, `CallerArgumentExpression`, constant interpolated strings (C# 10). Every section that covers a C# 11 or .NET 7 specific change is marked **New in C# 11** or **New in .NET 7**. **Do not use or recommend anything from C# 12 / .NET 8 or later** — see the explicit list below.
 
 The guide is self-contained: it covers the language, the base class library, ASP.NET Core 7, EF Core 7, testing and tooling as they exist in .NET 7. Every code block was compiled with the C# compiler of SDK 7.0.410 (Roslyn 4.7.0) against the `net7.0` reference assemblies and, where it prints output, run on runtime 7.0.20. "New in C# 11" claims were checked by compiling with `LangVersion` 10, and the "not available" claims by compiling with `LangVersion` 11 (and the feature with `LangVersion` 12+ on a newer SDK).
 
@@ -35,7 +35,7 @@ Global truths about C# 11 / .NET 7:
 
 ##### How to determine the language version
 
-The compiler picks the default `LangVersion` from the target framework, not from the SDK:[^12]
+The compiler picks the default `LangVersion` from the target framework, not from the SDK:
 
 | Target framework | Default C# version |
 | --- | --- |
@@ -70,7 +70,7 @@ Review the project file and `Directory.Build.props` for overrides:
 
 Findings to raise:
 
-- `LangVersion` set to `latest`, `latestMajor` or a number above 11 in a `net7.0` project: the code base now depends on whichever SDK builds it, and Microsoft does not support language versions above the TFM default.[^12] Verified: SDK 10.0.402 with `<LangVersion>latest</LangVersion>` compiles C# 12 collection expressions for `net7.0` without error.
+- `LangVersion` set to `latest`, `latestMajor` or a number above 11 in a `net7.0` project: the code base now depends on whichever SDK builds it, and Microsoft does not support language versions above the TFM default. Verified: SDK 10.0.402 with `<LangVersion>latest</LangVersion>` compiles C# 12 collection expressions for `net7.0` without error.
 - `LangVersion` `preview` with SDK 7.0.4xx: the 7.0.410 compiler (Roslyn 4.7) accepts primary constructors on classes, collection literals (`int[] a = [1, 2, 3];`), `using Point = (int X, int Y);` and lambda default parameters under `preview` — preview implementations that changed before C# 12 shipped. Under `LangVersion` 11 each one fails with `CS8652: The feature '…' is currently in Preview and *unsupported*`.
 - A `global.json` that pins the SDK (`"version": "7.0.410"`) keeps builds reproducible; `rollForward` policies such as `latestMajor` let a machine with only SDK 10 build the project (with NETSDK1138).
 - Multi-targeting (`<TargetFrameworks>net7.0;net8.0</TargetFrameworks>`) compiles each target with its own default language version — code shared between them must stay C# 11.
@@ -111,24 +111,24 @@ Packages are a separate axis: a `net7.0` project can reference a NuGet package t
 | `nint`/`nuint` are aliases of `IntPtr`/`UIntPtr` with full numeric operators ("numeric IntPtr") | gated by the **target framework** (`RuntimeFeature.NumericIntPtr`, `net7.0`+), not by LangVersion |
 | Warning wave 7 (`CS8981`, lowercase type names) | reported only with `<AnalysisLevel>` 7+ (the `net7.0` default) |
 
-Sources: the C# version history and the csharplang language-version history.[^4][^5]
+Sources: the C# version history and the csharplang language-version history.
 
 ##### Runtime and libraries (.NET 7) — highlights for reviewers
 
-- **Generic math** interfaces (`INumber<T>`, `INumberBase<T>`, `IBinaryInteger<T>`, `IFloatingPoint<T>`, …) on all numeric types, plus `Int128`/`UInt128`.[^6][^23]
-- **Regular expressions**: `[GeneratedRegex]` source generator, `RegexOptions.NonBacktracking` (linear-time engine), span APIs `Regex.EnumerateMatches`, `Regex.Count`, `IsMatch(ReadOnlySpan<char>)`, analyzer `SYSLIB1045` suggests the generator.[^6][^20]
-- **System.Text.Json**: contract customization (`DefaultJsonTypeInfoResolver` + `Modifiers`), polymorphism (`[JsonPolymorphic]`, `[JsonDerivedType]`), `required` members and `[JsonRequired]`.[^19]
-- **Rate limiting**: `System.Threading.RateLimiting` (`RateLimiter`, `TokenBucketRateLimiter`, `FixedWindowRateLimiter`, `SlidingWindowRateLimiter`, `ConcurrencyLimiter`, `PartitionedRateLimiter`) and the ASP.NET Core middleware. The rate-limiting library ships as the `System.Threading.RateLimiting` NuGet package (7.0.x, also part of the ASP.NET Core shared framework), not in `Microsoft.NETCore.App`: a plain console or worker project needs the package reference (verified: the type is absent from the 7.0.20 base runtime).[^6][^21]
-- **TAR archives**: `System.Formats.Tar` (`TarFile`, `TarReader`, `TarWriter`).[^6]
-- **Streams**: `Stream.ReadExactly`/`ReadAtLeast` (+ async).[^6]
-- **Unix file modes**: `UnixFileMode`, `File.GetUnixFileMode`/`SetUnixFileMode`, `Directory.CreateDirectory(path, mode)`, `FileStreamOptions.UnixCreateMode`.[^6]
-- **Microsecond/nanosecond** members on `DateTime`, `DateTimeOffset`, `TimeOnly`, `TimeSpan`.[^6]
-- **`[StringSyntax]`**, **`LibraryImport`** P/Invoke source generator, **`ObjectDisposedException.ThrowIf`**, **`ArgumentException.ThrowIfNullOrEmpty`**, **`UnreachableException`**, **`Enumerable.Order`/`OrderDescending`**, **`Stopwatch.GetElapsedTime`**, **`MemoryCache.GetCurrentStatistics()`**, **`Activity.CurrentChanged`**.[^6]
-- **Native AOT** publishing for console apps (not ASP.NET Core; that arrived in .NET 8); **on-stack replacement** enabled; Dynamic PGO available but **off by default** (`<TieredPGO>true</TieredPGO>`; on by default only from .NET 8).[^6][^28]
-- **SDK**: `dotnet new` tab completion, subcommands without `--` (`dotnet new install`/`list`/`search`), template constraints, built-in container publishing (`dotnet publish` to a container image); the release notes also highlight NuGet central package management (`Directory.Packages.props`), which first shipped with NuGet 6.2 / SDK 6.0.300 — `GlobalPackageReference` needs SDK 7.0.100+ / NuGet 6.4.[^6]
-- **Also new in .NET 7**: type converters for `DateOnly`, `TimeOnly`, `Int128`, `UInt128` and `Half`; `Activity.EnumerateTagObjects()`/`EnumerateLinks()`/`EnumerateEvents()`; `System.Runtime.InteropServices.JavaScript` interop for WebAssembly; ASP.NET Core gRPC JSON transcoding.[^6][^8]
-- **ASP.NET Core 7**: rate limiting middleware, output caching middleware, minimal API endpoint filters, route groups (`MapGroup`), `TypedResults` and `Results<T1,…>` unions, `[AsParameters]`, `IFormFile` binding in minimal APIs (no built-in antiforgery), problem details service (`AddProblemDetails`), request decompression middleware, HTTP/3 fully supported, `dotnet user-jwts`, single authentication scheme becomes the default scheme, API controllers infer `[FromServices]` parameters.[^8][^9]
-- **EF Core 7**: `ExecuteUpdate`/`ExecuteDelete` bulk operations, JSON columns (SQL Server provider only), TPC inheritance mapping, faster `SaveChanges` (SQL Server `OUTPUT`, SQLite `RETURNING`), `FromSql`, `SqlQuery<T>` for scalar types, `ExecuteSql`, interceptors for materialization, stored-procedure mapping for inserts/updates/deletes.[^10]
+- **Generic math** interfaces (`INumber<T>`, `INumberBase<T>`, `IBinaryInteger<T>`, `IFloatingPoint<T>`, …) on all numeric types, plus `Int128`/`UInt128`.
+- **Regular expressions**: `[GeneratedRegex]` source generator, `RegexOptions.NonBacktracking` (linear-time engine), span APIs `Regex.EnumerateMatches`, `Regex.Count`, `IsMatch(ReadOnlySpan<char>)`, analyzer `SYSLIB1045` suggests the generator.
+- **System.Text.Json**: contract customization (`DefaultJsonTypeInfoResolver` + `Modifiers`), polymorphism (`[JsonPolymorphic]`, `[JsonDerivedType]`), `required` members and `[JsonRequired]`.
+- **Rate limiting**: `System.Threading.RateLimiting` (`RateLimiter`, `TokenBucketRateLimiter`, `FixedWindowRateLimiter`, `SlidingWindowRateLimiter`, `ConcurrencyLimiter`, `PartitionedRateLimiter`) and the ASP.NET Core middleware. The rate-limiting library ships as the `System.Threading.RateLimiting` NuGet package (7.0.x, also part of the ASP.NET Core shared framework), not in `Microsoft.NETCore.App`: a plain console or worker project needs the package reference (verified: the type is absent from the 7.0.20 base runtime).
+- **TAR archives**: `System.Formats.Tar` (`TarFile`, `TarReader`, `TarWriter`).
+- **Streams**: `Stream.ReadExactly`/`ReadAtLeast` (+ async).
+- **Unix file modes**: `UnixFileMode`, `File.GetUnixFileMode`/`SetUnixFileMode`, `Directory.CreateDirectory(path, mode)`, `FileStreamOptions.UnixCreateMode`.
+- **Microsecond/nanosecond** members on `DateTime`, `DateTimeOffset`, `TimeOnly`, `TimeSpan`.
+- **`[StringSyntax]`**, **`LibraryImport`** P/Invoke source generator, **`ObjectDisposedException.ThrowIf`**, **`ArgumentException.ThrowIfNullOrEmpty`**, **`UnreachableException`**, **`Enumerable.Order`/`OrderDescending`**, **`Stopwatch.GetElapsedTime`**, **`MemoryCache.GetCurrentStatistics()`**, **`Activity.CurrentChanged`**.
+- **Native AOT** publishing for console apps (not ASP.NET Core; that arrived in .NET 8); **on-stack replacement** enabled; Dynamic PGO available but **off by default** (`<TieredPGO>true</TieredPGO>`; on by default only from .NET 8).
+- **SDK**: `dotnet new` tab completion, subcommands without `--` (`dotnet new install`/`list`/`search`), template constraints, built-in container publishing (`dotnet publish` to a container image); the release notes also highlight NuGet central package management (`Directory.Packages.props`), which first shipped with NuGet 6.2 / SDK 6.0.300 — `GlobalPackageReference` needs SDK 7.0.100+ / NuGet 6.4.
+- **Also new in .NET 7**: type converters for `DateOnly`, `TimeOnly`, `Int128`, `UInt128` and `Half`; `Activity.EnumerateTagObjects()`/`EnumerateLinks()`/`EnumerateEvents()`; `System.Runtime.InteropServices.JavaScript` interop for WebAssembly; ASP.NET Core gRPC JSON transcoding.
+- **ASP.NET Core 7**: rate limiting middleware, output caching middleware, minimal API endpoint filters, route groups (`MapGroup`), `TypedResults` and `Results<T1,…>` unions, `[AsParameters]`, `IFormFile` binding in minimal APIs (no built-in antiforgery), problem details service (`AddProblemDetails`), request decompression middleware, HTTP/3 fully supported, `dotnet user-jwts`, single authentication scheme becomes the default scheme, API controllers infer `[FromServices]` parameters.
+- **EF Core 7**: `ExecuteUpdate`/`ExecuteDelete` bulk operations, JSON columns (SQL Server provider only), TPC inheritance mapping, faster `SaveChanges` (SQL Server `OUTPUT`, SQLite `RETURNING`), `FromSql`, `SqlQuery<T>` for scalar types, `ExecuteSql`, interceptors for materialization, stored-procedure mapping for inserts/updates/deletes.
 
 ***
 
@@ -136,7 +136,7 @@ Sources: the C# version history and the csharplang language-version history.[^4]
 
 The compiler of a `net7.0` project rejects these, or the API does not exist in the `net7.0` reference assemblies. Never suggest them as a fix. (Language items verified with SDK 7.0.410 at LangVersion 11; API items verified by reflection on runtimes 7.0.20 and 8.0.32/9.0.21/10.0.13.)
 
-##### C# 12 (.NET 8, November 2023)[^13]
+##### C# 12 (.NET 8, November 2023)
 
 - **Primary constructors** on `class`/`struct` (`class Service(ILogger log) { … }`) — LangVersion 11: `CS8652 … 'primary constructors' is currently in Preview`. Records already have positional parameters in C# 11; ordinary classes do not.
 - **Collection expressions** `[1, 2, 3]`, `[..a, ..b]`, `List<int> l = [];` — `CS8652 'collection literals'` (SDK 7) / `CS9058` (newer SDK). Use `new[] { 1, 2, 3 }`, `new List<int> { … }`, `Array.Empty<T>()`, `a.Concat(b).ToArray()`.
@@ -147,14 +147,14 @@ The compiler of a `net7.0` project rejects these, or the API does not exist in t
 - **`[Experimental]`** attribute (type missing in .NET 7).
 - **Interceptors** (preview in C# 12).
 
-##### C# 13 (.NET 9, November 2024)[^14]
+##### C# 13 (.NET 9, November 2024)
 
 - `params ReadOnlySpan<T>` / `params IEnumerable<T>` collections — `CS0225: The params parameter must be a single dimensional array`.
 - `System.Threading.Lock` and the new `lock` semantics (type missing in .NET 7; keep `private readonly object _gate = new();`).
 - `\e` escape — `CS1009: Unrecognized escape sequence`; write `\u001b`.
 - Partial properties/indexers, `ref struct` implementing interfaces, `allows ref struct` anti-constraint, `ref`/`unsafe` in iterators and async methods, `[OverloadResolutionPriority]`, implicit `^` index in object initializers.
 
-##### C# 14 (.NET 10, November 2025)[^15]
+##### C# 14 (.NET 10, November 2025)
 
 - `extension` blocks / extension members (properties, static extension members) — use classic `static` extension methods.
 - The `field` keyword in property accessors — on LangVersion 11 `field` is an ordinary identifier, so `get => field;` fails with `CS0103: The name 'field' does not exist in the current context` (or silently binds to a member named `field`); declare a backing field.
@@ -197,8 +197,8 @@ Pre-release only; nothing from it applies to a `net7.0` code base.
 
 ##### Deprecated or removed in .NET 7 (do not keep using)
 
-- `BinaryFormatter.Serialize`/`Deserialize`, `Formatter`/`IFormatter` serialize methods: `SYSLIB0011` is a **compile error** in SDK builds targeting `net7.0` (verified: `error SYSLIB0011`), not just a warning.[^38]
-- New obsoletions with custom diagnostic IDs (verified as warnings on 7.0.410):[^25] `SYSLIB0039` (`SslProtocols.Tls`/`Tls11`), `SYSLIB0040` (`EncryptionPolicy.NoEncryption`/`AllowNoEncryption`), `SYSLIB0041` (`Rfc2898DeriveBytes` constructors with default SHA-1/1000 iterations), `SYSLIB0042` (`ToXmlString`/`FromXmlString` on the Windows CNG EC types), `SYSLIB0043` (`ECDiffieHellmanPublicKey.ToByteArray`), `SYSLIB0044` (`AssemblyName.CodeBase`), `SYSLIB0045` (`HashAlgorithm.Create(string)` and other name-based crypto factories), `SYSLIB0046` (`ControlledExecution.Run`), `SYSLIB0047` (`XmlSecureResolver`), `SYSLIB0036` (`Regex.CompileToAssembly`), `SYSLIB0037` (`AssemblyName.HashAlgorithm` etc.), `SYSLIB0038` (`SerializationFormat.Binary`).
+- `BinaryFormatter.Serialize`/`Deserialize`, `Formatter`/`IFormatter` serialize methods: `SYSLIB0011` is a **compile error** in SDK builds targeting `net7.0` (verified: `error SYSLIB0011`), not just a warning.
+- New obsoletions with custom diagnostic IDs (verified as warnings on 7.0.410): `SYSLIB0039` (`SslProtocols.Tls`/`Tls11`), `SYSLIB0040` (`EncryptionPolicy.NoEncryption`/`AllowNoEncryption`), `SYSLIB0041` (`Rfc2898DeriveBytes` constructors with default SHA-1/1000 iterations), `SYSLIB0042` (`ToXmlString`/`FromXmlString` on the Windows CNG EC types), `SYSLIB0043` (`ECDiffieHellmanPublicKey.ToByteArray`), `SYSLIB0044` (`AssemblyName.CodeBase`), `SYSLIB0045` (`HashAlgorithm.Create(string)` and other name-based crypto factories), `SYSLIB0046` (`ControlledExecution.Run`), `SYSLIB0047` (`XmlSecureResolver`), `SYSLIB0036` (`Regex.CompileToAssembly`), `SYSLIB0037` (`AssemblyName.HashAlgorithm` etc.), `SYSLIB0038` (`SerializationFormat.Binary`).
 - Still obsolete from earlier releases: `WebRequest`/`HttpWebRequest`/`WebClient`/`ServicePoint` (`SYSLIB0014`), `Thread.Abort` (`SYSLIB0006`), Code Access Security (`SYSLIB0003`).
 
 ***
@@ -239,7 +239,7 @@ public interface IOrderRepository                     // interfaces: I prefix
 public sealed record Order(int Id, decimal Total);    // records: PascalCase positional parameters
 ```
 
-**New in C# 11 — warning wave 7:** a type whose name contains only lowercase ASCII letters triggers `CS8981: The type name '…' only contains lower-cased ascii characters. Such names may become reserved for the language.` It is reported when the warning level is 7 or higher, which is the default for SDK-style projects targeting `net7.0` (verified: SDK build shows the warning; `csc -warn:6` does not).[^24] C# 11 itself reserved `required`, `scoped` and `file` as type names (`CS9029` for a type named `required`).[^5]
+**New in C# 11 — warning wave 7:** a type whose name contains only lowercase ASCII letters triggers `CS8981: The type name '…' only contains lower-cased ascii characters. Such names may become reserved for the language.` It is reported when the warning level is 7 or higher, which is the default for SDK-style projects targeting `net7.0` (verified: SDK build shows the warning; `csc -warn:6` does not). C# 11 itself reserved `required`, `scoped` and `file` as type names (`CS9029` for a type named `required`).
 
 ```csharp
 // warning CS8981 under AnalysisLevel 7 (net7.0 default)
@@ -259,7 +259,7 @@ Other house rules:
 
 #### New in C# 11: Raw String Literals
 
-A raw string literal starts and ends with at least three `"` characters. Content needs no escaping; a multi-line literal has its common indentation removed, measured from the closing delimiter.[^4]
+A raw string literal starts and ends with at least three `"` characters. Content needs no escaping; a multi-line literal has its common indentation removed, measured from the closing delimiter.
 
 ```csharp
 var name = "widget";
@@ -299,7 +299,7 @@ Rules a reviewer must know (all verified):
 
 #### New in C# 11: Generic Math and Static Abstract Interface Members
 
-Interfaces can declare `static abstract` (and `static virtual`) members, including operators. .NET 7 implements the generic math interfaces (`INumber<T>`, `IAdditionOperators<,,>`, `IBinaryInteger<T>`, `IFloatingPointIeee754<T>`, …) on every primitive numeric type.[^23]
+Interfaces can declare `static abstract` (and `static virtual`) members, including operators. .NET 7 implements the generic math interfaces (`INumber<T>`, `IAdditionOperators<,,>`, `IBinaryInteger<T>`, `IFloatingPointIeee754<T>`, …) on every primitive numeric type.
 
 ```csharp
 using System.Numerics;
@@ -361,7 +361,7 @@ Pitfalls (verified):
 
 - An interface with static abstract members cannot be used as a type argument: `G<IShape>()` fails with `CS8920: The interface 'IShape' cannot be used as type argument. Static member … does not have a most specific implementation`. Such interfaces are constraints, not variable types.
 - `Midpoint(int.MaxValue, int.MaxValue)` returns `-1`: generic math does not add overflow checking. Use `checked(...)`, `CreateChecked`, or widen the type.
-- `.NET 7` also ships `IParsable<T>`/`ISpanParsable<T>` (implemented by the primitives), which ASP.NET Core 7 MVC/API controllers use for model binding (`static bool TryParse(string?, IFormatProvider?, out T)`).[^8]
+- `.NET 7` also ships `IParsable<T>`/`ISpanParsable<T>` (implemented by the primitives), which ASP.NET Core 7 MVC/API controllers use for model binding (`static bool TryParse(string?, IFormatProvider?, out T)`).
 - Generic math on hot paths is JIT-specialized for value types; do not box values through `INumber<T>`-typed locals of an interface type (that is not allowed anyway — see `CS8920`).
 
 `checked` user-defined operators and the unsigned right shift are part of the same feature set:
@@ -387,7 +387,7 @@ readonly record struct Money(int Cents)
 
 #### New in C# 11 / .NET 7: `nint`, `nuint` and Numeric `IntPtr`
 
-`nint`/`nuint` are now plain aliases of `System.IntPtr`/`System.UIntPtr`, and on `net7.0` both get the full set of numeric operators ("numeric IntPtr"). This is controlled by the **target framework** (`RuntimeFeature.NumericIntPtr`), not by `LangVersion`.[^5]
+`nint`/`nuint` are now plain aliases of `System.IntPtr`/`System.UIntPtr`, and on `net7.0` both get the full set of numeric operators ("numeric IntPtr"). This is controlled by the **target framework** (`RuntimeFeature.NumericIntPtr`), not by `LangVersion`.
 
 Verified consequences when retargeting from `net6.0` to `net7.0`:
 
@@ -472,7 +472,7 @@ Under C# 10 this is `CS8967`. Do not put long logic into holes; extract a method
 
 #### New in C# 11: List Patterns
 
-List patterns match arrays, `List<T>`, spans, `string` and any type that is *countable* (`Length`/`Count`) and *indexable* (`this[int]` or `this[Index]`); slice patterns (`.. var rest`) also require a range indexer or `Slice(int, int)`.[^4]
+List patterns match arrays, `List<T>`, spans, `string` and any type that is *countable* (`Length`/`Count`) and *indexable* (`this[int]` or `this[Index]`); slice patterns (`.. var rest`) also require a range indexer or `Slice(int, int)`.
 
 ```csharp
 int[] numbers = { 1, 2, 3, 4, 5 };
@@ -508,7 +508,7 @@ Pitfalls (verified):
 - `List<T>` has no range indexer, so `list is [_, .. var middle, _]` fails with `CS1503: Argument 1: cannot convert from 'System.Range' to 'int'`. Discard slices (`..`) work; capturing slices need arrays, spans or strings.
 - `IEnumerable<T>` cannot be list-matched (`CS8985 … No suitable 'Length' or 'Count' property was found`). Materialize first, or use LINQ.
 - A slice of an **array** (`.. var rest`) allocates a new array (it calls `RuntimeHelpers.GetSubArray`); a slice of a `Span<T>`/`ReadOnlySpan<T>` does not. In hot paths match on `numbers.AsSpan()`.
-- `Length`/`Count` are assumed non-negative for exhaustiveness; arms like `{ Count: < 0 }` are reported as errors (subsumed patterns).[^5]
+- `Length`/`Count` are assumed non-negative for exhaustiveness; arms like `{ Count: < 0 }` are reported as errors (subsumed patterns).
 
 ***
 
@@ -534,7 +534,7 @@ Comparison is ordinal (`SequenceEqual`). `span is null` does not compile (`CS913
 
 #### New in C# 11: Required Members
 
-`required` on a field or property forces every object creation to set it in an object initializer; a constructor marked `[SetsRequiredMembers]` opts out.[^34]
+`required` on a field or property forces every object creation to set it in an object initializer; a constructor marked `[SetsRequiredMembers]` opts out.
 
 ```csharp
 using System.Diagnostics.CodeAnalysis;
@@ -638,7 +638,7 @@ A file-local type cannot appear in the signature of a non-file-local member (`CS
 
 #### New in C# 11: `ref` Fields and `scoped`
 
-`ref struct` types can contain `ref` fields; `scoped` restricts a reference so it cannot escape the method; `[UnscopedRef]` widens it.[^33] These features target low-level library code (`Span<T>` itself is now implemented with a `ref` field).
+`ref struct` types can contain `ref` fields; `scoped` restricts a reference so it cannot escape the method; `[UnscopedRef]` widens it. These features target low-level library code (`Span<T>` itself is now implemented with a `ref` field).
 
 ```csharp
 int value = 1;
@@ -662,7 +662,7 @@ ref struct RefHolder
 }
 ```
 
-Compiler breaking changes that come with the new ref-safety rules (C# 11 **or** `net7.0`): `out` parameters are implicitly `scoped`, so returning one by `ref` fails (`CS9075: Cannot return a parameter by reference 'x' because it is scoped to the current method`; fix with `[UnscopedRef] out` or a `ref` parameter), and a `ref struct` instance method is assumed to capture unscoped `ref`/`in` arguments, which turns some formerly accepted span code into errors.[^5] Treat a new `[UnscopedRef]` or `Unsafe.AsRef` in application code as a red flag that needs justification.
+Compiler breaking changes that come with the new ref-safety rules (C# 11 **or** `net7.0`): `out` parameters are implicitly `scoped`, so returning one by `ref` fails (`CS9075: Cannot return a parameter by reference 'x' because it is scoped to the current method`; fix with `[UnscopedRef] out` or a `ref` parameter), and a `ref struct` instance method is assumed to capture unscoped `ref`/`in` arguments, which turns some formerly accepted span code into errors. Treat a new `[UnscopedRef]` or `Unsafe.AsRef` in application code as a red flag that needs justification.
 
 ***
 
@@ -1392,7 +1392,7 @@ Review rules:
 
 - Lifetimes: a service may depend only on services with the same or longer lifetime. `DbContext` is scoped; never inject it into a singleton or `BackgroundService` — inject `IServiceScopeFactory` and create a scope per unit of work, or use `IDbContextFactory<T>`.
 - No service locator (`IServiceProvider.GetService` inside business code) except in factories and hosted services that create scopes.
-- Constructor injection only; avoid `[FromServices]` property injection patterns. In ASP.NET Core 7 API controllers, action parameters whose type is registered in DI are bound from services automatically (breaking change in 7.0) — a complex parameter type accidentally registered in DI is no longer read from the body.[^9]
+- Constructor injection only; avoid `[FromServices]` property injection patterns. In ASP.NET Core 7 API controllers, action parameters whose type is registered in DI are bound from services automatically (breaking change in 7.0) — a complex parameter type accidentally registered in DI is no longer read from the body.
 - Keyed services (`AddKeyedSingleton`, `[FromKeyedServices]`) are .NET 8; on .NET 7 register a factory or a dictionary of named instances.
 - Disposable transients resolved from the root provider are kept alive until the root is disposed — a memory leak in long-running processes.
 
@@ -1447,7 +1447,7 @@ Review rules:
 - `IOptions<T>` is a singleton snapshot read once; `IOptionsSnapshot<T>` is scoped and re-reads per scope; `IOptionsMonitor<T>` is a singleton with change notifications. Injecting `IOptionsSnapshot<T>` into a singleton is a captive dependency.
 - Without `ValidateOnStart()`, validation runs on the first `.Value` access — the app starts with broken configuration.
 - Options classes bound from configuration use settable properties; `required`/`init` is not useful there (the binder sets properties after construction).
-- Configuration binding to dictionaries **extends** values in .NET 7 rather than replacing them (breaking change).[^7]
+- Configuration binding to dictionaries **extends** values in .NET 7 rather than replacing them (breaking change).
 - Secrets come from environment variables, user secrets (development) or a vault provider — never from `appsettings.json` committed to the repository. Environment variables use `__` as the section separator (`Smtp__Password`); `DOTNET_`/`ASPNETCORE_` prefixes configure the host.
 - The source-generated configuration binder and `[OptionsValidator]` are .NET 8 — do not suggest them.
 
@@ -1557,7 +1557,7 @@ sealed class FakeHandler : HttpMessageHandler
 
 Review rules:
 
-- `new HttpClient()` per request exhausts sockets (`TIME_WAIT`); a static client without `PooledConnectionLifetime` ignores DNS changes. Use `IHttpClientFactory` (typed or named clients) or one shared client with `SocketsHttpHandler.PooledConnectionLifetime`.[^27]
+- `new HttpClient()` per request exhausts sockets (`TIME_WAIT`); a static client without `PooledConnectionLifetime` ignores DNS changes. Use `IHttpClientFactory` (typed or named clients) or one shared client with `SocketsHttpHandler.PooledConnectionLifetime`.
 - Typed clients are transient; do not capture a typed client in a singleton (it pins one handler forever and defeats handler rotation).
 - Always pass a `CancellationToken`; set `Timeout` deliberately (default 100 s). Dispose `HttpResponseMessage` (`using var response`), especially with `HttpCompletionOption.ResponseHeadersRead`.
 - Check status codes before deserializing; `GetFromJsonAsync` throws `HttpRequestException` on non-success codes, which callers often do not expect.
@@ -1627,7 +1627,7 @@ sealed class Circle : Shape { public double Radius { get; set; } }
 sealed class Square : Shape { public double Side { get; set; } }
 ```
 
-Verified pitfalls: a discriminator that is not the first JSON property makes .NET 7 fall back to the abstract base type and throw **`NotSupportedException`** (not `JsonException`) — `catch (JsonException)` around deserialization of client input misses it and produces a 500. `AllowOutOfOrderMetadataProperties` is .NET 9. Serializing as `object` omits the discriminator on .NET 7 (the same call on .NET 8.0.32 emits `"$kind"`). Never deserialize polymorphic types from untrusted input with `TypeNameHandling`-style type names (Newtonsoft.Json `TypeNameHandling.All/Auto` is a remote-code-execution risk); STJ only allows the derived types you register.[^30]
+Verified pitfalls: a discriminator that is not the first JSON property makes .NET 7 fall back to the abstract base type and throw **`NotSupportedException`** (not `JsonException`) — `catch (JsonException)` around deserialization of client input misses it and produces a 500. `AllowOutOfOrderMetadataProperties` is .NET 9. Serializing as `object` omits the discriminator on .NET 7 (the same call on .NET 8.0.32 emits `"$kind"`). Never deserialize polymorphic types from untrusted input with `TypeNameHandling`-style type names (Newtonsoft.Json `TypeNameHandling.All/Auto` is a remote-code-execution risk); STJ only allows the derived types you register.
 
 ##### New in .NET 7: contract customization
 
@@ -1668,7 +1668,7 @@ sealed class User
 }
 ```
 
-Combine resolvers with `JsonTypeInfoResolver.Combine(...)` (.NET 7); `TypeInfoResolverChain` and `WithAddedModifier` are .NET 8.[^31]
+Combine resolvers with `JsonTypeInfoResolver.Combine(...)` (.NET 7); `TypeInfoResolverChain` and `WithAddedModifier` are .NET 8.
 
 ##### Source generation and required properties
 
@@ -1750,10 +1750,10 @@ static partial class Patterns
 
 Review rules:
 
-- Patterns or inputs from users: `RegexOptions.NonBacktracking` (no lookarounds, backreferences, atomic groups or `RightToLeft`) or a match timeout; never an unbounded backtracking regex.[^20]
+- Patterns or inputs from users: `RegexOptions.NonBacktracking` (no lookarounds, backreferences, atomic groups or `RightToLeft`) or a match timeout; never an unbounded backtracking regex.
 - Constant patterns: `[GeneratedRegex]` on a `static partial` **method** (analyzer `SYSLIB1045` suggests it). Partial **properties** for `[GeneratedRegex]` are .NET 9.
 - Cache `Regex` instances; `new Regex(...)` per call re-parses. `RegexOptions.Compiled` costs startup time; the source generator is preferable in .NET 7.
-- .NET 7 corrected some character-range behaviours under `IgnoreCase` (breaking change "Regex patterns with ranges corrected").[^7]
+- .NET 7 corrected some character-range behaviours under `IgnoreCase` (breaking change "Regex patterns with ranges corrected").
 
 ***
 
@@ -1884,7 +1884,7 @@ Verified behaviour of this pipeline on ASP.NET Core 7.0.20 (Kestrel, real HTTP r
 - **The default problem-details writer in .NET 7 only writes JSON when the request's `Accept` header allows `application/json`.** A request without `Accept` (e.g. a bare `HttpClient`) gets an **empty** 500 body from `UseExceptionHandler()` and a `text/plain` body (`Status Code: 404; Not Found`) from `UseStatusCodePages()`. Clients and tests must send `Accept: application/json`.
 - `Results<T1,…>` exists for 2 to 6 type arguments (unchanged through .NET 10; verified by reflection); an endpoint with more outcomes returns `IResult`.
 
-Other minimal-API facts for .NET 7:[^8]
+Other minimal-API facts for .NET 7:
 
 - `[AsParameters]` binds a parameter object (route, query, header, services) — **New in .NET 7**.
 - Arrays and `StringValues` bind from query strings and headers; the body can be bound as `Stream`/`PipeReader`.
@@ -1931,9 +1931,9 @@ app.Run();
 
 Review rules:
 
-- `UseOutputCache` must come after `UseCors`, `UseAuthentication` and `UseAuthorization`; otherwise cached content can be served to unauthorized callers.[^22]
-- `UseHttpsRedirection`/`UseHsts` in production; Kestrel no longer binds HTTPS by default in .NET 7 (breaking change) — configure endpoints explicitly.[^9]
-- With a single authentication scheme registered, .NET 7 uses it as the default scheme automatically;[^8] with several, set `DefaultScheme`/`DefaultChallengeScheme` explicitly.
+- `UseOutputCache` must come after `UseCors`, `UseAuthentication` and `UseAuthorization`; otherwise cached content can be served to unauthorized callers.
+- `UseHttpsRedirection`/`UseHsts` in production; Kestrel no longer binds HTTPS by default in .NET 7 (breaking change) — configure endpoints explicitly.
+- With a single authentication scheme registered, .NET 7 uses it as the default scheme automatically; with several, set `DefaultScheme`/`DefaultChallengeScheme` explicitly.
 - `JwtBearer`: never disable `ValidateIssuer`, `ValidateAudience`, `ValidateLifetime` or `ValidateIssuerSigningKey`; never set `RequireHttpsMetadata = false` outside development. `dotnet user-jwts` (**New in .NET 7**) issues local development tokens.
 - CORS: `AllowAnyOrigin()` with credentials is rejected by the framework; `SetIsOriginAllowed(_ => true)` + `AllowCredentials()` is the same vulnerability in disguise.
 - Forwarded headers behind a proxy: `UseForwardedHeaders` with `KnownProxies`/`KnownNetworks` restricted, or client IPs (used by rate limiting and logging) are spoofable.
@@ -1979,7 +1979,7 @@ app.MapPost("/login", () => Results.Ok()).RequireRateLimiting("login");
 app.Run();
 ```
 
-Verified: without setting `RejectionStatusCode`, a request over the limit gets **`503 Service Unavailable`**, which load balancers and clients treat as a server fault and may retry. Set `429` and consider `OnRejected` to add `Retry-After`.[^21] The limiter state is in-process — with several instances each one enforces its own limit.
+Verified: without setting `RejectionStatusCode`, a request over the limit gets **`503 Service Unavailable`**, which load balancers and clients treat as a server fault and may retry. Set `429` and consider `OnRejected` to add `Retry-After`. The limiter state is in-process — with several instances each one enforces its own limit.
 
 ##### New in .NET 7: output caching
 
@@ -2008,19 +2008,19 @@ app.MapPost("/catalog/purge", async (IOutputCacheStore store, CancellationToken 
 app.Run();
 ```
 
-Default policy (verified for the authenticated case): only `200` responses to `GET`/`HEAD` are cached; responses that set cookies and responses to requests with an `Authorization` header or an authenticated user are not cached; default expiration 60 s; storage is in-process memory (`SizeLimit` 100 MB, `MaximumBodySize` 64 MB). A custom policy that enables caching for authenticated requests must vary by user, or one user's data leaks to another. The Redis output-cache store is .NET 8.[^22]
+Default policy (verified for the authenticated case): only `200` responses to `GET`/`HEAD` are cached; responses that set cookies and responses to requests with an `Authorization` header or an authenticated user are not cached; default expiration 60 s; storage is in-process memory (`SizeLimit` 100 MB, `MaximumBodySize` 64 MB). A custom policy that enables caching for authenticated requests must vary by user, or one user's data leaks to another. The Redis output-cache store is .NET 8.
 
 ##### Controllers
 
-- `[ApiController]` gives automatic `400` validation responses and binding-source inference. **.NET 7:** parameters whose type is registered in DI are now inferred as `[FromServices]`.[^9]
+- `[ApiController]` gives automatic `400` validation responses and binding-source inference. **.NET 7:** parameters whose type is registered in DI are now inferred as `[FromServices]`.
 - Return `ActionResult<T>`; validate with data annotations or FluentValidation; never bind EF entities directly from requests (over-posting) — use request DTOs.
-- MVC's empty-body detection changed in .NET 7: it uses `IHttpRequestBodyDetectionFeature.CanHaveBody`, so a request without `Content-Length`/chunked encoding is treated as having no body ("A non-empty request body is required."); optional `[FromBody]` parameters now bind correctly. Clients must send proper headers.[^9]
+- MVC's empty-body detection changed in .NET 7: it uses `IHttpRequestBodyDetectionFeature.CanHaveBody`, so a request without `Content-Length`/chunked encoding is treated as having no body ("A non-empty request body is required."); optional `[FromBody]` parameters now bind correctly. Clients must send proper headers.
 
 ***
 
 #### EF Core 7
 
-EF Core 7.0.20 is the last EF Core 7 release and is out of support together with .NET 7.[^2] EF Core 7 targets `net6.0`, so it also runs on .NET 7.[^11]
+EF Core 7.0.20 is the last EF Core 7 release and is out of support together with .NET 7. EF Core 7 targets `net6.0`, so it also runs on .NET 7.
 
 ##### New in EF Core 7: `ExecuteUpdate` / `ExecuteDelete`
 
@@ -2065,7 +2065,7 @@ public sealed class ShopContext : DbContext
 }
 ```
 
-Review rules for bulk operations:[^10]
+Review rules for bulk operations:
 
 - They bypass the change tracker: already-tracked entities keep stale values (verified above), `SaveChanges` interceptors, `SavingChanges` events, auditing/soft-delete logic implemented in `SaveChanges`, and concurrency tokens do **not** run.
 - Several `ExecuteUpdate`/`ExecuteDelete` calls are not one transaction; wrap them in `BeginTransactionAsync` when they must be atomic.
@@ -2108,10 +2108,10 @@ public sealed class UserContext : DbContext
 }
 ```
 
-- `FromSql`, `ExecuteSql` and `SqlQuery` (scalar types) are **New in EF Core 7**; `SqlQuery<T>` for unmapped entity-like types is EF Core 8.[^37]
+- `FromSql`, `ExecuteSql` and `SqlQuery` (scalar types) are **New in EF Core 7**; `SqlQuery<T>` for unmapped entity-like types is EF Core 8.
 - `FromSqlRaw`/`ExecuteSqlRaw` with a `string` built by concatenation or by an interpolated `string` variable is SQL injection; with `FormattableString` / `{0}` placeholders plus arguments it is parameterized. Identifiers (column names) cannot be parameters — whitelist them.
 
-##### EF Core 7 breaking changes to check during review[^11]
+##### EF Core 7 breaking changes to check during review
 
 - **SQL Server `Encrypt=True` by default** (Microsoft.Data.SqlClient 4+): connections fail against servers without a trusted certificate. The fix is a valid certificate — `TrustServerCertificate=True` or `Encrypt=False` in production connection strings are security findings.
 - **SQL Server tables with triggers** (and some computed columns) fail on `SaveChanges` because EF 7 uses `OUTPUT` without `INTO`: configure `entity.ToTable(tb => tb.HasTrigger("TriggerName"))` (`UseSqlOutputClause(false)` is EF 8).
@@ -2208,7 +2208,7 @@ Review rules:
 
 ##### Deserialization and XML
 
-- `BinaryFormatter`, `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter` and Newtonsoft.Json with `TypeNameHandling` other than `None` on untrusted data are remote-code-execution risks. `BinaryFormatter.Serialize`/`Deserialize` is a compile **error** (`SYSLIB0011`) in .NET 7 SDK builds — `<NoWarn>SYSLIB0011</NoWarn>` or `EnableUnsafeBinaryFormatterSerialization` in a diff is a red flag.[^38]
+- `BinaryFormatter`, `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter` and Newtonsoft.Json with `TypeNameHandling` other than `None` on untrusted data are remote-code-execution risks. `BinaryFormatter.Serialize`/`Deserialize` is a compile **error** (`SYSLIB0011`) in .NET 7 SDK builds — `<NoWarn>SYSLIB0011</NoWarn>` or `EnableUnsafeBinaryFormatterSerialization` in a diff is a red flag.
 - `XmlReader`/`XmlDocument` in .NET Core do not resolve external entities by default; do not set an `XmlUrlResolver`. `XmlSecureResolver` is obsolete (`SYSLIB0047`) — use `XmlResolver.ThrowingResolver` (**New in .NET 7**).
 
 ##### Unsupported runtime
@@ -2220,8 +2220,8 @@ Running on .NET 7 means known, unpatched vulnerabilities in the runtime, ASP.NET
 #### Performance
 
 - Measure first: BenchmarkDotNet for micro-benchmarks, `dotnet-counters`/`dotnet-trace` for services. Do not accept "optimizations" without numbers.
-- **Dynamic PGO is off by default in .NET 7** (`<TieredPGO>true</TieredPGO>` enables it; it is on by default from .NET 8). On-stack replacement is enabled, so long-running loops in Tier-0 methods get optimized.[^6][^28]
-- **Native AOT** in .NET 7 supports console apps only (no ASP.NET Core), requires trimming-compatible code and reflection-free serialization (STJ source generation).[^29]
+- **Dynamic PGO is off by default in .NET 7** (`<TieredPGO>true</TieredPGO>` enables it; it is on by default from .NET 8). On-stack replacement is enabled, so long-running loops in Tier-0 methods get optimized.
+- **Native AOT** in .NET 7 supports console apps only (no ASP.NET Core), requires trimming-compatible code and reflection-free serialization (STJ source generation).
 - Server GC is the ASP.NET Core default; containers with tight memory limits may need `<ConcurrentGarbageCollection>`/`GCHeapHardLimit` tuning (`DOTNET_GCHeapHardLimit`).
 - Avoid allocations in hot paths: `StringBuilder` or `string.Create` for string building, spans for parsing, `ArrayPool<T>`, `struct` enumerators (`foreach` over `List<T>` directly, not via `IEnumerable<T>`), cached delegates and `JsonSerializerOptions`.
 - `async` everywhere for I/O; `ValueTask` only where profiling shows allocation pressure.
@@ -2275,7 +2275,7 @@ public static class PriceCalculator
 }
 ```
 
-Integration tests for ASP.NET Core 7 use `WebApplicationFactory<Program>` from `Microsoft.AspNetCore.Mvc.Testing` 7.0.x. With top-level statements the generated `Program` class is internal; in .NET 7 add `public partial class Program { }` at the end of `Program.cs` (or `InternalsVisibleTo` the test assembly).[^35]
+Integration tests for ASP.NET Core 7 use `WebApplicationFactory<Program>` from `Microsoft.AspNetCore.Mvc.Testing` 7.0.x. With top-level statements the generated `Program` class is internal; in .NET 7 add `public partial class Program { }` at the end of `Program.cs` (or `InternalsVisibleTo` the test assembly).
 
 ```csharp
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -2303,7 +2303,7 @@ Review rules:
 
 - Tests are deterministic: no `DateTime.Now`, `Random` without seed, `Task.Delay`-based synchronization or shared static state. `TimeProvider`/`FakeTimeProvider` are .NET 8 — inject an own clock abstraction on .NET 7.
 - Async tests return `Task`, never `async void` (xUnit cannot observe failures in `async void` tests).
-- Test behaviour, not implementation details; mock boundaries (HTTP, clock, message bus), not the class under test. Moq 4.20.0 and 4.20.1 contained the SponsorLink build-time data collection (hashed e-mail addresses from git config); 4.20.2 removed it — flag pins to 4.20.0/4.20.1.[^40]
+- Test behaviour, not implementation details; mock boundaries (HTTP, clock, message bus), not the class under test. Moq 4.20.0 and 4.20.1 contained the SponsorLink build-time data collection (hashed e-mail addresses from git config); 4.20.2 removed it — flag pins to 4.20.0/4.20.1.
 - EF Core: the in-memory provider does not enforce relational constraints or translate SQL; prefer SQLite in-memory or Testcontainers for repository tests.
 - New tests accompany bug fixes; table-driven `[Theory]` tests for rule-heavy logic.
 
@@ -2327,10 +2327,10 @@ Review rules:
 </Project>
 ```
 
-- Default analysis (`AnalysisLevel` = `latest`, which is 7.0 on SDK 7, mode `Default`) reports very little: in a test project only `CA2200` fired. With `latest-recommended` the same code additionally reported `CA1304`/`CA1311` (culture-sensitive `ToLower()`), `CA1829` (`Count()` on a list), `CA1848` and `CA2254` (logging); `latest-all` additionally reported `CA2007` (`ConfigureAwait`) (verified on SDK 7.0.410; a `CA2000` dispose leak was not reported for an undisposed `MemoryStream` local, so do not rely on it alone).[^26]
+- Default analysis (`AnalysisLevel` = `latest`, which is 7.0 on SDK 7, mode `Default`) reports very little: in a test project only `CA2200` fired. With `latest-recommended` the same code additionally reported `CA1304`/`CA1311` (culture-sensitive `ToLower()`), `CA1829` (`Count()` on a list), `CA1848` and `CA2254` (logging); `latest-all` additionally reported `CA2007` (`ConfigureAwait`) (verified on SDK 7.0.410; a `CA2000` dispose leak was not reported for an undisposed `MemoryStream` local, so do not rely on it alone).
 - Sync-over-async (`.Result`, `.Wait()`) is not flagged by the built-in analyzers; `Microsoft.VisualStudio.Threading.Analyzers` (`VSTHRD002`) does.
-- Central package management (`Directory.Packages.props` with `ManagePackageVersionsCentrally`; featured in the .NET 7 SDK release notes, available since NuGet 6.2) keeps versions consistent across projects; `CentralPackageTransitivePinningEnabled` pins vulnerable transitive packages.[^6]
-- Vulnerable packages: `dotnet list package --vulnerable --include-transitive` works on SDK 7; automatic NuGet audit during restore (`NuGetAudit`) needs SDK 8+.[^39]
+- Central package management (`Directory.Packages.props` with `ManagePackageVersionsCentrally`; featured in the .NET 7 SDK release notes, available since NuGet 6.2) keeps versions consistent across projects; `CentralPackageTransitivePinningEnabled` pins vulnerable transitive packages.
+- Vulnerable packages: `dotnet list package --vulnerable --include-transitive` works on SDK 7; automatic NuGet audit during restore (`NuGetAudit`) needs SDK 8+.
 - `dotnet format` for style; `.editorconfig` for naming and severity configuration; `<WarningsAsErrors>nullable</WarningsAsErrors>` as a minimum.
 - `global.json` pins the SDK; CI images that only contain SDK 8+/10 build `net7.0` with `NETSDK1138` warnings — which `TreatWarningsAsErrors` turns into errors. Do not "fix" that by suppressing NETSDK1138; retarget.
 
@@ -2340,7 +2340,7 @@ Review rules:
 
 - `ILogger` with message templates (structured), `[LoggerMessage]` source generation, scopes for correlation.
 - `System.Diagnostics.Metrics` (`Meter`, `Counter<T>`, `Histogram<T>`, `UpDownCounter<T>` — all available in .NET 7) and `ActivitySource`/`Activity` for traces; export with OpenTelemetry. `IMeterFactory` and the built-in ASP.NET Core metrics instruments are .NET 8 — on .NET 7 create static `Meter` instances.
-- `Activity.CurrentChanged` and `Activity.EnumerateTagObjects()` are **New in .NET 7**.[^6]
+- `Activity.CurrentChanged` and `Activity.EnumerateTagObjects()` are **New in .NET 7**.
 - Health checks (`AddHealthChecks`, `MapHealthChecks`) separate liveness from readiness; do not expose detailed health output publicly.
 - `MemoryCache.GetCurrentStatistics()` (**New in .NET 7**) requires `TrackStatistics = true` in `MemoryCacheOptions`.
 - `dotnet-counters`, `dotnet-trace`, `dotnet-dump` work against .NET 7 processes; `EventPipe`-based tooling needs no code changes.
@@ -2349,7 +2349,7 @@ Review rules:
 
 #### Removed / Changed in .NET 7 and C# 11 — Migration Notes
 
-From .NET 6 / C# 10 to .NET 7 / C# 11 (what a reviewer of a freshly migrated code base should look for):[^5][^7][^9][^11]
+From .NET 6 / C# 10 to .NET 7 / C# 11 (what a reviewer of a freshly migrated code base should look for):
 
 - **Language:** `required`, `scoped` and `file` cannot be type names; lowercase type names warn (`CS8981`); `out` parameters cannot be returned by `ref`; stricter `ref struct` escape rules; `nint`/`IntPtr` arithmetic is checked inside `checked` blocks and `UIntPtr + int` is ambiguous on `net7.0`; `struct` constructors no longer must assign all fields (lost safety net).
 - **Libraries:** `BinaryFormatter` APIs are compile errors; new `SYSLIB0036`–`SYSLIB0047` obsoletions; `DateTime.Add*` methods round with higher precision (results can differ in the last ticks); `Equals` for `NaN` changed; `BrotliStream` rejects undefined `CompressionLevel` values; reflection-invoke exceptions changed; the legacy `FileStream` strategy switch is gone; numeric format strings have a maximum precision of 999,999,999; `MemoryCacheOptions.TrackLinkedCacheEntries` defaults to `false` (linked cache-entry expiration no longer propagates by default); multi-level SDK/runtime lookup is disabled on Windows; `SslClientAuthenticationOptions.AllowRenegotiation` defaults to `false`; a reused `X509ChainPolicy` now validates against `DateTime.Now` at each `X509Chain.Build` call (new `VerificationTimeIgnored` defaults to `true`; assigning `VerificationTime` turns it off).
@@ -2359,7 +2359,7 @@ From .NET 6 / C# 10 to .NET 7 / C# 11 (what a reviewer of a freshly migrated cod
 - **EF Core 7:** SQL Server `Encrypt=True` default; triggers need `HasTrigger`; SQLite `RETURNING`; orphaned optional dependents not deleted; `HasCheckConstraint`/`HasComment` move to the table builder (`ToTable(t => t.HasCheckConstraint(...))`).
 - **SDK:** `dotnet test -a`/`-r` switches changed meaning; automatic RuntimeIdentifier only for publish; `--output` invalid for solution-level commands.
 
-From .NET 7 to .NET 10 (the recommended upgrade): retarget to `net10.0`, update all `Microsoft.*` packages to 10.0.x and EF Core to 10.0.x, rebuild with `TreatWarningsAsErrors` to surface new obsoletions, and review the .NET 8, 9 and 10 breaking-change lists (notably: .NET 8 container images run as non-root on port 8080, `BinaryFormatter` is removed entirely in .NET 9, EF Core 8+ changes `Contains` translation with JSON/OPENJSON on SQL Server).[^16][^17][^18] Only after retargeting may the code adopt C# 12–14 features and the .NET 8–10 APIs listed in "Do Not Use or Recommend".
+From .NET 7 to .NET 10 (the recommended upgrade): retarget to `net10.0`, update all `Microsoft.*` packages to 10.0.x and EF Core to 10.0.x, rebuild with `TreatWarningsAsErrors` to surface new obsoletions, and review the .NET 8, 9 and 10 breaking-change lists (notably: .NET 8 container images run as non-root on port 8080, `BinaryFormatter` is removed entirely in .NET 9, EF Core 8+ changes `Contains` translation with JSON/OPENJSON on SQL Server). Only after retargeting may the code adopt C# 12–14 features and the .NET 8–10 APIs listed in "Do Not Use or Recommend".
 
 ***
 
@@ -2424,44 +2424,3 @@ From .NET 7 to .NET 10 (the recommended upgrade): retarget to `net10.0`, update 
 - [ ] `<TieredPGO>true</TieredPGO>` considered (off by default in .NET 7)
 - [ ] `AnalysisLevel` `latest-recommended` (or stricter) and `TreatWarningsAsErrors` enabled
 - [ ] Structured logs, metrics and traces in place; health checks separate liveness and readiness
-
-***
-
-[^1]: .NET 7.0 release notes and release metadata (7.0.0 on 2022-11-08 … 7.0.20 / SDK 7.0.410 on 2024-05-28). https://github.com/dotnet/core/blob/main/release-notes/7.0/README.md , https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/7.0/releases.json
-[^2]: .NET and .NET Core official support policy; release index with support phases and end-of-support dates (7.0 EOL 2024-05-14; 8.0 and 9.0 2026-11-10; 10.0 2028-11-14; 11.0 RC2 go-live). https://dotnet.microsoft.com/platform/support/policy/dotnet-core , https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json
-[^3]: .NET 7.0.20 – May 28, 2024 (CVE-2024-20672). https://github.com/dotnet/core/blob/main/release-notes/7.0/7.0.20/7.0.20.md
-[^4]: The history of C# — C# version 11. https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-version-history#c-version-11 ; csharplang Language Version History. https://github.com/dotnet/csharplang/blob/main/Language-Version-History.md
-[^5]: Roslyn: Breaking changes in the compiler after .NET 6 (C# 11 / .NET 7). https://github.com/dotnet/roslyn/blob/main/docs/compilers/CSharp/Compiler%20Breaking%20Changes%20-%20DotNet%207.md
-[^6]: What's new in .NET 7. https://learn.microsoft.com/dotnet/core/whats-new/dotnet-7
-[^7]: Breaking changes in .NET 7. https://learn.microsoft.com/dotnet/core/compatibility/7.0
-[^8]: What's new in ASP.NET Core in .NET 7. https://learn.microsoft.com/aspnet/core/release-notes/aspnetcore-7.0
-[^9]: Breaking changes in ASP.NET Core 7. https://learn.microsoft.com/aspnet/core/breaking-changes/7/overview
-[^10]: What's new in EF Core 7.0. https://learn.microsoft.com/ef/core/what-is-new/ef-core-7.0/whatsnew
-[^11]: Breaking changes in EF Core 7.0. https://learn.microsoft.com/ef/core/what-is-new/ef-core-7.0/breaking-changes
-[^12]: C# language versioning (defaults per target framework). https://learn.microsoft.com/dotnet/csharp/language-reference/configure-language-version
-[^13]: What's new in C# 12. https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-12
-[^14]: What's new in C# 13. https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-13
-[^15]: What's new in C# 14. https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-14
-[^16]: What's new in .NET 8 and breaking changes in .NET 8. https://learn.microsoft.com/dotnet/core/whats-new/dotnet-8/overview , https://learn.microsoft.com/dotnet/core/compatibility/8.0
-[^17]: What's new in .NET 9 and breaking changes in .NET 9. https://learn.microsoft.com/dotnet/core/whats-new/dotnet-9/overview , https://learn.microsoft.com/dotnet/core/compatibility/9.0
-[^18]: What's new in .NET 10 and breaking changes in .NET 10. https://learn.microsoft.com/dotnet/core/whats-new/dotnet-10/overview , https://learn.microsoft.com/dotnet/core/compatibility/10.0
-[^19]: What's new in System.Text.Json in .NET 7. https://devblogs.microsoft.com/dotnet/system-text-json-in-dotnet-7/
-[^20]: Regular expression improvements in .NET 7; .NET regular expression source generators. https://devblogs.microsoft.com/dotnet/regular-expression-improvements-in-dotnet-7/ , https://learn.microsoft.com/dotnet/standard/base-types/regular-expression-source-generators
-[^21]: Rate limiting middleware in ASP.NET Core. https://learn.microsoft.com/aspnet/core/performance/rate-limit?view=aspnetcore-7.0
-[^22]: Output caching middleware in ASP.NET Core (7.0 version: default policy, limits, ordering). https://learn.microsoft.com/aspnet/core/performance/caching/output?view=aspnetcore-7.0
-[^23]: Generic math. https://learn.microsoft.com/dotnet/standard/generics/math
-[^24]: C# compiler warning waves (CS8981, wave 7). https://learn.microsoft.com/dotnet/csharp/language-reference/compiler-messages/warning-waves
-[^25]: Obsolete features in .NET 5+ (SYSLIB0001–SYSLIB0047). https://learn.microsoft.com/dotnet/fundamentals/syslib-diagnostics/obsoletions-overview
-[^26]: MSBuild properties for code analysis (AnalysisLevel, AnalysisMode). https://learn.microsoft.com/dotnet/core/project-sdk/msbuild-props#code-analysis-properties
-[^27]: Guidelines for using HttpClient. https://learn.microsoft.com/dotnet/fundamentals/networking/http/httpclient-guidelines
-[^28]: Performance improvements in .NET 7; Performance improvements in .NET 8 (Dynamic PGO on by default). https://devblogs.microsoft.com/dotnet/performance_improvements_in_net_7/ , https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/
-[^29]: Native AOT deployment overview. https://learn.microsoft.com/dotnet/core/deploying/native-aot/
-[^30]: How to serialize properties of derived classes with System.Text.Json (polymorphism). https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/polymorphism
-[^31]: Customize a JSON contract. https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/custom-contracts
-[^33]: Low-level struct improvements (ref fields, scoped, UnscopedRef) proposal. https://github.com/dotnet/csharplang/blob/main/proposals/csharp-11.0/low-level-struct-improvements.md
-[^34]: Required members proposal. https://github.com/dotnet/csharplang/blob/main/proposals/csharp-11.0/required-members.md
-[^35]: Integration tests in ASP.NET Core (WebApplicationFactory, `public partial class Program`). https://learn.microsoft.com/aspnet/core/test/integration-tests?view=aspnetcore-7.0
-[^37]: SQL Queries — EF Core (FromSql in EF 7, SqlQuery unmapped types in EF 8). https://learn.microsoft.com/ef/core/querying/sql-queries
-[^38]: Breaking change: BinaryFormatter serialization APIs produce compiler errors (.NET 7). https://learn.microsoft.com/dotnet/core/compatibility/serialization/7.0/binaryformatter-apis-produce-errors
-[^39]: Auditing package dependencies for security vulnerabilities (NuGetAudit, .NET 8 SDK). https://learn.microsoft.com/nuget/concepts/auditing-packages
-[^40]: GitLab advisory database — Moq 4.20.0/4.20.1 SponsorLink data collection, removed in 4.20.2. https://advisories.gitlab.com/pkg/nuget/moq/

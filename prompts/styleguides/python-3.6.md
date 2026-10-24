@@ -2,7 +2,7 @@
 
 #### Overview
 
-Python 3.6 was released on December 23, 2016.[^1] It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. Python 3.6 delivered fourteen PEPs — one of the most significant feature releases since the Python 2→3 transition — and is a fully production-ready, long-supported release that underpins enormous amounts of real-world infrastructure.
+Python 3.6 was released on December 23, 2016. It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. Python 3.6 delivered fourteen PEPs — one of the most significant feature releases since the Python 2→3 transition — and is a fully production-ready, long-supported release that underpins enormous amounts of real-world infrastructure.
 
 This guide is the reference for projects on any Python 3.x release up to and including 3.6. Features that first appeared in 3.6 (f-strings, variable annotations, `secrets`, async generators, ...) are marked as such — skip them when targeting an older 3.x, and do not use anything newer than 3.6 (no `dataclasses` stdlib module, no `asyncio.run()`, no ordered-dict language guarantee).
 
@@ -49,7 +49,7 @@ class Base:
 _module_cache = {}
 ```
 
-**Note:** In Python 3, all classes implicitly inherit from `object`. You do not need to write `class Foo(object):`; `class Foo:` is equivalent and preferred.[^2]
+**Note:** In Python 3, all classes implicitly inherit from `object`. You do not need to write `class Foo(object):`; `class Foo:` is equivalent and preferred.
 
 ##### Indentation and Line Length
 
@@ -103,7 +103,7 @@ from myapp.utils import format_date
 
 ##### Integers
 
-Python 3.6 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`.[^3] Arithmetic never overflows; Python silently allocates more memory.
+Python 3.6 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`. Arithmetic never overflows; Python silently allocates more memory.
 
 ```python
 import sys
@@ -112,7 +112,7 @@ x = 10 ** 100             # perfectly fine — a googol
 print(type(x))            # <class 'int'>
 ```
 
-**Numeric literals with underscores (PEP 515 — new in 3.6):**[^1]
+**Numeric literals with underscores (PEP 515 — new in 3.6):**
 
 ```python
 one_million   = 1_000_000
@@ -122,7 +122,7 @@ pi_approx     = 3.141_592_653_589_793
 sci_notation  = 1.5e1_0  # 15000000000.0
 ```
 
-Underscores are purely cosmetic — the interpreter strips them. Single underscores between digits and after any base specifier are allowed; leading, trailing, or consecutive underscores are syntax errors.[^1]
+Underscores are purely cosmetic — the interpreter strips them. Single underscores between digits and after any base specifier are allowed; leading, trailing, or consecutive underscores are syntax errors.
 
 **Bitwise operations:**
 
@@ -141,7 +141,7 @@ print(a >> 1)  # right shift
 
 ##### Floats
 
-Floats are C `double` (64-bit IEEE 754).[^3]
+Floats are C `double` (64-bit IEEE 754).
 
 ```python
 x = 3.14
@@ -183,7 +183,7 @@ print(result)  # 0.3
 
 ##### Booleans
 
-`bool` is a subtype of `int`. `True == 1` and `False == 0`.[^3]
+`bool` is a subtype of `int`. `True == 1` and `False == 0`.
 
 ```python
 print(isinstance(True, int))  # True
@@ -191,7 +191,7 @@ print(True + True)            # 2
 print(True * 5)               # 5
 ```
 
-**Falsy values** in Python 3.6:[^3]
+**Falsy values** in Python 3.6:
 - `None`
 - `False`
 - Zero of any numeric type: `0`, `0.0`, `0j`
@@ -218,7 +218,7 @@ print(z.conjugate())  # (3-4j)
 
 #### Division
 
-In Python 3, `/` **always performs true (float) division** — this is one of the most important changes from Python 2.[^3]
+In Python 3, `/` **always performs true (float) division** — this is one of the most important changes from Python 2.
 
 ```python
 print(7 / 2)    # 3.5  — true division (no truncation!)
@@ -240,7 +240,7 @@ print(-7 % 2)    # 1   (satisfies: (a // b) * b + a % b == a)
 
 #### Strings: `str` and `bytes`
 
-This is the most fundamental difference from Python 2. Python 3.6 has two distinct string-like types:[^4]
+This is the most fundamental difference from Python 2. Python 3.6 has two distinct string-like types:
 
 - **`str`**: A sequence of Unicode code points. The "native" string type. **All string literals are `str`** — there is no `u''` / `unicode` split. (`u'...'` prefix is allowed again as of 3.3 for source compatibility but is redundant.)
 - **`bytes`**: A sequence of raw 8-bit values. Declared with `b''` prefix. Not text — never implicitly mixed with `str`.
@@ -288,7 +288,7 @@ print(encoded)           # b'caf\xc3\xa9'
 text.encode()            # equivalent to text.encode('utf-8')
 ```
 
-**Pitfall: `str` and `bytes` are never equal**, even empty:[^4]
+**Pitfall: `str` and `bytes` are never equal**, even empty:
 
 ```python
 print('' == b'')   # False — always False in Python 3
@@ -309,7 +309,7 @@ with open('data.txt', 'r', encoding='utf-8') as f:
 
 ##### String Methods
 
-All of the following work on `str`:[^3]
+All of the following work on `str`:
 
 ```python
 s = 'Hello, World!'
@@ -340,11 +340,11 @@ print('abc123'.isalnum())         # True
 print('  '.isspace())             # True
 ```
 
-**`casefold()` vs `lower()`:** `casefold()` is more aggressive — it handles German ß → ss and other Unicode folding rules. Prefer `casefold()` for case-insensitive comparisons of user-supplied text.[^3]
+**`casefold()` vs `lower()`:** `casefold()` is more aggressive — it handles German ß → ss and other Unicode folding rules. Prefer `casefold()` for case-insensitive comparisons of user-supplied text.
 
 ##### f-strings — Formatted String Literals (PEP 498, new in 3.6)
 
-f-strings are one of the biggest Python 3.6 additions. They are prefixed with `f` or `F` and allow embedding expressions directly inside string literals.[^1]
+f-strings are one of the biggest Python 3.6 additions. They are prefixed with `f` or `F` and allow embedding expressions directly inside string literals.
 
 ```python
 name = 'Alice'
@@ -393,7 +393,7 @@ print(f'Newline: {chr(10)}')       # chr() for special chars
 
 **Pitfall: f-strings are not templates.** They are evaluated immediately at the line they appear. They cannot be stored as a string and evaluated later (unlike `str.format_map()`).
 
-**Performance:** f-strings are faster than `%` formatting and `str.format()` because they are compiled directly to bytecode string-building instructions.[^5]
+**Performance:** f-strings are faster than `%` formatting and `str.format()` because they are compiled directly to bytecode string-building instructions.
 
 ```python
 # Slowest — two lookups, call overhead
@@ -435,7 +435,7 @@ print(b[0:1])    # b'h' — bytes slice
 
 #### Variable Annotations (PEP 526, new in 3.6)
 
-Python 3.6 adds syntax for annotating the types of variables — including module-level variables, class variables, and instance variables.[^1]
+Python 3.6 adds syntax for annotating the types of variables — including module-level variables, class variables, and instance variables.
 
 ```python
 from typing import ClassVar, Dict, List, Optional
@@ -508,7 +508,7 @@ def first(items: List[T]) -> Optional[T]:
 
 ##### `typing.NamedTuple` — Class-Based Syntax (Python 3.6+)
 
-Python 3.6 introduces a class-based syntax for `NamedTuple` with full type annotation support:[^6]
+Python 3.6 introduces a class-based syntax for `NamedTuple` with full type annotation support:
 
 ```python
 from typing import NamedTuple
@@ -564,7 +564,7 @@ print(u)  # User(id=1, name='Alice', email='alice@example.com', active=True, tag
 
 #### Lists
 
-Lists are mutable, ordered, heterogeneous sequences.[^3]
+Lists are mutable, ordered, heterogeneous sequences.
 
 ```python
 lst = [1, 'two', 3.0, [4, 5]]
@@ -643,7 +643,7 @@ flat    = [item for sublist in nested for item in sublist]
 matrix  = [[i * j for j in range(1, 4)] for i in range(1, 4)]
 ```
 
-**Python 3 fix:** Unlike Python 2, list comprehension variables do NOT leak into the enclosing scope.[^7]
+**Python 3 fix:** Unlike Python 2, list comprehension variables do NOT leak into the enclosing scope.
 
 ```python
 x = 10
@@ -655,7 +655,7 @@ print(x)  # 10 — x is unchanged (Python 3 correctly scopes comprehension varia
 
 #### Tuples
 
-Tuples are immutable, ordered sequences.[^3]
+Tuples are immutable, ordered sequences.
 
 ```python
 t = (1, 2, 3)
@@ -681,7 +681,7 @@ print(head, middle, tail)  # 1 [2, 3, 4] 5
 
 #### Dictionaries
 
-Dictionaries in Python 3.6 are ordered by insertion order as a CPython implementation detail (the language guarantee came with 3.7).[^8] In practice, CPython 3.6 dicts are ordered; use `collections.OrderedDict` if cross-implementation portability is needed.
+Dictionaries in Python 3.6 are ordered by insertion order as a CPython implementation detail (the language guarantee came with 3.7). In practice, CPython 3.6 dicts are ordered; use `collections.OrderedDict` if cross-implementation portability is needed.
 
 ```python
 d = {'name': 'Alice', 'age': 30}
@@ -708,7 +708,7 @@ for v in d.values():               # view of values
     pass
 ```
 
-**Python 3 dict views vs Python 2 iter methods:** In Python 3, `d.items()`, `d.keys()`, and `d.values()` return lightweight **view objects** — they don't copy the data. There is no equivalent of Python 2's `d.iteritems()` because the default methods ARE already lazy views.[^3]
+**Python 3 dict views vs Python 2 iter methods:** In Python 3, `d.items()`, `d.keys()`, and `d.values()` return lightweight **view objects** — they don't copy the data. There is no equivalent of Python 2's `d.iteritems()` because the default methods ARE already lazy views.
 
 **Pitfall:** Adding or removing keys while iterating a dictionary raises `RuntimeError` (the check is size-based, so the docs only promise it *may* be detected — never rely on it):
 
@@ -760,7 +760,7 @@ c.update('hello')
 
 #### Sets
 
-Sets are mutable, unordered collections of unique, hashable elements.[^3]
+Sets are mutable, unordered collections of unique, hashable elements.
 
 ```python
 s = {1, 2, 3}
@@ -789,7 +789,7 @@ unique_squares = {x**2 for x in range(-5, 6)}
 
 #### `range` in Python 3
 
-In Python 3, `range()` is always a lazy object — there is no `xrange()` at all.[^3]
+In Python 3, `range()` is always a lazy object — there is no `xrange()` at all.
 
 ```python
 for i in range(1_000_000):
@@ -899,7 +899,7 @@ create_user('Alice', 'alice@example.com', active=True)   # OK
 
 ##### `nonlocal` Keyword
 
-`nonlocal` allows a nested function to rebind a variable in the enclosing scope (Python 3 only):[^3]
+`nonlocal` allows a nested function to rebind a variable in the enclosing scope (Python 3 only):
 
 ```python
 from typing import Callable
@@ -935,7 +935,7 @@ print([f() for f in funcs])  # [0, 1, 2, 3, 4]
 
 ##### `map`, `filter`, `zip`, `reduce`
 
-In Python 3, `map()`, `filter()`, and `zip()` all return lazy iterators — no list copy.[^3] `reduce` moved to `functools`:
+In Python 3, `map()`, `filter()`, and `zip()` all return lazy iterators — no list copy. `reduce` moved to `functools`:
 
 ```python
 from functools import reduce
@@ -957,7 +957,7 @@ evens   = [x for x in range(10) if x % 2 == 0]
 
 ##### The Iterator Protocol
 
-An iterator in Python 3 uses `__next__()` (NOT `next()` as in Python 2):[^3]
+An iterator in Python 3 uses `__next__()` (NOT `next()` as in Python 2):
 
 ```python
 class CountDown:
@@ -998,7 +998,7 @@ total = sum(x**2 for x in range(1_000_000))   # never builds list
 
 ##### Asynchronous Generators (PEP 525, new in 3.6)
 
-Python 3.6 lifts the restriction that prevented using `yield` inside `async def` functions:[^1]
+Python 3.6 lifts the restriction that prevented using `yield` inside `async def` functions:
 
 ```python
 import asyncio
@@ -1080,7 +1080,7 @@ for key, group in itertools.groupby(data, key=lambda x: x[0]):
 
 ##### Class Definition
 
-In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical.[^2]
+In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical.
 
 ```python
 class Animal:
@@ -1111,7 +1111,7 @@ class Animal:
 
 ##### Inheritance and `super()`
 
-Python 3 supports zero-argument `super()` — no longer need to pass `ClassName, self`:[^3]
+Python 3 supports zero-argument `super()` — no longer need to pass `ClassName, self`:
 
 ```python
 class Dog(Animal):
@@ -1125,7 +1125,7 @@ class Dog(Animal):
 
 ##### `__init_subclass__` (PEP 487, new in 3.6)
 
-A cleaner alternative to metaclasses for customizing subclass creation:[^1]
+A cleaner alternative to metaclasses for customizing subclass creation:
 
 ```python
 from typing import ClassVar, List
@@ -1148,7 +1148,7 @@ print(PluginBase.subclasses)  # [<class 'Plugin1'>, <class 'Plugin2'>]
 
 ##### `__set_name__` Descriptor Enhancement (PEP 487, new in 3.6)
 
-Descriptors now receive their attribute name at class creation time:[^1]
+Descriptors now receive their attribute name at class creation time:
 
 ```python
 class Validated:
@@ -1218,7 +1218,7 @@ class Config:
 
 ##### `__slots__`
 
-`__slots__` eliminates the per-instance `__dict__`, reducing memory significantly for large numbers of small objects:[^9]
+`__slots__` eliminates the per-instance `__dict__`, reducing memory significantly for large numbers of small objects:
 
 ```python
 class Point:
@@ -1290,7 +1290,7 @@ class Rectangle(Shape):
 
 #### Enum (Python 3.4+)
 
-Enums provide named constants with type safety. `enum.auto()` was enhanced in Python 3.6:[^10]
+Enums provide named constants with type safety. `enum.auto()` was enhanced in Python 3.6:
 
 ```python
 from enum import Enum, IntEnum, Flag, auto
@@ -1422,9 +1422,9 @@ BaseException
 ```
 
 **Python 3 improvements:**
-- `IOError` and `OSError` are now the same class (`OSError`). `IOError` is a backwards-compatibility alias.[^3]
-- Specific `OSError` subclasses (`FileNotFoundError`, `PermissionError`, `TimeoutError`) allow fine-grained catching without checking `errno`.[^3]
-- `ModuleNotFoundError` (subclass of `ImportError`) is raised when a module is not found.[^1]
+- `IOError` and `OSError` are now the same class (`OSError`). `IOError` is a backwards-compatibility alias.
+- Specific `OSError` subclasses (`FileNotFoundError`, `PermissionError`, `TimeoutError`) allow fine-grained catching without checking `errno`.
+- `ModuleNotFoundError` (subclass of `ImportError`) is raised when a module is not found.
 
 ```python
 # Python 2 pattern — do not use in Python 3
@@ -1443,7 +1443,7 @@ except PermissionError:
     handle_permission_denied()
 ```
 
-**Pitfall: Never catch `BaseException` or bare `except:` in production:**[^11]
+**Pitfall: Never catch `BaseException` or bare `except:` in production:**
 
 ```python
 # BAD — swallows Ctrl-C and sys.exit()
@@ -1491,7 +1491,7 @@ def read_config(path: str) -> dict:
 
 ##### Exception Chaining (Python 3)
 
-Python 3 supports explicit exception chaining via `raise ... from`:[^12]
+Python 3 supports explicit exception chaining via `raise ... from`:
 
 ```python
 # Explicit chaining — sets __cause__
@@ -1616,7 +1616,7 @@ with suppress(FileNotFoundError):
 
 ##### Text Files
 
-In Python 3, `open()` in text mode returns a `TextIOWrapper` that decodes bytes to `str` automatically. Always pass `encoding` explicitly:[^4]
+In Python 3, `open()` in text mode returns a `TextIOWrapper` that decodes bytes to `str` automatically. Always pass `encoding` explicitly:
 
 ```python
 # Reading text
@@ -1658,7 +1658,7 @@ with open('large.bin', 'rb') as f:
 
 ##### `pathlib` — Object-Oriented Paths (Python 3.4+, `os.PathLike` support new in 3.6)
 
-`pathlib.Path` is the preferred path API in Python 3. In Python 3.6, `Path` objects implement `os.PathLike` (PEP 519) and work directly with `open()` and all standard library functions:[^13]
+`pathlib.Path` is the preferred path API in Python 3. In Python 3.6, `Path` objects implement `os.PathLike` (PEP 519) and work directly with `open()` and all standard library functions:
 
 ```python
 from pathlib import Path
@@ -1715,17 +1715,17 @@ with tempfile.TemporaryDirectory() as tmpdir:
 # directory deleted here automatically
 ```
 
-**Do NOT use `tempfile.mktemp()`** — deprecated and vulnerable to TOCTOU race conditions.[^11] In Python 3, `TemporaryDirectory()` is a proper context manager, unlike Python 2's `mkdtemp()`.
+**Do NOT use `tempfile.mktemp()`** — deprecated and vulnerable to TOCTOU race conditions. In Python 3, `TemporaryDirectory()` is a proper context manager, unlike Python 2's `mkdtemp()`.
 
 ***
 
 #### `async`/`await` and `asyncio`
 
-`asyncio` became stable (no longer provisional) in Python 3.6.[^1]
+`asyncio` became stable (no longer provisional) in Python 3.6.
 
 ##### Mental Model
 
-- `asyncio` runs on a **single thread** with cooperative scheduling.[^14]
+- `asyncio` runs on a **single thread** with cooperative scheduling.
 - Tasks yield control only when they explicitly `await`.
 - Ideal for **I/O-bound** work (HTTP, databases, file I/O).
 - A blocking call inside `async def` **freezes the entire event loop** for all tasks.
@@ -1876,7 +1876,7 @@ def _private_helper() -> None:  # excluded from star imports
 
 #### The `secrets` Module (new in Python 3.6)
 
-Python 3.6 introduces `secrets` for cryptographically strong random values suitable for security-sensitive purposes:[^1]
+Python 3.6 introduces `secrets` for cryptographically strong random values suitable for security-sensitive purposes:
 
 ```python
 import secrets
@@ -1903,7 +1903,7 @@ if secrets.compare_digest(provided_token, stored_token):
     grant_access()
 ```
 
-**Rule:** Use `secrets` for every value that must be unpredictable: session tokens, CSRF tokens, API keys, password reset links.[^1] **Never use `random` module for security-sensitive values** — it is a deterministic PRNG seeded from the clock and is predictable.
+**Rule:** Use `secrets` for every value that must be unpredictable: session tokens, CSRF tokens, API keys, password reset links. **Never use `random` module for security-sensitive values** — it is a deterministic PRNG seeded from the clock and is predictable.
 
 ---
 
@@ -2007,7 +2007,7 @@ except Exception:
     logger.exception('Unexpected error')  # includes traceback automatically
 ```
 
-**Critical rules:**[^14]
+**Critical rules:**
 - Use `logging.getLogger(__name__)` in each module.
 - **Use `%` style in logging, NOT f-strings.** `logger.info(f'Value: {x}')` evaluates the f-string even when INFO is suppressed. `logger.info('Value: %r', x)` defers formatting to only when needed.
 - Configure handlers only in the application entry point.
@@ -2077,7 +2077,7 @@ subprocess.call(['ls', user_dir])   # SAFE — no shell
 
 ##### The GIL
 
-CPython's Global Interpreter Lock (GIL) means only one thread runs Python bytecode at a time:[^15]
+CPython's Global Interpreter Lock (GIL) means only one thread runs Python bytecode at a time:
 - `threading` is effective for **I/O-bound** work (threads release the GIL while waiting).
 - `threading` does NOT give CPU parallelism for pure Python.
 - `multiprocessing` bypasses the GIL using separate processes.
@@ -2478,21 +2478,3 @@ black --check myapp/ && isort --check-only myapp/ && flake8 myapp/ && mypy myapp
 - [ ] `.venv/` in `.gitignore`
 - [ ] `mypy --strict` passes cleanly
 - [ ] All tests pass under `pytest`
-
----
-
-[^1]: Python 3.6 What's New. Python Software Foundation. https://docs.python.org/3/whatsnew/3.6.html
-[^2]: Python 3 Data Model — Classes. https://docs.python.org/3.6/reference/datamodel.html
-[^3]: Python 3 Built-in Types. https://docs.python.org/3.6/library/stdtypes.html
-[^4]: Python 3 io module. https://docs.python.org/3.6/library/io.html
-[^5]: PEP 498 – Literal String Interpolation. https://peps.python.org/pep-0498/
-[^6]: typing.NamedTuple. https://docs.python.org/3.6/library/typing.html#typing.NamedTuple
-[^7]: Python 3 Expressions — Comprehensions. https://docs.python.org/3/reference/expressions.html
-[^8]: CPython dict implementation — compact representation. Python 3.6 What's New.
-[^9]: Python Data Model — `__slots__`. https://docs.python.org/3/reference/datamodel.html
-[^10]: Python enum module. https://docs.python.org/3.6/library/enum.html
-[^11]: Python Security Best Practices. OWASP Python Security Project.
-[^12]: PEP 3134 – Exception Chaining and Embedded Tracebacks. https://peps.python.org/pep-3134/
-[^13]: pathlib module. https://docs.python.org/3.6/library/pathlib.html
-[^14]: Python logging HOWTO. https://docs.python.org/3.6/howto/logging.html
-[^15]: Python GIL. https://docs.python.org/3/glossary.html#term-global-interpreter-lock

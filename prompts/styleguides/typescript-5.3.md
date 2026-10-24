@@ -2,12 +2,12 @@
 
 #### Overview
 
-> **Version**: TypeScript 5.3. The GA build, **5.3.2, shipped on November 20, 2023**; the latest and final patch is **5.3.3 (published to npm on December 6, 2023)**.[^1][^2][^3]
-> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.3 received no fixes after 5.3.3. Newer lines followed: 5.4 (March 6, 2024), 5.5 (June 2024), 5.6 (September 2024), 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today (7.1 is in beta).[^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years; since June 2026 new `@types/node` releases require TypeScript 5.6 (see [Tooling](#tooling-and-type-packages)).[^4]
+> **Version**: TypeScript 5.3. The GA build, **5.3.2, shipped on November 20, 2023**; the latest and final patch is **5.3.3 (published to npm on December 6, 2023)**.
+> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.3 received no fixes after 5.3.3. Newer lines followed: 5.4 (March 6, 2024), 5.5 (June 2024), 5.6 (September 2024), 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today (7.1 is in beta). DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years; since June 2026 new `@types/node` releases require TypeScript 5.6 (see [Tooling](#tooling-and-type-packages)).
 > **Scope**: the complete TypeScript language and compiler as usable in 5.3 — types, narrowing, generics, `satisfies`, `const` type parameters, classes and decorators, `using`, enums, modules and module resolution, strictness flags, tsconfig, tooling — with every 5.3 change versus 5.2 marked **New in 5.3**.
 > **Note**: this document is self-contained. Everything that shipped before 5.3 is carried forward. Every `ts` block was compiled with `tsc` 5.3.3 (`strict`, `target: es2022`, `module: nodenext`, `lib: ["esnext", "dom"]`, `@types/node` 22.19.21) unless a `// @ts-config:` comment in the block says otherwise; lines marked `// error TSnnnn` fail on 5.3.3 with exactly that diagnostic. `// @file: name` starts another file of a multi-file example, `// @pkgtype: commonjs` marks examples that live in a `"type": "commonjs"` package (the default is `"type": "module"`), and blocks marked `// @run` were also emitted and executed on Node.js 22.23.4.
 
-TypeScript 5.3 is a small, mostly additive release. Its headline changes are **import attributes** (`import data from "./data.json" with { type: "json" }` and `import(spec, { with: … })`), **stable `resolution-mode` in `import type` and `import()` types** — now usable under every `moduleResolution` — **narrowing inside `switch (true)`**, **narrowing on comparisons to `true`/`false`**, **`instanceof` narrowing through a `static [Symbol.hasInstance]` type predicate**, and a **new error (TS2855) for `super.x` when `x` is a class field** of the base class. Tooling changes: interactive (clickable) type inlay hints, the editor preference `preferTypeOnlyAutoImports`, `tsc` skipping JSDoc parsing (with a new `JSDocParsingMode` API), faster comparison of non-normalized intersections, and `tsserverlibrary.js` reduced to a re-export of `typescript.js`.[^1][^5]
+TypeScript 5.3 is a small, mostly additive release. Its headline changes are **import attributes** (`import data from "./data.json" with { type: "json" }` and `import(spec, { with: … })`), **stable `resolution-mode` in `import type` and `import()` types** — now usable under every `moduleResolution` — **narrowing inside `switch (true)`**, **narrowing on comparisons to `true`/`false`**, **`instanceof` narrowing through a `static [Symbol.hasInstance]` type predicate**, and a **new error (TS2855) for `super.x` when `x` is a class field** of the base class. Tooling changes: interactive (clickable) type inlay hints, the editor preference `preferTypeOnlyAutoImports`, `tsc` skipping JSDoc parsing (with a new `JSDocParsingMode` API), faster comparison of non-normalized intersections, and `tsserverlibrary.js` reduced to a re-export of `typescript.js`.
 
 Global truths about TypeScript 5.3:
 
@@ -57,7 +57,7 @@ There are **no new compiler options, no new `target`/`lib` values and no new `li
 
 #### New in 5.3: Import attributes
 
-Import attributes (TC39 proposal, Stage 4 in ES2025) replace import *assertions*: the keyword is `with` instead of `assert`, and hosts may use the attributes to guide how a module is loaded, not just to check it afterwards.[^1][^6] TypeScript 5.3 parses and preserves them; it does **not** check their contents — any key and string value is accepted and passed through to the emitted JavaScript.
+Import attributes (TC39 proposal, Stage 4 in ES2025) replace import *assertions*: the keyword is `with` instead of `assert`, and hosts may use the attributes to guide how a module is loaded, not just to check it afterwards. TypeScript 5.3 parses and preserves them; it does **not** check their contents — any key and string value is accepted and passed through to the emitted JavaScript.
 
 ```ts
 // @ts-config: {"resolveJsonModule": true}
@@ -135,7 +135,7 @@ Review rules:
 
 #### New in 5.3: `resolution-mode` in import types and all module modes
 
-Under `node16`/`nodenext`, whether an import is resolved with `import` or `require` conditions depends on the importing file's module format. For *type-only* imports this can be overridden. 4.7 allowed `/// <reference types="pkg" resolution-mode="require" />`; 5.3 makes the import-attribute form stable:[^1][^7]
+Under `node16`/`nodenext`, whether an import is resolved with `import` or `require` conditions depends on the importing file's module format. For *type-only* imports this can be overridden. 4.7 allowed `/// <reference types="pkg" resolution-mode="require" />`; 5.3 makes the import-attribute form stable:
 
 ```ts
 // @ts-config: {"module": "nodenext"}
@@ -164,7 +164,7 @@ Use `resolution-mode` only in declaration-heavy code (dual-package typings, `.d.
 
 #### New in 5.3: `switch (true)` narrowing
 
-Each `case` condition in a `switch (true)` now narrows like an `if`. Fall-through accumulates (`string | any[]` below), and `default` receives the type narrowed by all cases that exited.[^1][^8]
+Each `case` condition in a `switch (true)` now narrows like an `if`. Fall-through accumulates (`string | any[]` below), and `default` receives the type narrowed by all cases that exited.
 
 ```ts
 export function describe(x: unknown): string {
@@ -204,7 +204,7 @@ TS18047 is "'s' is possibly 'null'". Write `case s !== null && s.kind === "circl
 
 #### New in 5.3: Narrowing on comparisons to booleans
 
-Comparing a type-guard call or a boolean expression with `true`/`false` now narrows.[^1]
+Comparing a type-guard call or a boolean expression with `true`/`false` now narrows.
 
 ```ts
 interface A { a: string }
@@ -220,7 +220,7 @@ export function f(x: AB, v: string | undefined) {
 }
 ```
 
-The 5.3.2 implementation had a regression where `if (foo?.bar === false) {}` (with `bar: boolean`) narrowed `foo` to non-undefined *after* the `if` statement, hiding real "possibly undefined" errors; it was fixed in **5.3.3** (issue #56482).[^9] Projects pinned to exactly 5.3.2 should move to 5.3.3.
+The 5.3.2 implementation had a regression where `if (foo?.bar === false) {}` (with `bar: boolean`) narrowed `foo` to non-undefined *after* the `if` statement, hiding real "possibly undefined" errors; it was fixed in **5.3.3** (issue #56482). Projects pinned to exactly 5.3.2 should move to 5.3.3.
 
 Style: `=== true` comparisons are still noise for plain booleans; they are useful when the operand may be `boolean | undefined` (where `=== false` differs from `!x`).
 
@@ -228,7 +228,7 @@ Style: `=== true` comparisons are still noise for plain booleans; they are usefu
 
 #### New in 5.3: `instanceof` narrowing through `Symbol.hasInstance`
 
-When the right operand of `instanceof` has a `[Symbol.hasInstance]` method declared as a type predicate, 5.3 narrows the left operand by that predicate instead of to the class instance type.[^1][^10]
+When the right operand of `instanceof` has a `[Symbol.hasInstance]` method declared as a type predicate, 5.3 narrows the left operand by that predicate instead of to the class instance type.
 
 ```ts
 interface PointLike { x: number; y: number }
@@ -281,7 +281,7 @@ Review notes:
 
 #### New in 5.3: `super` property access checks
 
-`super.x` reads from the base class *prototype*. Class fields (including arrow-function fields) live on the instance, so `super.field` is `undefined` at runtime. 5.3 reports this as **TS2855**; 5.2 accepted it.[^1][^11]
+`super.x` reads from the base class *prototype*. Class fields (including arrow-function fields) live on the instance, so `super.field` is `undefined` at runtime. 5.3 reports this as **TS2855**; 5.2 accepted it.
 
 ```ts
 class Base {
@@ -303,12 +303,12 @@ TS2855: "Class field 'handle' defined by the parent class is not accessible in t
 
 #### New in 5.3: Editor, compiler and API changes
 
-- **Interactive inlay hints**: type inlay hints are clickable and jump to the type's definition (needs a 5.3-based editor TypeScript).[^1]
-- **`preferTypeOnlyAutoImports`**: editor preference (VS Code: `typescript.preferences.preferTypeOnlyAutoImports`) that makes auto-imports in type positions use `import { type X }` even without `verbatimModuleSyntax`. It first appears in 5.3's `UserPreferences`. The older `autoImportFileExcludePatterns` (4.8) still excludes paths from auto-import; `autoImportSpecifierExcludeRegexes` is 5.6 and not available.[^1]
-- **JSDoc parsing mostly skipped by `tsc`**: the command-line compiler now parses with `JSDocParsingMode.ParseForTypeErrors`, which still parses JSDoc in JavaScript files but, in TypeScript files, only JSDoc comments containing `@see` or `@link`; this reduces parse time and memory. API consumers choose via the new `JSDocParsingMode` enum (`ParseAll`, `ParseNone`, `ParseForTypeErrors`, `ParseForTypeInfo`) on `createSourceFile` options, the compiler host or the language-service host; 5.3.3 also exposed it to `transpileModule` (issue #56625).[^1][^9] `ParseAll` remains the API default when no mode is given, so doc generators and lint rules that read JSDoc only lose it if they opt into another mode (or reuse `tsc`'s host settings).
-- **Faster intersection comparisons**: assignability checks such as `T & (A | B | …)` → `T` use the original intersection form as a fast path.[^1]
-- **`tsserverlibrary.js` → `typescript.js`**: `lib/tsserverlibrary.js` is now a ~1 KB re-export of `typescript.js` (which now contains the server API). Loading `tsserverlibrary.js` as a browser global throws; import `typescript` instead. Package size dropped by about 20 %.[^1][^12]
-- **API d.ts types**: 5.3.2 redefined the deprecated `AssertClause`/`AssertEntry` API types as type aliases and broke compilation of `typescript.d.ts` under `exactOptionalPropertyTypes`; both were fixed in 5.3.3 (issues #56477, #56478).[^9]
+- **Interactive inlay hints**: type inlay hints are clickable and jump to the type's definition (needs a 5.3-based editor TypeScript).
+- **`preferTypeOnlyAutoImports`**: editor preference (VS Code: `typescript.preferences.preferTypeOnlyAutoImports`) that makes auto-imports in type positions use `import { type X }` even without `verbatimModuleSyntax`. It first appears in 5.3's `UserPreferences`. The older `autoImportFileExcludePatterns` (4.8) still excludes paths from auto-import; `autoImportSpecifierExcludeRegexes` is 5.6 and not available.
+- **JSDoc parsing mostly skipped by `tsc`**: the command-line compiler now parses with `JSDocParsingMode.ParseForTypeErrors`, which still parses JSDoc in JavaScript files but, in TypeScript files, only JSDoc comments containing `@see` or `@link`; this reduces parse time and memory. API consumers choose via the new `JSDocParsingMode` enum (`ParseAll`, `ParseNone`, `ParseForTypeErrors`, `ParseForTypeInfo`) on `createSourceFile` options, the compiler host or the language-service host; 5.3.3 also exposed it to `transpileModule` (issue #56625). `ParseAll` remains the API default when no mode is given, so doc generators and lint rules that read JSDoc only lose it if they opt into another mode (or reuse `tsc`'s host settings).
+- **Faster intersection comparisons**: assignability checks such as `T & (A | B | …)` → `T` use the original intersection form as a fast path.
+- **`tsserverlibrary.js` → `typescript.js`**: `lib/tsserverlibrary.js` is now a ~1 KB re-export of `typescript.js` (which now contains the server API). Loading `tsserverlibrary.js` as a browser global throws; import `typescript` instead. Package size dropped by about 20 %.
+- **API d.ts types**: 5.3.2 redefined the deprecated `AssertClause`/`AssertEntry` API types as type aliases and broke compilation of `typescript.d.ts` under `exactOptionalPropertyTypes`; both were fixed in 5.3.3 (issues #56477, #56478).
 
 ***
 
@@ -321,12 +321,12 @@ TS2855: "Class field 'handle' defined by the parent class is not accessible in t
 | 5.3.2 | 2023-11-20 | GA |
 | 5.3.3 | 2023-12-06 | final: boolean-comparison narrowing regression (#56482), `typescript.d.ts` under `exactOptionalPropertyTypes` (#56478), `AssertClause`/`AssertEntry` back to interfaces (#56477), `JSDocParsingMode` for `transpileModule` (#56625) |
 
-Always pin `~5.3.3` (or exactly `5.3.3`), never `5.3.2`.[^2][^9]
+Always pin `~5.3.3` (or exactly `5.3.3`), never `5.3.2`.
 
 ***
 #### Do not use or recommend (not in TypeScript 5.3)
 
-The project's compiler does not have any of the following. Each item was checked on 5.3.3 (error) and, for the 5.4 items, on 5.4.5 (accepted).[^13][^14]
+The project's compiler does not have any of the following. Each item was checked on 5.3.3 (error) and, for the 5.4 items, on 5.4.5 (accepted).
 
 | Feature | Introduced | What 5.3 says |
 |---|---|---|
@@ -406,7 +406,7 @@ Even when the runtime has `Object.groupBy` (Node.js 21+), 5.3 has no declaration
 
 #### Deprecated in 5.3: the 5.0 deprecation set
 
-TypeScript 5.0 deprecated the following options; in 5.0–5.4 each one is an **error (TS5101/TS5107) unless `"ignoreDeprecations": "5.0"` is set**, and from 5.5 on they no longer have any effect (5.5 still reports them unless `ignoreDeprecations` is set; verified on 5.5.4).[^15][^19] On 5.3.3:
+TypeScript 5.0 deprecated the following options; in 5.0–5.4 each one is an **error (TS5101/TS5107) unless `"ignoreDeprecations": "5.0"` is set**, and from 5.5 on they no longer have any effect (5.5 still reports them unless `ignoreDeprecations` is set; verified on 5.5.4). On 5.3.3:
 
 - `target: "ES3"` (TS5107), `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, `importsNotUsedAsValues`, `preserveValueImports`, and `prepend` in project references.
 - `"ignoreDeprecations": "5.0"` is the only valid value in 5.3 (`"5.3"` or `"6.0"` give TS5103 "Invalid value").
@@ -655,7 +655,7 @@ Pitfalls:
 
 ##### Closures and narrowing in 5.3 (no "preserved narrowing")
 
-Narrowing of a `let` variable or parameter is reset inside closures created later, because the closure may run after a reassignment. TypeScript 5.4 keeps the narrowing when there are no assignments after the closure is created; **5.3 does not**.[^13]
+Narrowing of a `let` variable or parameter is reset inside closures created later, because the closure may run after a reassignment. TypeScript 5.4 keeps the narrowing when there are no assignments after the closure is created; **5.3 does not**.
 
 ```ts
 export function urlFor(input: string | URL, names: string[]) {
@@ -714,7 +714,7 @@ export const arr = ["a", "b"] as const satisfies string[];   // 5.3: ["a", "b"] 
 Notes:
 
 - `const T` only affects inference for literals written *at the call site*; an array variable passed in keeps its declared type.
-- **Changed in 5.3 (not in the release notes)**: with a *mutable* array constraint (`<const T extends string[]>`), 5.0–5.2 fell back to the constraint (`string[]`); 5.3 infers a mutable tuple (`["a", "b"]`). Likewise `["a", "b"] as const satisfies string[]` was TS1360 on 5.2 and is accepted on 5.3 with the type `["a", "b"]` (mutable tuple). Use a `readonly` constraint (`readonly string[]`) when the result must stay readonly — that form works the same on every version.[^20]
+- **Changed in 5.3 (not in the release notes)**: with a *mutable* array constraint (`<const T extends string[]>`), 5.0–5.2 fell back to the constraint (`string[]`); 5.3 infers a mutable tuple (`["a", "b"]`). Likewise `["a", "b"] as const satisfies string[]` was TS1360 on 5.2 and is accepted on 5.3 with the type `["a", "b"]` (mutable tuple). Use a `readonly` constraint (`readonly string[]`) when the result must stay readonly — that form works the same on every version.
 - `as const` does not freeze the runtime object; use `Object.freeze` too when mutation must be prevented.
 - `satisfies` does not change excess-property behavior of nested types; an object literal with an unknown key still errors.
 
@@ -993,7 +993,7 @@ TS4114: "This member must have an 'override' modifier because it overrides a mem
 
 ##### Decorators: standard (5.0) versus `experimentalDecorators`
 
-Without `experimentalDecorators`, TypeScript 5.3 implements the TC39 standard decorators (Stage 3): decorators receive `(value, context)` with a typed context object (`ClassMethodDecoratorContext`, `ClassFieldDecoratorContext`, `ClassAccessorDecoratorContext`, …). Parameter decorators and `emitDecoratorMetadata` exist only in the legacy `experimentalDecorators` mode, which frameworks such as NestJS, TypeORM and InversifyJS require. The two modes have incompatible signatures; mixing libraries of both kinds in one project does not work.[^16]
+Without `experimentalDecorators`, TypeScript 5.3 implements the TC39 standard decorators (Stage 3): decorators receive `(value, context)` with a typed context object (`ClassMethodDecoratorContext`, `ClassFieldDecoratorContext`, `ClassAccessorDecoratorContext`, …). Parameter decorators and `emitDecoratorMetadata` exist only in the legacy `experimentalDecorators` mode, which frameworks such as NestJS, TypeORM and InversifyJS require. The two modes have incompatible signatures; mixing libraries of both kinds in one project does not work.
 
 ```ts
 export function logged<This, Args extends unknown[], R>(
@@ -1041,7 +1041,7 @@ Further decorator rules:
 
 ##### Explicit resource management: `using` and `await using` (5.2)
 
-`using` disposes a resource at the end of the block, in reverse declaration order, even on exceptions; `await using` awaits `[Symbol.asyncDispose]()`.[^17]
+`using` disposes a resource at the end of the block, in reverse declaration order, even on exceptions; `await using` awaits `[Symbol.asyncDispose]()`.
 
 ```ts
 // @run
@@ -1393,7 +1393,7 @@ export {};
 
 ##### `@types/node` and other DefinitelyTyped packages
 
-DefinitelyTyped tests packages only against TypeScript versions younger than two years. In June 2026 the minimum moved to 5.6: every `@types/node` published since then declares `"typeScriptVersion": "5.6"` and uses 5.6-only types (`BuiltinIteratorReturn`, `IteratorObject`). With TypeScript 5.3, `@types/node@26` fails with errors such as `TS2304: Cannot find name 'IteratorObject'` and `Cannot find name 'BuiltinIteratorReturn'` (reproduced on 5.3.3 with `skipLibCheck: false`, plus TS2416/TS2420 errors inside `fs.d.ts` and `stream.d.ts`). `skipLibCheck: true` hides those errors but not the damage: the unresolved iterator types degrade, and user code such as `for await (const e of await opendir(p))` then fails with TS2504 "Type 'Dir' must have a '[Symbol.asyncIterator]()' method".[^4]
+DefinitelyTyped tests packages only against TypeScript versions younger than two years. In June 2026 the minimum moved to 5.6: every `@types/node` published since then declares `"typeScriptVersion": "5.6"` and uses 5.6-only types (`BuiltinIteratorReturn`, `IteratorObject`). With TypeScript 5.3, `@types/node@26` fails with errors such as `TS2304: Cannot find name 'IteratorObject'` and `Cannot find name 'BuiltinIteratorReturn'` (reproduced on 5.3.3 with `skipLibCheck: false`, plus TS2416/TS2420 errors inside `fs.d.ts` and `stream.d.ts`). `skipLibCheck: true` hides those errors but not the damage: the unresolved iterator types degrade, and user code such as `for await (const e of await opendir(p))` then fails with TS2504 "Type 'Dir' must have a '[Symbol.asyncIterator]()' method".
 
 Last `@types/node` releases that declare `typeScriptVersion` ≤ 5.3 (all published June 10, 2026):
 
@@ -1461,14 +1461,14 @@ Upgrading **5.2 → 5.3**:
 3. **More narrowing** (`switch (true)`, `=== true/false`) can make previously necessary assertions redundant; typescript-eslint's `no-unnecessary-type-assertion` will flag them.
 4. **Import attributes**: `with` replaces `assert` in new code; `assert` keeps working in 5.3 but is rejected at runtime by Node.js 22+.
 5. **API consumers**: `tsserverlibrary.js` is a thin wrapper; `JSDocParsingMode` is available; `AssertClause`/`AssertEntry` are deprecated in the API in favour of `ImportAttributes`/`ImportAttribute`. `ParseAll` is still the API default; tools that set another `jsDocParsingMode` to save memory lose JSDoc nodes in `.ts` files.
-6. **DOM lib**: small changes (e.g. a generic `SubtleCrypto.exportKey(format: KeyFormat, key)` overload returning `Promise<ArrayBuffer | JsonWebKey>`, `generateKey("Ed25519", …)`, and on `RTCInboundRtpStreamStats` a new optional `mid` and a new *required* `trackIdentifier`); test doubles that construct such objects may need updates.[^18]
+6. **DOM lib**: small changes (e.g. a generic `SubtleCrypto.exportKey(format: KeyFormat, key)` overload returning `Promise<ArrayBuffer | JsonWebKey>`, `generateKey("Ed25519", …)`, and on `RTCInboundRtpStreamStats` a new optional `mid` and a new *required* `trackIdentifier`); test doubles that construct such objects may need updates.
 7. **`const` type parameters / `satisfies` with mutable array constraints** now infer mutable tuples instead of the constraint (see [`satisfies`](#satisfies-as-const-and-const-type-parameters)); downstream code that relied on `string[]` may see tuple types.
 8. Use **5.3.3**, not 5.3.2 (boolean-comparison narrowing regression).
 
 Upgrading **out of 5.3** (what to expect, so reviewers can judge "upgrade TypeScript" suggestions):
 
-- **5.4**: `NoInfer`, closure narrowing preservation, `Object.groupBy`/`Map.groupBy` types, `--module preserve`; breaking: TS2865 for type-only imports shadowed by values under `isolatedModules`, stricter enum compatibility, enum member names `Infinity`/`NaN`/`-Infinity` disallowed, more accurate conditional type constraints, template-literal checks; the last release where `ignoreDeprecations: "5.0"` keeps the 5.0-deprecated options working.[^14]
-- **5.5**: the 5.0-deprecated options stop having any effect; inferred type predicates; regex checking; `isolatedDeclarations`; stricter decorator parsing; `undefined` no longer definable as a type name.[^19]
+- **5.4**: `NoInfer`, closure narrowing preservation, `Object.groupBy`/`Map.groupBy` types, `--module preserve`; breaking: TS2865 for type-only imports shadowed by values under `isolatedModules`, stricter enum compatibility, enum member names `Infinity`/`NaN`/`-Infinity` disallowed, more accurate conditional type constraints, template-literal checks; the last release where `ignoreDeprecations: "5.0"` keeps the 5.0-deprecated options working.
+- **5.5**: the 5.0-deprecated options stop having any effect; inferred type predicates; regex checking; `isolatedDeclarations`; stricter decorator parsing; `undefined` no longer definable as a type name.
 - **5.6–5.9**: always-truthy/nullish errors, iterator helpers, `--noCheck`, `--rewriteRelativeImportExtensions`, `--erasableSyntaxOnly`, `--module node18`/`node20`, `import defer`.
 - **6.0**: new defaults (`strict` on, `module: esnext`, `target` es2025-era, `types: []`), deprecation of `baseUrl`, `moduleResolution: node10`/`classic`, `module: amd`/`umd`/`system`, `target: es5`, `outFile`; **7.0** is the native Go compiler. A jump from 5.3 straight to 6.0/7.0 is a large migration; 5.9 is the practical intermediate step.
 
@@ -1518,26 +1518,3 @@ Upgrading **out of 5.3** (what to expect, so reviewers can judge "upgrade TypeSc
 - [ ] No prototype-pollution-prone merges of untrusted objects; `Map` for dynamic keys
 - [ ] Errors carry `cause` and a stable `code`; `target` ≥ es2015 so `Error` subclasses work
 - [ ] Source maps emitted and `--enable-source-maps` in production
-
-***
-
-[^1]: TypeScript 5.3 release notes (Handbook). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-3.html
-[^2]: TypeScript 5.3.3 release on GitHub (published December 6, 2023). https://github.com/microsoft/TypeScript/releases/tag/v5.3.3
-[^3]: npm registry metadata for `typescript` (version publish times and dist-tags: 5.3.2 2023-11-20, 5.3.3 2023-12-06, 5.4.2 2024-03-06, 6.0.2 2026-03-23, 6.0.3 2026-04-16, 7.0.2 2026-07-08). https://www.npmjs.com/package/typescript?activeTab=versions
-[^4]: DefinitelyTyped README — Support window ("only tests packages on versions of TypeScript that are less than 2 years old"); `@types/node` package metadata (`typeScriptVersion`, `typesVersions`, dist-tag `ts5.3`). https://github.com/DefinitelyTyped/DefinitelyTyped#support-window , https://www.npmjs.com/package/@types/node
-[^5]: Announcing TypeScript 5.3 (Microsoft DevBlogs, November 20, 2023). https://devblogs.microsoft.com/typescript/announcing-typescript-5-3/
-[^6]: TC39 proposal: Import Attributes; TypeScript implementation PR #54242. https://github.com/tc39/proposal-import-attributes , https://github.com/microsoft/TypeScript/pull/54242
-[^7]: `resolution-mode` in import types and all module modes, PR #55725. https://github.com/microsoft/TypeScript/pull/55725
-[^8]: `switch (true)` narrowing, PR #55991. https://github.com/microsoft/TypeScript/pull/55991
-[^9]: TypeScript 5.3.3 milestone issues: #56482 (boolean comparison narrowing regression), #56478, #56477, #56625. https://github.com/microsoft/TypeScript/issues?q=milestone%3A%22TypeScript+5.3.3%22
-[^10]: `instanceof` narrowing through `Symbol.hasInstance`, PR #55052. https://github.com/microsoft/TypeScript/pull/55052
-[^11]: Checks for `super` property accesses on instance fields, PR #54056. https://github.com/microsoft/TypeScript/pull/54056
-[^12]: TypeScript wiki — API Breaking Changes (5.3: `tsserverlibrary.js` is a thin wrapper around `typescript.js`). https://github.com/microsoft/TypeScript/wiki/API-Breaking-Changes
-[^13]: TypeScript 5.4 release notes (NoInfer, preserved narrowing in closures, Object.groupBy, --module preserve, notable behavioral changes). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html
-[^14]: Announcing TypeScript 5.4. https://devblogs.microsoft.com/typescript/announcing-typescript-5-4/
-[^15]: TypeScript 5.0 release notes — Deprecations and Default Changes; Flag Deprecation Plan #51000. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html , https://github.com/microsoft/TypeScript/issues/51000
-[^16]: TypeScript Handbook — Decorators; TC39 decorators proposal. https://www.typescriptlang.org/docs/handbook/decorators.html , https://github.com/tc39/proposal-decorators
-[^17]: TypeScript 5.2 release notes (using declarations, decorator metadata, union array methods, tuple labels). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html
-[^18]: DOM lib updates for TypeScript 5.3, PR #55798. https://github.com/microsoft/TypeScript/pull/55798
-[^19]: TypeScript 5.5 release notes (Disabling Features Deprecated in TypeScript 5.0, inferred type predicates, regex checking). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html
-[^20]: Total TypeScript — "The TypeScript 5.3 feature they didn't tell you about" (const type parameters and `satisfies` with mutable array constraints). https://www.totaltypescript.com/the-typescript-5-3-feature-they-didn-t-tell-you-about

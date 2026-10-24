@@ -1,8 +1,8 @@
 ### JavaScript on Node.js 22: The Complete Production Developer Guide
 
-> **Version**: Node.js 22 "Jod" — 22.0.0 released 2024-04-24; latest patch **22.23.4 (2026-10-21, security release)**.[^1][^3]
+> **Version**: Node.js 22 "Jod" — 22.0.0 released 2024-04-24; latest patch **22.23.4 (2026-10-21, security release)**.
 > **Engine**: V8 **12.4** (12.4.254.21-node.57 in 22.23.4), libuv 1.51.0, undici 6.29.1 (`fetch`/`WebSocket`), OpenSSL 3.5.9, SQLite 3.53.4, ICU 78.3 (Unicode 17), npm 10.9.9.
-> **Support status (October 2026)**: **Maintenance LTS** since 2025-10-21; **end of life 2027-04-30**. Only security and critical fixes land now.[^2]
+> **Support status (October 2026)**: **Maintenance LTS** since 2025-10-21; **end of life 2027-04-30**. Only security and critical fixes land now.
 > **Scope**: JavaScript (`.js`, `.mjs`, `.cjs`) written for the Node.js 22.x runtime — the ECMAScript features V8 12.4 ships, the Node 22 runtime APIs, ESM/CJS interop, async patterns, errors, streams, HTTP, security, performance, testing and tooling. This guide is also the one to apply when a project pins Node 23.x (see "Version-aware review").
 > **Note**: This document is self-contained. Sections marked **New in 22** cover behaviour that differs from Node 20/21; **22.x** markers name the exact minor that introduced a backported feature.
 
@@ -10,15 +10,15 @@
 
 #### Overview
 
-Node.js 22 is the "Jod" long-term-support line. It became Active LTS with 22.11.0 on 2024-10-29 and entered **Maintenance LTS on 2025-10-21**; it reaches **end of life on 2027-04-30**.[^2] The newest releases as of 2026-10-22 are **Node.js 26.12.1** (Current; it becomes LTS on 2026-10-28), **Node.js 24.22.1** ("Krypton", Maintenance LTS since 2026-10-20) and **22.23.4**. Node.js 20 reached end of life on 2026-04-30 (final release 20.20.2), Node 21, 23 and 25 are odd-numbered lines that are already EOL, and Node.js 27 exists only as nightly builds — its alpha channel is scheduled to open on 2026-10-28 and 27.0.0 is planned for April 2027.[^2][^5] Always deploy the **latest 22.x patch**: 2026 alone brought security releases 22.22.0, 22.22.2, 22.23.0, 22.23.2 and 22.23.4 (TLS hostname checks, HTTP/2 memory exhaustion, permission-model bypasses, `http.Agent` response-queue poisoning, DNS NUL-byte injection).[^1]
+Node.js 22 is the "Jod" long-term-support line. It became Active LTS with 22.11.0 on 2024-10-29 and entered **Maintenance LTS on 2025-10-21**; it reaches **end of life on 2027-04-30**. The newest releases as of 2026-10-22 are **Node.js 26.12.1** (Current; it becomes LTS on 2026-10-28), **Node.js 24.22.1** ("Krypton", Maintenance LTS since 2026-10-20) and **22.23.4**. Node.js 20 reached end of life on 2026-04-30 (final release 20.20.2), Node 21, 23 and 25 are odd-numbered lines that are already EOL, and Node.js 27 exists only as nightly builds — its alpha channel is scheduled to open on 2026-10-28 and 27.0.0 is planned for April 2027. Always deploy the **latest 22.x patch**: 2026 alone brought security releases 22.22.0, 22.22.2, 22.23.0, 22.23.2 and 22.23.4 (TLS hostname checks, HTTP/2 memory exhaustion, permission-model bypasses, `http.Agent` response-queue poisoning, DNS NUL-byte injection).
 
-Unlike most runtimes, a Node LTS line keeps receiving **semver-minor features** while it is Active LTS (and occasionally later). Many headline features of Node 22 therefore arrived in a 22.x minor, not in 22.0.0: `require(esm)` is unflagged from **22.12.0**, TypeScript type stripping is on by default from **22.18.0**, `node:sqlite` needs no flag from **22.13.0**, `module.registerHooks()` arrived in **22.15.0**, `import.meta.main` in **22.18.0**, built-in HTTP proxy support in **22.21.0**, and OpenSSL 3.5 replaced OpenSSL 3.0 in **22.20.0**.[^1] When a project pins a specific 22.x minor (for example `"engines": { "node": "22.11.x" }` or a `node:22.11` Docker tag), check the minor before accepting code that depends on these.
+Unlike most runtimes, a Node LTS line keeps receiving **semver-minor features** while it is Active LTS (and occasionally later). Many headline features of Node 22 therefore arrived in a 22.x minor, not in 22.0.0: `require(esm)` is unflagged from **22.12.0**, TypeScript type stripping is on by default from **22.18.0**, `node:sqlite` needs no flag from **22.13.0**, `module.registerHooks()` arrived in **22.15.0**, `import.meta.main` in **22.18.0**, built-in HTTP proxy support in **22.21.0**, and OpenSSL 3.5 replaced OpenSSL 3.0 in **22.20.0**. When a project pins a specific 22.x minor (for example `"engines": { "node": "22.11.x" }` or a `node:22.11` Docker tag), check the minor before accepting code that depends on these.
 
 Global truths about JavaScript on Node.js 22:
 
 - **One thread runs your JavaScript.** The event loop (libuv) multiplexes I/O; CPU-bound work blocks every request until it finishes. Use `worker_threads` or child processes for parallel CPU work.
 - **Two module systems coexist.** ES modules (`import`/`export`, `.mjs` or `"type": "module"`) and CommonJS (`require`, `.cjs` or `"type": "commonjs"`). From 22.12, `require()` can load synchronous ES modules; `import` has always been able to load CommonJS.
-- **Web platform APIs are globals.** `fetch`, `Request`/`Response`, `URL`, `AbortController`, `structuredClone`, `Blob`, `File`, `TextEncoder`, Web Streams, `CompressionStream`, `BroadcastChannel`, `crypto` (Web Crypto), `navigator` and — **new in 22** — `WebSocket` are available without imports.[^24]
+- **Web platform APIs are globals.** `fetch`, `Request`/`Response`, `URL`, `AbortController`, `structuredClone`, `Blob`, `File`, `TextEncoder`, Web Streams, `CompressionStream`, `BroadcastChannel`, `crypto` (Web Crypto), `navigator` and — **new in 22** — `WebSocket` are available without imports.
 - **Unhandled promise rejections crash the process** (`--unhandled-rejections=throw` is the default since Node 15).
 - **V8 12.4 defines the language level.** Everything through ES2024 is available, plus Set methods, iterator helpers and `Array.fromAsync`; several ES2025 features (`Promise.try`, `RegExp.escape`, `Float16Array`, RegExp modifiers, duplicate named groups) and explicit resource management (`using`) are **not**.
 
@@ -58,7 +58,7 @@ const hasZstd = typeof zlib.zstdCompress === 'function';            // 22.15+
 console.log({ hasRequireEsm, hasTypeStripping, hasZstd });
 ```
 
-`process.getBuiltinModule()` (22.3) loads a built-in synchronously from either module system without static imports, which is the idiomatic way to feature-detect.[^30]
+`process.getBuiltinModule()` (22.3) loads a built-in synchronously from either module system without static imports, which is the idiomatic way to feature-detect.
 
 ***
 
@@ -80,11 +80,11 @@ Node 21 (October 2023) was the odd-numbered line between the two LTS releases; e
 | RegExp `v` flag, `String.prototype.isWellFormed()/toWellFormed()`, change-array-by-copy (`toSorted`, `toReversed`, `toSpliced`, `with`), resizable `ArrayBuffer`, growable `SharedArrayBuffer`, `Atomics.waitAsync()` | Node 20 | Still available, listed for completeness |
 | WebAssembly GC | **New in 22** | |
 
-Feature-to-edition mapping follows the TC39 finished-proposals list.[^31]
+Feature-to-edition mapping follows the TC39 finished-proposals list.
 
 ##### Runtime, per 22.x minor
 
-- **22.0.0** (2024-04-24): V8 12.4; `WebSocket` global enabled by default (stable from 22.4); `fs.glob()`/`fs.globSync()`/`fsPromises.glob()` (experimental, stable 22.17); `node --run <script>` (stable 22.10); `--watch` stable; stream default `highWaterMark` raised **16 KiB → 64 KiB**; `require(esm)` behind `--experimental-require-module`; **import assertions (`assert { type: 'json' }`) removed** — use import attributes (`with`); `crypto.createCipher()`/`createDecipher()` removed; `util.is*()` type checks, `util.log()`, `util._extend()`, `fs.Stats`, `Hash` and `Hmac` constructors runtime-deprecated; `process.availableMemory()` and `v8.queryObjects()` *(both also late 20.x)*; `util.styleText()` accepts arrays of formats; Maglev enabled (disabled again in 22.9).[^4][^1]
+- **22.0.0** (2024-04-24): V8 12.4; `WebSocket` global enabled by default (stable from 22.4); `fs.glob()`/`fs.globSync()`/`fsPromises.glob()` (experimental, stable 22.17); `node --run <script>` (stable 22.10); `--watch` stable; stream default `highWaterMark` raised **16 KiB → 64 KiB**; `require(esm)` behind `--experimental-require-module`; **import assertions (`assert { type: 'json' }`) removed** — use import attributes (`with`); `crypto.createCipher()`/`createDecipher()` removed; `util.is*()` type checks, `util.log()`, `util._extend()`, `fs.Stats`, `Hash` and `Hmac` constructors runtime-deprecated; `process.availableMemory()` and `v8.queryObjects()` *(both also late 20.x)*; `util.styleText()` accepts arrays of formats; Maglev enabled (disabled again in 22.9).
 - **22.1**: `NODE_COMPILE_CACHE` on-disk code cache; `dns.lookup({ order: 'ipv6first' })`; `URL.parse()` *(also late 20.x)*; `--test-skip-pattern`.
 - **22.2**: `--experimental-policy` **removed**; `zlib.crc32()` *(also late 20.x)*; `fs.glob({ withFileTypes })`; test plans (`t.plan()`); `--inspect-wait`.
 - **22.3**: `process.getBuiltinModule()` *(also late 20.x)*; test-runner snapshot testing and module mocking (`--experimental-test-module-mocks`); `node --run` walks up to the nearest `package.json`; `Blob.prototype.bytes()` *(also late 20.x)*; `EventSource` client behind `--experimental-eventsource`.
@@ -106,7 +106,7 @@ Feature-to-edition mapping follows the TC39 finished-proposals list.[^31]
 - **22.19**: `NODE_USE_SYSTEM_CA=1`; `tls.setDefaultCACertificates()`; `--experimental-wasm-modules` unflagged; `process.threadCpuUsage()`; `server.keepAliveTimeoutBuffer` (default 1000 ms); `dns` `maxTimeout`.
 - **22.20**: **OpenSSL 3.5** (was 3.0; hybrid post-quantum `X25519MLKEM768` key exchange is now negotiated by default); `CompressionStream('brotli')`; `mock.property()`; `execArgv` in SEA config; worker CPU profiling.
 - **22.21**: `NODE_USE_ENV_PROXY` / `--use-env-proxy` and `http.Agent({ proxyEnv })`; `http.createServer({ shouldUpgradeCallback })`; `--max-old-space-size-percentage`; `.env` file support marked stable.
-- **22.22–22.23.4**: security releases only, but **22.23.0 removed HTTP/2 priority signaling** (DEP0194 is End-of-Life) and a `TLSSocket` default `'error'` handler was added in 22.22.0.[^1]
+- **22.22–22.23.4**: security releases only, but **22.23.0 removed HTTP/2 priority signaling** (DEP0194 is End-of-Life) and a `TLSSocket` default `'error'` handler was added in 22.22.0.
 
 ***
 
@@ -129,7 +129,7 @@ These features exist in newer Node.js or V8 releases. On 22.23.4 they are a `Syn
 - **Node 23**: `URLPattern` as an export of `node:url` (23.8; global from 24); the `'module.exports'` export name on the namespace of an `import`ed CommonJS module; global `CloseEvent`; `TimeoutNegativeWarning` for negative timer delays; `spec` as the default test reporter in non-TTY output.
 - **Node 24** (several items arrived only in late 24.x minors as backports from 26: `crypto.randomUUIDv7()` and `req.signal` 24.16, `Buffer.poolSize` 64 KiB 24.18, `Blob.prototype.textStream()` and `--experimental-import-text` 24.19, `als.withScope()` 24.20, `MIMEType.parse()` 24.21, `crypto.parsePKCS12()`, `util.debounce()`/`throttle()`/`markPromiseAsHandled()` 24.22): global **`URLPattern`**; `crypto.randomUUIDv7()`; `crypto.argon2()`; `crypto.parsePKCS12()`; Web Crypto `SubtleCrypto.supports()`, ML-KEM/ML-DSA, SHA-3, AES-OCB, ChaCha20-Poly1305 algorithms; `AsyncLocalStorage.prototype.withScope()` and the `name`/`defaultValue` constructor options; `AsyncLocalStorage` backed by `AsyncContextFrame` by default (opt-in on 22 via `--experimental-async-context-frame`); `http.setGlobalProxyFromEnv()`; `IncomingMessage.prototype.signal` (`req.signal`); `fs.Utf8Stream`; `fs.mkdtempDisposableSync()`; `stream/consumers` `bytes()`; `Blob.prototype.textStream()`; `util.debounce()`/`util.throttle()`, `util.markPromiseAsHandled()`, `util.convertProcessSignalToExitCode()`, `MIMEType.parse()`; `navigator.locks`; `node:sqlite` tagged templates (`createTagStore`), `StatementSync.prototype.close()`, `limits`, authorizer; test runner auto-awaits subtests (on 22 an un-awaited `t.test()` is **cancelled**); `--test-randomize`; global test setup/teardown; `Buffer.poolSize` default 64 KiB (22: 8 KiB); `import text from './x.txt' with { type: 'text' }` (`--experimental-import-text`).
 - **Node 25**: `--allow-net` (the Node 22 permission model does **not** restrict network access); `localStorage` enabled by default; global `ErrorEvent`; `--build-sea`; ESM entry points in SEA.
-- **Node 26**: `node:ffi`, and `node:vfs`/`node:bench` behind `--experimental-vfs`/`--experimental-bench`; `fs.openAsBlobSync()`; `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`; `sqlite` binding `undefined` as `NULL` (on 22 it throws `ERR_INVALID_ARG_TYPE`).[^15][^16][^17][^18]
+- **Node 26**: `node:ffi`, and `node:vfs`/`node:bench` behind `--experimental-vfs`/`--experimental-bench`; `fs.openAsBlobSync()`; `Buffer.stringLength()`, `buffer.isLatin1()`; `http.isValidHeaderName()`; `sqlite` binding `undefined` as `NULL` (on 22 it throws `ERR_INVALID_ARG_TYPE`).
 
 ##### Flags that do not exist on Node 22
 
@@ -157,7 +157,7 @@ These features exist in newer Node.js or V8 releases. On 22.23.4 they are a `Syn
 | `util.getCallSite()` | Renamed (ExperimentalWarning); removed in 24 | `util.getCallSites()` |
 | `crypto.createHash('shake128' / 'shake256')` without `outputLength` | Doc-deprecated (DEP0198, 22.18; warns under `--pending-deprecation`) | Pass `{ outputLength }` explicitly |
 
-All of these were verified on 22.23.4: removed APIs throw, runtime-deprecated ones print a `DeprecationWarning` with the DEP code on first use.[^14]
+All of these were verified on 22.23.4: removed APIs throw, runtime-deprecated ones print a `DeprecationWarning` with the DEP code on first use.
 
 ***
 
@@ -555,7 +555,7 @@ Installing an `unhandledRejection` handler that only logs turns crashes into sil
 | `.js` with **no** `"type"` field | CommonJS, unless it fails to parse as CommonJS because of ESM syntax — then it is re-parsed as ESM (**module syntax detection, default since 22.7**) |
 | `.ts` / `.mts` / `.cts` | Same rules after type stripping (22.18+ by default) |
 
-Sources: Node 22 packages and ESM documentation.[^7][^8]
+Sources: Node 22 packages and ESM documentation.
 
 Syntax detection costs a second parse, and when the nearest `package.json` lacks `"type"`, Node prints a `MODULE_TYPELESS_PACKAGE_JSON` warning for every such file that turns out to be ESM (a script with no `package.json` above it is detected silently). **Always set `"type"` explicitly** in every `package.json` you own; a missing `"type"` is a review finding for new code. `--experimental-default-type` still exists on 22 but is removed in 23 — do not use it.
 
@@ -653,7 +653,7 @@ The namespace of an imported CommonJS module on Node 22 has `default` (= `module
 console.log(process.features.require_module); // true on 22.12+
 ```
 
-Rules a reviewer must check:[^6]
+Rules a reviewer must check:
 
 - `require()` of an ES module returns the **namespace object**, not the default export: `require('./x.mjs')` is `{ default: fn, … }`, so `require('./x.mjs')()` is a `TypeError`. Use `.default`, or have the ESM module export `'module.exports'`.
 - The required graph must be **fully synchronous**. Top-level `await` anywhere in it throws `ERR_REQUIRE_ASYNC_MODULE`; use `await import()` instead. Cycles that cross CJS↔ESM through `require(esm)` throw `ERR_REQUIRE_CYCLE_MODULE`.
@@ -712,7 +712,7 @@ console.log(cfg);       // { env: 'test' }
 hooks.deregister();
 ```
 
-- `module.registerHooks()` (22.15, Stability 1.1)[^20] runs hooks synchronously on the main thread and also affects `require()`. `module.register()` (20.6+) runs **asynchronous** hooks on a separate loader thread and requires `--allow-worker` under the permission model. Register either from a file preloaded with `--import ./register.js`.
+- `module.registerHooks()` (22.15, Stability 1.1) runs hooks synchronously on the main thread and also affects `require()`. `module.register()` (20.6+) runs **asynchronous** hooks on a separate loader thread and requires `--allow-worker` under the permission model. Register either from a file preloaded with `--import ./register.js`.
 - `--experimental-loader`/`--loader` is discouraged; use `--import` with `register()`/`registerHooks()`.
 - Hooks are process-global: a library must not install them as an import side effect.
 
@@ -740,7 +740,7 @@ Equivalent for end users: `NODE_COMPILE_CACHE=/path node app.js`. The cache is k
 - **22.6.0**: `--experimental-strip-types` — erases type annotations from `.ts`/`.mts`/`.cts`.
 - **22.7.0**: `--experimental-transform-types` — additionally transforms enums, namespaces and parameter properties (emits a warning; removed again in Node 26).
 - **22.13/22.14**: `module.stripTypeScriptTypes()`; TypeScript via `--eval`/stdin; `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`.
-- **22.18.0**: **type stripping on by default, without an ExperimentalWarning**; disable with `--no-experimental-strip-types`. Stability: 1.2 (release candidate) in 22.20+.[^9]
+- **22.18.0**: **type stripping on by default, without an ExperimentalWarning**; disable with `--no-experimental-strip-types`. Stability: 1.2 (release candidate) in 22.20+.
 
 On 22.23.4 `process.features.typescript` is `'strip'`; with `--experimental-transform-types` it is `'transform'`; with `--no-experimental-strip-types` it is `false`.
 
@@ -785,7 +785,7 @@ Recommended `tsconfig.json` for code executed directly by Node 22 (TypeScript �
 }
 ```
 
-`erasableSyntaxOnly` (TypeScript 5.8)[^33] makes `tsc` reject enums and parameter properties (TS1294) and `verbatimModuleSyntax` rejects type imports without `type` (TS1484) — the exact constructs Node cannot strip. Type stripping never type-checks: CI must still run `tsc --noEmit`. Publish compiled `.js` + `.d.ts` to npm; Node refuses to strip types under `node_modules`. The `lib` list matches V8 12.4: `es2024` adds `Object.groupBy`/`Promise.withResolvers`, the three `esnext.*` entries add `Array.fromAsync`, Set methods and iterator helpers, while `Promise.try` and `RegExp.escape` stay type errors (TS2339). `lib: ["esnext"]` would let them through. Note that `tsc` happily *downlevels* `using` declarations, but type stripping passes them to V8 unchanged — `using x = …` in a `.ts` file run by Node 22 is a `SyntaxError`.
+`erasableSyntaxOnly` (TypeScript 5.8) makes `tsc` reject enums and parameter properties (TS1294) and `verbatimModuleSyntax` rejects type imports without `type` (TS1484) — the exact constructs Node cannot strip. Type stripping never type-checks: CI must still run `tsc --noEmit`. Publish compiled `.js` + `.d.ts` to npm; Node refuses to strip types under `node_modules`. The `lib` list matches V8 12.4: `es2024` adds `Object.groupBy`/`Promise.withResolvers`, the three `esnext.*` entries add `Array.fromAsync`, Set methods and iterator helpers, while `Promise.try` and `RegExp.escape` stay type errors (TS2339). `lib: ["esnext"]` would let them through. Note that `tsc` happily *downlevels* `using` declarations, but type stripping passes them to V8 unchanged — `using x = …` in a `.ts` file run by Node 22 is a `SyntaxError`.
 
 ***
 
@@ -1008,7 +1008,7 @@ await Promise.all([handle('a'), handle('b')]);
 log('outside');                  // [-] outside
 ```
 
-- The store propagates through `await`, timers and promise callbacks.[^26] A `.then()` callback sees the context of the code that **registered** it, not of the code that resolved the promise.
+- The store propagates through `await`, timers and promise callbacks. A `.then()` callback sees the context of the code that **registered** it, not of the code that resolved the promise.
 - `EventEmitter` listeners run in the context of `emit()`, not of the code that added them; use `AsyncResource.bind()` / `AsyncLocalStorage.bind()` when that matters.
 - Since 22.7, `AsyncLocalStorage` no longer uses `async_hooks` internally; the faster `AsyncContextFrame` implementation is opt-in on 22 (`--experimental-async-context-frame`) and default only from Node 24. `als.withScope()` and the `name`/`defaultValue` options are Node 24+.
 - Do not use `async_hooks.createHook()` in application code (Stability 1, high overhead); `AsyncLocalStorage` and `diagnostics_channel` cover the use cases.
@@ -1074,7 +1074,7 @@ console.log(b.toString());                                           // Héllo
 
 ##### New in 22: default `highWaterMark` is 64 KiB
 
-Node 22.0 raised the default buffer threshold of byte streams from 16 KiB to **64 KiB**[^23] (object-mode streams stay at 16 objects). Throughput improves, but every buffered stream may hold four times more memory before backpressure kicks in. Services that keep thousands of concurrent streams (proxies, WebSocket fan-out) should measure and, if needed, set `highWaterMark` per stream or globally with `stream.setDefaultHighWaterMark(false, 16 * 1024)`.
+Node 22.0 raised the default buffer threshold of byte streams from 16 KiB to **64 KiB** (object-mode streams stay at 16 objects). Throughput improves, but every buffered stream may hold four times more memory before backpressure kicks in. Services that keep thousands of concurrent streams (proxies, WebSocket fan-out) should measure and, if needed, set `highWaterMark` per stream or globally with `stream.setDefaultHighWaterMark(false, 16 * 1024)`.
 
 ```javascript
 import { getDefaultHighWaterMark, Readable } from 'node:stream';
@@ -1229,7 +1229,7 @@ const all = await readdir(import.meta.dirname, { recursive: true });
 console.log(Array.isArray(all));
 ```
 
-`fs.glob` replaces the `glob`/`fast-glob` packages for simple cases.[^22] It does not read `.gitignore`. Returned paths are relative to `cwd`; join them with `path.join(cwd, f)`. Use `dirent.parentPath` (not the deprecated `dirent.path`).
+`fs.glob` replaces the `glob`/`fast-glob` packages for simple cases. It does not read `.gitignore`. Returned paths are relative to `cwd`; join them with `path.join(cwd, f)`. Use `dirent.parentPath` (not the deprecated `dirent.path`).
 
 ##### Path handling
 
@@ -1253,7 +1253,7 @@ See Security → Path traversal for the containment check.
 
 ##### `fetch` (undici 6.x)
 
-Node 22.23.4 bundles undici 6.29.1; `fetch`, `Request`, `Response`, `Headers`, `FormData` and `WebSocket` are globals.[^24]
+Node 22.23.4 bundles undici 6.29.1; `fetch`, `Request`, `Response`, `Headers`, `FormData` and `WebSocket` are globals.
 
 ```javascript
 import { createServer } from 'node:http';
@@ -1281,8 +1281,8 @@ server.close();
 
 - `fetch` resolves on **any** HTTP status; a 404/500 is not a rejection. Check `res.ok`/`res.status`.
 - A network failure rejects with `TypeError: fetch failed`; the real reason (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_CONNECT_TIMEOUT`) is on `err.cause`. Log `err.cause`, not just `err.message`.
-- There is **no overall request timeout**; undici's defaults are 10 s to connect and 300 s each for headers and body.[^19] Always pass `signal`.
-- Always consume or cancel the body (`await res.text()`, `res.body?.cancel()`): undici does not release the connection of an unread body promptly, which reduces connection reuse and can stall the pool.[^19]
+- There is **no overall request timeout**; undici's defaults are 10 s to connect and 300 s each for headers and body. Always pass `signal`.
+- Always consume or cancel the body (`await res.text()`, `res.body?.cancel()`): undici does not release the connection of an unread body promptly, which reduces connection reuse and can stall the pool.
 - `fetch` ignores `HTTP_PROXY`/`HTTPS_PROXY` **unless** `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` is set (22.21+; undici prints an `EnvHttpProxyAgent is experimental` warning on 22). Verified: without the variable the request goes direct even when `HTTP_PROXY` is set; with it, undici 6 tunnels even plain `http://` requests through `CONNECT host:80` (whereas `http.request` with `proxyEnv` sends an absolute-form `GET`), and a proxy that refuses `CONNECT` makes `fetch` retry until its signal aborts — another reason every `fetch` needs a deadline.
 - Undici is a separate HTTP stack from `node:http`: `http.globalAgent`/`http.Agent` options and the `diagnostics_channel` `http.client.*` events do not apply to `fetch` (it publishes its own `undici:*` channels). Configure pooling with an undici `Dispatcher` instead.
 
@@ -1313,7 +1313,7 @@ server.listen(0, () => {
 - Graceful shutdown: `server.close()` stops accepting connections, closes idle keep-alive connections (since Node 19) and waits for in-flight requests; call `server.closeAllConnections()` after a deadline so slow clients cannot block exit forever.
 - `http.createServer({ shouldUpgradeCallback })` (22.21) decides per request whether an `Upgrade` is accepted; without an `'upgrade'` listener, upgrade requests are treated as normal requests.
 - Calling `node:http` constructors (`IncomingMessage`, `ServerResponse`, `Agent`, …) without `new` is doc-deprecated since 22.17.
-- `http.Agent({ proxyEnv: process.env })` (22.21)[^21] routes `http.request` through `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; with `NODE_USE_ENV_PROXY=1` the global agent does so automatically. `http.setGlobalProxyFromEnv()` is Node 24+.
+- `http.Agent({ proxyEnv: process.env })` (22.21) routes `http.request` through `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; with `NODE_USE_ENV_PROXY=1` the global agent does so automatically. `http.setGlobalProxyFromEnv()` is Node 24+.
 
 ##### New in 22: global `WebSocket` client
 
@@ -1402,7 +1402,7 @@ const [code] = await (await import('node:events')).once(child, 'exit');
 console.log('exit code', code);                  // 3
 ```
 
-- `exec()`/`execSync()` always use a shell.[^27] Prefer `execFile`/`spawn` without `shell`. `options.shell = ''` is doc-deprecated (22.17).
+- `exec()`/`execSync()` always use a shell. Prefer `execFile`/`spawn` without `shell`. `options.shell = ''` is doc-deprecated (22.17).
 - Spawning `.bat`/`.cmd` files on Windows without `shell: true` fails with `EINVAL` since the April 2024 fix for CVE-2024-27980 (part of 22.0.0; the bypass CVE-2024-36138 was fixed in 22.4.1). With `shell: true` the arguments must be escaped manually (not executable on the Linux test machine; documented behaviour).
 - Pass a minimal `env` to children; `process.env` may contain secrets. With the permission model, `--allow-child-process` is required and child processes inherit the permission flags (22.18).
 - `process.execve()` (22.15; not available on Windows or IBM i) replaces the current process image; it does not return.
@@ -1411,7 +1411,7 @@ console.log('exit code', code);                  // 3
 
 #### `node:sqlite` — Built-in SQLite (New in 22)
 
-`node:sqlite` arrived in 22.5 behind `--experimental-sqlite`, is **unflagged since 22.13**, and is still **Stability 1.1 (active development)**: every process that loads it prints `ExperimentalWarning: SQLite is an experimental feature`. It is synchronous (`DatabaseSync`) — fine for CLIs, tests and small services, but each query blocks the event loop.[^10]
+`node:sqlite` arrived in 22.5 behind `--experimental-sqlite`, is **unflagged since 22.13**, and is still **Stability 1.1 (active development)**: every process that loads it prints `ExperimentalWarning: SQLite is an experimental feature`. It is synchronous (`DatabaseSync`) — fine for CLIs, tests and small services, but each query blocks the event loop.
 
 ```javascript
 import { DatabaseSync } from 'node:sqlite';
@@ -1465,7 +1465,7 @@ try {
 
 ##### Keep the runtime patched
 
-Node 22 is in maintenance: fixes arrive only as patch releases, frequently as coordinated security releases. 2026 security releases for 22.x fixed, among others: TLS server-identity checks and session reuse bound to the wrong host (22.23.0), HTTP/2 memory exhaustion via header accounting and `RST_STREAM` handling (22.23.2), permission-model bypasses (`realpathSync`, `fs/promises`, trace events, report paths, `FileHandle.utimes`), `http.Agent` response-queue poisoning, NUL bytes in DNS/hostnames, `headersDistinct` prototype pollution (22.22.2), hash-collision DoS (22.22.2), a race that could make `Buffer.alloc()`/`Uint8Array` return non-zero-filled memory (CVE-2025-55131, 22.22.0) and a brotli decoder bug (22.23.4).[^1] A Dockerfile pinned to an old patch (`node:22.11-alpine`) is a finding; prefer `node:22-alpine` plus digest pinning updated by a bot, or an explicit current patch.
+Node 22 is in maintenance: fixes arrive only as patch releases, frequently as coordinated security releases. 2026 security releases for 22.x fixed, among others: TLS server-identity checks and session reuse bound to the wrong host (22.23.0), HTTP/2 memory exhaustion via header accounting and `RST_STREAM` handling (22.23.2), permission-model bypasses (`realpathSync`, `fs/promises`, trace events, report paths, `FileHandle.utimes`), `http.Agent` response-queue poisoning, NUL bytes in DNS/hostnames, `headersDistinct` prototype pollution (22.22.2), hash-collision DoS (22.22.2), a race that could make `Buffer.alloc()`/`Uint8Array` return non-zero-filled memory (CVE-2025-55131, 22.22.0) and a brotli decoder bug (22.23.4). A Dockerfile pinned to an old patch (`node:22.11-alpine`) is a finding; prefer `node:22-alpine` plus digest pinning updated by a bot, or an explicit current patch.
 
 ##### New in 22: the permission model is stable (22.13)
 
@@ -1487,7 +1487,7 @@ What the 22.x permission model does **not** do — never present it as a sandbox
 - **No network restriction** (`--allow-net` is Node 25+); `fetch`, `net.connect`, `dgram` and DNS are unrestricted.
 - **No coverage of `node:sqlite`** file access, existing file descriptors, or files read before startup (`--env-file`, `--openssl-config`).
 - Symlinks are followed even outside the allowed paths; `--allow-child-process` and `--allow-addons` effectively disable it (Node prints a `SecurityWarning`).
-- It protects against accidental access by trusted code, not against malicious code; the Node threat model treats the code you run as trusted.[^11][^32]
+- It protects against accidental access by trusted code, not against malicious code; the Node threat model treats the code you run as trusted.
 
 ##### Path traversal
 
@@ -1616,7 +1616,7 @@ console.log(Buffer.concat([decipher.update(ct), decipher.final()]).toString()); 
 ##### TLS and certificates
 
 - `rejectUnauthorized: false` and `NODE_TLS_REJECT_UNAUTHORIZED=0` disable certificate validation for **every** connection — never in production. Use `ca:` with the private CA, `NODE_EXTRA_CA_CERTS`, or the system store (`--use-system-ca` 22.15, `NODE_USE_SYSTEM_CA=1` 22.19).
-- `tls.getCACertificates('bundled' | 'system' | 'extra' | 'default')` (22.15)[^28] and `tls.setDefaultCACertificates()` (22.19) replace manual `ca` juggling.
+- `tls.getCACertificates('bundled' | 'system' | 'extra' | 'default')` (22.15) and `tls.setDefaultCACertificates()` (22.19) replace manual `ca` juggling.
 - **New in 22.20: OpenSSL 3.5.** Verified with a Node 24 client against a 22.23.4 server: TLS 1.3 now negotiates the hybrid post-quantum group `X25519MLKEM768` (a 20.x server negotiates `X25519`). The larger ClientHello can trip old middleboxes and TLS-inspecting proxies. `tls.DEFAULT_MIN_VERSION` stays `TLSv1.2`. On a 22.x client, `tlsSocket.getEphemeralKeyInfo()` returns `{}` for this hybrid group (Node 24 reports `{ type: 'TLSGroup', name: 'X25519MLKEM768' }`), so monitoring code must not assume `name` is present.
 - Since 22.22.0, `TLSSocket` has a default `'error'` handler, so a malformed HTTP/2 `HEADERS` frame that resets the socket no longer crashes an HTTP/2 server that attached no `'error'` handler (CVE-2025-59465, rated High). Older 22.x patches are remotely crashable; upgrade, and still attach error handlers.
 
@@ -1759,7 +1759,7 @@ test('waitFor (22.14)', async (t) => {
 });
 ```
 
-- Snapshot testing:[^13] `t.assert.snapshot(value)` (stable since 22.14) writes `<test file>.snapshot` on `node --test --test-update-snapshots`; commit the snapshot files. `t.assert.fileSnapshot(value, path)` (22.14) targets a custom file.
+- Snapshot testing: `t.assert.snapshot(value)` (stable since 22.14) writes `<test file>.snapshot` on `node --test --test-update-snapshots`; commit the snapshot files. `t.assert.fileSnapshot(value, path)` (22.14) targets a custom file.
 - Module mocking (`mock.module()`) requires `--experimental-test-module-mocks` on 22; without it `mock.module` is `undefined` and the test fails with `TypeError`.
 - `mock.restoreAll()`/`t.mock` cleanup: mocks created with the global `mock` survive across tests unless restored.
 
@@ -1788,7 +1788,7 @@ node --test --test-name-pattern="pricing" --test-skip-pattern="slow"
 ##### Bundled tools and scripts
 
 - npm **10.9.9** ships with 22.23.4 (npm 11 is bundled from Node 24). Corepack (0.36.0 in 22.23.4) is still bundled with Node 22 but is **not enabled by default**, and Node 25+ no longer ships it; pin the package manager with `"packageManager": "pnpm@x.y.z"` and enable it explicitly (`corepack enable`) or install the manager directly.
-- **`node --run <script>`** (stable 22.10)[^12] runs `package.json` scripts much faster than `npm run`, walks up to the nearest `package.json` (22.3) and adds every ancestor `node_modules/.bin` to `PATH`. It intentionally does **not** run `pre`/`post` scripts and does not define `npm_*` variables (`npm_package_version`, `npm_config_*`); it sets `NODE_RUN_SCRIPT_NAME` and `NODE_RUN_PACKAGE_JSON_PATH` instead. Scripts that rely on `pretest` or `npm_package_*` must keep using `npm run`.
+- **`node --run <script>`** (stable 22.10) runs `package.json` scripts much faster than `npm run`, walks up to the nearest `package.json` (22.3) and adds every ancestor `node_modules/.bin` to `PATH`. It intentionally does **not** run `pre`/`post` scripts and does not define `npm_*` variables (`npm_package_version`, `npm_config_*`); it sets `NODE_RUN_SCRIPT_NAME` and `NODE_RUN_PACKAGE_JSON_PATH` instead. Scripts that rely on `pretest` or `npm_package_*` must keep using `npm run`.
 - **`node --watch`** (stable 22.0) restarts on changes to imported files; `--watch-path` works only on macOS and Windows; `--watch-preserve-output`; `--watch-kill-signal` (22.18). Development only.
 - `--env-file`, `--env-file-if-exists`, `process.loadEnvFile()` replace `dotenv` for simple cases.
 - `--experimental-config-file=node.config.json` / `--experimental-default-config-file` (22.16) are Stability 1.0 (early development) and print an ExperimentalWarning — do not depend on them in production.
@@ -1847,7 +1847,7 @@ console.log(JSON.stringify(styleText('red', 'error')));        // plain "error" 
 ```
 
 - Structured logs: use a JSON logger (pino) writing to stdout; avoid `console.log` of objects in hot paths (`util.inspect` is synchronous and can be slow). `process.stdout`/`stderr` writes to **pipes are asynchronous on POSIX** (synchronous for files and TTYs) — a `process.exit()` right after logging into a pipe (Docker, systemd, `| tee`) can drop lines; set `process.exitCode` and let the process end.
-- `diagnostics_channel` channels on 22 include[^29] `http.client.request.created/start/error`, `http.server.request.start`, `http.server.response.finish`, `http2.*` stream events, `net.client.socket`/`net.server.socket`, `module.require.*`/`module.import.*` (22.4), `child_process`, `worker_threads`, and undici's `undici:request:*` for `fetch`. `TracingChannel` gives start/end/asyncStart/asyncEnd/error events.
+- `diagnostics_channel` channels on 22 include `http.client.request.created/start/error`, `http.server.request.start`, `http.server.response.finish`, `http2.*` stream events, `net.client.socket`/`net.server.socket`, `module.require.*`/`module.import.*` (22.4), `child_process`, `worker_threads`, and undici's `undici:request:*` for `fetch`. `TracingChannel` gives start/end/asyncStart/asyncEnd/error events.
 - `process.report.writeReport()` / `--report-on-fatalerror` produce a JSON diagnostic report; it contains environment variables unless `--report-exclude-env` (22.13) is used.
 - `--heapsnapshot-signal=SIGUSR2`, `--heapsnapshot-near-heap-limit=2`, `--cpu-prof`, `--heap-prof` and the inspector (`--inspect`, `--inspect-wait` 22.2) cover most production debugging. `--disable-sigusr1` (22.14) stops `SIGUSR1` from opening the inspector.
 - `--experimental-network-inspection` (22.6, experimental) shows outgoing `http`/`https` traffic in Chrome DevTools.
@@ -1909,7 +1909,7 @@ const { values, positionals } = parseArgs({
 console.log(Number(values.port), values.color, values.verbose, positionals); // 8080 false true [ 'serve' ]
 ```
 
-`parseArgs` returns strings;[^25] validate and convert (`Number.parseInt(values.port, 10)`, range checks) yourself. In real programs omit `args` to parse `process.argv.slice(2)`.
+`parseArgs` returns strings; validate and convert (`Number.parseInt(values.port, 10)`, range checks) yourself. In real programs omit `args` to parse `process.argv.slice(2)`.
 
 ##### URLs
 
@@ -1996,39 +1996,3 @@ Upgrading from 22 to 24 (what will break later): `url.parse()`, `SlowBuffer`, `f
 - [ ] Stream-heavy services re-measured after the 64 KiB `highWaterMark` change
 - [ ] Maglev not force-enabled; compile cache considered for CLIs
 - [ ] Structured logging; diagnostics via `diagnostics_channel`, `--cpu-prof`, heap snapshots; reports exclude env (`--report-exclude-env`)
-
-***
-
-[^1]: Node.js 22 changelog (22.0.0 – 22.23.4). https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V22.md
-[^2]: Node.js Release schedule (schedule.json: 22 "Jod" maintenance 2025-10-21, end 2027-04-30; 24, 26, 27 dates). https://github.com/nodejs/Release
-[^3]: Node.js 22.23.4 (LTS) security release, 2026-10-21. https://nodejs.org/en/blog/release/v22.23.4
-[^4]: Node.js 22 is now available! (release announcement). https://nodejs.org/en/blog/announcements/v22-release-announce
-[^5]: Node.js distribution index (release dates, bundled V8/npm/OpenSSL versions). https://nodejs.org/dist/index.json
-[^6]: Modules: CommonJS — Loading ECMAScript modules using `require()`. https://nodejs.org/docs/latest-v22.x/api/modules.html#loading-ecmascript-modules-using-require
-[^7]: Modules: Packages (`type`, `exports`, `imports`, `module-sync`, syntax detection). https://nodejs.org/docs/latest-v22.x/api/packages.html
-[^8]: Modules: ECMAScript modules (import attributes, `import.meta`). https://nodejs.org/docs/latest-v22.x/api/esm.html
-[^9]: Modules: TypeScript (type stripping, unsupported syntax, tsconfig). https://nodejs.org/docs/latest-v22.x/api/typescript.html
-[^10]: SQLite (`node:sqlite`). https://nodejs.org/docs/latest-v22.x/api/sqlite.html
-[^11]: Permissions (permission model, limitations). https://nodejs.org/docs/latest-v22.x/api/permissions.html
-[^12]: Command-line API (`--run`, `--watch`, `--env-file`, `--max-old-space-size-percentage`, `--use-env-proxy`, `--trace-env`). https://nodejs.org/docs/latest-v22.x/api/cli.html
-[^13]: Test runner (`node:test`). https://nodejs.org/docs/latest-v22.x/api/test.html
-[^14]: Deprecated APIs (DEP0005 … DEP0199). https://nodejs.org/docs/latest-v22.x/api/deprecations.html
-[^15]: Node.js 23 changelog. https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V23.md
-[^16]: Node.js 24 changelog. https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V24.md
-[^17]: Node.js 25 changelog. https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V25.md
-[^18]: Node.js 26 changelog. https://github.com/nodejs/node/blob/main/doc/changelogs/CHANGELOG_V26.md
-[^19]: undici v6 documentation (Client defaults; consuming response bodies). https://github.com/nodejs/undici/blob/v6.x/docs/docs/api/Client.md , https://github.com/nodejs/undici/blob/v6.x/README.md
-[^20]: Modules: `node:module` API (`registerHooks`, `register`, `enableCompileCache`, `findPackageJSON`). https://nodejs.org/docs/latest-v22.x/api/module.html
-[^21]: HTTP (`server.keepAliveTimeoutBuffer`, `shouldUpgradeCallback`, built-in proxy support). https://nodejs.org/docs/latest-v22.x/api/http.html
-[^22]: File system (`fs.glob`, `fs.cp`, `Dir`). https://nodejs.org/docs/latest-v22.x/api/fs.html
-[^23]: Stream (default high water mark, `pipeline`, operators, Web Streams adapters). https://nodejs.org/docs/latest-v22.x/api/stream.html
-[^24]: Global objects (`fetch`, `WebSocket`, `navigator`, `EventSource`, Web Storage). https://nodejs.org/docs/latest-v22.x/api/globals.html
-[^25]: Util (`parseArgs`, `styleText`, `getCallSites`, `parseEnv`, `diff`). https://nodejs.org/docs/latest-v22.x/api/util.html
-[^26]: Asynchronous context tracking (`AsyncLocalStorage`). https://nodejs.org/docs/latest-v22.x/api/async_context.html
-[^27]: Child process (shell options, DEP0190/DEP0196). https://nodejs.org/docs/latest-v22.x/api/child_process.html
-[^28]: TLS (`getCACertificates`, `setDefaultCACertificates`, `--use-system-ca`). https://nodejs.org/docs/latest-v22.x/api/tls.html
-[^29]: Diagnostics Channel (built-in channels). https://nodejs.org/docs/latest-v22.x/api/diagnostics_channel.html
-[^30]: Process (`getBuiltinModule`, `features`, `constrainedMemory`, `availableMemory`, process I/O). https://nodejs.org/docs/latest-v22.x/api/process.html
-[^31]: TC39 finished proposals (ES2024/ES2025 feature list). https://github.com/tc39/proposals/blob/main/finished-proposals.md
-[^32]: Node.js threat model (SECURITY.md). https://github.com/nodejs/node/blob/main/SECURITY.md
-[^33]: TypeScript 5.8 release notes (`--erasableSyntaxOnly`). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html

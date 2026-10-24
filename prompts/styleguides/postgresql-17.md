@@ -2,14 +2,14 @@
 
 #### Overview
 
-> **Version**: PostgreSQL 17.0 was released on **September 26, 2024**.[^1] The latest minor release is **17.11 (August 13, 2026)**; the next scheduled minor release date is November 12, 2026.[^2][^3] PostgreSQL 17 is **supported until November 8, 2029**.[^2]
-> **Newest releases (October 2026)**: PostgreSQL **18** is the current stable major version (18.0 on September 25, 2025; current minor 18.6). PostgreSQL **19 is at Release Candidate 1** (October 15, 2026). It is pre-release software and not a deployment target.[^2] PostgreSQL 14 reaches end of life on November 12, 2026.
+> **Version**: PostgreSQL 17.0 was released on **September 26, 2024**. The latest minor release is **17.11 (August 13, 2026)**; the next scheduled minor release date is November 12, 2026. PostgreSQL 17 is **supported until November 8, 2029**.
+> **Newest releases (October 2026)**: PostgreSQL **18** is the current stable major version (18.0 on September 25, 2025; current minor 18.6). PostgreSQL **19 is at Release Candidate 1** (October 15, 2026). It is pre-release software and not a deployment target. PostgreSQL 14 reaches end of life on November 12, 2026.
 > **Scope**: SQL that runs on a PostgreSQL 17 server: schema migrations, queries embedded in application code, functions, procedures and triggers, schema design, indexing, transactions, security, JSON, partitioning, connection pooling and operations-facing SQL.
 > **Note**: This document is self-contained. It carries forward everything from PostgreSQL 14–16 that is still correct, and it marks the version in which each feature arrived. Sections that cover 17-specific behaviour are marked **New in 17**. Every example was executed on PostgreSQL 17.11. Boundary claims ("new in 17", "not available in 17") were checked on 16.15 and 18.6. Older "since 14/15/16" markers were checked on 13.23, 14.24 and 15.19.
 
-PostgreSQL 17 is mainly a performance and operations release with a few large SQL features. Its headline changes are **`JSON_TABLE()` and the SQL/JSON query functions** (`JSON_EXISTS`, `JSON_QUERY`, `JSON_VALUE`) and constructors (`JSON()`, `JSON_SCALAR()`, `JSON_SERIALIZE()`), **`MERGE ... RETURNING`** with `merge_action()`, `WHEN NOT MATCHED BY SOURCE` and `MERGE` into views, **`COPY ... ON_ERROR ignore`**, **incremental backups** (`pg_basebackup --incremental` plus `pg_combinebackup`), a new **vacuum dead-tuple store that uses up to 20x less memory** and is no longer capped at 1 GB, **streaming I/O** for sequential scans and `ANALYZE`, faster **B-tree `IN (...)` / `= ANY(array)` lookups**, **identity columns and exclusion constraints on partitioned tables**, the **`MAINTAIN` privilege and `pg_maintain` role**, **`transaction_timeout`**, a **builtin collation provider** (`C.UTF-8`), **direct TLS negotiation** (`sslnegotiation=direct`) and **failover for logical replication slots**.[^1][^4]
+PostgreSQL 17 is mainly a performance and operations release with a few large SQL features. Its headline changes are **`JSON_TABLE()` and the SQL/JSON query functions** (`JSON_EXISTS`, `JSON_QUERY`, `JSON_VALUE`) and constructors (`JSON()`, `JSON_SCALAR()`, `JSON_SERIALIZE()`), **`MERGE ... RETURNING`** with `merge_action()`, `WHEN NOT MATCHED BY SOURCE` and `MERGE` into views, **`COPY ... ON_ERROR ignore`**, **incremental backups** (`pg_basebackup --incremental` plus `pg_combinebackup`), a new **vacuum dead-tuple store that uses up to 20x less memory** and is no longer capped at 1 GB, **streaming I/O** for sequential scans and `ANALYZE`, faster **B-tree `IN (...)` / `= ANY(array)` lookups**, **identity columns and exclusion constraints on partitioned tables**, the **`MAINTAIN` privilege and `pg_maintain` role**, **`transaction_timeout`**, a **builtin collation provider** (`C.UTF-8`), **direct TLS negotiation** (`sslnegotiation=direct`) and **failover for logical replication slots**.
 
-PostgreSQL 17 also changes behaviour that breaks old code. **Maintenance commands now run functions with a safe `search_path`** (`pg_catalog, pg_temp`), so expression indexes and materialized views whose functions use unqualified names can fail on `CREATE INDEX`, `REINDEX`, `REFRESH` or after a `pg_upgrade`. **`ago` must be the last token of an interval literal.** `old_snapshot_threshold`, `db_user_namespace`, `adminpack` and `trace_recovery_messages` are gone. Several monitoring columns moved or were renamed (`pg_stat_bgwriter` → `pg_stat_checkpointer`, `pg_stat_statements.blk_read_time` → `shared_blk_read_time`).[^1]
+PostgreSQL 17 also changes behaviour that breaks old code. **Maintenance commands now run functions with a safe `search_path`** (`pg_catalog, pg_temp`), so expression indexes and materialized views whose functions use unqualified names can fail on `CREATE INDEX`, `REINDEX`, `REFRESH` or after a `pg_upgrade`. **`ago` must be the last token of an interval literal.** `old_snapshot_threshold`, `db_user_namespace`, `adminpack` and `trace_recovery_messages` are gone. Several monitoring columns moved or were renamed (`pg_stat_bgwriter` → `pg_stat_checkpointer`, `pg_stat_statements.blk_read_time` → `shared_blk_read_time`).
 
 Global truths about PostgreSQL 17:
 
@@ -38,7 +38,7 @@ The project pins PostgreSQL 17 (for example `image: postgres:17`, `postgresql 17
 
 #### What's New in PostgreSQL 17
 
-All items below are verified against the official release notes[^1] and, where they are SQL-visible, were executed on 17.11 and shown to fail on 16.15.
+All items below are verified against the official release notes and, where they are SQL-visible, were executed on 17.11 and shown to fail on 16.15.
 
 ##### SQL and data types
 
@@ -71,12 +71,12 @@ All items below are verified against the official release notes[^1] and, where t
 
 ##### Server, performance and operations
 
-- **Vacuum** stores dead tuple IDs in a new radix-tree structure. It uses up to 20x less memory and is no longer silently limited to 1 GB of `maintenance_work_mem`/`autovacuum_work_mem`. Vacuum also writes less WAL. `vacuum_buffer_usage_limit` defaults to 2MB (256kB in 16).[^1][^4]
-- **Streaming I/O.** Sequential scans and `ANALYZE` combine adjacent block reads. `io_combine_limit` (default 128kB) sets the maximum read size.[^1]
+- **Vacuum** stores dead tuple IDs in a new radix-tree structure. It uses up to 20x less memory and is no longer silently limited to 1 GB of `maintenance_work_mem`/`autovacuum_work_mem`. Vacuum also writes less WAL. `vacuum_buffer_usage_limit` defaults to 2MB (256kB in 16).
+- **Streaming I/O.** Sequential scans and `ANALYZE` combine adjacent block reads. `io_combine_limit` (default 128kB) sets the maximum read size.
 - **B-tree `IN` lists.** One index scan handles several array values that are on the same leaf page instead of descending once per value (measured below: 4 buffer hits on 17 against 64 on 16 for 20 adjacent keys).
-- **Planner.** It removes `IS NOT NULL` on `NOT NULL` columns, replaces `IS NULL` on such columns with a constant-false filter, turns correlated `IN (subquery)` into semi-joins, can use statistics and sort order from CTEs, and can use `MergeAppend` for `UNION`. `GROUP BY` keys can be reordered to match `ORDER BY` (`enable_group_by_reordering`).[^1]
+- **Planner.** It removes `IS NOT NULL` on `NOT NULL` columns, replaces `IS NULL` on such columns with a constant-false filter, turns correlated `IN (subquery)` into semi-joins, can use statistics and sort order from CTEs, and can use `MergeAppend` for `UNION`. `GROUP BY` keys can be reordered to match `ORDER BY` (`enable_group_by_reordering`).
 - **BRIN indexes** can be built in parallel.
-- **WAL** throughput under high concurrency improves by up to 2x.[^4]
+- **WAL** throughput under high concurrency improves by up to 2x.
 - **Incremental backup.** `summarize_wal = on` plus `pg_basebackup --incremental=<manifest>`, then rebuild with `pg_combinebackup`.
 - **Logical replication.** Failover slots (`failover` option, `sync_replication_slots`, `synchronized_standby_slots`), `pg_createsubscriber`, and `pg_upgrade` now keeps logical slots and subscriptions (when upgrading *from* 17 or later).
 - **New settings.** `transaction_timeout`, `allow_alter_system`, `event_triggers`, `huge_pages_status`, `summarize_wal`, `wal_summary_keep_time`, `io_combine_limit` and the SLRU buffer settings (`transaction_buffers`, `subtransaction_buffers`, `multixact_*_buffers`, ...).
@@ -85,14 +85,14 @@ All items below are verified against the official release notes[^1] and, where t
 - **Builtin collation provider.** `provider = builtin` with locales `C` and `C.UTF-8`. It is platform-independent and immutable across OS upgrades.
 - **Event triggers** on login (`ON login`) and for `REINDEX`.
 - **libpq.** `sslnegotiation=direct` (TLS without the `SSLRequest` round trip, using ALPN), `PQchangePassword()`, `PQclosePrepared()`/`PQclosePortal()`, new encrypted cancel APIs (`PQcancelCreate()` and related), `PQsetChunkedRowsMode()`, `PQsocketPoll()`, `PQsendPipelineSync()`.
-- **Other server changes.** `ALTER SYSTEM` (and `GRANT ... ON PARAMETER`) accepts unrecognized custom settings such as `myapp.x`; `pg_stat_reset_shared()` with no argument resets all shared statistics; partition pruning works for `IS [NOT] UNKNOWN` on boolean partition keys; `postgres_fdw` pushes down `EXISTS`/`IN` subqueries; `ltree` supports hash indexes; `pg_buffercache_evict()`; the `unaccent.rules` file syntax changed (rules may contain whitespace and quotes); PL/pgSQL `%TYPE` can reference a column of a composite variable.[^1]
+- **Other server changes.** `ALTER SYSTEM` (and `GRANT ... ON PARAMETER`) accepts unrecognized custom settings such as `myapp.x`; `pg_stat_reset_shared()` with no argument resets all shared statistics; partition pruning works for `IS [NOT] UNKNOWN` on boolean partition keys; `postgres_fdw` pushes down `EXISTS`/`IN` subqueries; `ltree` supports hash indexes; `pg_buffercache_evict()`; the `unaccent.rules` file syntax changed (rules may contain whitespace and quotes); PL/pgSQL `%TYPE` can reference a column of a composite variable.
 - **Tools.** `pg_dump --filter`, `pg_dump --exclude-extension`, `pg_restore --transaction-size`, `pg_upgrade --copy-file-range`, `vacuumdb/reindexdb/clusterdb --all` with patterns, `pg_walsummary`.
 
 ***
 
 #### Do Not Use or Recommend (PostgreSQL 18+ Features)
 
-The server is PostgreSQL 17. Everything in this list was introduced in **PostgreSQL 18** (released September 25, 2025)[^5] and was shown to fail on 17.11. Never suggest these, and flag them as bugs when they appear in code that targets 17:
+The server is PostgreSQL 17. Everything in this list was introduced in **PostgreSQL 18** (released September 25, 2025) and was shown to fail on 17.11. Never suggest these, and flag them as bugs when they appear in code that targets 17:
 
 | PostgreSQL 18 feature | What happens on 17 | Use on 17 instead |
 |---|---|---|
@@ -120,7 +120,7 @@ The server is PostgreSQL 17. Everything in this list was introduced in **Postgre
 | `initdb` enabling data checksums by default | 17's `initdb` does **not** enable checksums unless you pass `--data-checksums` (`-k`) | |
 | PL/pgSQL `=>` for named cursor arguments | only `:=` | |
 
-Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released) is also unavailable, for example the `REPACK` command (`REPACK (CONCURRENTLY)`) and `error_on_null()`. Both work on 19rc1 and fail on 17.11 (`syntax error at or near "REPACK"`, `function error_on_null(integer) does not exist`).[^24] `GROUP BY ALL` is not a feature of any of these versions: it is a syntax error on 17.11, 18.6 and 19rc1.
+Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released) is also unavailable, for example the `REPACK` command (`REPACK (CONCURRENTLY)`) and `error_on_null()`. Both work on 19rc1 and fail on 17.11 (`syntax error at or near "REPACK"`, `function error_on_null(integer) does not exist`). `GROUP BY ALL` is not a feature of any of these versions: it is a syntax error on 17.11, 18.6 and 19rc1.
 
 ##### Deprecated or removed in 17 (do not use)
 
@@ -152,7 +152,7 @@ Already gone before 17, and still common in old code: `lc_collate`/`lc_ctype` as
 
 #### Features from PostgreSQL 14–16 You Can Rely On
 
-All of these exist on 17 and should be used where they fit.[^22] The version marker shows when each arrived. The marker was confirmed by running the feature on the version before it, where it fails.
+All of these exist on 17 and should be used where they fit. The version marker shows when each arrived. The marker was confirmed by running the feature on the version before it, where it fails.
 
 ##### Since 14
 
@@ -200,7 +200,7 @@ All of these exist on 17 and should be used where they fit.[^22] The version mar
 
 ##### JSON_TABLE
 
-`JSON_TABLE` replaces long chains of `jsonb_array_elements()` and `->>` casts. Each column has a type, a path and error handling.[^14]
+`JSON_TABLE` replaces long chains of `jsonb_array_elements()` and `->>` casts. Each column has a type, a path and error handling.
 
 ```sql
 SELECT jt.*
@@ -328,10 +328,10 @@ RETURNING merge_action(), s.*;
 ```
 
 - `merge_action()` is only valid in a `MERGE ... RETURNING` list.
-- In `RETURNING`, target columns show **new** values for `INSERT`/`UPDATE` and **old** values for `DELETE`. `RETURNING *` returns the **source columns followed by the target columns**. Use explicit lists in application code.[^6]
+- In `RETURNING`, target columns show **new** values for `INSERT`/`UPDATE` and **old** values for `DELETE`. `RETURNING *` returns the **source columns followed by the target columns**. Use explicit lists in application code.
 - `WHEN NOT MATCHED BY SOURCE` without an extra condition deletes or updates **every** target row that has no source row. That is a full-table sync, which is rarely what an incremental feed wants. Look for a guard condition (`AND s.batch_id = ...`) or a pre-filtered target (a CTE or a view as the target).
-- The target can be a view if it is automatically updatable with no `INSTEAD OF` triggers, or if it has `INSTEAD OF` triggers for every action used. Views with rules, materialized views and foreign tables are not supported.[^6]
-- **Concurrency**: `MERGE` is **not** an atomic upsert. With concurrent inserts of the same key, the `WHEN NOT MATCHED THEN INSERT` branch can raise a unique violation. For "insert or update one row by key" under concurrency, use `INSERT ... ON CONFLICT DO UPDATE`.[^6]
+- The target can be a view if it is automatically updatable with no `INSTEAD OF` triggers, or if it has `INSTEAD OF` triggers for every action used. Views with rules, materialized views and foreign tables are not supported.
+- **Concurrency**: `MERGE` is **not** an atomic upsert. With concurrent inserts of the same key, the `WHEN NOT MATCHED THEN INSERT` branch can raise a unique violation. For "insert or update one row by key" under concurrency, use `INSERT ... ON CONFLICT DO UPDATE`.
 - If one target row matches several source rows, a repeated `UPDATE`/`DELETE` raises a cardinality violation and a repeated `INSERT` raises a unique violation. Deduplicate the source (`DISTINCT ON`) first.
 - Not available in 17: `RETURNING old.*, new.*` (18).
 
@@ -353,7 +353,7 @@ x,2024-01-02
 -- COPY 2
 ```
 
-What `ON_ERROR ignore` does **not** cover (tested):[^15]
+What `ON_ERROR ignore` does **not** cover (tested):
 
 - Constraint violations (`CHECK`, `NOT NULL`, unique, foreign key) still abort the whole `COPY`.
 - Malformed rows, such as `extra data after last expected column`, still abort.
@@ -434,11 +434,11 @@ GRANT MAINTAIN ON TABLE orders TO ops_role;   -- per table
 GRANT pg_maintain TO ops_role;                -- all relations
 ```
 
-`MAINTAIN` allows[^20] `VACUUM`, `ANALYZE`, `CLUSTER`, `REFRESH MATERIALIZED VIEW`, `REINDEX` and `LOCK TABLE`. It does **not** allow reading data. A `pg_maintain` member got `permission denied for table acct` on `SELECT` after a successful `VACUUM`/`ANALYZE`/`REINDEX`. Use it instead of making job roles table owners or superusers. On 16: `unrecognized privilege type "maintain"` and `role "pg_maintain" does not exist`.
+`MAINTAIN` allows `VACUUM`, `ANALYZE`, `CLUSTER`, `REFRESH MATERIALIZED VIEW`, `REINDEX` and `LOCK TABLE`. It does **not** allow reading data. A `pg_maintain` member got `permission denied for table acct` on `SELECT` after a successful `VACUUM`/`ANALYZE`/`REINDEX`. Use it instead of making job roles table owners or superusers. On 16: `unrecognized privilege type "maintain"` and `role "pg_maintain" does not exist`.
 
 ##### Safe search_path during maintenance (breaking change)
 
-`ANALYZE`, `CLUSTER`, `CREATE INDEX`, `CREATE MATERIALIZED VIEW`, `REFRESH MATERIALIZED VIEW`, `REINDEX` and `VACUUM` now run functions with `search_path = pg_catalog, pg_temp`.[^1]
+`ANALYZE`, `CLUSTER`, `CREATE INDEX`, `CREATE MATERIALIZED VIEW`, `REFRESH MATERIALIZED VIEW`, `REINDEX` and `VACUUM` now run functions with `search_path = pg_catalog, pg_temp`.
 
 ```sql
 CREATE TABLE lookup(k int PRIMARY KEY, v int);
@@ -474,7 +474,7 @@ BEGIN; SELECT pg_sleep(1); COMMIT;
 -- server closed the connection unexpectedly
 ```
 
-`transaction_timeout` limits the total duration of a transaction,[^19] including a single-statement implicit transaction. **It terminates the session**, like `idle_in_transaction_session_timeout`. It does not just cancel the statement, as `statement_timeout` does. Consequences for review:
+`transaction_timeout` limits the total duration of a transaction, including a single-statement implicit transaction. **It terminates the session**, like `idle_in_transaction_session_timeout`. It does not just cancel the statement, as `statement_timeout` does. Consequences for review:
 
 - Setting it in a pooled connection kills the server connection. Clients must handle connection loss and retry the whole transaction.
 - Set it per role or per database (`ALTER ROLE app SET transaction_timeout = '5min'`) for interactive or OLTP roles. Do not set it globally, because it would also kill legitimate long batch and migration transactions.
@@ -579,7 +579,7 @@ EXPLAIN (ANALYZE, SERIALIZE, MEMORY, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT 
 
 #### New in 17: Connections, libpq, Backup and Replication
 
-- **`sslnegotiation=direct`** (libpq 17 and server 17): the client starts TLS immediately with ALPN `postgresql`, which saves a round trip.[^21] libpq refuses weak modes: `weak sslmode "disable" may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")`. Only use it when every server the client talks to, including poolers and proxies, is 17+ and understands direct TLS. Otherwise keep the default `sslnegotiation=postgres`.
+- **`sslnegotiation=direct`** (libpq 17 and server 17): the client starts TLS immediately with ALPN `postgresql`, which saves a round trip. libpq refuses weak modes: `weak sslmode "disable" may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")`. Only use it when every server the client talks to, including poolers and proxies, is 17+ and understands direct TLS. Otherwise keep the default `sslnegotiation=postgres`.
 - **Cancel requests** can be encrypted with the new libpq cancel API (`PQcancelCreate()` and related). The legacy `PQcancel()` sends the cancel key in clear text.
 - **Incremental backup**: enable `summarize_wal`, take a full `pg_basebackup`, then `pg_basebackup --incremental=/path/backup_manifest`. Restore with `pg_combinebackup full incr1 incr2 -o restored`. An incremental backup is useless without its whole chain. Backup scripts must keep and verify every link (`pg_verifybackup`).
 - **Failover slots**: `pg_create_logical_replication_slot(..., failover => true)` or `CREATE SUBSCRIPTION ... WITH (failover = true)`, plus `sync_replication_slots = on` on the standby and `synchronized_standby_slots` on the primary. Logical replication can then continue after a physical failover.
@@ -615,7 +615,7 @@ This is the most important review area for production PostgreSQL. A migration th
 | `VACUUM FULL`, `CLUSTER` | `ACCESS EXCLUSIVE` | yes | yes | rewrite |
 | plain `REINDEX INDEX` | `SHARE` on the table, `ACCESS EXCLUSIVE` on the index | queries that would use the index block | yes | rebuilds the index |
 
-The rewrite facts above were measured by comparing `pg_relation_filenode()` before and after each statement. Source for lock modes: the "Explicit Locking" and `ALTER TABLE` documentation.[^7][^8]
+The rewrite facts above were measured by comparing `pg_relation_filenode()` before and after each statement. Source for lock modes: the "Explicit Locking" and `ALTER TABLE` documentation.
 
 ##### The lock queue: why "fast" DDL still causes outages
 
@@ -870,7 +870,7 @@ With `plan_cache_mode = auto` (the default), the first five executions are plann
 
 #### Transactions, Isolation and Concurrency
 
-##### Isolation levels (all behaviour verified with two sessions on 17.11)[^17]
+##### Isolation levels (all behaviour verified with two sessions on 17.11)
 
 | Level | Snapshot | What you must handle |
 |---|---|---|
@@ -980,7 +980,7 @@ REVOKE EXECUTE ON FUNCTION app.n_safe() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.n_safe() TO app_role;
 ```
 
-Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`: per-schema default privileges can only add to the global defaults, so the `IN SCHEMA` form of this revoke has no effect. It applies only to functions later created by that role.[^9] Owners should be dedicated, non-superuser roles.
+Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`: per-schema default privileges can only add to the global defaults, so the `IN SCHEMA` form of this revoke has no effect. It applies only to functions later created by that role. Owners should be dedicated, non-superuser roles.
 
 ##### Roles and privileges
 
@@ -1000,7 +1000,7 @@ CREATE POLICY tenant_isolation ON docs
   WITH CHECK (tenant = current_setting('app.tenant', true));
 ```
 
-Behaviour verified on 17.11:[^16]
+Behaviour verified on 17.11:
 
 - **Superusers and roles with `BYPASSRLS` always bypass RLS**, even with `FORCE`.
 - Without `FORCE ROW LEVEL SECURITY`, the **table owner bypasses** policies (a non-superuser owner saw all rows). With `FORCE` the owner saw 0 rows with no tenant set.
@@ -1014,7 +1014,7 @@ Behaviour verified on 17.11:[^16]
 
 - `COPY ... FROM/TO 'file'` and `COPY ... PROGRAM` run on the server with the server's OS user (superuser or `pg_read_server_files`/`pg_write_server_files`/`pg_execute_server_program`). Treat them as remote code execution if inputs reach them.
 - `dblink`/`postgres_fdw` connection strings built from user input are injection and SSRF vectors.
-- Keep the server on the latest 17.x. 17.11 alone fixed 28 CVEs, including memory-safety bugs in `to_char()`, regexp functions and `pg_stat_statements`. Earlier 17.x releases fixed CVE-2025-1094 (libpq quoting functions with invalidly encoded input, 17.3) and CVE-2025-8713/8714/8715 (statistics leak and `pg_dump`/psql restore injection, 17.6).[^2][^10]
+- Keep the server on the latest 17.x. 17.11 alone fixed 28 CVEs, including memory-safety bugs in `to_char()`, regexp functions and `pg_stat_statements`. Earlier 17.x releases fixed CVE-2025-1094 (libpq quoting functions with invalidly encoded input, 17.3) and CVE-2025-8713/8714/8715 (statistics leak and `pg_dump`/psql restore injection, 17.6).
 
 ***
 
@@ -1035,7 +1035,7 @@ SELECT timestamptz '2024-10-27 00:00 Europe/Berlin' + interval '24 hours'; -- 20
 SELECT (timestamptz '2024-01-31 00:00+00' + interval '1 month')::date;  -- 2024-02-29 (clamped)
 ```
 
-- Use **`timestamptz`** for points in time.[^23] It stores UTC and converts on input and output using the session `TimeZone`. Plain `timestamp` drops offsets on input and is only right for "wall clock" values (for example a store's opening hours).
+- Use **`timestamptz`** for points in time. It stores UTC and converts on input and output using the session `TimeZone`. Plain `timestamp` drops offsets on input and is only right for "wall clock" values (for example a store's opening hours).
 - `now()::timestamp AT TIME ZONE 'UTC'` is a common bug. It first converts to session-local wall time and then interprets that as UTC. With a Berlin session it produced a value two hours off. Use `now() AT TIME ZONE 'UTC'` (gives `timestamp`) or keep `timestamptz`.
 - `now()`/`CURRENT_TIMESTAMP` is the **transaction start time**. All rows in one transaction get the same value. Use `clock_timestamp()` for wall time inside long transactions.
 - `timestamp(0)` **rounds**: `'2024-01-01 23:59:59.7'::timestamp(0)` gives `2024-01-02 00:00:00`.
@@ -1180,7 +1180,7 @@ CREATE TABLE m_2025 PARTITION OF m FOR VALUES FROM ('2025-01-01') TO ('2026-01-0
 CREATE TABLE m_def  PARTITION OF m DEFAULT;
 ```
 
-Rules verified on 17.11:[^18]
+Rules verified on 17.11:
 
 - **Unique and primary keys must include all partition key columns**: `PRIMARY KEY (id)` on a table partitioned by `at` fails. Global uniqueness of `id` alone is not enforced, so don't assume it.
 - **Pruning needs the raw partition key.** `WHERE at >= '2025-03-01' AND at < '2025-04-01'` scans only `m_2025`. `WHERE date_trunc('month', at) = '2025-03-01'` scans **every** partition. Stable expressions like `now() - interval '1 day'` are pruned at execution time (`EXPLAIN ANALYZE` shows `Subplans Removed: n`).
@@ -1329,8 +1329,8 @@ Sort order and range comparisons on text depend on the collation. Keyset paginat
 #### Connection Pooling and Application Access
 
 - **Always pool.** Each PostgreSQL connection is a process with several MB of memory. Size pools to roughly a small multiple of CPU cores, not to the number of application threads. `max_connections` in the thousands is a design smell.
-- **PgBouncer transaction mode** (the most common setup) forbids session state across transactions: `SET` without `LOCAL`, session advisory locks, `LISTEN`, `WITH HOLD` cursors, temporary tables, and SQL-level `PREPARE`/`EXECUTE`.[^11] Use `SET LOCAL`/`set_config(..., true)` inside transactions, and `pg_advisory_xact_lock`.
-- **Protocol-level prepared statements** work in transaction mode with PgBouncer 1.21+ when `max_prepared_statements` is non-zero (default 200 in current releases). SQL `PREPARE` statements are still not tracked.[^11]
+- **PgBouncer transaction mode** (the most common setup) forbids session state across transactions: `SET` without `LOCAL`, session advisory locks, `LISTEN`, `WITH HOLD` cursors, temporary tables, and SQL-level `PREPARE`/`EXECUTE`. Use `SET LOCAL`/`set_config(..., true)` inside transactions, and `pg_advisory_xact_lock`.
+- **Protocol-level prepared statements** work in transaction mode with PgBouncer 1.21+ when `max_prepared_statements` is non-zero (default 200 in current releases). SQL `PREPARE` statements are still not tracked.
 - `transaction_timeout` (17) and `idle_in_transaction_session_timeout` **terminate** the server connection. Pools must validate connections and drivers must retry.
 - Set `application_name` per service so `pg_stat_activity` and the logs identify the caller.
 - Retries: retry on `40001` (serialization), `40P01` (deadlock), and connection loss before commit. Never blindly retry after an unknown commit outcome for non-idempotent writes. Use idempotency keys.
@@ -1371,7 +1371,7 @@ SELECT num_timed, num_requested, write_time, sync_time, buffers_written FROM pg_
 - Old checkpoint queries against `pg_stat_bgwriter.checkpoints_timed` fail on 17 (`column "checkpoints_timed" does not exist`).
 - Autovacuum: tune per table for large, hot tables (`ALTER TABLE t SET (autovacuum_vacuum_scale_factor = 0.01)`) rather than turning it off. Watch `n_dead_tup`, `last_autovacuum`, and `age(datfrozenxid)` for wraparound.
 - Logging: `log_min_duration_statement`, `log_lock_waits = on`, `log_temp_files = 0`, `auto_explain` for slow plans. Logs contain query text and parameters, so treat them as sensitive.
-- Plain `REINDEX` blocks writes. Use `REINDEX ... CONCURRENTLY` and only when bloat or corruption warrants it. 17.x release notes sometimes ask for specific reindexes (for example BRIN `numeric_minmax_multi_ops` indexes after 17.6, `btree_gist` float indexes with `NaN` and `ltree` indexes after 17.11).[^10][^2]
+- Plain `REINDEX` blocks writes. Use `REINDEX ... CONCURRENTLY` and only when bloat or corruption warrants it. 17.x release notes sometimes ask for specific reindexes (for example BRIN `numeric_minmax_multi_ops` indexes after 17.6, `btree_gist` float indexes with `NaN` and `ltree` indexes after 17.11).
 
 ***
 
@@ -1391,16 +1391,16 @@ SELECT num_timed, num_requested, write_time, sync_time, buffers_written FROM pg_
 
 Minor releases contain only fixes and need no dump/restore, but some require actions:
 
-- **17.1 (November 14, 2024)**: four CVEs (CVE-2024-10976 RLS-dependent cached plans, CVE-2024-10977 libpq trusting pre-TLS error messages, CVE-2024-10978 `SET SESSION AUTHORIZATION`/`SET ROLE` interaction, CVE-2024-10979 trusted PL/Perl changing environment variables). A table that was detached from a partitioned table with a foreign key to another partitioned table, and not dropped, can have broken FK catalog state that must be repaired. Databases with `LC_CTYPE = C` but a different `LC_COLLATE` must reindex text indexes.[^25]
-- **17.2 (November 21, 2024)** was an out-of-cycle release that restored extension binary compatibility (`ResultRelInfo`) broken by 17.1, and restored `ALTER ROLE/DATABASE ... SET role`.[^12]
-- **17.3 (February 13, 2025)** fixed CVE-2025-1094 in libpq quoting functions (`PQescapeLiteral()` and friends now validate encoding).[^13]
-- **17.4 (February 20, 2025)** was out of cycle: it fixed a regression in the 17.3 quoting fix (`PQescapeLiteral()`/`PQescapeIdentifier()` ignored their length argument).[^25]
-- **17.5 (May 8, 2025)**: CVE-2025-4207 (GB18030 over-read). Self-referential foreign keys on partitioned tables may need to be recreated; BRIN bloom indexes should be reindexed.[^25]
-- **17.6 (August 14, 2025)** fixed CVE-2025-8713 (statistics leak through views and partitions; permission errors can now appear at planning time), CVE-2025-8714/8715 (`pg_dump` output injection; psql gained `\restrict`). Reindex BRIN `numeric_minmax_multi_ops` indexes.[^10]
-- **17.7 (November 13, 2025)**: CVE-2025-12817 (`CREATE STATISTICS` now checks `CREATE` on the schema) and CVE-2025-12818 (libpq allocation overflow).[^25]
-- **17.8 (February 12, 2026)**: four CVEs (CVE-2026-2003 to 2006: `oidvector` checks, `intarray` selectivity estimator code execution, pgcrypto PGP buffer overrun, multibyte length validation). Attaching a non-built-in selectivity estimator to an operator now needs superuser, and string functions may now report `invalid byte sequence for encoding` for invalid text already stored. **17.9 (February 26, 2026)** was out of cycle and fixed regressions from 17.8 (multixact WAL replay on standbys, a too-strict `substring()` encoding check).[^25]
-- **17.10 (May 14, 2026)**: ten CVEs, including quoting fixes in `pg_createsubscriber` and `ALTER SUBSCRIPTION ... REFRESH PUBLICATION`, path traversal in `pg_basebackup`/`pg_rewind`, and allocation overflows. libpq's `PQfn()` is now marked unsafe and deprecated.[^25]
-- **17.11 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must now be allow-listed with `output_plugin_libraries` (CVE-2026-6471), and `pg_upgrade --check` fails if the new cluster does not allow the plugins of existing slots. pgcrypto PGP decryption fails for data that was never actually encrypted because OpenSSL rejected the cipher (CVE-2026-14663; the `ignore-cipher-failure=1` option recovers such data). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing COPY commands. `amcheck` now restricts `search_path` before running index expressions (CVE-2026-14673). It also recommends reindexing `btree_gist` float indexes that may contain `NaN` and `ltree` B-tree indexes with very long values, and fixes incremental-backup correctness (visibility-map clears were not WAL-logged) and a default-partition pruning bug that could drop rows.[^2]
+- **17.1 (November 14, 2024)**: four CVEs (CVE-2024-10976 RLS-dependent cached plans, CVE-2024-10977 libpq trusting pre-TLS error messages, CVE-2024-10978 `SET SESSION AUTHORIZATION`/`SET ROLE` interaction, CVE-2024-10979 trusted PL/Perl changing environment variables). A table that was detached from a partitioned table with a foreign key to another partitioned table, and not dropped, can have broken FK catalog state that must be repaired. Databases with `LC_CTYPE = C` but a different `LC_COLLATE` must reindex text indexes.
+- **17.2 (November 21, 2024)** was an out-of-cycle release that restored extension binary compatibility (`ResultRelInfo`) broken by 17.1, and restored `ALTER ROLE/DATABASE ... SET role`.
+- **17.3 (February 13, 2025)** fixed CVE-2025-1094 in libpq quoting functions (`PQescapeLiteral()` and friends now validate encoding).
+- **17.4 (February 20, 2025)** was out of cycle: it fixed a regression in the 17.3 quoting fix (`PQescapeLiteral()`/`PQescapeIdentifier()` ignored their length argument).
+- **17.5 (May 8, 2025)**: CVE-2025-4207 (GB18030 over-read). Self-referential foreign keys on partitioned tables may need to be recreated; BRIN bloom indexes should be reindexed.
+- **17.6 (August 14, 2025)** fixed CVE-2025-8713 (statistics leak through views and partitions; permission errors can now appear at planning time), CVE-2025-8714/8715 (`pg_dump` output injection; psql gained `\restrict`). Reindex BRIN `numeric_minmax_multi_ops` indexes.
+- **17.7 (November 13, 2025)**: CVE-2025-12817 (`CREATE STATISTICS` now checks `CREATE` on the schema) and CVE-2025-12818 (libpq allocation overflow).
+- **17.8 (February 12, 2026)**: four CVEs (CVE-2026-2003 to 2006: `oidvector` checks, `intarray` selectivity estimator code execution, pgcrypto PGP buffer overrun, multibyte length validation). Attaching a non-built-in selectivity estimator to an operator now needs superuser, and string functions may now report `invalid byte sequence for encoding` for invalid text already stored. **17.9 (February 26, 2026)** was out of cycle and fixed regressions from 17.8 (multixact WAL replay on standbys, a too-strict `substring()` encoding check).
+- **17.10 (May 14, 2026)**: ten CVEs, including quoting fixes in `pg_createsubscriber` and `ALTER SUBSCRIPTION ... REFRESH PUBLICATION`, path traversal in `pg_basebackup`/`pg_rewind`, and allocation overflows. libpq's `PQfn()` is now marked unsafe and deprecated.
+- **17.11 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must now be allow-listed with `output_plugin_libraries` (CVE-2026-6471), and `pg_upgrade --check` fails if the new cluster does not allow the plugins of existing slots. pgcrypto PGP decryption fails for data that was never actually encrypted because OpenSSL rejected the cipher (CVE-2026-14663; the `ignore-cipher-failure=1` option recovers such data). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing COPY commands. `amcheck` now restricts `search_path` before running index expressions (CVE-2026-14673). It also recommends reindexing `btree_gist` float indexes that may contain `NaN` and `ltree` B-tree indexes with very long values, and fixes incremental-backup correctness (visibility-map clears were not WAL-logged) and a default-partition pruning bug that could drop rows.
 
 Pin `postgres:17` (floating minor) or an exact `postgres:17.11` in containers, and update minors promptly.
 
@@ -1467,31 +1467,3 @@ Pin `postgres:17` (floating minor) or an exact `postgres:17.11` in containers, a
 - [ ] `pg_stat_statements`, `log_lock_waits`, `log_min_duration_statement` configured; monitoring queries use 17 column names
 - [ ] `ANALYZE` after bulk loads and after `pg_upgrade`
 - [ ] Incremental backups (if used) keep and verify the full chain; `summarize_wal = on`
-
-***
-
-[^1]: PostgreSQL 17 Release Notes (E.12, Release 17.0). https://www.postgresql.org/docs/release/17.0/
-[^2]: PostgreSQL Versioning Policy (supported versions, 17.11 current, EOL November 8, 2029; 18.6, 19 RC1 news) and PostgreSQL 17.11 Release Notes (August 13, 2026). https://www.postgresql.org/support/versioning/ , https://www.postgresql.org/docs/release/17.11/
-[^3]: PostgreSQL Roadmap (next minor releases: November 12, 2026, ...). https://www.postgresql.org/developer/roadmap/
-[^4]: PostgreSQL 17 Released! (press release, September 26, 2024: vacuum memory up to 20x less, WAL write throughput up to 2x, streaming I/O). https://www.postgresql.org/about/news/postgresql-17-released-2936/
-[^5]: PostgreSQL 18 Release Notes (Release 18.0). https://www.postgresql.org/docs/release/18.0/
-[^6]: PostgreSQL 17 Documentation: MERGE. https://www.postgresql.org/docs/17/sql-merge.html
-[^7]: PostgreSQL 17 Documentation: Explicit Locking. https://www.postgresql.org/docs/17/explicit-locking.html
-[^8]: PostgreSQL 17 Documentation: ALTER TABLE; CREATE INDEX (Building Indexes Concurrently). https://www.postgresql.org/docs/17/sql-altertable.html , https://www.postgresql.org/docs/17/sql-createindex.html
-[^9]: PostgreSQL 17 Documentation: CREATE FUNCTION — Writing SECURITY DEFINER Functions Safely. https://www.postgresql.org/docs/17/sql-createfunction.html
-[^10]: PostgreSQL 17.6 Release Notes (August 14, 2025; CVE-2025-8713, CVE-2025-8714, CVE-2025-8715). https://www.postgresql.org/docs/release/17.6/
-[^11]: PgBouncer configuration (max_prepared_statements, transaction pooling restrictions). https://www.pgbouncer.org/config.html
-[^12]: PostgreSQL 17.2 Release Notes (November 21, 2024). https://www.postgresql.org/docs/release/17.2/
-[^13]: PostgreSQL 17.3 Release Notes (February 13, 2025; CVE-2025-1094). https://www.postgresql.org/docs/release/17.3/
-[^14]: PostgreSQL 17 Documentation: SQL/JSON functions (JSON_TABLE, JSON_VALUE, JSON_QUERY, JSON_EXISTS). https://www.postgresql.org/docs/17/functions-json.html
-[^15]: PostgreSQL 17 Documentation: COPY (ON_ERROR, LOG_VERBOSITY, FORCE_NULL). https://www.postgresql.org/docs/17/sql-copy.html
-[^16]: PostgreSQL 17 Documentation: Row Security Policies. https://www.postgresql.org/docs/17/ddl-rowsecurity.html
-[^17]: PostgreSQL 17 Documentation: Transaction Isolation. https://www.postgresql.org/docs/17/transaction-iso.html
-[^18]: PostgreSQL 17 Documentation: Table Partitioning. https://www.postgresql.org/docs/17/ddl-partitioning.html
-[^19]: PostgreSQL 17 Documentation: Client Connection Defaults (transaction_timeout, statement_timeout, lock_timeout). https://www.postgresql.org/docs/17/runtime-config-client.html
-[^20]: PostgreSQL 17 Documentation: Predefined Roles (pg_maintain). https://www.postgresql.org/docs/17/predefined-roles.html
-[^21]: PostgreSQL 17 Documentation: libpq Connection Parameters (sslnegotiation). https://www.postgresql.org/docs/17/libpq-connect.html
-[^22]: PostgreSQL 16, 15 and 14 Release Notes (feature version markers). https://www.postgresql.org/docs/release/16.0/ , https://www.postgresql.org/docs/release/15.0/ , https://www.postgresql.org/docs/release/14.0/
-[^23]: PostgreSQL Wiki: Don't Do This. https://wiki.postgresql.org/wiki/Don't_Do_This
-[^24]: PostgreSQL 19 Release Notes (draft, Release Candidate 1). https://www.postgresql.org/docs/19/release-19.html
-[^25]: PostgreSQL 17.1, 17.4, 17.5, 17.7, 17.8, 17.9 and 17.10 Release Notes. https://www.postgresql.org/docs/release/17.1/ , https://www.postgresql.org/docs/release/17.4/ , https://www.postgresql.org/docs/release/17.5/ , https://www.postgresql.org/docs/release/17.7/ , https://www.postgresql.org/docs/release/17.8/ , https://www.postgresql.org/docs/release/17.9/ , https://www.postgresql.org/docs/release/17.10/

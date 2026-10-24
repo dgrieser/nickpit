@@ -2,20 +2,20 @@
 
 #### Overview
 
-Python 3.14 was released on October 7, 2025.[^1] It is in the **bugfix ("maintenance") phase** as of October 2026: bugfix releases ship roughly every two months for about 24 months — the final regular bugfix release with binary installers is planned for around October 2027 (PEP 745 lists it as 3.14.14 on October 5, 2027; 3.14.9 shipped ahead of that schedule, so later numbers may shift) — followed by source-only security fixes until **October 2030**.[^2] The latest patch release is **3.14.9 (October 21, 2026)**; Python 3.15.0 shipped on October 9, 2026 (3.15.1 followed on October 21, 2026), so 3.14 is now the *previous* stable release, not the newest.[^3] Always run the latest 3.14.x patch: several point releases contain security fixes and one (3.14.5) changed the garbage collector back (see the point-release notes throughout this guide).
+Python 3.14 was released on October 7, 2025. It is in the **bugfix ("maintenance") phase** as of October 2026: bugfix releases ship roughly every two months for about 24 months — the final regular bugfix release with binary installers is planned for around October 2027 (PEP 745 lists it as 3.14.14 on October 5, 2027; 3.14.9 shipped ahead of that schedule, so later numbers may shift) — followed by source-only security fixes until **October 2030**. The latest patch release is **3.14.9 (October 21, 2026)**; Python 3.15.0 shipped on October 9, 2026 (3.15.1 followed on October 21, 2026), so 3.14 is now the *previous* stable release, not the newest. Always run the latest 3.14.x patch: several point releases contain security fixes and one (3.14.5) changed the garbage collector back (see the point-release notes throughout this guide).
 
-Python 3.14 is a large release. Its headline changes are **deferred evaluation of annotations** (PEP 649/749) with the new `annotationlib` module, **template string literals** (t-strings, PEP 750), **multiple interpreters in the standard library** (PEP 734: `concurrent.interpreters` and `InterpreterPoolExecutor`), **officially supported free-threaded builds** (PEP 779), **Zstandard compression** in the new `compression` package (PEP 784), a **safe external debugger interface** (PEP 768: `sys.remote_exec()`, `python -m pdb -p PID`), `except A, B:` **without parentheses** (PEP 758), a **`SyntaxWarning` for `return`/`break`/`continue` leaving a `finally` block** (PEP 765), asyncio task introspection (`python -m asyncio ps/pstree`), and several *behavior changes that break old code*: `forkserver` replaces `fork` as the default multiprocessing start method on Linux, `tarfile` extraction defaults to the `'data'` filter, `asyncio.get_event_loop()` no longer creates a loop, `int()` no longer falls back to `__trunc__()`, `NotImplemented` in boolean context raises `TypeError`, and a batch of long-deprecated APIs is gone (`ast.Num`, asyncio child watchers, `pkgutil.find_loader`, `urllib.request.URLopener`, ...).[^1]
+Python 3.14 is a large release. Its headline changes are **deferred evaluation of annotations** (PEP 649/749) with the new `annotationlib` module, **template string literals** (t-strings, PEP 750), **multiple interpreters in the standard library** (PEP 734: `concurrent.interpreters` and `InterpreterPoolExecutor`), **officially supported free-threaded builds** (PEP 779), **Zstandard compression** in the new `compression` package (PEP 784), a **safe external debugger interface** (PEP 768: `sys.remote_exec()`, `python -m pdb -p PID`), `except A, B:` **without parentheses** (PEP 758), a **`SyntaxWarning` for `return`/`break`/`continue` leaving a `finally` block** (PEP 765), asyncio task introspection (`python -m asyncio ps/pstree`), and several *behavior changes that break old code*: `forkserver` replaces `fork` as the default multiprocessing start method on Linux, `tarfile` extraction defaults to the `'data'` filter, `asyncio.get_event_loop()` no longer creates a loop, `int()` no longer falls back to `__trunc__()`, `NotImplemented` in boolean context raises `TypeError`, and a batch of long-deprecated APIs is gone (`ast.Num`, asyncio child watchers, `pkgutil.find_loader`, `urllib.request.URLopener`, ...).
 
-This guide targets Python 3.14 specifically. Everything from earlier versions is available and should be used where it fits: structural pattern matching, `X | Y` unions, parenthesized context managers, `zip(strict=True)` and `dataclass(slots=True, kw_only=True)` (3.10); `ExceptionGroup`/`except*`, `asyncio.TaskGroup`, `asyncio.timeout()`, `tomllib`, `typing.Self` and `BaseException.add_note()` (3.11); PEP 695 type-parameter syntax and the `type` statement, PEP 701 f-strings, `@typing.override`, `itertools.batched()` and `Path.walk()` (3.12); `copy.replace()`, `@warnings.deprecated`, `typing.TypeIs`/`ReadOnly`, type-parameter defaults (PEP 696), `queue.Queue.shutdown()` and the new REPL (3.13).[^4] Every section that covers a 3.14-specific change is marked **New in 3.14**. **Do not use or recommend anything from Python 3.15 or later** — the project's interpreter does not have it: no explicit lazy imports (`lazy import x`, `__lazy_modules__`, PEP 810), no `frozendict` built-in (PEP 814), no `sentinel` built-in (PEP 661), no unpacking in comprehensions (`[*xs for xs in rows]`, PEP 798), no `TypedDict` `closed=`/`extra_items=` (PEP 728), no `typing.TypeForm` (PEP 747) or `@typing.disjoint_base` (PEP 800), no `profiling` package / Tachyon sampling profiler (PEP 799), no `math.integer`, `math.isnormal()`/`fmax()`/`signbit()`, `re.prefixmatch()`, `asyncio.TaskGroup.cancel()`, `Counter.__xor__`, `threading.serialize_iterator`, `json.load(array_hook=)` or `bytearray.take_bytes()` (all 3.15) — and do not assume UTF-8 is the default text encoding: UTF-8 mode becomes the default only in 3.15 (PEP 686).[^5]
+This guide targets Python 3.14 specifically. Everything from earlier versions is available and should be used where it fits: structural pattern matching, `X | Y` unions, parenthesized context managers, `zip(strict=True)` and `dataclass(slots=True, kw_only=True)` (3.10); `ExceptionGroup`/`except*`, `asyncio.TaskGroup`, `asyncio.timeout()`, `tomllib`, `typing.Self` and `BaseException.add_note()` (3.11); PEP 695 type-parameter syntax and the `type` statement, PEP 701 f-strings, `@typing.override`, `itertools.batched()` and `Path.walk()` (3.12); `copy.replace()`, `@warnings.deprecated`, `typing.TypeIs`/`ReadOnly`, type-parameter defaults (PEP 696), `queue.Queue.shutdown()` and the new REPL (3.13). Every section that covers a 3.14-specific change is marked **New in 3.14**. **Do not use or recommend anything from Python 3.15 or later** — the project's interpreter does not have it: no explicit lazy imports (`lazy import x`, `__lazy_modules__`, PEP 810), no `frozendict` built-in (PEP 814), no `sentinel` built-in (PEP 661), no unpacking in comprehensions (`[*xs for xs in rows]`, PEP 798), no `TypedDict` `closed=`/`extra_items=` (PEP 728), no `typing.TypeForm` (PEP 747) or `@typing.disjoint_base` (PEP 800), no `profiling` package / Tachyon sampling profiler (PEP 799), no `math.integer`, `math.isnormal()`/`fmax()`/`signbit()`, `re.prefixmatch()`, `asyncio.TaskGroup.cancel()`, `Counter.__xor__`, `threading.serialize_iterator`, `json.load(array_hook=)` or `bytearray.take_bytes()` (all 3.15) — and do not assume UTF-8 is the default text encoding: UTF-8 mode becomes the default only in 3.15 (PEP 686).
 
 Global truths about Python 3.14:
 
 - **Everything is an object.** Integers, functions, classes, modules, annotations' `__annotate__` functions and t-string `Template`s — all are objects.
 - **Indentation is syntax.** Python uses indentation levels to delimit blocks, not braces.
 - **Dynamic typing, static checking.** Values carry types; annotations are *not* enforced at runtime. Type checkers (mypy, pyright) do the static work.
-- **Annotations are lazy.** In 3.14, function, class and module annotations are compiled into an `__annotate__` function and evaluated only when someone asks for them (PEP 649/749). Forward references no longer need quotes.[^6]
-- **Reference counting + cyclic GC.** CPython frees most objects immediately when their refcount drops to zero; a cyclic collector handles cycles. (3.14.0–3.14.4 shipped an *incremental* collector; 3.14.5 reverted to the 3.13 generational collector.)[^1]
-- **The GIL is still the default.** The standard `python3.14` build has a GIL. A separate, officially supported free-threaded build (`python3.14t`) runs without it.[^7]
+- **Annotations are lazy.** In 3.14, function, class and module annotations are compiled into an `__annotate__` function and evaluated only when someone asks for them (PEP 649/749). Forward references no longer need quotes.
+- **Reference counting + cyclic GC.** CPython frees most objects immediately when their refcount drops to zero; a cyclic collector handles cycles. (3.14.0–3.14.4 shipped an *incremental* collector; 3.14.5 reverted to the 3.13 generational collector.)
+- **The GIL is still the default.** The standard `python3.14` build has a GIL. A separate, officially supported free-threaded build (`python3.14t`) runs without it.
 - **`str` is Unicode; `bytes` is binary.** They never mix implicitly. The default text encoding is still locale-dependent in 3.14 — always pass `encoding=`.
 - **Dicts are ordered by insertion.** Guaranteed by the language since 3.7.
 
@@ -78,7 +78,7 @@ from pathlib import Path
 # Never wildcard imports — they defeat static analysis and __all__ hygiene
 ```
 
-**Do not** write `lazy import x` or rely on `__lazy_modules__`: explicit lazy imports are Python 3.15 (PEP 810). In 3.14, `lazy import json` is a `SyntaxError`, and a `__lazy_modules__` list is silently ignored (imports stay eager).[^5] Keep the 3.14 idioms for deferring expensive imports: import inside the function that needs it, or use `importlib.util.LazyLoader`.
+**Do not** write `lazy import x` or rely on `__lazy_modules__`: explicit lazy imports are Python 3.15 (PEP 810). In 3.14, `lazy import json` is a `SyntaxError`, and a `__lazy_modules__` list is silently ignored (imports stay eager). Keep the 3.14 idioms for deferring expensive imports: import inside the function that needs it, or use `importlib.util.LazyLoader`.
 
 ##### Docstrings
 
@@ -123,13 +123,13 @@ class DatabaseConnection: ...
 class Cache: ...
 ```
 
-`dataclasses.field(doc=...)` is **new in 3.14** — use it to document dataclass fields so `help()` and `pydoc` show them (see Dataclasses).[^8]
+`dataclasses.field(doc=...)` is **new in 3.14** — use it to document dataclass fields so `help()` and `pydoc` show them (see Dataclasses).
 
 ***
 
 #### New in 3.14: Deferred Evaluation of Annotations (PEP 649 / PEP 749)
 
-This is the most far-reaching change in 3.14. Annotations on functions, classes and modules are **no longer evaluated when the `def`/`class` statement runs**. The compiler stores them in a generated `__annotate__` function, and they are evaluated the first time something reads `__annotations__` (or calls `annotationlib.get_annotations()`, `typing.get_type_hints()`, `inspect.signature()`, ...).[^6][^9]
+This is the most far-reaching change in 3.14. Annotations on functions, classes and modules are **no longer evaluated when the `def`/`class` statement runs**. The compiler stores them in a generated `__annotate__` function, and they are evaluated the first time something reads `__annotations__` (or calls `annotationlib.get_annotations()`, `typing.get_type_hints()`, `inspect.signature()`, ...).
 
 ```python
 # Python 3.13: NameError at the def line — Node is not defined yet.
@@ -155,7 +155,7 @@ Consequences a reviewer must know:
 
 ##### The Three Formats (`annotationlib.Format`)
 
-`annotationlib` (new module) reads annotations in one of three formats:[^9]
+`annotationlib` (new module) reads annotations in one of three formats:
 
 ```python
 from annotationlib import Format, get_annotations
@@ -182,9 +182,9 @@ class Response: ...
 print(get_annotations(handler)['request'])   # <class '__main__.Request'> — VALUE works now
 ```
 
-`Format` is an `IntEnum`: `VALUE = 1`, `VALUE_WITH_FAKE_GLOBALS = 2` (internal — never pass it yourself), `FORWARDREF = 3`, `STRING = 4`.[^9]
+`Format` is an `IntEnum`: `VALUE = 1`, `VALUE_WITH_FAKE_GLOBALS = 2` (internal — never pass it yourself), `FORWARDREF = 3`, `STRING = 4`.
 
-**Rule: library and framework code that introspects annotations should call `annotationlib.get_annotations(obj, format=Format.FORWARDREF)`** (or `typing.get_type_hints(obj, format=...)`) instead of reading `obj.__annotations__` directly. That is what `dataclasses` itself does in 3.14.[^1]
+**Rule: library and framework code that introspects annotations should call `annotationlib.get_annotations(obj, format=Format.FORWARDREF)`** (or `typing.get_type_hints(obj, format=...)`) instead of reading `obj.__annotations__` directly. That is what `dataclasses` itself does in 3.14.
 
 ##### `typing.get_type_hints()`, `inspect.signature()` and `TYPE_CHECKING` Imports
 
@@ -215,11 +215,11 @@ print(typing.get_type_hints(price, format=Format.FORWARDREF)['return'])   # <cla
 print(inspect.signature(price, annotation_format=Format.STRING))          # (amount: 'Decimal') -> 'str'
 ```
 
-**Pitfall for runtime-typed frameworks** (FastAPI, pydantic, typer, cattrs, dependency injectors): they evaluate annotations. Types they need at runtime must be importable at runtime — never hide them behind `TYPE_CHECKING`, quoted or not. `typing.get_type_hints()` gained the `format=` parameter in 3.14, and calling it on an *instance* (rather than a class/function/module) now raises `TypeError`.[^10]
+**Pitfall for runtime-typed frameworks** (FastAPI, pydantic, typer, cattrs, dependency injectors): they evaluate annotations. Types they need at runtime must be importable at runtime — never hide them behind `TYPE_CHECKING`, quoted or not. `typing.get_type_hints()` gained the `format=` parameter in 3.14, and calling it on an *instance* (rather than a class/function/module) now raises `TypeError`.
 
 ##### `from __future__ import annotations` in 3.14
 
-The PEP 563 future import still works exactly as before in 3.14: annotations become strings and `__annotations__` returns them as strings. It does **not** emit a warning in 3.14. It is, however, officially on its way out: it will be deprecated (compiling it will emit `DeprecationWarning`) no sooner than the first release after Python 3.13 reaches end-of-life in 2029, and removed at least two releases after that.[^1][^11]
+The PEP 563 future import still works exactly as before in 3.14: annotations become strings and `__annotations__` returns them as strings. It does **not** emit a warning in 3.14. It is, however, officially on its way out: it will be deprecated (compiling it will emit `DeprecationWarning`) no sooner than the first release after Python 3.13 reaches end-of-life in 2029, and removed at least two releases after that.
 
 ```python
 from __future__ import annotations   # only needed if the code must also run on <= 3.13
@@ -265,11 +265,11 @@ class Model(metaclass=Meta):
     field: int
 ```
 
-Metaclasses, class decorators and `__init_subclass__` hooks that read `ns['__annotations__']` or `cls.__dict__['__annotations__']` get a `KeyError` in 3.14 — or, with `.get('__annotations__', {})`, silently see no annotations at all (unless the module uses the future import). Use `annotationlib.get_annotate_from_class_namespace(ns)` + `annotationlib.call_annotate_function(annotate, Format.FORWARDREF)` during class creation, and `annotationlib.get_annotations(cls)` afterwards.[^9]
+Metaclasses, class decorators and `__init_subclass__` hooks that read `ns['__annotations__']` or `cls.__dict__['__annotations__']` get a `KeyError` in 3.14 — or, with `.get('__annotations__', {})`, silently see no annotations at all (unless the module uses the future import). Use `annotationlib.get_annotate_from_class_namespace(ns)` + `annotationlib.call_annotate_function(annotate, Format.FORWARDREF)` during class creation, and `annotationlib.get_annotations(cls)` afterwards.
 
-**Pitfall: `typing.ForwardRef` is now `annotationlib.ForwardRef`** and no longer caches its evaluated value; private methods such as `ForwardRef._evaluate` are undocumented and changed. Use `ForwardRef.evaluate()` or `typing.evaluate_forward_ref()` (new in 3.14), which also resolves forward references nested inside the hint.[^10]
+**Pitfall: `typing.ForwardRef` is now `annotationlib.ForwardRef`** and no longer caches its evaluated value; private methods such as `ForwardRef._evaluate` are undocumented and changed. Use `ForwardRef.evaluate()` or `typing.evaluate_forward_ref()` (new in 3.14), which also resolves forward references nested inside the hint.
 
-**Security:** evaluating annotations executes arbitrary code — even `Format.STRING` can execute code for crafted annotations. Never feed untrusted strings into `ForwardRef`, `__annotations__` or `eval_str=True`.[^9]
+**Security:** evaluating annotations executes arbitrary code — even `Format.STRING` can execute code for crafted annotations. Never feed untrusted strings into `ForwardRef`, `__annotations__` or `eval_str=True`.
 
 ##### Dataclasses with Forward References
 
@@ -295,7 +295,7 @@ print(inspect.signature(Tree))
 # (left: __main__.Tree | None = None, right: __main__.Leaf | None = None) -> None
 ```
 
-**Point-release note:** 3.14.1 introduced two annotation-related regressions in `dataclasses` (with `slots=True` + `init=False`, and with dynamically removed fields); they were fixed in the expedited **3.14.2** release three days later. Do not pin 3.14.1.[^12]
+**Point-release note:** 3.14.1 introduced two annotation-related regressions in `dataclasses` (with `slots=True` + `init=False`, and with dynamically removed fields); they were fixed in the expedited **3.14.2** release three days later. Do not pin 3.14.1.
 
 ##### Typing Annotations: What Changed at Runtime
 
@@ -312,13 +312,13 @@ print(typing.get_origin(int | None))        # <class 'typing.Union'>
 print(typing.get_args(int | None))          # (<class 'int'>, <class 'NoneType'>)
 ```
 
-Code that compared unions with `is`, string-matched `repr()` output (`'typing.Union['`), or checked for the private `typing._UnionGenericAlias` must be updated; the private class remains only as a compatibility shim until 3.17. Use `typing.get_origin()`/`get_args()`.[^1]
+Code that compared unions with `is`, string-matched `repr()` output (`'typing.Union['`), or checked for the private `typing._UnionGenericAlias` must be updated; the private class remains only as a compatibility shim until 3.17. Use `typing.get_origin()`/`get_args()`.
 
 ***
 
 #### New in 3.14: Template String Literals — t-strings (PEP 750)
 
-A t-string uses f-string syntax with a `t` prefix, but evaluates to a `string.templatelib.Template` object instead of a `str`. The template keeps the static text and the interpolated values **separate**, so the code that consumes it can escape, parameterize or validate each value before combining them.[^13][^14]
+A t-string uses f-string syntax with a `t` prefix, but evaluates to a `string.templatelib.Template` object instead of a `str`. The template keeps the static text and the interpolated values **separate**, so the code that consumes it can escape, parameterize or validate each value before combining them.
 
 ```python
 from string.templatelib import Interpolation, Template
@@ -338,7 +338,7 @@ for part in template:           # iteration yields str and Interpolation, skippi
 # Interpolation(12.5, 'amount', None, '.2f')
 ```
 
-An `Interpolation` has four attributes: `value` (the evaluated object), `expression` (the source text, e.g. `'amount'`), `conversion` (`'r'`, `'s'`, `'a'` or `None`) and `format_spec` (e.g. `'.2f'`). Unlike f-strings, **the conversion and format spec are *not* applied automatically** — the consuming function decides; `string.templatelib.convert(value, conversion)` reproduces f-string conversion semantics.[^14]
+An `Interpolation` has four attributes: `value` (the evaluated object), `expression` (the source text, e.g. `'amount'`), `conversion` (`'r'`, `'s'`, `'a'` or `None`) and `format_spec` (e.g. `'.2f'`). Unlike f-strings, **the conversion and format spec are *not* applied automatically** — the consuming function decides; `string.templatelib.convert(value, conversion)` reproduces f-string conversion semantics.
 
 ##### Writing a Template Processor
 
@@ -432,7 +432,7 @@ print(t'x' == t'x')                    # False
 
 #### New in 3.14: `except A, B:` Without Parentheses (PEP 758)
 
-`except` and `except*` may now list several exception types without parentheses — **only when there is no `as` clause**.[^15]
+`except` and `except*` may now list several exception types without parentheses — **only when there is no `as` clause**.
 
 ```python
 def connect(host: str) -> None:
@@ -464,7 +464,7 @@ except SyntaxError as exc:
 
 #### New in 3.14: `return`/`break`/`continue` Leaving a `finally` Block (PEP 765)
 
-The compiler now emits a **`SyntaxWarning`** when `return`, `break` or `continue` would transfer control out of a `finally` block. Such statements silently swallow any in-flight exception — including `KeyboardInterrupt` and `SystemExit`.[^16]
+The compiler now emits a **`SyntaxWarning`** when `return`, `break` or `continue` would transfer control out of a `finally` block. Such statements silently swallow any in-flight exception — including `KeyboardInterrupt` and `SystemExit`.
 
 ```python
 import warnings
@@ -506,7 +506,7 @@ print(safe())   # ok
 Notes:
 
 - The warning is emitted at **compile time**, so it appears when the module is first compiled (CI, `python -m compileall`, first import without a cached `.pyc`), not on every run. Under `-W error` it becomes a `SyntaxError` and the module fails to import.
-- A runtime `warnings.filterwarnings(...)` only affects code compiled *after* the filter is installed. To silence it for a dependency, use `-W ignore::SyntaxWarning` / `PYTHONWARNINGS=ignore::SyntaxWarning` — but fix your own code instead.[^1]
+- A runtime `warnings.filterwarnings(...)` only affects code compiled *after* the filter is installed. To silence it for a dependency, use `-W ignore::SyntaxWarning` / `PYTHONWARNINGS=ignore::SyntaxWarning` — but fix your own code instead.
 - PEP 765 leaves open whether this ever becomes a `SyntaxError` in CPython. The fix is always the same: move the `return`/`break`/`continue` out of `finally`.
 
 ***
@@ -547,7 +547,7 @@ class Modern:
 print(int(Modern()))               # 3
 ```
 
-`__trunc__` delegation was deprecated in 3.11 and removed in 3.14 (gh-119743): classes that want `int(obj)` must implement `__int__()` or `__index__()`.[^1]
+`__trunc__` delegation was deprecated in 3.11 and removed in 3.14 (gh-119743): classes that want `int(obj)` must implement `__int__()` or `__index__()`.
 
 **New in 3.14: `NotImplemented` in a boolean context raises `TypeError`** (it emitted `DeprecationWarning` since 3.9). This catches a classic bug in hand-written comparison methods:
 
@@ -573,7 +573,7 @@ except TypeError as exc:
 # ✅ Don't define __ne__ at all — Python derives it from __eq__ correctly
 ```
 
-Three-argument `pow()` now also tries `__rpow__()` (gh-130104).[^1]
+Three-argument `pow()` now also tries `__rpow__()` (gh-130104).
 
 ##### Floats
 
@@ -597,11 +597,11 @@ print(0.1 + 0.2 == 0.3)              # False
 print(math.fma(2.0, 3.0, 4.0))       # 10.0 — fused multiply-add, since 3.13
 ```
 
-**New deprecation in 3.14:** passing a complex number as the `real` or `imag` argument of `complex()` (`complex(1j, 2)`) emits `DeprecationWarning`; pass a single complex positional argument instead.[^1]
+**New deprecation in 3.14:** passing a complex number as the `real` or `imag` argument of `complex()` (`complex(1j, 2)`) emits `DeprecationWarning`; pass a single complex positional argument instead.
 
 ##### Booleans
 
-`bool` is a subclass of `int`. `~True` is `-2` and has emitted `DeprecationWarning` since 3.12 (removal pending in 3.16) — use `not x`.[^1]
+`bool` is a subclass of `int`. `~True` is `-2` and has emitted `DeprecationWarning` since 3.12 (removal pending in 3.16) — use `not x`.
 
 ```python
 print(isinstance(True, int))   # True
@@ -619,7 +619,7 @@ print(not True)                # False — never ~True
 
 - **`str`**: Unicode code points. **`bytes`**: raw octets. Never mixed implicitly.
 - Decode at input boundaries, work in `str`, encode at output boundaries.
-- **Always pass `encoding='utf-8'` to `open()`** and friends. In 3.14 the default is still the locale encoding (`locale.getencoding()`); UTF-8 mode is opt-in (`-X utf8`, `PYTHONUTF8=1`) and only becomes the default in Python 3.15. Run tests with `-X warn_default_encoding` to get an `EncodingWarning` for every `open()` that omits `encoding=`.[^5]
+- **Always pass `encoding='utf-8'` to `open()`** and friends. In 3.14 the default is still the locale encoding (`locale.getencoding()`); UTF-8 mode is opt-in (`-X utf8`, `PYTHONUTF8=1`) and only becomes the default in Python 3.15. Run tests with `-X warn_default_encoding` to get an `EncodingWarning` for every `open()` that omits `encoding=`.
 
 ```python
 text = 'café'
@@ -744,11 +744,11 @@ print(caught[0].category.__name__, caught[0].message)   # DeprecationWarning Use
 
 ##### New in 3.14: Typing Details
 
-- `typing.get_type_hints(obj, format=...)` and `typing.evaluate_forward_ref()` (see the annotations section).[^10]
-- `typing.Union` is `types.UnionType`; `Union[...]` reprs as `int | str` and is no longer cached.[^1]
-- Type aliases support star unpacking: `type Row = tuple[bool, *Pair]` where `Pair` is itself a `type` alias (3.13 raises `TypeError` when the value is evaluated).[^10]
-- `memoryview` is generic (`memoryview[int]`); `io.Reader`/`io.Writer` are new minimal protocols — prefer them to `typing.IO`/`TextIO`/`BinaryIO` for parameters.[^1]
-- Using `super()` (or `__class__`) inside methods of a `typing.NamedTuple` subclass now raises `TypeError` at class creation (it never worked — 3.13 raised `RuntimeError`).[^10]
+- `typing.get_type_hints(obj, format=...)` and `typing.evaluate_forward_ref()` (see the annotations section).
+- `typing.Union` is `types.UnionType`; `Union[...]` reprs as `int | str` and is no longer cached.
+- Type aliases support star unpacking: `type Row = tuple[bool, *Pair]` where `Pair` is itself a `type` alias (3.13 raises `TypeError` when the value is evaluated).
+- `memoryview` is generic (`memoryview[int]`); `io.Reader`/`io.Writer` are new minimal protocols — prefer them to `typing.IO`/`TextIO`/`BinaryIO` for parameters.
+- Using `super()` (or `__class__`) inside methods of a `typing.NamedTuple` subclass now raises `TypeError` at class creation (it never worked — 3.13 raised `RuntimeError`).
 - **Not in 3.14 (3.15+):** `TypedDict(closed=True)`/`extra_items=`, `TypeForm`, `@disjoint_base`.
 
 ```python
@@ -761,7 +761,7 @@ def copy_stream(src: io.Reader[bytes], dst: io.Writer[bytes]) -> int:   # new in
 print(copy_stream(io.BytesIO(b'abc'), io.BytesIO()))   # 3
 ```
 
-**Do not write `Optional[X]` / `Union[X, Y]` / `List[int]` / `typing.Callable` in 3.14 code.** `typing.List` etc. are deprecated aliases; `collections.abc.Callable`, `X | None` and `list[int]` are correct. `typing.ByteString` and `collections.abc.ByteString` are scheduled for removal in 3.17 — use `collections.abc.Buffer` or `bytes | bytearray | memoryview`.[^1]
+**Do not write `Optional[X]` / `Union[X, Y]` / `List[int]` / `typing.Callable` in 3.14 code.** `typing.List` etc. are deprecated aliases; `collections.abc.Callable`, `X | None` and `list[int]` are correct. `typing.ByteString` and `collections.abc.ByteString` are scheduled for removal in 3.17 — use `collections.abc.Buffer` or `bytes | bytearray | memoryview`.
 
 ***
 
@@ -794,7 +794,7 @@ except ValueError as exc:
 
 **Pitfall: list multiplication shares references** — `[[0] * 3] * 3` creates three references to one inner list; use `[[0] * 3 for _ in range(3)]`.
 
-**Removed in 3.14:** `itertools` iterators no longer support `copy.copy()`, `copy.deepcopy()` or pickling (deprecated since 3.12). Code that pickled `itertools.count()`/`chain()` objects (e.g., checkpointing generators) now gets `TypeError`.[^1]
+**Removed in 3.14:** `itertools` iterators no longer support `copy.copy()`, `copy.deepcopy()` or pickling (deprecated since 3.12). Code that pickled `itertools.count()`/`chain()` objects (e.g., checkpointing generators) now gets `TypeError`.
 
 ```python
 import itertools, pickle
@@ -806,7 +806,7 @@ except TypeError as exc:
 
 ##### New in 3.14: Max-Heaps in `heapq`
 
-`heapq` gained public max-heap functions — no more negating keys or using the private `_heapify_max`:[^17]
+`heapq` gained public max-heap functions — no more negating keys or using the private `_heapify_max`:
 
 ```python
 import heapq
@@ -849,7 +849,7 @@ print(layered['color'], layered['user'])   # red guest
 
 **Pitfall: never mutate a dict while iterating it** (`RuntimeError: dictionary changed size during iteration`). Rebuild with a comprehension.
 
-**Point-release note:** since **3.14.3**, `defaultdict` stores the `default_factory` result with `__setitem__()` semantics that cannot overwrite a value another thread set while the factory ran (gh-142495) — relevant on the free-threaded build.[^12]
+**Point-release note:** since **3.14.3**, `defaultdict` stores the `default_factory` result with `__setitem__()` semantics that cannot overwrite a value another thread set while the factory ran (gh-142495) — relevant on the free-threaded build.
 
 `Counter.__xor__` (symmetric difference) is **3.15** — do not use `c1 ^ c2` in 3.14 code. The `frozendict` built-in is also 3.15; in 3.14 use `types.MappingProxyType` for a read-only view.
 
@@ -871,7 +871,7 @@ print(a | b, a & b, a - b, a ^ b)     # {1, 2, 3, 4, 5} {3, 4} {1, 2} {1, 2, 5}
 empty = set()                         # NOT {} — that is a dict
 ```
 
-**New in 3.14:** adding an unhashable object to a set or using one as a dict key produces a clearer error: `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`. Do not match on the old message text in tests.[^1]
+**New in 3.14:** adding an unhashable object to a set or using one as a dict key produces a clearer error: `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`. Do not match on the old message text in tests.
 
 ***
 
@@ -911,7 +911,7 @@ print(total)                                           # 100000
 
 **Pitfall: `case NAME:` is a capture pattern, not a comparison.** `case RED:` binds any value to a new variable `RED`; use dotted names (`case Color.RED:`) or literals for value patterns.
 
-**New in 3.14 error messages** help newcomers but must not be matched in tests: misspelled keywords (`whille True:` → "Did you mean 'while'?"), `elif` after `else`, statements after `else` in a conditional expression, incompatible string prefixes (`ub''`), `async with` on a synchronous context manager and vice versa.[^1]
+**New in 3.14 error messages** help newcomers but must not be matched in tests: misspelled keywords (`whille True:` → "Did you mean 'while'?"), `elif` after `else`, statements after `else` in a conditional expression, incompatible string prefixes (`ub''`), `async with` on a synchronous context manager and vice versa.
 
 ***
 
@@ -969,7 +969,7 @@ class FixedCalc:
 print(FixedCalc().add_one(2))                  # (1, 2)
 ```
 
-`functools.partial` became a method descriptor in 3.14 (3.13 emitted a `FutureWarning`). Any class body that stores a `partial` as an attribute and calls it through an instance changes meaning — wrap it in `staticmethod()`.[^1][^18]
+`functools.partial` became a method descriptor in 3.14 (3.13 emitted a `FutureWarning`). Any class body that stores a `partial` as an attribute and calls it through an instance changes meaning — wrap it in `staticmethod()`.
 
 ```python
 import functools
@@ -1027,7 +1027,7 @@ next(gen)
 print(gen.send(5), gen.send(10))                # 5 15
 ```
 
-The three-argument forms `gen.throw(type, value, tb)` / `agen.athrow(type, value, tb)` are deprecated — pass an exception instance: `gen.throw(ValueError('x'))`.[^1]
+The three-argument forms `gen.throw(type, value, tb)` / `agen.athrow(type, value, tb)` are deprecated — pass an exception instance: `gen.throw(ValueError('x'))`.
 
 ***
 
@@ -1061,7 +1061,7 @@ moved = copy.replace(Coordinate(1.0, 2.0), lon=3.0)   # copy.replace() is 3.13+
 print(moved)                   # Coordinate(lat=1.0, lon=3.0)
 ```
 
-New in 3.14 for dataclasses: `field(doc=...)` (shown by `help()`/`pydoc`), `make_dataclass(..., decorator=...)` to plug in a custom decorator, and annotation handling built on `annotationlib` — fields may use forward references without quotes.[^8]
+New in 3.14 for dataclasses: `field(doc=...)` (shown by `help()`/`pydoc`), `make_dataclass(..., decorator=...)` to plug in a custom decorator, and annotation handling built on `annotationlib` — fields may use forward references without quotes.
 
 **Critical pitfalls (unchanged):**
 
@@ -1255,7 +1255,7 @@ asyncio.run(main())
 - Catch the narrowest exception type; never bare `except:` (it also catches `KeyboardInterrupt`/`SystemExit`).
 - Re-raise with bare `raise` to preserve the traceback; chain with `raise New(...) from exc`.
 - Custom exceptions inherit from `Exception`, never `BaseException`.
-- **New in 3.14:** `json.dumps()` and `pickle.dumps()` attach `__notes__` that pinpoint where in a nested structure serialization failed, and `pickle` raises `PicklingError` (with the original exception chained) for failures that previously raised `AttributeError`, `ValueError`, etc. — update `except` clauses around `pickle.dumps()` accordingly.[^1]
+- **New in 3.14:** `json.dumps()` and `pickle.dumps()` attach `__notes__` that pinpoint where in a nested structure serialization failed, and `pickle` raises `PicklingError` (with the original exception chained) for failures that previously raised `AttributeError`, `ValueError`, etc. — update `except` clauses around `pickle.dumps()` accordingly.
 
 ```python
 import json, pickle
@@ -1342,7 +1342,7 @@ p.unlink(missing_ok=True)
 
 ##### New in 3.14: `Path.copy()`, `copy_into()`, `move()`, `move_into()`
 
-`pathlib` can finally copy and move files **and directory trees** without `shutil`:[^19]
+`pathlib` can finally copy and move files **and directory trees** without `shutil`:
 
 ```python
 import tempfile
@@ -1393,15 +1393,15 @@ print(info.exists())          # True — ❌ cached! the file is gone
 print((base / 'f.txt').exists())   # False — ✅ Path.exists() queries the filesystem
 ```
 
-`Path.info` (a `pathlib.types.PathInfo`) caches results; never use it to re-check state that may have changed.[^19]
+`Path.info` (a `pathlib.types.PathInfo`) caches results; never use it to re-check state that may have changed.
 
 ##### Behavior Changes in `pathlib` (3.14)
 
-- **`Path.exists()`, `is_file()`, `is_dir()`, `is_symlink()` etc. no longer raise `OSError`** (e.g. `PermissionError` for an unreadable parent directory) — they return `False`, consistent with `os.path.exists()`. Code that relied on the exception to detect permission problems must call `path.stat()` instead.[^19]
+- **`Path.exists()`, `is_file()`, `is_dir()`, `is_symlink()` etc. no longer raise `OSError`** (e.g. `PermissionError` for an unreadable parent directory) — they return `False`, consistent with `os.path.exists()`. Code that relied on the exception to detect permission problems must call `path.stat()` instead.
 - `PurePath.with_suffix('.')` is now valid (a single dot is a valid suffix) instead of raising `ValueError`.
-- **Removed:** extra keyword arguments to `Path(...)` (silently ignored before; `TypeError` now) and extra positional arguments to `relative_to()`/`is_relative_to()` (they used to be joined onto the first).[^1]
+- **Removed:** extra keyword arguments to `Path(...)` (silently ignored before; `TypeError` now) and extra positional arguments to `relative_to()`/`is_relative_to()` (they used to be joined onto the first).
 - **Deprecated (removal 3.19):** calling `as_uri()` on a `PurePath` — use `Path.as_uri()`. `Path.from_uri()` exists since 3.13.
-- `Path.read_bytes()` now opens files unbuffered — 9–17% faster for whole-file reads.[^1]
+- `Path.read_bytes()` now opens files unbuffered — 9–17% faster for whole-file reads.
 
 ```python
 from pathlib import Path, PurePath
@@ -1433,7 +1433,7 @@ except PermissionError as exc:
     print('blocked')                                # blocked
 ```
 
-**Added in 3.14.0 with the CVE-2025-4517 fixes (also backported to 3.13.4+):** `os.path.realpath(path, strict=os.path.ALLOW_MISSING)` resolves symlinks while tolerating a missing final path, but re-raises other errors — useful for validating a path you are about to create.[^1]
+**Added in 3.14.0 with the CVE-2025-4517 fixes (also backported to 3.13.4+):** `os.path.realpath(path, strict=os.path.ALLOW_MISSING)` resolves symlinks while tolerating a missing final path, but re-raises other errors — useful for validating a path you are about to create.
 
 ```python
 import os
@@ -1462,15 +1462,15 @@ os.reload_environ()
 print(os.environ['DEMO_FLAG'])       # 1
 ```
 
-`os.reload_environ()` is not thread-safe with concurrent `os.environ` access; call it at startup or in single-threaded sections only.[^1] `os.popen()` and the `os.spawn*()` functions are **soft-deprecated** in 3.14 — use `subprocess` in new code.[^1]
+`os.reload_environ()` is not thread-safe with concurrent `os.environ` access; call it at startup or in single-threaded sections only. `os.popen()` and the `os.spawn*()` functions are **soft-deprecated** in 3.14 — use `subprocess` in new code.
 
-**Point-release security fix (3.14.9):** `tempfile.TemporaryDirectory` cleanup could follow a symlink swapped into the tree and delete files outside the temporary directory when working around permission errors; 3.14.9 removes files relative to open directory descriptors (gh-157579).[^12]
+**Point-release security fix (3.14.9):** `tempfile.TemporaryDirectory` cleanup could follow a symlink swapped into the tree and delete files outside the temporary directory when working around permission errors; 3.14.9 removes files relative to open directory descriptors (gh-157579).
 
 ***
 
 #### New in 3.14: The `compression` Package and Zstandard (PEP 784)
 
-3.14 adds a `compression` namespace: `compression.zstd` is new, and `compression.gzip`, `compression.bz2`, `compression.lzma`, `compression.zlib` re-export the existing modules. The `compression.*` names are the preferred spelling for 3.14+ code; the old top-level modules are **not** deprecated, and any deprecation or removal will come no sooner than five years after PEP 784's acceptance (April 2025).[^20]
+3.14 adds a `compression` namespace: `compression.zstd` is new, and `compression.gzip`, `compression.bz2`, `compression.lzma`, `compression.zlib` re-export the existing modules. The `compression.*` names are the preferred spelling for 3.14+ code; the old top-level modules are **not** deprecated, and any deprecation or removal will come no sooner than five years after PEP 784's acceptance (April 2025).
 
 ```python
 import gzip
@@ -1556,9 +1556,9 @@ print('zstdtar' in [name for name, _ in shutil.get_archive_formats()])   # True
 
 **Caveats:**
 
-- `compression.zstd` is an **optional module**: CPython builds without libzstd lack it (`ImportError`). Guard optional use with `try: from compression import zstd` / `except ImportError` in libraries.[^20]
+- `compression.zstd` is an **optional module**: CPython builds without libzstd lack it (`ImportError`). Guard optional use with `try: from compression import zstd` / `except ImportError` in libraries.
 - **`ZIP_ZSTANDARD` archives are not readable by older Python versions** or many unzip tools; use deflate for archives meant for wide distribution.
-- **Point-release security fix (3.14.8):** `zipfile` now bounds how much data it decompresses per read for bzip2, LZMA and Zstandard members, matching deflate — on 3.14.0–3.14.7 a tiny member could force an unbounded allocation (gh-156002).[^12]
+- **Point-release security fix (3.14.8):** `zipfile` now bounds how much data it decompresses per read for bzip2, LZMA and Zstandard members, matching deflate — on 3.14.0–3.14.7 a tiny member could force an unbounded allocation (gh-156002).
 
 ***
 
@@ -1566,7 +1566,7 @@ print('zstdtar' in [name for name, _ in shutil.get_archive_formats()])   # True
 
 ##### New in 3.14: `asyncio.get_event_loop()` No Longer Creates a Loop
 
-`asyncio.get_event_loop()` now raises `RuntimeError` when there is no current event loop, instead of implicitly creating one (3.12–3.13 emitted a `DeprecationWarning` and created it).[^21]
+`asyncio.get_event_loop()` now raises `RuntimeError` when there is no current event loop, instead of implicitly creating one (3.12–3.13 emitted a `DeprecationWarning` and created it).
 
 ```python
 import asyncio
@@ -1596,11 +1596,11 @@ async def needs_loop() -> bool:
 print(asyncio.run(needs_loop()))     # True
 ```
 
-For a server that should run forever: `async def main(): await start_server(); await asyncio.Event().wait()` and `asyncio.run(main())`.[^1]
+For a server that should run forever: `async def main(): await start_server(); await asyncio.Event().wait()` and `asyncio.run(main())`.
 
 ##### New in 3.14: Policy System Deprecated (Removal in 3.16)
 
-`asyncio.get_event_loop_policy()`, `set_event_loop_policy()`, `AbstractEventLoopPolicy`, `DefaultEventLoopPolicy` and the Windows policy classes emit `DeprecationWarning` and are scheduled for removal in **3.16**. Choose the loop implementation with `loop_factory`:[^1]
+`asyncio.get_event_loop_policy()`, `set_event_loop_policy()`, `AbstractEventLoopPolicy`, `DefaultEventLoopPolicy` and the Windows policy classes emit `DeprecationWarning` and are scheduled for removal in **3.16**. Choose the loop implementation with `loop_factory`:
 
 ```python
 import asyncio
@@ -1615,7 +1615,7 @@ print(asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop))   # ok
 # uvloop and similar: asyncio.run(main(), loop_factory=uvloop.new_event_loop)
 ```
 
-Also deprecated in 3.14 (removal 3.16): `asyncio.iscoroutinefunction()` — use `inspect.iscoroutinefunction()`.[^1]
+Also deprecated in 3.14 (removal 3.16): `asyncio.iscoroutinefunction()` — use `inspect.iscoroutinefunction()`.
 
 ##### Structured Concurrency (3.11+)
 
@@ -1666,13 +1666,13 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-**New in 3.14:** `create_task()` (module function, `loop.create_task()`, `TaskGroup.create_task()`) forwards **arbitrary keyword arguments** to the `Task` constructor or custom task factory — e.g. `eager_start=True`. Custom task factories must accept `**kwargs`.[^1]
+**New in 3.14:** `create_task()` (module function, `loop.create_task()`, `TaskGroup.create_task()`) forwards **arbitrary keyword arguments** to the `Task` constructor or custom task factory — e.g. `eager_start=True`. Custom task factories must accept `**kwargs`.
 
 **Blocking calls:** never call blocking I/O or CPU-heavy code in a coroutine; use `await asyncio.to_thread(func, *args)`. Keep strong references to fire-and-forget tasks (the loop holds only weak references) — or better, use a `TaskGroup`.
 
 ##### New in 3.14: Asyncio Introspection
 
-Inspect a **running process** without modifying it:[^1][^22]
+Inspect a **running process** without modifying it:
 
 ```bash
 python -m asyncio ps 12345      # flat table: task ids, names, coroutine stacks, awaiters
@@ -1698,11 +1698,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-For interactive debugging of coroutines, **`pdb.set_trace_async()`** (new in 3.14) supports `await` at the prompt, and `$_asynctask` refers to the current task.[^1]
+For interactive debugging of coroutines, **`pdb.set_trace_async()`** (new in 3.14) supports `await` at the prompt, and `$_asynctask` refers to the current task.
 
-**Point-release security fix (3.14.8):** `loop.create_connection()` / `loop.start_tls()` now raise `ValueError` when given an `SSLContext` with `check_hostname=True` but no `server_hostname`, instead of completing a handshake that skipped hostname verification (gh-156793); `ssl.SSLContext.wrap_bio()` got the same validation.[^21][^12]
+**Point-release security fix (3.14.8):** `loop.create_connection()` / `loop.start_tls()` now raise `ValueError` when given an `SSLContext` with `check_hostname=True` but no `server_hostname`, instead of completing a handshake that skipped hostname verification (gh-156793); `ssl.SSLContext.wrap_bio()` got the same validation.
 
-**Performance:** asyncio is 10–20% faster on standard benchmarks in 3.14 and has first-class support for the free-threaded build (several event loops in different threads scale linearly).[^1]
+**Performance:** asyncio is 10–20% faster on standard benchmarks in 3.14 and has first-class support for the free-threaded build (several event loops in different threads scale linearly).
 
 ***
 
@@ -1710,7 +1710,7 @@ For interactive debugging of coroutines, **`pdb.set_trace_async()`** (new in 3.1
 
 ##### The GIL, and the Officially Supported Free-Threaded Build (PEP 779)
 
-The default `python3.14` build still has a Global Interpreter Lock: threads help I/O-bound work, not CPU-bound pure-Python code. **New in 3.14:** the free-threaded build (`python3.14t`, PEP 703) is **officially supported** (PEP 779, "phase II") — no longer experimental, but still optional and not the default. Its single-threaded overhead dropped to roughly 5–10% because the specializing adaptive interpreter is now enabled in it.[^7][^1]
+The default `python3.14` build still has a Global Interpreter Lock: threads help I/O-bound work, not CPU-bound pure-Python code. **New in 3.14:** the free-threaded build (`python3.14t`, PEP 703) is **officially supported** (PEP 779, "phase II") — no longer experimental, but still optional and not the default. Its single-threaded overhead dropped to roughly 5–10% because the specializing adaptive interpreter is now enabled in it.
 
 ```python
 import sys
@@ -1722,14 +1722,14 @@ print(sysconfig.get_config_var('Py_GIL_DISABLED'))   # 1 on python3.14t, 0 on th
 print(sys._is_gil_enabled())                         # False on 3.14t, True on the default build
 ```
 
-Rules for free-threaded deployments:[^23]
+Rules for free-threaded deployments:
 
 - **Extensions decide.** Importing a C extension that is not marked free-threading-safe **re-enables the GIL** for the whole process (with a `RuntimeWarning`). Check `sys._is_gil_enabled()` at startup and in health checks; `PYTHON_GIL=0` / `-X gil=0` forces it off (at your own risk). Wheels for the free-threaded build carry the `cp314t` ABI tag — they are separate builds.
 - **Built-in containers are internally locked, your invariants are not.** `list.append` won't corrupt memory, but check-then-act sequences (`if key not in d: d[key] = ...`) race exactly as before. Use `threading.Lock`; don't rely on the GIL for atomicity anywhere.
 - **Iterators are not thread-safe**: sharing one iterator/generator between threads can yield duplicates or skip items.
 - **Memory**: higher usage (larger object headers for non-GC objects, all interned strings immortal, mimalloc, deferred freeing).
 - **Defaults differ**: `sys.flags.context_aware_warnings` and `sys.flags.thread_inherit_context` are **on** by default in 3.14t and **off** in the default build (see below).
-- The experimental JIT is not available in free-threaded builds.[^1]
+- The experimental JIT is not available in free-threaded builds.
 
 ```python
 import threading
@@ -1754,7 +1754,7 @@ print(c.value)                      # 40000
 
 ##### New in 3.14: Multiple Interpreters — `concurrent.interpreters` (PEP 734)
 
-Subinterpreters are isolated Python runtimes inside one process, each with its own GIL (since 3.12): "the isolation of processes with the efficiency of threads".[^24][^25]
+Subinterpreters are isolated Python runtimes inside one process, each with its own GIL (since 3.12): "the isolation of processes with the efficiency of threads".
 
 ```python
 from concurrent import interpreters
@@ -1786,9 +1786,9 @@ except interpreters.NotShareableError as exc: # subclass of TypeError
 interp.close()
 ```
 
-Most objects are **copied via pickle** when crossing interpreters; `None`, `bool`, `bytes`, `str`, `int`, `float` and tuples of those are shared or copied efficiently; only `memoryview` and interpreter `Queue`s actually share mutable data. `call_in_thread()` runs a function in the interpreter on a new thread.[^25]
+Most objects are **copied via pickle** when crossing interpreters; `None`, `bool`, `bytes`, `str`, `int`, `float` and tuples of those are shared or copied efficiently; only `memoryview` and interpreter `Queue`s actually share mutable data. `call_in_thread()` runs a function in the interpreter on a new thread.
 
-`concurrent.futures.InterpreterPoolExecutor` (new in 3.14) wraps this in the familiar executor API — a `ThreadPoolExecutor` whose workers each own an interpreter, so CPU-bound work runs in parallel on the default (GIL) build:[^26]
+`concurrent.futures.InterpreterPoolExecutor` (new in 3.14) wraps this in the familiar executor API — a `ThreadPoolExecutor` whose workers each own an interpreter, so CPU-bound work runs in parallel on the default (GIL) build:
 
 ```python
 from concurrent.futures import InterpreterPoolExecutor
@@ -1808,11 +1808,11 @@ if __name__ == '__main__':
             print(exc, type(exc.__cause__).__name__)        # bad ExecutionFailed
 ```
 
-**Limitations to flag in review:** many third-party C extensions do not support subinterpreters yet (all stdlib extension modules do); start-up and per-interpreter memory are not optimized; arguments/results are pickled; module-level state (caches, connections) is per interpreter. Do not use subinterpreters as a security boundary — they share one address space.[^25]
+**Limitations to flag in review:** many third-party C extensions do not support subinterpreters yet (all stdlib extension modules do); start-up and per-interpreter memory are not optimized; arguments/results are pickled; module-level state (caches, connections) is per interpreter. Do not use subinterpreters as a security boundary — they share one address space.
 
 ##### `concurrent.futures` and `multiprocessing` — New Default Start Method
 
-**Behavior change: on Linux and other non-macOS POSIX platforms, the default start method for `multiprocessing` and `ProcessPoolExecutor` is now `'forkserver'` instead of `'fork'`.** Windows and macOS already used `'spawn'`.[^27][^1] Workers no longer inherit a copy of the parent's current memory; they are forked from a clean server process that preloads your main module.
+**Behavior change: on Linux and other non-macOS POSIX platforms, the default start method for `multiprocessing` and `ProcessPoolExecutor` is now `'forkserver'` instead of `'fork'`.** Windows and macOS already used `'spawn'`. Workers no longer inherit a copy of the parent's current memory; they are forked from a clean server process that preloads your main module.
 
 ```python
 import multiprocessing as mp
@@ -1843,9 +1843,9 @@ What breaks after upgrading on Linux:
 - **Missing `if __name__ == '__main__':` guard** — the main module is imported by the forkserver.
 - Prefer a context object (`mp.get_context('fork')`) over the global `mp.set_start_method()`; `fork` in a multi-threaded process is unsafe (3.12+ warns).
 
-**Point-release notes:** 3.14.9 falls back to `'spawn'` when there is no writable temporary directory (read-only file systems), where `forkserver` previously failed with `OSError` (gh-155717); 3.14.3 fixed `sys.argv` being empty while the forkserver preloads `__main__` (regression in 3.14.1); 3.14.4 fixed a `BrokenPipeError` with a very large `sys.argv` (regression in 3.14.3) and propagates all `-X` options to child processes.[^28][^12]
+**Point-release notes:** 3.14.9 falls back to `'spawn'` when there is no writable temporary directory (read-only file systems), where `forkserver` previously failed with `OSError` (gh-155717); 3.14.3 fixed `sys.argv` being empty while the forkserver preloads `__main__` (regression in 3.14.1); 3.14.4 fixed a `BrokenPipeError` with a very large `sys.argv` (regression in 3.14.3) and propagates all `-X` options to child processes.
 
-Other 3.14 executor additions:[^26]
+Other 3.14 executor additions:
 
 ```python
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -1865,7 +1865,7 @@ if __name__ == '__main__':
     pool.terminate_workers()                           # new: SIGTERM all workers, then shutdown
 ```
 
-Without `buffersize`, `Executor.map()` submits **every** item up front — with `itertools.count()` it never returns. `ProcessPoolExecutor.kill_workers()` sends `SIGKILL`; `multiprocessing.Process.interrupt()` (new) sends `SIGINT` so the child's `finally` blocks run. The `forkserver` control socket is now authenticated (security hardening).[^1]
+Without `buffersize`, `Executor.map()` submits **every** item up front — with `itertools.count()` it never returns. `ProcessPoolExecutor.kill_workers()` sends `SIGKILL`; `multiprocessing.Process.interrupt()` (new) sends `SIGINT` so the child's `finally` blocks run. The `forkserver` control socket is now authenticated (security hardening).
 
 ##### `threading`
 
@@ -1885,11 +1885,11 @@ with ThreadPoolExecutor(max_workers=4, thread_name_prefix='worker') as pool:
 print(sorted(results)[:3])        # [0, 1, 4]
 ```
 
-**New in 3.14:** `Thread.start()` sets the **operating-system thread name** from `Thread.name` (visible in `top -H`, `py-spy`, debuggers) — give threads meaningful names. Passing arguments to `threading.RLock()` is deprecated (they were ignored; removed in 3.15).[^1]
+**New in 3.14:** `Thread.start()` sets the **operating-system thread name** from `Thread.name` (visible in `top -H`, `py-spy`, debuggers) — give threads meaningful names. Passing arguments to `threading.RLock()` is deprecated (they were ignored; removed in 3.15).
 
 ##### New in 3.14: Concurrency-Safe Warnings Control
 
-`warnings.catch_warnings()` historically mutated the **process-global** filter list — not thread-safe and not task-safe. In 3.14 it can use a context variable instead when `sys.flags.context_aware_warnings` is true (`-X context_aware_warnings` / `PYTHON_CONTEXT_AWARE_WARNINGS=1`); this is the default only on the free-threaded build. The companion flag `thread_inherit_context` makes new threads start with a copy of the caller's `contextvars` context.[^29]
+`warnings.catch_warnings()` historically mutated the **process-global** filter list — not thread-safe and not task-safe. In 3.14 it can use a context variable instead when `sys.flags.context_aware_warnings` is true (`-X context_aware_warnings` / `PYTHON_CONTEXT_AWARE_WARNINGS=1`); this is the default only on the free-threaded build. The companion flag `thread_inherit_context` makes new threads start with a copy of the caller's `contextvars` context.
 
 ```python
 import sys
@@ -1904,7 +1904,7 @@ On the default build, do not use `catch_warnings()` concurrently from several th
 
 ##### Safe External Debugger Interface (PEP 768)
 
-A process can now execute a Python file inside another running Python process at the next safe point, with no overhead when unused:[^30][^31]
+A process can now execute a Python file inside another running Python process at the next safe point, with no overhead when unused:
 
 ```bash
 python -m pdb -p 12345           # attach pdb to a running process (new in 3.14)
@@ -1922,19 +1922,19 @@ print(callable(sys.remote_exec))    # True
 Operational facts for production:
 
 - **Attach is cooperative:** the code runs when the target next executes bytecode or handles a signal. A process blocked in a long system call (`select`, `epoll`, a C library call) only runs it once that call returns.
-- **Permissions:** the caller needs the same OS rights as a debugger — on Linux, ptrace access to the target (typically root or `CAP_SYS_PTRACE`; some distributions allow the same uid, depending on the ptrace scope setting); comparable privileges on macOS and Windows.[^30]
-- **Disable it where untrusted local users exist:** `PYTHON_DISABLE_REMOTE_DEBUG=1`, `-X disable-remote-debug`, or build with `--without-remote-debug`. Like every `PYTHON*` variable, the environment variable is ignored under `-E`/`-I` — use the `-X` option there. With it disabled, `sys.remote_exec()` against that process raises `RuntimeError: Remote debugging is not enabled in the remote process`.[^1]
+- **Permissions:** the caller needs the same OS rights as a debugger — on Linux, ptrace access to the target (typically root or `CAP_SYS_PTRACE`; some distributions allow the same uid, depending on the ptrace scope setting); comparable privileges on macOS and Windows.
+- **Disable it where untrusted local users exist:** `PYTHON_DISABLE_REMOTE_DEBUG=1`, `-X disable-remote-debug`, or build with `--without-remote-debug`. Like every `PYTHON*` variable, the environment variable is ignored under `-E`/`-I` — use the `-X` option there. With it disabled, `sys.remote_exec()` against that process raises `RuntimeError: Remote debugging is not enabled in the remote process`.
 - `sys.remote_exec()` returns immediately with no completion signal; the caller must keep the script file in place until it has run. Caller and target must run the same `major.minor` CPython version.
-- Auditing: the caller raises the audit event `sys.remote_exec`; the **target** raises `cpython.remote_debugger_script` before running the script — an audit hook in the target can log or block injected code.[^31]
-- **Point-release hardening (3.14.5):** the remote-debugging reader validates offset tables read from the target before using them (gh-148178).[^12]
+- Auditing: the caller raises the audit event `sys.remote_exec`; the **target** raises `cpython.remote_debugger_script` before running the script — an audit hook in the target can log or block injected code.
+- **Point-release hardening (3.14.5):** the remote-debugging reader validates offset tables read from the target before using them (gh-148178).
 
 ##### Other New Debugging Aids
 
-- `faulthandler.dump_c_stack()` and `faulthandler.enable(c_stack=True)` print the **C** stack on crashes (where supported).[^1]
+- `faulthandler.dump_c_stack()` and `faulthandler.enable(c_stack=True)` print the **C** stack on crashes (where supported).
 - `python -X importtime=2` also reports modules that were already loaded ("cached") — useful for start-up profiling.
 - `python -c` now **dedents** its argument automatically, so indented multi-line snippets in shell scripts work.
 - `breakpoint()`/`pdb.set_trace()` reuse the most recent `Pdb` instance (display/commands persist); the `pdb` CLI and `breakpoint()` use the low-overhead `sys.monitoring` backend.
-- The REPL has **syntax highlighting** and import auto-completion; `unittest`, `argparse` help, `json` CLI and `calendar` output are colored. Disable color in CI logs with `NO_COLOR=1` or `PYTHON_COLORS=0`; disable the new REPL with `PYTHON_BASIC_REPL=1`.[^1]
+- The REPL has **syntax highlighting** and import auto-completion; `unittest`, `argparse` help, `json` CLI and `calendar` output are colored. Disable color in CI logs with `NO_COLOR=1` or `PYTHON_COLORS=0`; disable the new REPL with `PYTHON_BASIC_REPL=1`.
 
 ```python
 import faulthandler
@@ -1977,7 +1977,7 @@ with logging.handlers.QueueListener(log_queue, console):
     logging.getLogger('worker').warning('queued message')
 ```
 
-3.14 changes: `QueueListener.start()` raises `RuntimeError` if the listener is already started; custom handlers that take a `strm` argument are deprecated (use `stream`, removal 3.16); `Logger.warn()` remains deprecated — use `warning()`.[^1]
+3.14 changes: `QueueListener.start()` raises `RuntimeError` if the listener is already started; custom handlers that take a `strm` argument are deprecated (use `stream`, removal 3.16); `Logger.warn()` remains deprecated — use `warning()`.
 
 **Security:** logs may contain request data, prompts and tokens. Never log secrets; log identifiers instead.
 
@@ -1987,7 +1987,7 @@ with logging.handlers.QueueListener(log_queue, console):
 
 ##### New in 3.14: `tarfile` Extracts with the `'data'` Filter by Default (PEP 706)
 
-`TarFile.extract()`/`extractall()` without `filter=` now use the **`'data'` filter**: leading `/` is stripped from member names; members that would land outside the destination (`..` escapes), links that are absolute or point outside the destination, and device files/pipes are refused; setuid/setgid/sticky and group/other-write bits are cleared, and ownership is not restored. In 3.12–3.13 the default was `fully_trusted` (with a `DeprecationWarning` announcing this change).[^32][^33]
+`TarFile.extract()`/`extractall()` without `filter=` now use the **`'data'` filter**: leading `/` is stripped from member names; members that would land outside the destination (`..` escapes), links that are absolute or point outside the destination, and device files/pipes are refused; setuid/setgid/sticky and group/other-write bits are cleared, and ownership is not restored. In 3.12–3.13 the default was `fully_trusted` (with a `DeprecationWarning` announcing this change).
 
 ```python
 import io
@@ -2020,11 +2020,11 @@ Reviewer rules:
 - **Always pass `filter='data'` explicitly** in code that may also run on older Pythons (the default only changed in 3.14), and for untrusted archives.
 - `filter='tar'` keeps Unix-specific features (e.g. permissions) but still blocks the dangerous ones; `filter='fully_trusted'` must be justified in review.
 - Catch `tarfile.FilterError` (base of `OutsideDestinationError`, `AbsoluteLinkError`, `AbsolutePathError`, `SpecialFileError`, ...). `tarfile.LinkFallbackError` (added with the 3.14.0 CVE fixes, also present in patched older branches) is raised when a link that would be replaced by a copy of another member is rejected.
-- The `'data'` filter is a security boundary that has needed repeated fixes. **Run the latest 3.14.x:** 3.14.0 shipped the CVE-2025-4138/4330/4435 and CVE-2024-12718 fixes; later releases closed further bypasses — 3.14.6 (link targets validated with the normalized on-disk value, gh-149486), 3.14.7 (symlinks pointing outside the destination, a bypass of CVE-2025-4330, gh-151558), 3.14.8 (directories created outside the destination for names such as `../evil/../dest/sub/file`, gh-155999; `..` components normalized), 3.14.9 (filter result honored when a link falls back to extracting a member, gh-157265).[^12]
+- The `'data'` filter is a security boundary that has needed repeated fixes. **Run the latest 3.14.x:** 3.14.0 shipped the CVE-2025-4138/4330/4435 and CVE-2024-12718 fixes; later releases closed further bypasses — 3.14.6 (link targets validated with the normalized on-disk value, gh-149486), 3.14.7 (symlinks pointing outside the destination, a bypass of CVE-2025-4330, gh-151558), 3.14.8 (directories created outside the destination for names such as `../evil/../dest/sub/file`, gh-155999; `..` components normalized), 3.14.9 (filter result honored when a link falls back to extracting a member, gh-157265).
 
 ##### Security Fixes in 3.14 Point Releases
 
-Selected from the official changelog — the reason "latest patch release" is a hard requirement:[^12]
+Selected from the official changelog — the reason "latest patch release" is a hard requirement:
 
 | Release | Fix |
 |---|---|
@@ -2040,10 +2040,10 @@ Selected from the official changelog — the reason "latest patch release" is a 
 
 ##### Other Security-Relevant Changes in 3.14
 
-- **PGP signatures are discontinued** for 3.14+ release artifacts (PEP 761). Verify downloads with **Sigstore** (`sigstore verify identity ...`), which CPython has used since 3.11.[^34]
+- **PGP signatures are discontinued** for 3.14+ release artifacts (PEP 761). Verify downloads with **Sigstore** (`sigstore verify identity ...`), which CPython has used since 3.11.
 - `configparser` refuses to **write** keys it could not read back (keys containing delimiters, or starting like a section header) — `configparser.InvalidWriteError`.
 - The `multiprocessing` **forkserver control socket is authenticated** instead of relying only on filesystem permissions.
-- `hmac` has a built-in, formally verified HACL* implementation used when OpenSSL lacks HMAC.[^1]
+- `hmac` has a built-in, formally verified HACL* implementation used when OpenSSL lacks HMAC.
 - `http.server` can serve **HTTPS** (`python -m http.server --tls-cert cert.pem --tls-key key.pem`) — still a development server, never production.
 - `urllib.request` supports SHA-256 HTTP digest authentication (RFC 7616).
 - Remote debugging (above) is a new local attack surface: disable it with `PYTHON_DISABLE_REMOTE_DEBUG=1` on multi-tenant hosts.
@@ -2083,7 +2083,7 @@ signature = hmac.new(b'server-key', b'payload', 'sha256').hexdigest()
 print(hmac.compare_digest(signature, hmac.new(b'server-key', b'payload', 'sha256').hexdigest()))  # True
 ```
 
-Never use `random` (Mersenne Twister, predictable) or `uuid.uuid1()/uuid6()/uuid8()` (time/MAC or non-cryptographic randomness) for secrets; `uuid.uuid4()` and `uuid.uuid7()` draw from `os.urandom()`, but a UUIDv7 also **exposes its creation time** (see UUIDs below).[^35]
+Never use `random` (Mersenne Twister, predictable) or `uuid.uuid1()/uuid6()/uuid8()` (time/MAC or non-cryptographic randomness) for secrets; `uuid.uuid4()` and `uuid.uuid7()` draw from `os.urandom()`, but a UUIDv7 also **exposes its creation time** (see UUIDs below).
 
 ##### SQL, Subprocess and XML
 
@@ -2138,7 +2138,7 @@ print(json.dumps({'ts': datetime(2025, 10, 7, tzinfo=UTC)}, cls=AppEncoder))
 # {"ts": "2025-10-07T00:00:00+00:00"}
 ```
 
-**New in 3.14:** `python -m json` is the preferred CLI (`python -m json.tool` still works but is soft-deprecated), with colored output; serialization errors carry `__notes__` locating the failing element (see Exception Handling).[^1]
+**New in 3.14:** `python -m json` is the preferred CLI (`python -m json.tool` still works but is soft-deprecated), with colored output; serialization errors carry `__notes__` locating the failing element (see Exception Handling).
 
 ##### Pickle — New in 3.14: Default Protocol 5
 
@@ -2150,9 +2150,9 @@ blob = pickle.dumps({'a': 1})
 print(pickle.loads(blob))             # {'a': 1}
 ```
 
-The default protocol is now **5** (PEP 574, out-of-band buffers, available since 3.8). Pickles written by 3.14 with the default protocol **cannot be read by Python 3.7 or older**; pass `protocol=4` if a legacy consumer reads them.[^36] Failures now raise `PicklingError` with the original exception chained, and errors include notes locating the unpicklable item.[^1]
+The default protocol is now **5** (PEP 574, out-of-band buffers, available since 3.8). Pickles written by 3.14 with the default protocol **cannot be read by Python 3.7 or older**; pass `protocol=4` if a legacy consumer reads them. Failures now raise `PicklingError` with the original exception chained, and errors include notes locating the unpicklable item.
 
-**Point-release note (3.14.7):** the C unpickler now enforces frame boundaries like the pure-Python implementation, raising `UnpicklingError` for malformed frame layouts it used to accept (gh-154848).[^12]
+**Point-release note (3.14.7):** the C unpickler now enforces frame boundaries like the pure-Python implementation, raising `UnpicklingError` for malformed frame layouts it used to accept (gh-154848).
 
 **SECURITY:** never unpickle untrusted data — `pickle.loads()` executes arbitrary code. Use JSON, MessagePack or protobuf across trust boundaries.
 
@@ -2198,8 +2198,8 @@ print(re.findall(r'\B', ''))                         # ['']  (3.13: [])
 
 - In Python, `\Z` has always meant "very end of string"; `\z` was added because in most other regex engines `\Z` allows a trailing newline. Prefer `\z` in new patterns for unambiguous, portable intent. **Use `\z` or `fullmatch()` instead of `$` when validating input** — `$` accepts a trailing newline (`'admin\n'` passes `^admin$`).
 - `re.prefixmatch()` is **3.15** — keep using `re.match()`/`fullmatch()`/`search()` in 3.14 code.
-- The undocumented `sre_compile`/`sre_parse`/`sre_constants` modules are deprecated and **removed in 3.15** — import only `re`.[^1][^5]
-- `re.Scanner` (undocumented): a 3.14.1 change was reverted in 3.14.2; capturing groups inside scanner patterns still work but can give wrong results and will be forbidden in a future version (gh-140797).[^12]
+- The undocumented `sre_compile`/`sre_parse`/`sre_constants` modules are deprecated and **removed in 3.15** — import only `re`.
+- `re.Scanner` (undocumented): a 3.14.1 change was reverted in 3.14.2; capturing groups inside scanner patterns still work but can give wrong results and will be forbidden in a future version (gh-140797).
 
 ***
 
@@ -2216,9 +2216,9 @@ print(uuid.NIL, uuid.MAX)
 print(isinstance(u7.time, int))         # True — for v7, milliseconds since the Unix epoch
 ```
 
-- **Use `uuid7()` for database primary keys**: it is time-ordered, so B-tree inserts stay localized (unlike random `uuid4()`), and its random parts come from `os.urandom()`.[^35]
+- **Use `uuid7()` for database primary keys**: it is time-ordered, so B-tree inserts stay localized (unlike random `uuid4()`), and its random parts come from `os.urandom()`.
 - **A UUIDv7 reveals when it was created** (`u.time`). Do not use it where creation time must stay secret, and never as an unguessable token — use `secrets.token_urlsafe()`.
-- `uuid6()` is a field-reordered `uuid1()` (time + node; leaks the MAC address unless you pass `node=`). `uuid8()` is a custom-layout format; its default randomness is **not** cryptographically secure.[^35]
+- `uuid6()` is a field-reordered `uuid1()` (time + node; leaks the MAC address unless you pass `node=`). `uuid8()` is a custom-layout format; its default randomness is **not** cryptographically secure.
 - `python -m uuid -u uuid7 -C 5` generates several at once (`--count` is new).
 
 ***
@@ -2228,7 +2228,7 @@ print(isinstance(u7.time, int))         # True — for v7, milliseconds since th
 ##### The 3.14 GC Story: Incremental, Then Reverted (3.14.5)
 
 - **3.14.0–3.14.4** shipped a new **incremental** cyclic garbage collector (two generations; `gc.collect(1)` performed one increment; `gc.get_threshold()` returned `(2000, 10, 0)` and the third threshold was ignored).
-- Because of **significant memory-pressure reports in production**, **3.14.5 reverted** the default build to the **3.13 generational collector** (`gc.get_threshold()` is `(2000, 10, 10)` again, three generations, `gc.collect(1)` collects generation 1). The free-threaded build's collector was not affected.[^1][^12]
+- Because of **significant memory-pressure reports in production**, **3.14.5 reverted** the default build to the **3.13 generational collector** (`gc.get_threshold()` is `(2000, 10, 10)` again, three generations, `gc.collect(1)` collects generation 1). The free-threaded build's collector was not affected.
 
 ```python
 import gc
@@ -2263,9 +2263,9 @@ del n
 print(1 in cache)                   # False — no strong reference kept it alive
 ```
 
-- **New in 3.14:** the interpreter borrows references internally where safe, so `sys.getrefcount()` can return **smaller values than in 3.13**. Never assert on exact reference counts in tests; C extensions must not use `Py_REFCNT(op) == 1` to detect temporaries (use `PyUnstable_Object_IsUniqueReferencedTemporary()`).[^1]
+- **New in 3.14:** the interpreter borrows references internally where safe, so `sys.getrefcount()` can return **smaller values than in 3.13**. Never assert on exact reference counts in tests; C extensions must not use `Py_REFCNT(op) == 1` to detect temporaries (use `PyUnstable_Object_IsUniqueReferencedTemporary()`).
 - `sys._is_immortal()` (new, CPython detail) reports immortal objects; on the free-threaded build, all interned strings are immortal.
-- On the free-threaded build, memory is freed later (QSBR, biased refcounting, mimalloc). `gc.collect()` forces QSBR-deferred frees; RSS may still not shrink immediately.[^23]
+- On the free-threaded build, memory is freed later (QSBR, biased refcounting, mimalloc). `gc.collect()` forces QSBR-deferred frees; RSS may still not shrink immediately.
 
 ***
 
@@ -2289,7 +2289,7 @@ print('function calls' in stream.getvalue())                 # True
 print(timeit.timeit('sum(range(100))', number=1000) > 0)     # True
 ```
 
-What 3.14 changes for performance (measure before relying on any of it):[^1]
+What 3.14 changes for performance (measure before relying on any of it):
 
 - **Tail-calling interpreter** (opt-in build, Clang 19+ on x86-64/AArch64): ~3–5% faster on pyperformance; invisible to Python code.
 - **Experimental JIT** is included in the official Windows and macOS binaries, **off by default** (`PYTHON_JIT=1`); effect ranges from 10% slower to 20% faster, and native profilers cannot unwind JIT frames — **not recommended for production**. `sys._jit.is_available()` / `is_enabled()` report status.
@@ -2393,10 +2393,10 @@ filterwarnings = ["error"]
 Packaging notes for 3.14:
 
 - **`requires-python = ">=3.14"` is mandatory** if the code uses t-strings, `except A, B:`, unquoted forward references evaluated at runtime, `annotationlib`, `compression.zstd`, `concurrent.interpreters` or any other 3.14 API — older interpreters fail at import or compile time.
-- Free-threaded wheels use the **`cp314t`** ABI tag and are separate from `cp314` wheels; the Limited API/stable ABI (`abi3`) is **not** available for free-threaded builds in 3.14 (a free-threaded stable ABI arrives in 3.15). Extension authors must build `cp314t` wheels explicitly (opting out of `py_limited_api` for that build) and declare `Py_mod_gil` support.[^5][^37]
-- Installations now include **`build-details.json`** (PEP 739) in the stdlib directory — a static description of the build for launchers and cross-compilation tools.[^1]
-- Verify CPython downloads with **Sigstore**, not PGP (PEP 761).[^34]
-- When running under a virtual environment, `sys.prefix`/`sys.exec_prefix` are now set during path initialization rather than by `site` — tools that compute paths before `site` runs see the venv prefix.[^31]
+- Free-threaded wheels use the **`cp314t`** ABI tag and are separate from `cp314` wheels; the Limited API/stable ABI (`abi3`) is **not** available for free-threaded builds in 3.14 (a free-threaded stable ABI arrives in 3.15). Extension authors must build `cp314t` wheels explicitly (opting out of `py_limited_api` for that build) and declare `Py_mod_gil` support.
+- Installations now include **`build-details.json`** (PEP 739) in the stdlib directory — a static description of the build for launchers and cross-compilation tools.
+- Verify CPython downloads with **Sigstore**, not PGP (PEP 761).
+- When running under a virtual environment, `sys.prefix`/`sys.exec_prefix` are now set during path initialization rather than by `site` — tools that compute paths before `site` runs see the venv prefix.
 
 ##### Project Layout
 
@@ -2431,7 +2431,7 @@ Tool support (verified with ruff 0.17.1 and mypy 2.4.0, October 2026): both pars
 
 ##### Removed in 3.14
 
-Code using any of these fails on 3.14 with `AttributeError`, `ImportError` or `TypeError`:[^1]
+Code using any of these fails on 3.14 with `AttributeError`, `ImportError` or `TypeError`:
 
 | Removed in 3.14 | Replacement |
 |---|---|
@@ -2484,7 +2484,7 @@ print(hasattr(ast, 'Num'))                     # False
 
 ##### Deprecated in 3.14 — Fix Before 3.15/3.16
 
-**Removed in 3.15** (deprecated in 3.14 or earlier, most with a runtime `DeprecationWarning` — the project's next upgrade will break):[^5]
+**Removed in 3.15** (deprecated in 3.14 or earlier, most with a runtime `DeprecationWarning` — the project's next upgrade will break):
 
 - `typing.NamedTuple('P', x=int)` keyword syntax; `TypedDict('TD')` / `TypedDict('TD', None)` with no fields; `@typing.no_type_check_decorator`
 - arguments to `threading.RLock()`
@@ -2494,13 +2494,13 @@ print(hasattr(ast, 'Num'))                     # False
 - `datetime.strptime()` with a day of month but **no year** in the format (`'%m-%d'`) — `DeprecationWarning` since 3.13, `ValueError` in 3.15; add a year (or parse with a fixed leap year yourself)
 - `module.__cached__` is no longer set or consulted by the import system — read `__spec__.cached` (`__package__` and `__loader__` are deprecated too; use `__spec__.parent`/`__spec__.loader`)
 
-**Scheduled for 3.16:** the asyncio policy system and `asyncio.iscoroutinefunction()`; `~bool`; `logging` handlers' `strm` argument; undotted `mimetypes.add_type()` extensions; Python implementation of `functools.reduce()` with keyword `function`/`sequence`; `shutil.ExecError`; `symtable.Class.get_methods()`; `sysconfig.expand_makefile_vars()`; `array` `'u'` format code (use `'w'`).[^1]
+**Scheduled for 3.16:** the asyncio policy system and `asyncio.iscoroutinefunction()`; `~bool`; `logging` handlers' `strm` argument; undotted `mimetypes.add_type()` extensions; Python implementation of `functools.reduce()` with keyword `function`/`sequence`; `shutil.ExecError`; `symtable.Class.get_methods()`; `sysconfig.expand_makefile_vars()`; `array` `'u'` format code (use `'w'`).
 
 **Scheduled for 3.17:** `collections.abc.ByteString` and `typing.ByteString`; `typing._UnionGenericAlias` shim. **3.19:** `PurePath.as_uri()`; implicit MSVC layout via `ctypes` `_pack_`.
 
-**Deprecated in 3.14 without a removal date:** `codecs.open()` (`DeprecationWarning`; use `open()`), `argparse.FileType` (`PendingDeprecationWarning`), `complex()` with a complex `real`/`imag`, `os.popen()`/`os.spawn*()` (soft — documentation only, no warning). Older still-pending ones: three-argument `throw()`/`athrow()`, numeric literals immediately followed by keywords (`0in x`, `SyntaxWarning`), `datetime.utcnow()`/`utcfromtimestamp()`.[^1]
+**Deprecated in 3.14 without a removal date:** `codecs.open()` (`DeprecationWarning`; use `open()`), `argparse.FileType` (`PendingDeprecationWarning`), `complex()` with a complex `real`/`imag`, `os.popen()`/`os.spawn*()` (soft — documentation only, no warning). Older still-pending ones: three-argument `throw()`/`athrow()`, numeric literals immediately followed by keywords (`0in x`, `SyntaxWarning`), `datetime.utcnow()`/`utcfromtimestamp()`.
 
-**Point-release reversal:** `locale.getdefaultlocale()` was deprecated (slated for 3.15 removal) and emitted `DeprecationWarning` on 3.14.0–3.14.6; **3.14.7 un-deprecated it** (gh-130796) and it remains in 3.15. Don't "fix" working calls just to silence a warning seen on an early 3.14.x.[^12]
+**Point-release reversal:** `locale.getdefaultlocale()` was deprecated (slated for 3.15 removal) and emitted `DeprecationWarning` on 3.14.0–3.14.6; **3.14.7 un-deprecated it** (gh-130796) and it remains in 3.15. Don't "fix" working calls just to silence a warning seen on an early 3.14.x.
 
 ```python
 import warnings, datetime
@@ -2576,43 +2576,3 @@ print(datetime.datetime.strptime('2024-03-15', '%Y-%m-%d').date())   # 2024-03-1
 - [ ] `logger.exception()` inside `except` blocks; bare `raise` to re-raise
 - [ ] `faulthandler` enabled in services (`-X faulthandler`; C stacks with `c_stack=True`)
 - [ ] `NO_COLOR=1` / `PYTHON_COLORS=0` in CI if colored output breaks log parsing
-
-***
-
-[^1]: What's New in Python 3.14. Python Software Foundation. https://docs.python.org/3.14/whatsnew/3.14.html
-[^2]: PEP 745 – Python 3.14 Release Schedule. https://peps.python.org/pep-0745/
-[^3]: Python downloads — active releases and release dates (3.14.9 and 3.15.0/3.15.1). https://www.python.org/downloads/
-[^4]: What's New in Python 3.13 (and the linked 3.10–3.12 What's New documents). https://docs.python.org/3.14/whatsnew/3.13.html
-[^5]: What's New in Python 3.15 (lazy imports PEP 810, frozendict PEP 814, sentinel PEP 661, PEP 798, PEP 686 UTF-8 mode, removals). https://docs.python.org/3.15/whatsnew/3.15.html
-[^6]: PEP 649 – Deferred Evaluation Of Annotations Using Descriptors. https://peps.python.org/pep-0649/
-[^7]: PEP 779 – Criteria for supported status for free-threaded Python. https://peps.python.org/pep-0779/
-[^8]: dataclasses — Data Classes (field doc=, make_dataclass decorator=). https://docs.python.org/3.14/library/dataclasses.html
-[^9]: annotationlib — Functionality for introspecting annotations. https://docs.python.org/3.14/library/annotationlib.html
-[^10]: typing — Support for type hints (get_type_hints format=, evaluate_forward_ref, Union changes, NamedTuple super()). https://docs.python.org/3.14/library/typing.html
-[^11]: PEP 749 – Implementing PEP 649 (future-import deprecation plan). https://peps.python.org/pep-0749/
-[^12]: Python 3.14 changelog (3.14.1–3.14.9 entries, including Security sections). https://docs.python.org/3.14/whatsnew/changelog.html
-[^13]: PEP 750 – Template Strings. https://peps.python.org/pep-0750/
-[^14]: string.templatelib — Support for template string literals. https://docs.python.org/3.14/library/string.templatelib.html
-[^15]: PEP 758 – Allow except and except* expressions without brackets. https://peps.python.org/pep-0758/
-[^16]: PEP 765 – Disallow return/break/continue that exit a finally block. https://peps.python.org/pep-0765/
-[^17]: heapq — Heap queue algorithm (max-heap functions). https://docs.python.org/3.14/library/heapq.html
-[^18]: functools — Placeholder, partial. https://docs.python.org/3.14/library/functools.html
-[^19]: pathlib — Object-oriented filesystem paths (copy/move, info, query methods). https://docs.python.org/3.14/library/pathlib.html
-[^20]: compression.zstd — Compression compatible with the Zstandard format; PEP 784. https://docs.python.org/3.14/library/compression.zstd.html , https://peps.python.org/pep-0784/
-[^21]: asyncio Event Loop (get_event_loop RuntimeError; 3.14.8 server_hostname check). https://docs.python.org/3.14/library/asyncio-eventloop.html
-[^22]: asyncio call graph introspection. https://docs.python.org/3.14/library/asyncio-graph.html
-[^23]: Python support for free threading (HOWTO). https://docs.python.org/3.14/howto/free-threading-python.html
-[^24]: PEP 734 – Multiple Interpreters in the Stdlib. https://peps.python.org/pep-0734/
-[^25]: concurrent.interpreters — Multiple interpreters in the same process. https://docs.python.org/3.14/library/concurrent.interpreters.html
-[^26]: concurrent.futures — InterpreterPoolExecutor, Executor.map buffersize, terminate_workers/kill_workers. https://docs.python.org/3.14/library/concurrent.futures.html
-[^27]: multiprocessing — Contexts and start methods (forkserver default; 3.14.9 spawn fallback). https://docs.python.org/3.14/library/multiprocessing.html#contexts-and-start-methods
-[^28]: gh-155717 / gh-143706 / gh-146004 — multiprocessing start-method fixes in 3.14.x (see changelog). https://docs.python.org/3.14/whatsnew/changelog.html
-[^29]: warnings — Concurrent safety of context managers (context_aware_warnings). https://docs.python.org/3.14/library/warnings.html
-[^30]: PEP 768 – Safe external debugger interface for CPython. https://peps.python.org/pep-0768/
-[^31]: sys — sys.remote_exec(), sys.flags, sys.prefix under venvs. https://docs.python.org/3.14/library/sys.html
-[^32]: tarfile — Extraction filters (default 'data' in 3.14). https://docs.python.org/3.14/library/tarfile.html#tarfile-extraction-filter
-[^33]: PEP 706 – Filter for tarfile.extractall. https://peps.python.org/pep-0706/
-[^34]: PEP 761 – Deprecating PGP signatures for CPython artifacts. https://peps.python.org/pep-0761/
-[^35]: uuid — UUID objects according to RFC 9562 (uuid6/7/8, NIL, MAX). https://docs.python.org/3.14/library/uuid.html
-[^36]: pickle — Data stream format (protocol 5 default in 3.14). https://docs.python.org/3.14/library/pickle.html#data-stream-format
-[^37]: C API Extension Support for Free Threading (limited API not supported in free-threaded 3.14). https://docs.python.org/3.14/howto/free-threading-extensions.html

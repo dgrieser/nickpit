@@ -3,7 +3,7 @@
 #### Overview
 
 > **Edition**: The complete production review guide for HTML and CSS, Baseline status as of October 2026.
-> **Versioning model**: HTML and CSS have no release numbers. This guide judges feature availability by **Baseline** status as published in the `web-features` data set (web-platform-dx, W3C WebDX Community Group) and shown on MDN and caniuse.[^1][^2] All statuses below are taken from **`web-features` 3.44.0 (published 2026-10-22)**, not from memory.
+> **Versioning model**: HTML and CSS have no release numbers. This guide judges feature availability by **Baseline** status as published in the `web-features` data set (web-platform-dx, W3C WebDX Community Group) and shown on MDN and caniuse. All statuses below are taken from **`web-features` 3.44.0 (published 2026-10-22)**, not from memory.
 > **Browsers at time of writing** (per that data set): Chrome 156 (2026-10-20), Edge 155 (2026-10-08), Firefox 158 (2026-10-13), Safari / Safari on iOS 27 (2026-09-14). The release data shows Chrome and Firefox shipping every two weeks since September 2026 (Chrome 152 → 153, Firefox 154 → 155), so version numbers now climb faster than in earlier years.
 > **Scope**: semantic HTML, accessibility (WCAG 2.2 AA, ARIA), forms, dialogs/popovers, security-relevant markup, loading performance, the cascade and specificity, modern CSS, motion, colour schemes, layout and typography — in plain `.html`/`.css` files and in HTML/CSS embedded in templates and components (JSX, Vue, Svelte, Angular, Web Components, server templates).
 > **Verification**: behavioural claims marked *(Chromium-verified)* were executed in headless **Chromium 141.0.7390.37** (Playwright 1.56.1) with `CSS.supports()`, `getComputedStyle()`, layout measurements, network interception and the Chromium accessibility tree. Chromium 141 is older than current Chrome 156, so it cannot exercise features that shipped later (e.g. interest invokers, `contrast-color()`, name-only container queries). Firefox and Safari behaviour is sourced from specifications, MDN and browser-compat-data, not executed.
@@ -29,7 +29,7 @@ Global truths a reviewer should hold:
 | **Newly available** (`baseline: "low"`) | Supported in the latest stable version of **every** core browser: Chrome, Chrome Android, Edge, Firefox, Firefox Android, Safari, Safari on iOS | "Baseline <year>" / "Newly available" |
 | **Limited availability** (`baseline: false`) | Missing (or only partially/behind a flag) in at least one core browser | "Limited availability" |
 
-A feature's "Baseline year" is the year it became Newly available (e.g. `:has()` is "Baseline 2023"). Widely-available date = Newly-available date + 30 months (e.g. `:has()`: Newly 2023-12-19, Widely 2026-06-19).[^1][^3]
+A feature's "Baseline year" is the year it became Newly available (e.g. `:has()` is "Baseline 2023"). Widely-available date = Newly-available date + 30 months (e.g. `:has()`: Newly 2023-12-19, Widely 2026-06-19).
 
 Key consequences:
 
@@ -38,7 +38,7 @@ Key consequences:
 - **Non-core browsers** (Samsung Internet, Opera, in-app WebViews) are not part of the definition. Check them separately if analytics say they matter.
 - **Baseline says nothing about bugs, accessibility support in screen readers, or performance.** `display: contents` on buttons, for example, has a long history of accessibility-tree bugs that compat data does not model as "unsupported".
 
-As of 2026-10-22, `browserslist` 4.29.4 resolves `baseline widely available` to **Chrome/Edge ≥ 124, Firefox ≥ 125, Safari / iOS Safari ≥ 17.4** (plus the current Android Chrome/Firefox) *(executed with `npx browserslist`)*.[^4]
+As of 2026-10-22, `browserslist` 4.29.4 resolves `baseline widely available` to **Chrome/Edge ≥ 124, Firefox ≥ 125, Safari / iOS Safari ≥ 17.4** (plus the current Android Chrome/Firefox) *(executed with `npx browserslist`)*.
 
 ##### Features turning Widely available within the next months
 
@@ -306,7 +306,7 @@ Review rules:
 - **Viewport**: `width=device-width, initial-scale=1`. **Never** add `maximum-scale=1`, `minimum-scale`, or `user-scalable=no` — they block pinch zoom where honoured and fail WCAG 1.4.4 Resize Text.
 - **Script loading**: `type="module"` scripts are deferred by default; classic scripts in `<head>` need `defer` (or `async` for independent scripts like analytics). A classic `<script src>` without either blocks parsing.
 - **Do not use `<meta http-equiv="refresh">`** for timed redirects or reloads (WCAG 2.2.1 Timing Adjustable / 3.2.5); redirect on the server.
-- **Duplicate IDs are bugs.** `getElementById`, `<label for>`, `aria-labelledby`, `aria-describedby`, `aria-controls`, fragment links and `popovertarget`/`commandfor` all resolve to the first match. Components rendered more than once must generate IDs (`useId()` in React, etc.). WCAG 2.2 removed 4.1.1 Parsing, but duplicate IDs that break name/role/value still fail 1.3.1 and 4.1.2.[^5]
+- **Duplicate IDs are bugs.** `getElementById`, `<label for>`, `aria-labelledby`, `aria-describedby`, `aria-controls`, fragment links and `popovertarget`/`commandfor` all resolve to the first match. Components rendered more than once must generate IDs (`useId()` in React, etc.). WCAG 2.2 removed 4.1.1 Parsing, but duplicate IDs that break name/role/value still fail 1.3.1 and 4.1.2.
 
 ##### Social and structured metadata (house rules)
 
@@ -438,9 +438,9 @@ Microdata (`itemscope`/`itemprop`) remains valid; when used, keep the visible te
 
 ##### Status of the standards
 
-- **WCAG 2.2** became a W3C Recommendation on 5 October 2023; the current edition is dated **12 December 2024**. It is also **ISO/IEC 40500:2025** (announced by W3C on 21 October 2025).[^5][^6]
+- **WCAG 2.2** became a W3C Recommendation on 5 October 2023; the current edition is dated **12 December 2024**. It is also **ISO/IEC 40500:2025** (announced by W3C on 21 October 2025).
 - WCAG 2.2 **removed 4.1.1 Parsing** and added nine success criteria (six at A/AA).
-- In the EU, the **European Accessibility Act** (Directive (EU) 2019/882) applies since **28 June 2025**. The harmonised standard **EN 301 549 V4.1.1** (published 2 September 2026) references **WCAG 2.2 Level AA**; until the European Commission cites it in the Official Journal (expected December 2026), V3.2.1 (WCAG 2.1) remains the cited version.[^7]
+- In the EU, the **European Accessibility Act** (Directive (EU) 2019/882) applies since **28 June 2025**. The harmonised standard **EN 301 549 V4.1.1** (published 2 September 2026) references **WCAG 2.2 Level AA**; until the European Commission cites it in the Official Journal (expected December 2026), V3.2.1 (WCAG 2.1) remains the cited version.
 - WCAG 3 is a Working Draft and is not a conformance target.
 
 ##### New A/AA criteria in WCAG 2.2 that reviewers must check
@@ -458,7 +458,7 @@ Long-standing AA criteria that code review catches most often: 1.1.1 text altern
 
 ##### The rules of ARIA
 
-From *Using ARIA* and *ARIA in HTML*:[^8][^9]
+From *Using ARIA* and *ARIA in HTML*:
 
 1. **Use a native element** (`<button>`, `<a href>`, `<input type=checkbox>`, `<dialog>`, `<details>`) instead of re-purposing a `div` with a role.
 2. **Do not change native semantics** unless you must (`<h2 role="tab">` is wrong; wrap instead).
@@ -546,7 +546,7 @@ Common ARIA review findings:
 }
 ```
 
-*(Chromium-verified: text styled this way stays in the accessibility tree.)* The deprecated `clip: rect(0 0 0 0)` of older versions of this pattern still works but should be migrated.[^30] Do not use `display: none`, `visibility: hidden`, `hidden`, or `font-size: 0` for text meant for screen readers — those remove it. Conversely, `aria-hidden="true"` hides from assistive technology without any CSS; it does not hide visually.
+*(Chromium-verified: text styled this way stays in the accessibility tree.)* The deprecated `clip: rect(0 0 0 0)` of older versions of this pattern still works but should be migrated. Do not use `display: none`, `visibility: hidden`, `hidden`, or `font-size: 0` for text meant for screen readers — those remove it. Conversely, `aria-hidden="true"` hides from assistive technology without any CSS; it does not hide visually.
 
 ##### Keyboard and focus
 
@@ -657,12 +657,12 @@ Review rules:
 <input name="cc-exp"    autocomplete="cc-exp">
 ```
 
-- **`autocomplete` tokens** come from the HTML spec's autofill field list (`name`, `given-name`, `family-name`, `email`, `tel`, `street-address`, `address-line1`, `postal-code`, `country`, `bday`, `username`, `current-password`, `new-password`, `one-time-code`, `cc-name`, `cc-number`, `cc-exp`, `cc-csc`, …), optionally with section/`shipping`/`billing` prefixes.[^10] Invented tokens (`autocomplete="nope"`, `"disabled"`) are ignored. They are required for WCAG 1.3.5 Identify Input Purpose.
+- **`autocomplete` tokens** come from the HTML spec's autofill field list (`name`, `given-name`, `family-name`, `email`, `tel`, `street-address`, `address-line1`, `postal-code`, `country`, `bday`, `username`, `current-password`, `new-password`, `one-time-code`, `cc-name`, `cc-number`, `cc-exp`, `cc-csc`, …), optionally with section/`shipping`/`billing` prefixes. Invented tokens (`autocomplete="nope"`, `"disabled"`) are ignored. They are required for WCAG 1.3.5 Identify Input Purpose.
 - **`autocomplete="off"` on login fields does not stop password managers** (browsers deliberately ignore it for credentials). Do not use it to "secure" passwords; it only harms WCAG 3.3.8.
 - **Do not block paste** (`onpaste="return false"`) on password, email-confirmation or OTP fields.
 - **Use `type="number"` only for real quantities.** For postcodes, card numbers, IDs, phone numbers use `type="text" inputmode="numeric"`: `number` drops leading zeros, accepts `e`, changes value on scroll-wheel, and shows spinners.
 - Date/time inputs are Widely available (2024-04-05); `<input type="color">` and `<datalist>` are not Baseline (Firefox Android).
-- **`pattern` is compiled with the RegExp `v` flag.**[^31] Unescaped `-` (or other "syntax characters") inside a character class make the pattern **invalid, and an invalid pattern is ignored entirely** — every value passes *(Chromium-verified: `pattern="[a-z-]+"` gives no `patternMismatch` for "ABC" and logs a console error; `pattern="[a-z\-]+"` works)*. The pattern is anchored implicitly (`^(?:…)$`).
+- **`pattern` is compiled with the RegExp `v` flag.** Unescaped `-` (or other "syntax characters") inside a character class make the pattern **invalid, and an invalid pattern is ignored entirely** — every value passes *(Chromium-verified: `pattern="[a-z-]+"` gives no `patternMismatch` for "ABC" and logs a console error; `pattern="[a-z\-]+"` works)*. The pattern is anchored implicitly (`^(?:…)$`).
 - Client-side validation is UX only; the server must re-validate everything.
 
 ##### `field-sizing` (Newly available 2026-06-16)
@@ -677,7 +677,7 @@ textarea {
 }
 ```
 
-*(Chromium-verified: an empty `field-sizing: content` textarea measured 7 px wide; after typing one short sentence it grew to fit the text, about 280 px — always set minimum sizes.)* Older browsers ignore it and keep the fixed size, which is an acceptable fallback.[^27]
+*(Chromium-verified: an empty `field-sizing: content` textarea measured 7 px wide; after typing one short sentence it grew to fit the text, about 280 px — always set minimum sizes.)* Older browsers ignore it and keep the fixed size, which is an acceptable fallback.
 
 ##### Styling form controls
 
@@ -691,7 +691,7 @@ textarea {
 
 ##### `<dialog>` (Widely available)
 
-Specification and reference: HTML Standard, MDN.[^11][^12]
+Specification and reference: HTML Standard, MDN.
 
 ```html
 <button type="button" id="open-delete">Delete project…</button>
@@ -813,7 +813,7 @@ if (!('command' in HTMLButtonElement.prototype)) {
 
 ##### Links and windows
 
-- **`target="_blank"` implies `rel="noopener"`**[^32] in all current browsers (Widely available since 2021: Chrome 88, Firefox 79, Safari 12.1) *(Chromium-verified: `window.opener` is `null` in the new tab; `rel="opener"` restores it)*. Adding `rel="noopener"` is harmless and still recommended where very old browsers matter; `rel="noreferrer"` additionally strips the `Referer` header.
+- **`target="_blank"` implies `rel="noopener"`** in all current browsers (Widely available since 2021: Chrome 88, Firefox 79, Safari 12.1) *(Chromium-verified: `window.opener` is `null` in the new tab; `rel="opener"` restores it)*. Adding `rel="noopener"` is harmless and still recommended where very old browsers matter; `rel="noreferrer"` additionally strips the `Referer` header.
 - **`window.open()` does *not* imply `noopener`.** *(Chromium-verified: the opened page sees `window.opener`.)* Pass `'noopener'` in the features string (it then returns `null`) when opening untrusted URLs.
 - **Never render untrusted URLs into `href`/`src`/`action`/`formaction` without scheme allow-listing.** `javascript:` and `data:` URLs execute script. Allow `https:`, `mailto:`, `tel:` and relative URLs only.
 - `rel="nofollow ugc"` on user-generated links (SEO hygiene, not security).
@@ -835,7 +835,7 @@ if (!('command' in HTMLButtonElement.prototype)) {
 <script nonce="{{ csp_nonce }}">…</script>
 ```
 
-Behaviour under `Content-Security-Policy: script-src 'nonce-…'; style-src 'self'` *(Chromium-verified)*:[^14]
+Behaviour under `Content-Security-Policy: script-src 'nonce-…'; style-src 'self'` *(Chromium-verified)*:
 
 - Inline scripts without the nonce, **inline event handlers** (`onclick`) and `style=""` attributes are blocked.
 - Setting styles through the CSSOM (`el.style.color = …`) is **not** blocked by `style-src` — prefer it (or classes) over generated `style` attributes.
@@ -853,13 +853,13 @@ Behaviour under `Content-Security-Policy: script-src 'nonce-…'; style-src 'sel
         referrerpolicy="no-referrer"></script>
 ```
 
-- *(Chromium-verified: a mismatching `integrity` hash blocks execution and logs "Failed to find a valid digest".)* Cross-origin SRI requires CORS[^15] (`crossorigin="anonymous"`) and a CDN that sends `Access-Control-Allow-Origin`.
+- *(Chromium-verified: a mismatching `integrity` hash blocks execution and logs "Failed to find a valid digest".)* Cross-origin SRI requires CORS (`crossorigin="anonymous"`) and a CDN that sends `Access-Control-Allow-Origin`.
 - Pin exact versions in CDN URLs; `integrity` on a "latest" URL breaks on the next release.
 - `integrity` covers only that one file: modules it imports are not checked unless an import map's `integrity` section lists them (that section is not tracked as a Baseline feature — check your targets).
 
 ##### Referrer policy
 
-- The default policy is **`strict-origin-when-cross-origin`**[^16]: cross-origin requests receive only the origin *(Chromium-verified: a navigation from `https://a.test/index.html` to another origin sent `Referer: https://a.test/`)*.
+- The default policy is **`strict-origin-when-cross-origin`**: cross-origin requests receive only the origin *(Chromium-verified: a navigation from `https://a.test/index.html` to another origin sent `Referer: https://a.test/`)*.
 - Do not put secrets or personal data in URLs regardless; same-origin requests still receive the full URL. Use `referrerpolicy="no-referrer"` on links/resources to third parties when even the origin is sensitive. Avoid `unsafe-url`.
 
 ##### Iframes
@@ -875,7 +875,7 @@ Behaviour under `Content-Security-Policy: script-src 'nonce-…'; style-src 'sel
         width="600" height="400"></iframe>
 ```
 
-- **`sandbox="allow-scripts allow-same-origin"` on same-origin content provides no sandbox**[^13]: the framed document can reach `window.frameElement` and remove the attribute (the HTML spec warns about this). *(Chromium-verified: with both tokens the child has origin `https://a.test` and a non-null `frameElement`; with `allow-scripts` alone its origin is `null` and accessing `parent.document` throws `SecurityError`.)* Serve untrusted HTML from a separate origin.
+- **`sandbox="allow-scripts allow-same-origin"` on same-origin content provides no sandbox**: the framed document can reach `window.frameElement` and remove the attribute (the HTML spec warns about this). *(Chromium-verified: with both tokens the child has origin `https://a.test` and a non-null `frameElement`; with `allow-scripts` alone its origin is `null` and accessing `parent.document` throws `SecurityError`.)* Serve untrusted HTML from a separate origin.
 - Grant the minimum `sandbox` tokens; `allow-top-navigation` and `allow-popups-to-escape-sandbox` deserve scrutiny.
 - `allow=""` (Permissions Policy) controls camera, microphone, geolocation, fullscreen, clipboard etc. for the frame; list only what the embed needs.
 - Every `<iframe>` needs a `title` (accessible name).
@@ -919,7 +919,7 @@ Behaviour under `Content-Security-Policy: script-src 'nonce-…'; style-src 'sel
 ```
 
 - **Always set `width` and `height` attributes** (the intrinsic pixel size, not the display size). Browsers map them to `aspect-ratio: auto <w> / <h>` so space is reserved before the image loads, preventing layout shift (CLS). *(Chromium-verified: computed `aspect-ratio` is `auto 800 / 600`.)* Combine with `img { max-inline-size: 100%; block-size: auto; }`. Once the image loads, its natural ratio takes over (`auto`), so mismatched attributes only matter before load.
-- **Never `loading="lazy"` the LCP/hero image**[^17] or anything above the fold — it delays the fetch until layout. Lazy loading is Widely available (2026-06-19) for `img` and `iframe`. *(Chromium-verified: an `img loading="lazy"` 5000 px below the fold was not fetched.)*
+- **Never `loading="lazy"` the LCP/hero image** or anything above the fold — it delays the fetch until layout. Lazy loading is Widely available (2026-06-19) for `img` and `iframe`. *(Chromium-verified: an `img loading="lazy"` 5000 px below the fold was not fetched.)*
 - `fetchpriority="high"` on the LCP image (Newly available; ignored by older browsers — safe). Use `fetchpriority="low"` for non-critical carousels' later slides. Do not mark many resources `high`.
 - `srcset` with `w` descriptors **requires `sizes`** that match the CSS layout; without `sizes` the browser assumes `100vw` and downloads oversized images. *(Chromium-verified: at DPR 2 with `sizes="… 400px"`, the 800w candidate was selected.)* `sizes="auto"` (needs `loading="lazy"`) is not Baseline.
 - AVIF is Widely available (2026-07-25); WebP since 2023. Keep a JPEG/PNG `img src` fallback only if the target includes older browsers.
@@ -1015,7 +1015,7 @@ body { font-family: "Inter", "Inter Fallback", system-ui, sans-serif; }
 
 ##### Order of precedence (simplified)
 
-Per CSS Cascading Level 5/6.[^18]
+Per CSS Cascading Level 5/6.
 
 1. Highest first: transitions → `!important` UA → `!important` user → **`!important` author (layers in *reverse* order, unlayered last)** → animations → normal author (**unlayered beats all layers**, later layers beat earlier ones) → user → UA.
 2. Within the same origin, importance and layer: specificity, then `@scope` proximity, then source order *(Chromium-verified: a farther `@scope (.outer) { p.x }` beats a closer `@scope (.inner) { p }`; with equal specificity the closer scope beats the later rule)*.
@@ -1064,7 +1064,7 @@ Review consequences:
 *(Chromium-verified: the nested rule above beats `.p .c.c` (0,3,0) for an element under `.card`.)*
 
 - **ID selectors in component CSS** create specificity wars; prefer classes, or wrap in `:where()`.
-- **Selector lists are invalidated by a single bad selector**[^19]: `.a:has(.b), .a:unknown-thing { … }` drops the whole rule *(Chromium-verified)*. `:is()` and `:where()` use *forgiving* lists (`:is(.a, :unknown)` still matches `.a`), but **`:has()` is unforgiving** (`.c:has(.k, :unknown)` is dropped) and **`:has()` cannot be nested** (`:has(:has(…))` is invalid) — all *Chromium-verified*. Do not mix experimental pseudo-classes into shared selector lists.
+- **Selector lists are invalidated by a single bad selector**: `.a:has(.b), .a:unknown-thing { … }` drops the whole rule *(Chromium-verified)*. `:is()` and `:where()` use *forgiving* lists (`:is(.a, :unknown)` still matches `.a`), but **`:has()` is unforgiving** (`.c:has(.k, :unknown)` is dropped) and **`:has()` cannot be nested** (`:has(:has(…))` is invalid) — all *Chromium-verified*. Do not mix experimental pseudo-classes into shared selector lists.
 - `CSS.supports('selector(:is(a, :unknown))')` returns `false` even though the stylesheet would accept it — `@supports selector()` does not apply forgiving parsing.
 
 ##### Custom properties pitfalls
@@ -1079,7 +1079,7 @@ Review consequences:
 }
 ```
 
-*(Chromium-verified.)* The fallback in `var(--x, fallback)`[^22] is used only when `--x` is *not defined* (guaranteed-invalid), not when its value is unsuitable. Typed custom properties fix this:
+*(Chromium-verified.)* The fallback in `var(--x, fallback)` is used only when `--x` is *not defined* (guaranteed-invalid), not when its value is unsuitable. Typed custom properties fix this:
 
 ```css
 /* Registered custom property — Newly available (2024-07-09; Firefox 128) */
@@ -1154,7 +1154,7 @@ Rules: unforgiving argument list; no nesting of `:has()`; pseudo-elements are no
 
 Pitfalls *(Chromium-verified)*:
 
-- **An element cannot query itself.**[^21] `.self { container-type: inline-size }` plus `@container (…) { .self { … } }` never applies to `.self` — only to descendants.
+- **An element cannot query itself.** `.self { container-type: inline-size }` plus `@container (…) { .self { … } }` never applies to `.self` — only to descendants.
 - **`container-type: size` applies size containment in both axes**: a container without an explicit height collapses to **0 px** high even with content. Use `inline-size` unless you set a block size.
 - `container-type: inline-size` also establishes inline-size containment: the container's width can no longer depend on its children (a shrink-to-fit `inline-block` container with text content measured **0 px** wide).
 - Container query units fall back to the small viewport units when no container exists (`width: 50cqw` without a container measured 500 px in a 1000 px viewport).
@@ -1178,7 +1178,7 @@ Pitfalls *(Chromium-verified)*:
 
 Pitfalls (all *Chromium-verified* unless noted):
 
-- **Native nesting is not Sass**[^20]: `&__title` (BEM suffix concatenation) **does not work** — the rule is dropped and `.card__title` is not styled. Write the full class (`.card__title { }`) at top level or `& .card__title`.
+- **Native nesting is not Sass**: `&__title` (BEM suffix concatenation) **does not work** — the rule is dropped and `.card__title` is not styled. Write the full class (`.card__title { }`) at top level or `& .card__title`.
 - `&` has `:is()` specificity (see Specificity).
 - **Declarations after nested rules**: since `CSSNestedDeclarations` (Newly, 2024-12-11; Chrome 130, Firefox 132, Safari 18.2) they apply in source order. In `.a { & { color: X } color: Y }` current browsers apply Y; browsers before those versions hoisted Y above the nested rule and applied X. Keep declarations *before* nested rules to get identical results everywhere.
 - The relaxed syntax (nested rules starting with a type selector) arrived with the versions that make nesting Baseline (Chrome 120, Safari 17.2); Chrome 112–119 and Safari 16.5–17.1 required `&` or another symbol first. For the Widely-available target this no longer matters.
@@ -1237,7 +1237,7 @@ Pitfalls (all *Chromium-verified* unless noted):
 .chip { color: contrast-color(var(--chip-bg)); }
 ```
 
-Facts *(Chromium-verified)*:[^23]
+Facts *(Chromium-verified)*:
 
 - `color-mix(in srgb, red, blue)` computes to `color(srgb 0.5 0 0.5)`; `color-mix(in oklab, …)` to an `oklab()` value. The current CSS Color 5 draft makes the `in <space>` part optional (default Oklab), but Chromium 141 rejects `color-mix(red, blue)` and the omission is not tracked as Baseline: always write the interpolation space.
 - `oklch(70% 0.4 150)` is accepted and stays out of gamut in the computed value; the browser gamut-maps when painting. Keep chroma within the target gamut (sRGB chroma is usually ≤ 0.15–0.2 depending on hue) or provide a `@media (color-gamut: p3)` variant.
@@ -1249,7 +1249,7 @@ Facts *(Chromium-verified)*:[^23]
 ##### View transitions
 
 - **Same-document view transitions — Newly available (2025-10-14; Firefox 144, Safari 18).**
-- **Cross-document (MPA) view transitions — not Baseline (no Firefox).**[^24]
+- **Cross-document (MPA) view transitions — not Baseline (no Firefox).**
 
 ```js
 // Progressive enhancement: always perform the update, animate when possible
@@ -1291,7 +1291,7 @@ Review: duplicate `view-transition-name` values on rendered elements abort the t
 }
 ```
 
-*(Chromium-verified: `anchor-name`, `position-area`, `position-try-fallbacks`, `anchor()` parse; `position-visibility: anchor-visible` does not.)* Anchors must be laid out before the positioned element[^25] and be in the same containing-block chain (or the positioned element must be in the top layer). Chrome 125–128 used the older `inset-area` name for `position-area` (renamed in Chrome 129).
+*(Chromium-verified: `anchor-name`, `position-area`, `position-try-fallbacks`, `anchor()` parse; `position-visibility: anchor-visible` does not.)* Anchors must be laid out before the positioned element and be in the same containing-block chain (or the positioned element must be in the top layer). Chrome 125–128 used the older `inset-area` name for `position-area` (renamed in Chrome 129).
 
 ##### `@starting-style` and discrete transitions — Newly available (2024-08-06)
 
@@ -1312,7 +1312,7 @@ dialog:not([open]) { opacity: 0; }
 }
 ```
 
-*(Chromium-verified: two frames after `showModal()` the opacity was still well below 1 and reached 1 after the transition.)* Without `@starting-style`,[^26] an element that goes from `display: none` to visible has no "before" style and does not transition. Put `@starting-style` *after* the base rule (or give it equal-or-higher specificity) — it participates in the normal cascade.
+*(Chromium-verified: two frames after `showModal()` the opacity was still well below 1 and reached 1 after the transition.)* Without `@starting-style`, an element that goes from `display: none` to visible has no "before" style and does not transition. Put `@starting-style` *after* the base rule (or give it equal-or-higher specificity) — it participates in the normal cascade.
 
 ##### `text-wrap`
 
@@ -1322,7 +1322,7 @@ p { text-wrap: pretty; }                         /* NOT Baseline (no Firefox) �
 .nowrap { text-wrap: nowrap; }                   /* the wrap/nowrap values alone are Widely available (2026-09-19) */
 ```
 
-`balance` is limited to short blocks (per MDN: six lines or fewer in Chromium, ten or fewer in Firefox); `pretty` costs layout time.[^28] These are pure enhancements; never flag their absence as a bug, and never treat `pretty` as Baseline.
+`balance` is limited to short blocks (per MDN: six lines or fewer in Chromium, ten or fewer in Firefox); `pretty` costs layout time. These are pure enhancements; never flag their absence as a bug, and never treat `pretty` as Baseline.
 
 ##### Other recent additions worth recognising
 
@@ -1340,7 +1340,7 @@ p { text-wrap: pretty; }                         /* NOT Baseline (no Firefox) �
 
 #### Motion and `prefers-reduced-motion`
 
-`prefers-reduced-motion` is Widely available (2022).[^29] WCAG 2.3.3 (motion from interactions) is AAA, but 2.2.2 Pause, Stop, Hide (A) requires a way to stop auto-playing motion lasting more than five seconds, and vestibular disorders make large parallax/zoom effects a real harm.
+`prefers-reduced-motion` is Widely available (2022). WCAG 2.3.3 (motion from interactions) is AAA, but 2.2.2 Pause, Stop, Hide (A) requires a way to stop auto-playing motion lasting more than five seconds, and vestibular disorders make large parallax/zoom effects a real harm.
 
 ```css
 /* Motion as an enhancement: no motion by default, add it when allowed */
@@ -1566,7 +1566,7 @@ Keep raw values in tokens and semantic aliases (`--surface`, `--text`, `--border
 
 #### Tooling
 
-- **Baseline linting**[^33]: `@eslint/css` (2.0.1) ships the `use-baseline` rule (default `available: "widely"`; also `"newly"` or a year) *(rule options read from the installed package)*; `stylelint-plugin-use-baseline` (1.4.8) does the same for Stylelint 16/17. `eslint-plugin-baseline-js` covers JavaScript APIs.
+- **Baseline linting**: `@eslint/css` (2.0.1) ships the `use-baseline` rule (default `available: "widely"`; also `"newly"` or a year) *(rule options read from the installed package)*; `stylelint-plugin-use-baseline` (1.4.8) does the same for Stylelint 16/17. `eslint-plugin-baseline-js` covers JavaScript APIs.
 - **Browser targets**: `browserslist` supports `baseline widely available`, `baseline newly available` and `baseline 2024`-style queries *(executed with browserslist 4.29.4)*; Autoprefixer and Lightning CSS (`browserslistToTargets`) consume it, and Vite's `build.target` accepts `'baseline-widely-available'` *(string found in the Vite 8.3.5 build)*.
 - **Accessibility**: axe-core (4.14.0) in unit/E2E tests (`@axe-core/playwright`), plus manual keyboard and screen-reader passes; automated rules cannot judge alt-text quality, focus order, or whether names make sense.
 - **HTML validation**: the Nu HTML Checker (`vnu`) or `@html-eslint/eslint-plugin` catch invalid nesting, duplicate IDs, obsolete attributes.
@@ -1646,39 +1646,3 @@ Keep raw values in tokens and semantic aliases (`--surface`, `--text`, `--border
 - [ ] `prefers-reduced-motion` honoured for animations, smooth scroll, view transitions
 - [ ] Logical properties in multilingual UIs; `min-inline-size: 0`/`minmax(0, 1fr)` where content can overflow
 - [ ] Every Newly-available feature has an acceptable fallback for the project's target; no Limited-availability feature carries essential function
-
-***
-
-[^1]: Baseline (web-features) — definitions of Widely/Newly available and the 30-month rule; web-features data package (3.44.0). https://web-platform-dx.github.io/web-features/ , https://github.com/web-platform-dx/web-features , https://www.npmjs.com/package/web-features
-[^2]: MDN Glossary: Baseline (compatibility). https://developer.mozilla.org/en-US/docs/Glossary/Baseline/Compatibility
-[^3]: web.dev — Baseline. https://web.dev/baseline
-[^4]: Browserslist — queries including `baseline widely available` / `baseline newly available` / `baseline YYYY`. https://github.com/browserslist/browserslist#queries
-[^5]: Web Content Accessibility Guidelines (WCAG) 2.2, W3C Recommendation (12 December 2024 edition; 4.1.1 removed). https://www.w3.org/TR/WCAG22/
-[^6]: W3C WAI — WCAG 2.2 Approved as an ISO Standard (ISO/IEC 40500:2025), 21 October 2025. https://www.w3.org/WAI/news/2025-10-21/wcag22-iso
-[^7]: National Disability Authority (Ireland) — EN 301 549 V4.1.1 published (2 September 2026; WCAG 2.2 AA; expected OJEU citation). https://nda.ie/news/en301549-published ; Directive (EU) 2019/882 (European Accessibility Act). https://eur-lex.europa.eu/eli/dir/2019/882/oj
-[^8]: Using ARIA — the rules of ARIA use. https://www.w3.org/TR/using-aria/
-[^9]: ARIA in HTML (implicit roles, allowed and prohibited attributes). https://www.w3.org/TR/html-aria/ ; WAI-ARIA 1.2 (naming prohibited on generic). https://www.w3.org/TR/wai-aria-1.2/
-[^10]: HTML Standard — Autofill (autocomplete tokens). https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill
-[^11]: HTML Standard — The dialog element; popover attribute; invoker commands (`command`/`commandfor`). https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element , https://html.spec.whatwg.org/multipage/popover.html
-[^12]: MDN — `<dialog>`, Popover API, `inert`. https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog , https://developer.mozilla.org/en-US/docs/Web/API/Popover_API , https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/inert
-[^13]: HTML Standard — `iframe` `sandbox` (warning about `allow-scripts` + `allow-same-origin`). https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox
-[^14]: Content Security Policy Level 3 (nonce hiding, directives ignored in `<meta>`). https://www.w3.org/TR/CSP3/
-[^15]: Subresource Integrity. https://www.w3.org/TR/SRI/
-[^16]: Referrer Policy (default `strict-origin-when-cross-origin`). https://www.w3.org/TR/referrer-policy/ ; MDN `Referrer-Policy`. https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Referrer-Policy
-[^17]: web.dev — Optimize Largest Contentful Paint; Lazy-loading images and LCP; Optimize CLS; Fetch Priority. https://web.dev/articles/optimize-lcp , https://web.dev/articles/lcp-lazy-loading , https://web.dev/articles/optimize-cls , https://web.dev/articles/fetch-priority
-[^18]: CSS Cascading and Inheritance Level 5 (cascade layers) and Level 6 (`@scope`). https://www.w3.org/TR/css-cascade-5/ , https://www.w3.org/TR/css-cascade-6/
-[^19]: Selectors Level 4 (`:is()`, `:where()`, `:has()`, forgiving selector lists, specificity). https://www.w3.org/TR/selectors-4/
-[^20]: CSS Nesting Module (relaxed syntax, `CSSNestedDeclarations`). https://www.w3.org/TR/css-nesting-1/
-[^21]: CSS Containment Module Level 3 (container queries). https://www.w3.org/TR/css-contain-3/
-[^22]: CSS Custom Properties Level 1 (invalid at computed-value time) and CSS Properties and Values API (`@property`). https://www.w3.org/TR/css-variables-1/ , https://www.w3.org/TR/css-properties-values-api-1/
-[^23]: CSS Color Level 4 and 5 (`oklch()`, `color-mix()`, relative colour, `light-dark()`, `contrast-color()`). https://www.w3.org/TR/css-color-4/ , https://www.w3.org/TR/css-color-5/
-[^24]: CSS View Transitions Level 1 and 2. https://www.w3.org/TR/css-view-transitions-1/ , https://www.w3.org/TR/css-view-transitions-2/
-[^25]: CSS Anchor Positioning. https://www.w3.org/TR/css-anchor-position-1/
-[^26]: CSS Transitions Level 2 (`@starting-style`, `transition-behavior`). https://www.w3.org/TR/css-transitions-2/
-[^27]: CSS Basic User Interface Level 4 (`field-sizing`, `accent-color`). https://www.w3.org/TR/css-ui-4/
-[^28]: CSS Text Level 4 (`text-wrap`); MDN `text-wrap-style` (balance line limits). https://www.w3.org/TR/css-text-4/ , https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/text-wrap-style
-[^29]: Media Queries Level 5 (`prefers-reduced-motion`, `prefers-color-scheme`, `forced-colors`, `prefers-contrast`). https://www.w3.org/TR/mediaqueries-5/
-[^30]: CSS Masking (deprecation of `clip`). https://www.w3.org/TR/css-masking-1/#clip-property
-[^31]: HTML Standard — `pattern` attribute compiled with the `v` flag. https://html.spec.whatwg.org/multipage/input.html#the-pattern-attribute
-[^32]: HTML Standard — `target="_blank"` implies `noopener`; `window.open()` features. https://html.spec.whatwg.org/multipage/links.html#link-type-noopener , https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open
-[^33]: ESLint CSS plugin (`use-baseline` rule). https://github.com/eslint/css ; stylelint-plugin-use-baseline. https://github.com/ryo-manba/stylelint-plugin-use-baseline

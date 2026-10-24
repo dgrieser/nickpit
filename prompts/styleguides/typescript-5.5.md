@@ -1,52 +1,15 @@
 ### TypeScript 5.5: The Complete Production Developer Guide
 
-> **Version**: TypeScript 5.5 — 5.5.2 was the first stable build (June 20, 2024; 5.5.0 was the beta, 5.5.1 the RC). The latest and final patch release is **5.5.4 (July 22, 2024)**.[^1][^2]
-> **Support status (October 2026)**: unmaintained. The TypeScript team ships fixes only for the newest release and does not backport them. 5.6 replaced 5.5 on September 9, 2024. Since then 5.6–5.9, **6.0** (last JavaScript-based compiler; 6.0.3, April 16, 2026) and **7.0** (native Go compiler; 7.0.2, July 8, 2026, now the npm `latest` tag) have shipped; 7.1 is in beta (`7.1.0-beta` on the npm `beta` tag).[^2][^3] DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years, so 5.5 (June 2024) has dropped out of that window. Pin `@types/*` to their `ts5.5` dist-tags (see Toolchain Compatibility).[^4]
+> **Version**: TypeScript 5.5 — 5.5.2 was the first stable build (June 20, 2024; 5.5.0 was the beta, 5.5.1 the RC). The latest and final patch release is **5.5.4 (July 22, 2024)**.
+> **Support status (October 2026)**: unmaintained. The TypeScript team ships fixes only for the newest release and does not backport them. 5.6 replaced 5.5 on September 9, 2024. Since then 5.6–5.9, **6.0** (last JavaScript-based compiler; 6.0.3, April 16, 2026) and **7.0** (native Go compiler; 7.0.2, July 8, 2026, now the npm `latest` tag) have shipped; 7.1 is in beta (`7.1.0-beta` on the npm `beta` tag). DefinitelyTyped tests `@types` packages only against TypeScript versions younger than two years, so 5.5 (June 2024) has dropped out of that window. Pin `@types/*` to their `ts5.5` dist-tags (see Toolchain Compatibility).
 > **Scope**: the complete TypeScript language and type system as usable in 5.5, the 5.5 changes relative to 5.4, tsconfig and module resolution for Node.js and bundlers, declaration files, async code, errors, security, performance, testing and tooling. The focus is on what a code reviewer must catch.
 > **Note**: this document is self-contained. Sections that cover 5.5-specific behaviour are marked **New in 5.5**. Every example was compiled with `tsc` 5.5.4; "new in 5.5" claims were checked against 5.4.5, and "not available" claims against the release that introduced the feature (5.6.3, 5.7.3, 5.8.3, 5.9.3, 6.0.3). Runtime claims were run on Node.js 18.20, 20.20, 22.23, 24.22 and 26.12. Unless a block says otherwise, examples assume `strict`, `target: es2022`, `module: nodenext`, an ES module package (`"type": "module"`), `lib: ["esnext"]` (which in 5.5 means ES2023 plus the listed proposals) and `@types/node`. Comments of the form `// error TS2322` mark the line where 5.5 reports that error; `// 5.4: error ...` describes the old behaviour.
 
 ***
 
-#### Table of Contents
-
-1. What's New in TypeScript 5.5
-2. Do Not Use or Recommend
-3. Version-Aware Review
-4. Toolchain Compatibility and Release Facts
-5. tsconfig for 5.5
-6. Modules and Module Resolution
-7. Core Types and Inference
-8. Narrowing and Control-Flow Analysis
-9. Strictness Flags Explained
-10. Iterators, Generators and Collections in 5.5
-11. Numbers, BigInt and Dates
-12. Node.js APIs with TypeScript
-13. JSX and React
-14. Objects, Interfaces, Classes
-15. Generics and Type-Level Programming
-16. Enums, Namespaces and Non-Erasable Syntax
-17. Functions, Overloads and `this`
-18. Errors and Exceptions
-19. Async Code and Promises
-20. Resource Management (`using`)
-21. Decorators
-22. Idioms and Things to Avoid (BAD/GOOD)
-23. Runtime Validation and Untrusted Data
-24. Security
-25. Declaration Files and Library Authoring
-26. JavaScript Projects (`checkJs`, JSDoc)
-27. Performance (Compiler and Runtime)
-28. Testing
-29. Tooling, Linting and Formatting
-30. Observability and Debugging
-31. Removed / Changed in 5.5 — Migration Notes
-32. Production / Review Checklist
-
-***
-
 #### What's New in TypeScript 5.5
 
-TypeScript 5.5 is a type-checker and tooling release. It has no new runtime syntax. Its headline changes are:[^1]
+TypeScript 5.5 is a type-checker and tooling release. It has no new runtime syntax. Its headline changes are:
 
 | Change | What it means for review |
 |---|---|
@@ -64,11 +27,11 @@ TypeScript 5.5 is a type-checker and tooling release. It has no new runtime synt
 | **Reference directives no longer synthesized/preserved in `.d.ts`** | `/// <reference types="node" />` is no longer emitted automatically; hand-written ones survive only with `preserve="true"`. |
 | Tooling | `transpileDeclaration` API; `transpileModule` skips full checking (faster ts-jest / ts-loader `transpileOnly`); named ESM imports from the `typescript` package work; package size 30.2 MB → 20.4 MB on disk; editor/watch reliability fixes. |
 
-Everything from earlier 5.x releases is available and should be used where it fits: standard ECMAScript decorators, `const` type parameters, `--verbatimModuleSyntax`, `--moduleResolution bundler`, `export type *`, `extends` arrays in tsconfig (5.0); unrelated getter/setter types and implicit `undefined` returns (5.1); `using`/`await using` declarations and decorator metadata (5.2); import attributes (`with { type: "json" }`), `switch (true)` narrowing and `resolution-mode` in import types (5.3); preserved narrowing in closures after the last assignment, the `NoInfer<T>` utility type, `Object.groupBy`/`Map.groupBy` typings and `--module preserve` (5.4).[^5]
+Everything from earlier 5.x releases is available and should be used where it fits: standard ECMAScript decorators, `const` type parameters, `--verbatimModuleSyntax`, `--moduleResolution bundler`, `export type *`, `extends` arrays in tsconfig (5.0); unrelated getter/setter types and implicit `undefined` returns (5.1); `using`/`await using` declarations and decorator metadata (5.2); import attributes (`with { type: "json" }`), `switch (true)` narrowing and `resolution-mode` in import types (5.3); preserved narrowing in closures after the last assignment, the `NoInfer<T>` utility type, `Object.groupBy`/`Map.groupBy` typings and `--module preserve` (5.4).
 
 ##### New in 5.5: Inferred Type Predicates
 
-A function with no return-type annotation, a **single `return` statement**, no mutation of its parameter, and a `boolean` result tied to a refinement of a parameter now gets a type-predicate signature.[^1][^6]
+A function with no return-type annotation, a **single `return` statement**, no mutation of its parameter, and a `boolean` result tied to a refinement of a parameter now gets a type-predicate signature.
 
 ```ts
 interface Bird { name: string; sing(): void }
@@ -139,7 +102,7 @@ export function isNumeric(x: unknown): x is number {
 
 ##### New in 5.5: Control-Flow Narrowing for Constant Indexed Accesses
 
-`obj[key]` now narrows when both `obj` and `key` are effectively constant (parameters or `const`s never reassigned).[^1]
+`obj[key]` now narrows when both `obj` and `key` are effectively constant (parameters or `const`s never reassigned).
 
 ```ts
 export function upper(obj: Record<string, unknown>, key: string) {
@@ -176,7 +139,7 @@ Like all property narrowing, it is **not invalidated by function calls**. This c
 
 ##### New in 5.5: The JSDoc `@import` Tag
 
-JavaScript files checked with `checkJs` can import types with ECMAScript import syntax inside a JSDoc comment, with no runtime import:[^1]
+JavaScript files checked with `checkJs` can import types with ECMAScript import syntax inside a JSDoc comment, with no runtime import:
 
 ```js
 /** @import { User } from "./types.js" */
@@ -193,7 +156,7 @@ TypeScript 5.4 reports `Cannot find name 'User'` (TS2304) for the same file. Pre
 
 ##### New in 5.5: Regular-Expression Syntax Checking
 
-Regular-expression **literals** are now parsed and checked. `new RegExp("...")` strings are not.[^1]
+Regular-expression **literals** are now parsed and checked. `new RegExp("...")` strings are not.
 
 ```ts
 export const r1 = /@robot(\s+(please|immediately)))? do/; // error TS1508 Unexpected ')'
@@ -216,7 +179,7 @@ Reviewers should treat new TS15xx regex errors after an upgrade as real bugs —
 
 ##### New in 5.5: ECMAScript `Set` Methods
 
-`lib.esnext.collection.d.ts` declares the ES2025 set methods on `Set` and `ReadonlySet`. They are **not** in `lib.es2023`; you need `"lib": ["esnext"]` or `"esnext.collection"`.[^1][^7]
+`lib.esnext.collection.d.ts` declares the ES2025 set methods on `Set` and `ReadonlySet`. They are **not** in `lib.es2023`; you need `"lib": ["esnext"]` or `"esnext.collection"`.
 
 ```ts
 const a = new Set([1, 2, 3]);
@@ -235,7 +198,7 @@ export const bad = a.union([4, 5]);           // error TS2345 arrays are not set
 
 ##### New in 5.5: `--isolatedDeclarations`
 
-`isolatedDeclarations` reports an error wherever the declaration (`.d.ts`) type of an **exported** item cannot be produced from the file's syntax alone. It requires `declaration` or `composite` (TS5069 otherwise) and does not change emit. Its purpose is to let other tools (oxc, swc, the `transpileDeclaration` API) generate `.d.ts` files in parallel.[^1][^8]
+`isolatedDeclarations` reports an error wherever the declaration (`.d.ts`) type of an **exported** item cannot be produced from the file's syntax alone. It requires `declaration` or `composite` (TS5069 otherwise) and does not change emit. Its purpose is to let other tools (oxc, swc, the `transpileDeclaration` API) generate `.d.ts` files in parallel.
 
 ```ts
 // @isolatedDeclarations: true
@@ -270,7 +233,7 @@ Adopt `isolatedDeclarations` for libraries whose build uses a fast declaration e
 
 ##### New in 5.5: The `${configDir}` Template Variable
 
-In path-valued tsconfig options (`outDir`, `rootDir`, `typeRoots`, `paths`, `include`, `exclude`, `files`, `declarationDir`, `tsBuildInfoFile`, ...), `${configDir}` is replaced by the directory of the tsconfig that is being compiled — the *extending* config, not the shared base.[^1][^9]
+In path-valued tsconfig options (`outDir`, `rootDir`, `typeRoots`, `paths`, `include`, `exclude`, `files`, `declarationDir`, `tsBuildInfoFile`, ...), `${configDir}` is replaced by the directory of the tsconfig that is being compiled — the *extending* config, not the shared base.
 
 ```jsonc
 // packages/tsconfig.base.json — shared
@@ -293,7 +256,7 @@ When an exported value's inferred type comes from a transitive package (`a` retu
 
 ##### New in 5.5: Compiler API, Editor and Performance Changes
 
-These items from the release notes do not change what code compiles, but they matter when reviewing build tooling:[^1]
+These items from the release notes do not change what code compiles, but they matter when reviewing build tooling:
 
 - **`ts.transpileDeclaration(source, { compilerOptions })`** produces a single file's `.d.ts` without a program, like `transpileModule` does for JavaScript. Its output is only correct for files that are free of `isolatedDeclarations` errors. It does not exist in 5.4 (verified: the named import fails there).
 - **`transpileModule` and `transpileDeclaration` skip the full type-check pass** and collect only the information emit needs (about 2x faster in the TypeScript team's measurements). Tools built on them (ts-jest, ts-loader `transpileOnly`) never reported type errors, and still do not.
@@ -305,7 +268,7 @@ These items from the release notes do not change what code compiles, but they ma
 
 ##### New in 5.5: Behaviour Changes That Break Builds
 
-**5.0-deprecated options no longer work.** `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out`, `preserveValueImports`, `prepend` in project references and implicitly OS-specific `newLine`. Verified behaviour on 5.5.4:[^1][^10]
+**5.0-deprecated options no longer work.** `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out`, `preserveValueImports`, `prepend` in project references and implicitly OS-specific `newLine`. Verified behaviour on 5.5.4:
 
 | | 5.4 | 5.5 | 5.6+ |
 |---|---|---|---|
@@ -343,13 +306,13 @@ export const myPath = path.parse("/a/b"); // .d.ts keeps the directive above
 
 Library authors whose published types rely on Node or React globals must either add `preserve="true"` or document that consumers need `@types/node` in their `types`. Verified: for `Buffer`/`node:path` declarations 5.4.5 emitted `/// <reference types="node" resolution-mode="require"/>` (even duplicated it), 5.5.4 emits nothing unless the source carries `preserve="true"`. The attribute is backward compatible — older compilers ignore unknown attributes.
 
-**`lib.d.ts` changes.** DOM typings were regenerated; expect occasional new errors in DOM-heavy code.[^1]
+**`lib.d.ts` changes.** DOM typings were regenerated; expect occasional new errors in DOM-heavy code.
 
 ***
 
 #### Do Not Use or Recommend
 
-The project's compiler is 5.5. Never suggest the following — they do not exist in 5.5 (each verified to fail on 5.5.4 and to work on the listed version):[^11]
+The project's compiler is 5.5. Never suggest the following — they do not exist in 5.5 (each verified to fail on 5.5.4 and to work on the listed version):
 
 **TypeScript 5.6** (September 2024)
 - Iterator helper methods and their types: `Iterator.from(...)`, `map()`/`filter()`/`take()`/`drop()`/`flatMap()`/`reduce()`/`toArray()` on iterators (`m.values().map(...)`), and the lib types `IteratorObject`, `MapIterator`, `SetIterator`, `ArrayIterator`, `BuiltinIteratorReturn`. (The runtime methods exist on Node 22+, but 5.5 has no declarations.)
@@ -400,13 +363,13 @@ The project's compiler is 5.5. Never suggest the following — they do not exist
 
 | Item | Fact (verified October 2026) |
 |---|---|
-| 5.5 releases on npm | 5.5.0-beta (April 25, 2024), 5.5.1-rc (June 6), **5.5.2 (June 20)**, 5.5.3 (July 1), **5.5.4 (July 22, 2024)**[^2] |
+| 5.5 releases on npm | 5.5.0-beta (April 25, 2024), 5.5.1-rc (June 6), **5.5.2 (June 20)**, 5.5.3 (July 1), **5.5.4 (July 22, 2024)** |
 | Node.js needed to run `tsc` 5.5 | `engines: { "node": ">=14.17" }` |
 | Newer releases | 5.6.2 (Sep 9, 2024), 5.7.2 (Nov 22, 2024), 5.8.2 (Feb 28, 2025), 5.9.2 (Jul 31, 2025), 6.0.2 (Mar 23, 2026), 7.0.2 (Jul 8, 2026, npm `latest`) |
 | `@types/node` | The `ts5.5` dist-tag points to **25.9.3**. `@types/node` 26.x declares `typeScriptVersion: "5.6"` and does **not** compile on 5.5 (verified: TS2304 `Cannot find name 'BuiltinIteratorReturn'`/`IteratorObject`, TS2416 in `fs.d.ts`/`stream.d.ts`) unless `skipLibCheck` hides it — and even then iterator-typed APIs degrade. Install with `npm i -D @types/node@ts5.5`. |
 | Other `@types/*` | Same mechanism: e.g. `@types/react@ts5.5` is 19.2.17 while `latest` is 19.3.0. A caret range in `package.json` can pull in a version that requires 5.6+. |
 | typescript-eslint | v8 supports TypeScript `>=4.8.4 <6.1.0` (8.72.0); 5.5 is in range. |
-| Node.js type stripping | Node 22.18+/23.6+ run `.ts` files directly by erasing types; it recommends TS 5.8+ with `erasableSyntaxOnly` and `rewriteRelativeImportExtensions`, which 5.5 lacks (see Tooling).[^12] |
+| Node.js type stripping | Node 22.18+/23.6+ run `.ts` files directly by erasing types; it recommends TS 5.8+ with `erasableSyntaxOnly` and `rewriteRelativeImportExtensions`, which 5.5 lacks (see Tooling). |
 
 Upgrade notes for reviewers: moving off 5.5 means passing through 5.6's hard errors for the removed 5.0 options (TS5102), 5.7's JSON-import and never-initialized checks, 5.8's `assert` error under `nodenext`, and 6.0's default changes. That is outside a 5.5 review, but do not let new code add to that debt (no new `baseUrl`, `moduleResolution: node10`, `target: es5`, `outFile`, `module`-keyword namespaces).
 
@@ -416,7 +379,7 @@ Upgrade notes for reviewers: moving off 5.5 means passing through 5.6's hard err
 
 ##### Defaults You Must Not Assume
 
-Defaults below are from `tsc --all` and the TSConfig reference for 5.5, and were checked by compiling.[^14] In 5.5, an empty `compilerOptions` means: `target: es5`, `module: commonjs`, `moduleResolution: node10`, `strict: false`, every package under `node_modules/@types` is loaded, `useDefineForClassFields: false` (it is `true` only for `target >= es2022`), `esModuleInterop: false` (implied `true` by `module: node16/nodenext/preserve`), `forceConsistentCasingInFileNames: true`. `tsc --init` in 5.5 writes `target: es2016`, `module: commonjs`, `strict`, `esModuleInterop`, `skipLibCheck`, `forceConsistentCasingInFileNames`.
+Defaults below are from `tsc --all` and the TSConfig reference for 5.5, and were checked by compiling. In 5.5, an empty `compilerOptions` means: `target: es5`, `module: commonjs`, `moduleResolution: node10`, `strict: false`, every package under `node_modules/@types` is loaded, `useDefineForClassFields: false` (it is `true` only for `target >= es2022`), `esModuleInterop: false` (implied `true` by `module: node16/nodenext/preserve`), `forceConsistentCasingInFileNames: true`. `tsc --init` in 5.5 writes `target: es2016`, `module: commonjs`, `strict`, `esModuleInterop`, `skipLibCheck`, `forceConsistentCasingInFileNames`.
 
 Traps verified on 5.5.4:
 
@@ -516,7 +479,7 @@ Do not set `skipLibCheck` in a library's *release* type-check job without also r
 
 ##### Choosing `module`/`moduleResolution`
 
-The module settings decide both how imports are resolved and which output format each file gets.[^13]
+The module settings decide both how imports are resolved and which output format each file gets.
 
 | Code runs on | `module` | `moduleResolution` | Relative import specifiers |
 |---|---|---|---|
@@ -1531,7 +1494,7 @@ TypeScript's types do not protect against injection, prototype pollution or unsa
 - `skipLibCheck: true` is standard for applications. It skips *all* `.d.ts` files, including your own generated ones.
 - Large unions (thousands of members), deeply recursive conditional types and huge inferred object literal types slow everything down. Prefer interfaces over intersections of object types for extension (`interface A extends B, C` is cached; `B & C` is recomputed).
 - Annotate return types of exported functions in hot modules; inference across big call graphs is expensive.
-- 5.5 itself is faster than 5.4 for language-service operations, and `transpileModule` (ts-jest, ts-loader `transpileOnly`) skips full checking — roughly 2x faster in the TypeScript team's tests.[^1]
+- 5.5 itself is faster than 5.4 for language-service operations, and `transpileModule` (ts-jest, ts-loader `transpileOnly`) skips full checking — roughly 2x faster in the TypeScript team's tests.
 
 ##### Emitted Code
 
@@ -1576,11 +1539,11 @@ export { n, ok };
 #### Tooling, Linting and Formatting
 
 - **tsc** is the type checker of record. Run `tsc --noEmit` (applications), `tsc -b` (references), or `tsc -p tsconfig.build.json` (libraries) in CI, pinned to the same 5.5.4 as the editor. In VS Code, select the workspace version ("Use Workspace Version") — the bundled TypeScript is far newer and will show 5.6+ behaviour (for example no `isolatedDeclarations` noEmit bug, different truthiness errors).
-- **typescript-eslint v8** supports 5.5.[^15] Enable type-aware linting (`parserOptions.projectService: true`) and at least `no-floating-promises`, `no-misused-promises`, `await-thenable`, `return-await`, `no-unnecessary-type-assertion`, `no-unsafe-*` (assignment/call/member-access/return/argument), `switch-exhaustiveness-check`, `consistent-type-imports` (or rely on `verbatimModuleSyntax`), `ban-ts-comment` (require descriptions), `prefer-nullish-coalescing`, `strict-boolean-expressions` (for codebases that want no truthiness on strings/numbers). The `no-constant-binary-expression` core rule catches part of what 5.6's truthy/nullish checks catch.
+- **typescript-eslint v8** supports 5.5. Enable type-aware linting (`parserOptions.projectService: true`) and at least `no-floating-promises`, `no-misused-promises`, `await-thenable`, `return-await`, `no-unnecessary-type-assertion`, `no-unsafe-*` (assignment/call/member-access/return/argument), `switch-exhaustiveness-check`, `consistent-type-imports` (or rely on `verbatimModuleSyntax`), `ban-ts-comment` (require descriptions), `prefer-nullish-coalescing`, `strict-boolean-expressions` (for codebases that want no truthiness on strings/numbers). The `no-constant-binary-expression` core rule catches part of what 5.6's truthy/nullish checks catch.
 - **Prettier/Biome/dprint** for formatting; do not hand-format. Check that the formatter's parser understands the syntax you use (5.5 adds no new syntax, so any 2024+ formatter version works).
 - **Running TypeScript directly:**
   - `tsx` (esbuild) and `ts-node --transpile-only`/`--swc` skip type checks; `ts-node` without them type-checks but is slow and its ESM loader is fragile. `ts-node` 10.9.2 is the last release (December 2023).
-  - **Node type stripping** (Node 22.18+, 23.6+; stable in 24.12+/25.2+) ignores `tsconfig.json`, requires explicit `.ts` extensions in relative imports, requires `import type` for type-only imports, and rejects enums, value namespaces, parameter properties, `import =` aliases and decorators.[^12] With 5.5, type-check such code with `"noEmit": true`, `"allowImportingTsExtensions": true`, `"verbatimModuleSyntax": true` and `"module": "nodenext"`; enforce erasable syntax with lint rules because `--erasableSyntaxOnly` is 5.8+.
+  - **Node type stripping** (Node 22.18+, 23.6+; stable in 24.12+/25.2+) ignores `tsconfig.json`, requires explicit `.ts` extensions in relative imports, requires `import type` for type-only imports, and rejects enums, value namespaces, parameter properties, `import =` aliases and decorators. With 5.5, type-check such code with `"noEmit": true`, `"allowImportingTsExtensions": true`, `"verbatimModuleSyntax": true` and `"module": "nodenext"`; enforce erasable syntax with lint rules because `--erasableSyntaxOnly` is 5.8+.
 - **Bundlers** (Vite, esbuild, webpack + ts-loader `transpileOnly`, Rollup, tsup) strip types per file. Keep `isolatedModules`/`verbatimModuleSyntax` on.
 - **Declaration bundlers** (`api-extractor`, `rollup-plugin-dts`, `tsup --dts`) run the TypeScript API; check their bundled/peer TypeScript version. Some declaration tools bundle a newer TypeScript and may emit `.d.ts` features 5.5 consumers cannot parse.
 - **Named ESM imports of the compiler API** (`import { createProgram } from "typescript"`) work from 5.5 on; earlier versions needed the default import.
@@ -1673,21 +1636,3 @@ Upgrading from 5.4 to 5.5 (all verified on 5.4.5 vs 5.5.4):
 - [ ] `@ts-expect-error` with a reason instead of `@ts-ignore`
 - [ ] Editor uses the workspace TypeScript 5.5, not the bundled newer version
 - [ ] Source maps enabled and `--enable-source-maps` used in production Node processes
-
-***
-
-[^1]: TypeScript 5.5 release notes (Microsoft). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html ; Announcing TypeScript 5.5 (June 20, 2024). https://devblogs.microsoft.com/typescript/announcing-typescript-5-5/
-[^2]: npm registry, `typescript` package version history and dist-tags (`npm view typescript time`). https://www.npmjs.com/package/typescript?activeTab=versions ; GitHub release v5.5.4. https://github.com/microsoft/TypeScript/releases/tag/v5.5.4
-[^3]: Announcing TypeScript 7.0 / TypeScript 7.0 released (July 2026). https://devblogs.microsoft.com/typescript/ ; InfoWorld, "Go-based TypeScript 7.0 arrives". https://www.infoworld.com/article/4196378/go-based-typescript-7-0-arrives.html
-[^4]: DefinitelyTyped README — Support Window and `ts<version>` dist-tags. https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^5]: TypeScript 5.0–5.4 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html (and the linked 5.0–5.3 pages)
-[^6]: microsoft/TypeScript PR #57465 — Infer type predicates from function bodies; Dan Vanderkam, "The Making of a TypeScript Feature: Inferring Type Predicates". https://github.com/microsoft/TypeScript/pull/57465 , https://effectivetypescript.com/2024/04/16/inferring-a-type-predicate/
-[^7]: TC39 proposal-set-methods (ES2025). https://github.com/tc39/proposal-set-methods
-[^8]: Isolated Declarations: State of the Feature (microsoft/TypeScript #58944). https://github.com/microsoft/TypeScript/issues/58944
-[^9]: microsoft/TypeScript PR #58042 — `${configDir}` substitution in tsconfig. https://github.com/microsoft/TypeScript/pull/58042
-[^10]: TypeScript Flag Deprecation Plan (#51000) and 5.0 deprecations (#51909). https://github.com/microsoft/TypeScript/issues/51000 , https://github.com/microsoft/TypeScript/issues/51909
-[^11]: TypeScript 5.6, 5.7, 5.8, 5.9 and 6.0 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html , https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
-[^12]: Node.js documentation — Modules: TypeScript (type stripping history and limitations). https://nodejs.org/api/typescript.html
-[^13]: TypeScript handbook — Modules reference (module, moduleResolution, nodenext, bundler). https://www.typescriptlang.org/docs/handbook/modules/reference.html
-[^14]: TSConfig reference. https://www.typescriptlang.org/tsconfig/
-[^15]: typescript-eslint — supported TypeScript versions and rules. https://typescript-eslint.io/users/dependency-versions/ , https://typescript-eslint.io/rules/

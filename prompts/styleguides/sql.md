@@ -54,9 +54,9 @@ Find the engine before commenting on syntax. In order of reliability:
 | `ALTER TABLE … DROP COLUMN` | yes | yes | 3.35.0 | yes |
 | `RIGHT` / `FULL OUTER JOIN` | yes | `RIGHT` only, no `FULL` | 3.39.0 | yes |
 | `concat()` function | yes | yes | 3.44.0 | yes |
-| `\|\|` string concatenation | yes | logical OR by default (deprecated)[^39] | yes | 2025 / Azure SQL |
+| `\|\|` string concatenation | yes | logical OR by default (deprecated) | yes | 2025 / Azure SQL |
 
-"yes" means available in every release still in support (PostgreSQL 14+, MySQL 8.4/9.7, SQL Server 2017+). PostgreSQL and MySQL boundaries come from their release notes; SQLite boundaries from its release history; SQL Server boundaries from Microsoft Learn "Applies to" notes.[^1][^2][^3][^4][^5][^6]
+"yes" means available in every release still in support (PostgreSQL 14+, MySQL 8.4/9.7, SQL Server 2017+). PostgreSQL and MySQL boundaries come from their release notes; SQLite boundaries from its release history; SQL Server boundaries from Microsoft Learn "Applies to" notes.
 
 ***
 
@@ -68,7 +68,7 @@ Find the engine before commenting on syntax. In order of reliability:
 | Identifier quoting | `"Name"`; unquoted folded to lower case | `` `Name` `` (`"Name"` only with `ANSI_QUOTES`) | `"Name"`, also `` ` `` and `[ ]` | `[Name]`, `"Name"` with `QUOTED_IDENTIFIER ON` |
 | String concatenation | `\|\|` (NULL → NULL), `concat()` (skips NULL) | `CONCAT()` (any NULL → NULL), `CONCAT_WS()` | `\|\|` (NULL → NULL), `concat()` 3.44+ (skips NULL) | `+`, `CONCAT()` (NULL → `''`), `\|\|` 2025+ |
 | `7 / 2` | `3` | `3.5000` (`DIV` for integer division) | `3` | `3` |
-| `1 / 0` | error | `NULL` + warning in `SELECT` | `NULL` | error (with the default `ANSI_WARNINGS ON`)[^61] |
+| `1 / 0` | error | `NULL` + warning in `SELECT` | `NULL` | error (with the default `ANSI_WARNINGS ON`) |
 | Boolean type | `boolean` | `BOOL` = `TINYINT(1)` | none (integers 0/1; `TRUE`/`FALSE` keywords 3.23+) | `bit` |
 | Default `=` on strings | case-sensitive | case- and accent-insensitive (`utf8mb4_0900_ai_ci`) | case-sensitive (`BINARY`) | depends on collation; common defaults are case-insensitive (`_CI_`) |
 | `LIKE` | case-sensitive (`ILIKE` for insensitive) | follows column collation | case-insensitive for ASCII only | follows collation |
@@ -79,12 +79,12 @@ Find the engine before commenting on syntax. In order of reliability:
 | Auto-generated key | `GENERATED … AS IDENTITY`, `serial` | `AUTO_INCREMENT` | `INTEGER PRIMARY KEY` (rowid) | `IDENTITY(1,1)`, `SEQUENCE` |
 | Fetch generated key | `RETURNING id` | `LAST_INSERT_ID()` / driver `LastInsertId` | `RETURNING id`, `last_insert_rowid()` | `OUTPUT inserted.id`, `SCOPE_IDENTITY()` |
 | Row limit | `LIMIT n OFFSET m`, `OFFSET m ROWS FETCH FIRST n ROWS ONLY` | `LIMIT n OFFSET m`, `LIMIT m, n` | `LIMIT n OFFSET m` | `TOP (n)`, `ORDER BY … OFFSET m ROWS FETCH NEXT n ROWS ONLY` |
-| `now()` / current time | constant for the whole **transaction** | constant for the **statement** | `'now'` is constant within one `sqlite3_step()` call, UTC text[^49] | `SYSDATETIME()` (local), `SYSUTCDATETIME()` |
+| `now()` / current time | constant for the whole **transaction** | constant for the **statement** | `'now'` is constant within one `sqlite3_step()` call, UTC text | `SYSDATETIME()` (local), `SYSUTCDATETIME()` |
 | Time-zone-aware type | `timestamptz` (stores UTC) | `TIMESTAMP` (converts via session time zone, 1970–2038) | none (store ISO-8601 UTC text or Unix integers) | `datetimeoffset` |
 | Type enforcement | strict | strict with default `sql_mode`; `INSERT IGNORE` downgrades errors | **flexible typing** unless `STRICT` table (3.37+) | strict |
 | Foreign keys | enforced | enforced (InnoDB) | **off unless `PRAGMA foreign_keys = ON`** per connection | enforced |
 
-Sources for the SQL Server column: Microsoft Learn pages on `ORDER BY`, `CONCAT`, `||`, division, `bit`, collations, `CREATE INDEX`, isolation levels, transactions, the database/backup statements, `OUTPUT` and `SCOPE_IDENTITY`.[^4][^5][^6][^7][^9][^10][^11][^12][^13][^14][^16][^17][^63]
+Sources for the SQL Server column: Microsoft Learn pages on `ORDER BY`, `CONCAT`, `||`, division, `bit`, collations, `CREATE INDEX`, isolation levels, transactions, the database/backup statements, `OUTPUT` and `SCOPE_IDENTITY`.
 
 ***
 
@@ -161,7 +161,7 @@ CREATE INDEX orders_status_created_idx ON orders (status, created_at, id);
 
 ##### Values: always bind parameters
 
-Every value that comes from outside the code — request fields, headers, file contents, other services, even rows read back from the database — is bound as a parameter. String concatenation or interpolation into SQL is a **blocking finding**, whatever escaping function is used.[^52]
+Every value that comes from outside the code — request fields, headers, file contents, other services, even rows read back from the database — is bound as a parameter. String concatenation or interpolation into SQL is a **blocking finding**, whatever escaping function is used.
 
 ```python
 # BAD: injection — email = "x' OR '1'='1" returns every row
@@ -218,7 +218,7 @@ PREPARE orders_for_users(bigint[]) AS
 EXECUTE orders_for_users('{1,2,3}');
 ```
 
-Bound the list size. Hard limits on parameters per statement: **PostgreSQL 65,535** (16-bit count in the protocol's Bind message), **MySQL 65,535** ("Prepared statement contains too many placeholders", error 1390)[^40], **SQLite 32,766** by default since 3.32.0 (999 before; the official sqlite.org build uses the default, while Debian/Ubuntu system libraries are compiled with 250,000 — a test suite on Ubuntu proves nothing about other builds), **SQL Server 2,100** parameters per stored procedure (client-side parameterized queries are sent as `sp_executesql` calls and hit the same limit).[^29][^47][^51] With psql/libpq on PostgreSQL 18.6, a statement with 65,535 bound parameters runs and 65,536 is rejected ("number of parameters must be between 0 and 65535"); MySQL 8.4 `PREPARE` accepts 65,535 `?` and rejects 65,536 with error 1390. For larger sets, load keys into a temporary table and join, or use an array (`= ANY($1)`) or table-valued parameter.
+Bound the list size. Hard limits on parameters per statement: **PostgreSQL 65,535** (16-bit count in the protocol's Bind message), **MySQL 65,535** ("Prepared statement contains too many placeholders", error 1390), **SQLite 32,766** by default since 3.32.0 (999 before; the official sqlite.org build uses the default, while Debian/Ubuntu system libraries are compiled with 250,000 — a test suite on Ubuntu proves nothing about other builds), **SQL Server 2,100** parameters per stored procedure (client-side parameterized queries are sent as `sp_executesql` calls and hit the same limit). With psql/libpq on PostgreSQL 18.6, a statement with 65,535 bound parameters runs and 65,536 is rejected ("number of parameters must be between 0 and 65535"); MySQL 8.4 `PREPARE` accepts 65,535 `?` and rejects 65,536 with error 1390. For larger sets, load keys into a temporary table and join, or use an array (`= ANY($1)`) or table-valued parameter.
 
 ##### Identifiers: allow-list, then quote
 
@@ -246,7 +246,7 @@ SELECT format('SELECT * FROM %I WHERE name = %L', 'my table', 'O''Brien');
 
 - PostgreSQL PL/pgSQL: `EXECUTE format('… %I …', tbl) USING value`.
 - MySQL: `PREPARE stmt FROM @sql; EXECUTE stmt USING @v;` — values go through `USING`; identifiers must come from an allow-list.
-- SQL Server: `sp_executesql N'… WHERE id = @id', N'@id int', @id = @value` for values and `QUOTENAME(@name)` for identifiers; `EXEC('…' + @input)` is injectable.[^20]
+- SQL Server: `sp_executesql N'… WHERE id = @id', N'@id int', @id = @value` for values and `QUOTENAME(@name)` for identifiers; `EXEC('…' + @input)` is injectable.
 
 ##### Least privilege and secrets
 
@@ -286,7 +286,7 @@ WHERE NOT EXISTS (
 );
 ```
 
-Use `NOT EXISTS` (or `LEFT JOIN … WHERE right.key IS NULL`) for anti-joins. `NOT IN` is safe only when the subquery column is `NOT NULL` — and stays safe only as long as the schema does.[^28]
+Use `NOT EXISTS` (or `LEFT JOIN … WHERE right.key IS NULL`) for anti-joins. `NOT IN` is safe only when the subquery column is `NOT NULL` — and stays safe only as long as the schema does.
 
 ##### Null-safe equality
 
@@ -320,7 +320,7 @@ SELECT sum(total), count(total), count(*) FROM orders WHERE 1 = 0;   -- NULL, 0,
 
 ##### NULLs in UNIQUE constraints
 
-Most engines treat NULLs as distinct in a unique constraint, so a nullable unique column accepts any number of NULLs. **SQL Server allows at most one NULL** in a unique constraint or unique index.[^11]
+Most engines treat NULLs as distinct in a unique constraint, so a nullable unique column accepts any number of NULLs. **SQL Server allows at most one NULL** in a unique constraint or unique index.
 
 ```sql
 -- PostgreSQL, MySQL and SQLite: both rows are accepted
@@ -367,7 +367,7 @@ SELECT CONCAT('a', NULL, 'b'), CONCAT_WS('-', 'a', NULL, 'b');   -- NULL, 'a-b'
 SELECT concat('a', NULL, 'b'), 'a' || NULL || 'b';   -- 'ab', NULL
 ```
 
-SQL Server: `CONCAT` converts NULL to an empty string; `+` and `||` return NULL (`||` always, `+` with the default `CONCAT_NULL_YIELDS_NULL ON`).[^5][^12] A display name built from optional parts is empty on one engine and fine on another — check which function is used.
+SQL Server: `CONCAT` converts NULL to an empty string; `+` and `||` return NULL (`||` always, `+` with the default `CONCAT_NULL_YIELDS_NULL ON`). A display name built from optional parts is empty on one engine and fine on another — check which function is used.
 
 ***
 
@@ -395,7 +395,7 @@ SELECT 9223372036854775807 + 1;        -- 9.223372036854776e+18
 
 ##### Integer division
 
-`7 / 2` is `3` in PostgreSQL, SQLite and SQL Server (integer operands truncate), but `3.5000` in MySQL.[^13] Ratios and percentages computed as `count_a / count_b` are 0 on three engines.
+`7 / 2` is `3` in PostgreSQL, SQLite and SQL Server (integer operands truncate), but `3.5000` in MySQL. Ratios and percentages computed as `count_a / count_b` are 0 on three engines.
 
 ```sql
 -- PostgreSQL
@@ -410,7 +410,7 @@ Portable: multiply by `1.0` or `CAST(x AS DECIMAL(…))` before dividing, and gu
 
 ##### SQLite type affinity
 
-SQLite stores whatever value it is given unless the table is declared `STRICT` (3.37.0+): an `INTEGER` column accepts `'abc'`, a `BOOLEAN` column accepts `'yes'`.[^41][^42]
+SQLite stores whatever value it is given unless the table is declared `STRICT` (3.37.0+): an `INTEGER` column accepts `'abc'`, a `BOOLEAN` column accepts `'yes'`.
 
 ```sql
 -- SQLite
@@ -426,7 +426,7 @@ Arithmetic treats non-numeric text as 0 without an error (`SELECT 'x' + 1` is `1
 
 ##### Implicit conversions between strings and numbers
 
-Comparing a string column with a number converts **every row's value** to a number. Besides preventing index use (see "Sargable predicates"), it changes results: in MySQL `'0000000042' = 42`, `'42abc' = 42` and `'abc' = 0` are all true (with only a 1292 "Truncated incorrect DOUBLE value" warning).[^32]
+Comparing a string column with a number converts **every row's value** to a number. Besides preventing index use (see "Sargable predicates"), it changes results: in MySQL `'0000000042' = 42`, `'42abc' = 42` and `'abc' = 0` are all true (with only a 1292 "Truncated incorrect DOUBLE value" warning).
 
 ```sql
 -- MySQL: phone is VARCHAR with an index
@@ -465,7 +465,7 @@ The database is the last line of defence; application checks race with each othe
 
 - **`NOT NULL`** on every column that is never legitimately unknown.
 - **`UNIQUE`** for every business key the code "checks first" (`SELECT … then INSERT` without a unique constraint creates duplicates under concurrency).
-- **`CHECK`** for ranges and enumerations. MySQL enforces `CHECK` only since **8.0.16**; earlier versions parse and ignore it.[^54]
+- **`CHECK`** for ranges and enumerations. MySQL enforces `CHECK` only since **8.0.16**; earlier versions parse and ignore it.
 - **Foreign keys** for every reference, with an explicit `ON DELETE` choice.
 
 ```sql
@@ -476,7 +476,7 @@ INSERT INTO ck VALUES (-1);    -- ERROR 3819: Check constraint 'ck_chk_1' is vio
 
 ##### Foreign keys: engine differences
 
-- **SQLite does not enforce foreign keys** unless every connection runs `PRAGMA foreign_keys = ON` (the default is off; it cannot be changed inside a transaction).[^43]
+- **SQLite does not enforce foreign keys** unless every connection runs `PRAGMA foreign_keys = ON` (the default is off; it cannot be changed inside a transaction).
 
 ```sql
 -- SQLite
@@ -487,7 +487,7 @@ PRAGMA foreign_keys = ON;
 INSERT INTO child VALUES (2, 999);   -- FOREIGN KEY constraint failed
 ```
 
-- **Index the referencing column.** PostgreSQL does not create an index on the referencing (child) columns; without one, every delete or key update on the parent scans the child table, and joins from parent to child scan too. MySQL/InnoDB creates one automatically if none exists. SQL Server does not create one either ("creating a foreign key constraint doesn't automatically create a corresponding index").[^58]
+- **Index the referencing column.** PostgreSQL does not create an index on the referencing (child) columns; without one, every delete or key update on the parent scans the child table, and joins from parent to child scan too. MySQL/InnoDB creates one automatically if none exists. SQL Server does not create one either ("creating a foreign key constraint doesn't automatically create a corresponding index").
 
 ```sql
 -- PostgreSQL: only the primary key index exists on child
@@ -647,13 +647,13 @@ Storing the value already normalized (lower-cased e-mail with a `CHECK (email = 
 
 ##### Type mismatches
 
-A comparison between different types converts one side. When the column side is converted, the index on it is unusable (see the MySQL `phone = 42` example under "Data types"). In SQL Server the operand with the lower data-type precedence is converted: an `nvarchar` parameter compared with a `varchar` column converts the column, and an `int` parameter compared with a `varchar` column converts every value to `int` (failing on non-numeric rows).[^55] Make parameter types match column types in driver code (for example, set the parameter type explicitly instead of letting the driver send every string as `nvarchar`).
+A comparison between different types converts one side. When the column side is converted, the index on it is unusable (see the MySQL `phone = 42` example under "Data types"). In SQL Server the operand with the lower data-type precedence is converted: an `nvarchar` parameter compared with a `varchar` column converts the column, and an `int` parameter compared with a `varchar` column converts every value to `int` (failing on non-numeric rows). Make parameter types match column types in driver code (for example, set the parameter type explicitly instead of letting the driver send every string as `nvarchar`).
 
 ##### `LIKE`
 
 - `LIKE 'abc%'` can use a B-tree index; `LIKE '%abc'` and `LIKE '%abc%'` cannot. Use PostgreSQL `pg_trgm` GIN/GiST indexes, MySQL `FULLTEXT`, SQLite FTS5 or SQL Server full-text search for substring search.
 - PostgreSQL: a plain B-tree on a `text` column supports `LIKE 'abc%'` only with the `C` collation or a `text_pattern_ops` index.
-- **SQLite: `LIKE` is case-insensitive by default, so an ordinary (`BINARY`) index is not used for `LIKE 'abc%'`**; the LIKE optimization needs a `NOCASE` index, or `PRAGMA case_sensitive_like = ON` with a `BINARY` index.[^46]
+- **SQLite: `LIKE` is case-insensitive by default, so an ordinary (`BINARY`) index is not used for `LIKE 'abc%'`**; the LIKE optimization needs a `NOCASE` index, or `PRAGMA case_sensitive_like = ON` with a `BINARY` index.
 
 ```sql
 -- SQLite
@@ -694,7 +694,7 @@ Always use `>= start AND < next_start`.
 | SQLite | `EXPLAIN QUERY PLAN SELECT …` | — (measure in the application) |
 | SQL Server | `SET SHOWPLAN_XML ON` / estimated plan in SSMS | `SET STATISTICS IO, TIME ON`; actual plan; Query Store |
 
-**`EXPLAIN ANALYZE` executes the statement.**[^25][^38] For `INSERT`/`UPDATE`/`DELETE` in PostgreSQL, wrap it in a transaction and roll back:
+**`EXPLAIN ANALYZE` executes the statement.** For `INSERT`/`UPDATE`/`DELETE` in PostgreSQL, wrap it in a transaction and roll back:
 
 ```sql
 -- PostgreSQL
@@ -819,7 +819,7 @@ The SQL standard allows selecting a non-aggregated column only if it is function
 
 - **PostgreSQL**: allows columns of a table whose primary key is grouped; rejects everything else.
 - **MySQL**: with `ONLY_FULL_GROUP_BY` (default since 5.7.5) it detects functional dependencies like PostgreSQL; sessions or servers that drop the mode return an arbitrary value per group.
-- **SQLite**: accepts any "bare" column and returns a value from an arbitrary row of the group (a row matching `min()`/`max()` when exactly one of those is used).[^53]
+- **SQLite**: accepts any "bare" column and returns a value from an arbitrary row of the group (a row matching `min()`/`max()` when exactly one of those is used).
 - **SQL Server**: every non-aggregated column must be listed in `GROUP BY`.
 
 ```sql
@@ -948,7 +948,7 @@ LIMIT 20;
 --   Index Cond: ((status = 'paid') AND (ROW(created_at, id) > ROW(...)))
 ```
 
-**MySQL does not use an index range for row-constructor inequalities** — the same query becomes a filter over all `status = 'paid'` entries, as slow as `OFFSET` on late pages. Write the expanded form:[^31]
+**MySQL does not use an index range for row-constructor inequalities** — the same query becomes a filter over all `status = 'paid'` entries, as slow as `OFFSET` on late pages. Write the expanded form:
 
 ```sql
 -- MySQL — BAD: filter over the index from its start
@@ -1003,7 +1003,7 @@ SELECT table_rows FROM information_schema.tables
 WHERE table_schema = DATABASE() AND table_name = 'orders';
 ```
 
-The MySQL manual itself says `TABLE_ROWS` may vary from the actual value by as much as 40 % to 50 % for InnoDB.[^59]
+The MySQL manual itself says `TABLE_ROWS` may vary from the actual value by as much as 40 % to 50 % for InnoDB.
 
 Filtered counts (`WHERE status = ? AND created_at >= ?`) are fast when an index covers the filter columns. "Total pages" for paginated UIs is a common hidden full count; prefer "has next page" (fetch `LIMIT n + 1`).
 
@@ -1060,7 +1060,7 @@ INSERT INTO counters (k, n) VALUES ('a', 1) AS new
 ON DUPLICATE KEY UPDATE n = counters.n + new.n;
 ```
 
-All three statements are atomic with respect to the unique key; the column after `ON CONFLICT` must name a unique constraint or index.[^21][^30][^44][^45]
+All three statements are atomic with respect to the unique key; the column after `ON CONFLICT` must name a unique constraint or index.
 
 ```sql
 -- SQL Server (not executed): MERGE needs HOLDLOCK (SERIALIZABLE) to be safe against
@@ -1071,12 +1071,12 @@ WHEN MATCHED THEN UPDATE SET t.n = t.n + s.n
 WHEN NOT MATCHED THEN INSERT (k, n) VALUES (s.k, s.n);
 ```
 
-Microsoft documents that, "in some scenarios where unique keys are expected to be both inserted and updated by the `MERGE`", `HOLDLOCK` (a synonym for `SERIALIZABLE`) prevents unique-key violations.[^8] A widely used alternative — a community pattern, not one Microsoft Learn documents — is one transaction with `UPDATE … WITH (UPDLOCK, SERIALIZABLE)` followed by `INSERT` when `@@ROWCOUNT = 0`; it relies on the documented hint semantics (`UPDLOCK` holds update locks until the transaction completes, `SERIALIZABLE` holds range locks so the missing key cannot be inserted concurrently).[^18]
+Microsoft documents that, "in some scenarios where unique keys are expected to be both inserted and updated by the `MERGE`", `HOLDLOCK` (a synonym for `SERIALIZABLE`) prevents unique-key violations. A widely used alternative — a community pattern, not one Microsoft Learn documents — is one transaction with `UPDATE … WITH (UPDLOCK, SERIALIZABLE)` followed by `INSERT` when `@@ROWCOUNT = 0`; it relies on the documented hint semantics (`UPDLOCK` holds update locks until the transaction completes, `SERIALIZABLE` holds range locks so the missing key cannot be inserted concurrently).
 
 Engine-specific upsert traps:
 
-- **PostgreSQL** `ON CONFLICT` requires a conflict target for `DO UPDATE` (`ON CONFLICT DO UPDATE` without `(k)` is an error) and the target must match a unique index or constraint exactly (including a partial index's predicate). `MERGE` (15+) follows the normal isolation rules, so a concurrent insert of the same key can still raise a unique violation; the manual points to `INSERT … ON CONFLICT` as the alternative that can update when a concurrent insert occurs.[^21][^22]
-- **MySQL** `ON DUPLICATE KEY UPDATE` fires on **any** unique key, not just the one the code has in mind — a table with two unique keys can update the wrong row. Affected-rows is 1 for an insert, 2 for an update, 0 for an unchanged row; drivers with `clientFoundRows` report differently.[^30] `INSERT IGNORE` and `REPLACE` are not upserts: `IGNORE` also turns data errors (truncation, `NULL` into `NOT NULL`) into warnings, and `REPLACE` deletes and re-inserts (new auto-increment id, cascading deletes).
+- **PostgreSQL** `ON CONFLICT` requires a conflict target for `DO UPDATE` (`ON CONFLICT DO UPDATE` without `(k)` is an error) and the target must match a unique index or constraint exactly (including a partial index's predicate). `MERGE` (15+) follows the normal isolation rules, so a concurrent insert of the same key can still raise a unique violation; the manual points to `INSERT … ON CONFLICT` as the alternative that can update when a concurrent insert occurs.
+- **MySQL** `ON DUPLICATE KEY UPDATE` fires on **any** unique key, not just the one the code has in mind — a table with two unique keys can update the wrong row. Affected-rows is 1 for an insert, 2 for an update, 0 for an unchanged row; drivers with `clientFoundRows` report differently. `INSERT IGNORE` and `REPLACE` are not upserts: `IGNORE` also turns data errors (truncation, `NULL` into `NOT NULL`) into warnings, and `REPLACE` deletes and re-inserts (new auto-increment id, cascading deletes).
 - **Generated keys are consumed** by upserts that end in an update or do nothing, in PostgreSQL (sequence) and MySQL (`AUTO_INCREMENT`):
 
 ```sql
@@ -1115,7 +1115,7 @@ INSERT INTO s (k) VALUES ('p'), ('q'), ('r');
 SELECT LAST_INSERT_ID();      -- id of 'p'
 ```
 
-- SQL Server: use `SCOPE_IDENTITY()` or `OUTPUT`, never `@@IDENTITY`, which returns an identity generated by a trigger on another table. `OUTPUT` without `INTO` is rejected when the target table has an enabled trigger for that action.[^7][^9]
+- SQL Server: use `SCOPE_IDENTITY()` or `OUTPUT`, never `@@IDENTITY`, which returns an identity generated by a trigger on another table. `OUTPUT` without `INTO` is rejected when the target table has an enabled trigger for that action.
 - Never read the new id with `SELECT max(id)` — it races with concurrent inserts.
 
 ##### Batch updates and deletes
@@ -1184,10 +1184,10 @@ SQL Server: `DELETE TOP (1000) FROM orders WHERE …;` in a loop until `@@ROWCOU
 | --- | --- | --- |
 | PostgreSQL | Read Committed | Each statement sees a fresh snapshot; `REPEATABLE READ` and `SERIALIZABLE` raise serialization failures (SQLSTATE `40001`) that the client must retry |
 | MySQL InnoDB | Repeatable Read | Plain `SELECT` reads a snapshot from the first read; `UPDATE`/`DELETE`/locking reads see the latest committed data and take next-key (gap) locks |
-| SQLite | Serializable | One writer at a time per database file; readers do not block the writer in WAL mode[^50] |
+| SQLite | Serializable | One writer at a time per database file; readers do not block the writer in WAL mode |
 | SQL Server | Read Committed | Shared locks by default (readers block writers); with `READ_COMMITTED_SNAPSHOT ON` (default on Azure SQL Database) statements read row versions |
 
-Sources: engine manuals.[^10][^26][^37][^60]
+Sources: engine manuals.
 
 ##### Lost updates: read-modify-write
 
@@ -1214,19 +1214,19 @@ SELECT id FROM jobs WHERE state = 'queued' ORDER BY id LIMIT 2 FOR UPDATE SKIP L
 COMMIT;
 ```
 
-Verified with two sessions: while session A holds ids 1 and 2, session B's identical query returns 3 and 4; `FOR UPDATE NOWAIT` on a locked row fails immediately (PostgreSQL "could not obtain lock on row", MySQL error 3572). SQL Server uses `WITH (UPDLOCK, READPAST, ROWLOCK)` hints, or `DELETE TOP (1) … WITH (READPAST) OUTPUT deleted.*` for destructive reads.[^7][^18] SQLite has no row locks; a single process or `BEGIN IMMEDIATE` serializes claimers.
+Verified with two sessions: while session A holds ids 1 and 2, session B's identical query returns 3 and 4; `FOR UPDATE NOWAIT` on a locked row fails immediately (PostgreSQL "could not obtain lock on row", MySQL error 3572). SQL Server uses `WITH (UPDLOCK, READPAST, ROWLOCK)` hints, or `DELETE TOP (1) … WITH (READPAST) OUTPUT deleted.*` for destructive reads. SQLite has no row locks; a single process or `BEGIN IMMEDIATE` serializes claimers.
 
 ##### Deadlocks and retries
 
 - Access rows and tables in a consistent order (sort ids before locking a batch).
 - Keep transactions short; **never hold a transaction open across network calls**, user think time, message publishing or file I/O.
-- Retry the whole transaction on deadlock and serialization errors: PostgreSQL SQLSTATE `40P01` (deadlock) and `40001` (serialization failure); MySQL errors 1213 (deadlock; the transaction was rolled back) and 1205 (lock wait timeout; by default only the statement is rolled back); SQL Server error 1205 (deadlock victim: the victim's transaction is rolled back and must be rerun)[^62]; SQLite `SQLITE_BUSY` — set a busy timeout and use `BEGIN IMMEDIATE` for transactions that will write.
-- In SQL Server, `SET XACT_ABORT ON` makes run-time errors roll back the whole transaction instead of leaving it open; nested `BEGIN TRAN` is not a real nested transaction — an inner `ROLLBACK` rolls back the outermost transaction.[^17]
+- Retry the whole transaction on deadlock and serialization errors: PostgreSQL SQLSTATE `40P01` (deadlock) and `40001` (serialization failure); MySQL errors 1213 (deadlock; the transaction was rolled back) and 1205 (lock wait timeout; by default only the statement is rolled back); SQL Server error 1205 (deadlock victim: the victim's transaction is rolled back and must be rerun); SQLite `SQLITE_BUSY` — set a busy timeout and use `BEGIN IMMEDIATE` for transactions that will write.
+- In SQL Server, `SET XACT_ABORT ON` makes run-time errors roll back the whole transaction instead of leaving it open; nested `BEGIN TRAN` is not a real nested transaction — an inner `ROLLBACK` rolls back the outermost transaction.
 
 ##### Autocommit and the current time
 
 - Without `BEGIN`, every statement commits on its own in PostgreSQL, MySQL, SQLite and SQL Server; multi-statement business operations must be wrapped explicitly. Driver/ORM defaults vary (Python's `sqlite3` and DB-API drivers open transactions implicitly; JDBC is autocommit by default).
-- PostgreSQL `now()`/`CURRENT_TIMESTAMP` return the **transaction** start time — the same value for every statement in the transaction; `clock_timestamp()` is wall time.[^27] MySQL `NOW()` is the **statement** start time; `SYSDATE()` is wall time.[^35]
+- PostgreSQL `now()`/`CURRENT_TIMESTAMP` return the **transaction** start time — the same value for every statement in the transaction; `clock_timestamp()` is wall time. MySQL `NOW()` is the **statement** start time; `SYSDATE()` is wall time.
 
 ```sql
 -- PostgreSQL
@@ -1249,7 +1249,7 @@ SET SESSION innodb_lock_wait_timeout = 1;
 SET SESSION lock_wait_timeout = 1;
 ```
 
-SQL Server: `SET LOCK_TIMEOUT 500;` (milliseconds; the default `-1` waits forever).[^57] Statement time limits: PostgreSQL `statement_timeout`, MySQL `max_execution_time` (read-only `SELECT`s), SQL Server client command timeouts.
+SQL Server: `SET LOCK_TIMEOUT 500;` (milliseconds; the default `-1` waits forever). Statement time limits: PostgreSQL `statement_timeout`, MySQL `max_execution_time` (read-only `SELECT`s), SQL Server client command timeouts.
 
 ***
 
@@ -1257,8 +1257,8 @@ SQL Server: `SET LOCK_TIMEOUT 500;` (milliseconds; the default `-1` waits foreve
 
 ##### DDL and transactions
 
-- **PostgreSQL, SQLite and SQL Server** run most DDL inside transactions: a failed migration rolls back completely. PostgreSQL exceptions include `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, `VACUUM`, `CREATE DATABASE` and `ALTER TYPE … ADD VALUE` before 12. SQL Server cannot run `CREATE/ALTER/DROP DATABASE`, `BACKUP` or `RESTORE` inside an explicit or implicit transaction, nor `RESUMABLE = ON` index operations inside an explicit transaction.[^11][^63]
-- **MySQL commits implicitly before and after every DDL statement**: a migration with several statements that fails halfway leaves the schema half-migrated, and a `ROLLBACK` after DDL does not undo earlier DML.[^33]
+- **PostgreSQL, SQLite and SQL Server** run most DDL inside transactions: a failed migration rolls back completely. PostgreSQL exceptions include `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, `VACUUM`, `CREATE DATABASE` and `ALTER TYPE … ADD VALUE` before 12. SQL Server cannot run `CREATE/ALTER/DROP DATABASE`, `BACKUP` or `RESTORE` inside an explicit or implicit transaction, nor `RESUMABLE = ON` index operations inside an explicit transaction.
+- **MySQL commits implicitly before and after every DDL statement**: a migration with several statements that fails halfway leaves the schema half-migrated, and a `ROLLBACK` after DDL does not undo earlier DML.
 
 ```sql
 -- PostgreSQL / SQLite: DDL rolls back
@@ -1288,12 +1288,12 @@ Migration tools that wrap each file in a transaction (Flyway, golang-migrate, Al
 
 | Dialect | Online index build |
 | --- | --- |
-| PostgreSQL | `CREATE INDEX CONCURRENTLY` (outside a transaction; a failed build leaves an `INVALID` index to drop)[^23] |
-| MySQL | `ALTER TABLE … ADD INDEX …, ALGORITHM=INPLACE, LOCK=NONE` (InnoDB secondary indexes are built in place, permitting concurrent DML)[^34] |
-| SQL Server | `CREATE INDEX … WITH (ONLINE = ON[, RESUMABLE = ON])` — online index operations are not available in every edition[^11] |
+| PostgreSQL | `CREATE INDEX CONCURRENTLY` (outside a transaction; a failed build leaves an `INVALID` index to drop) |
+| MySQL | `ALTER TABLE … ADD INDEX …, ALGORITHM=INPLACE, LOCK=NONE` (InnoDB secondary indexes are built in place, permitting concurrent DML) |
+| SQL Server | `CREATE INDEX … WITH (ONLINE = ON[, RESUMABLE = ON])` — online index operations are not available in every edition |
 | SQLite | none needed for small files; any write locks the whole database file |
 
-4. **Add constraints without a long validation lock**: PostgreSQL `ADD CONSTRAINT … NOT VALID` then `VALIDATE CONSTRAINT` in a separate statement (validation takes a weaker lock that permits reads and writes).[^24]
+4. **Add constraints without a long validation lock**: PostgreSQL `ADD CONSTRAINT … NOT VALID` then `VALIDATE CONSTRAINT` in a separate statement (validation takes a weaker lock that permits reads and writes).
 
 ```sql
 -- PostgreSQL
@@ -1311,7 +1311,7 @@ ALTER TABLE jobs ADD COLUMN note TEXT;
 ```
 
 6. **Adding `NOT NULL` to an existing column** scans the table to validate it (PostgreSQL 12+ skips the scan when a validated `CHECK (col IS NOT NULL)` exists; PostgreSQL 18 also accepts `ADD CONSTRAINT name NOT NULL col NOT VALID` followed by `VALIDATE CONSTRAINT` — a syntax error on 17; MySQL rebuilds the table). Backfill first, then add the constraint.
-7. **SQLite `ALTER TABLE` is limited**: it supports `RENAME TO`, `RENAME COLUMN` (3.25.0+), `ADD COLUMN` and `DROP COLUMN` (3.35.0+); **3.53.0+** adds `ALTER COLUMN col SET NOT NULL` / `DROP NOT NULL`, `ADD CONSTRAINT name CHECK (…)` and `DROP CONSTRAINT name` (verified on 3.54.1; syntax errors on older versions). Changing a type, a key, a default or a foreign key still requires the documented "create new table, copy, drop, rename" procedure inside a transaction with foreign keys disabled.[^48]
+7. **SQLite `ALTER TABLE` is limited**: it supports `RENAME TO`, `RENAME COLUMN` (3.25.0+), `ADD COLUMN` and `DROP COLUMN` (3.35.0+); **3.53.0+** adds `ALTER COLUMN col SET NOT NULL` / `DROP NOT NULL`, `ADD CONSTRAINT name CHECK (…)` and `DROP CONSTRAINT name` (verified on 3.54.1; syntax errors on older versions). Changing a type, a key, a default or a foreign key still requires the documented "create new table, copy, drop, rename" procedure inside a transaction with foreign keys disabled.
 8. **Backfills run in batches** with a commit per batch (see "Batch updates and deletes"), not as one `UPDATE big_table SET new_col = …`.
 
 ***
@@ -1322,9 +1322,9 @@ ALTER TABLE jobs ADD COLUMN note TEXT;
 
 | Dialect | Instant (point in time) | Local date-time (no zone) | Notes |
 | --- | --- | --- | --- |
-| PostgreSQL | `timestamptz` (stored as UTC, displayed in the session `TimeZone`) | `timestamp` | `timestamp` for instants is a common bug: the zone is lost[^28] |
-| MySQL | `TIMESTAMP` (converted from/to the session `time_zone`; 1970-01-01 to 2038-01-19 UTC) or `DATETIME` holding UTC by convention | `DATETIME` | `TIMESTAMP` overflows in 2038; `DATETIME` has no zone — the application must fix the convention[^36] |
-| SQLite | `TEXT` ISO-8601 in UTC (`2024-01-10T08:00:00Z`) or `INTEGER` Unix time | `TEXT` | no date type; date functions work on text, real (Julian day) or integer[^49] |
+| PostgreSQL | `timestamptz` (stored as UTC, displayed in the session `TimeZone`) | `timestamp` | `timestamp` for instants is a common bug: the zone is lost |
+| MySQL | `TIMESTAMP` (converted from/to the session `time_zone`; 1970-01-01 to 2038-01-19 UTC) or `DATETIME` holding UTC by convention | `DATETIME` | `TIMESTAMP` overflows in 2038; `DATETIME` has no zone — the application must fix the convention |
+| SQLite | `TEXT` ISO-8601 in UTC (`2024-01-10T08:00:00Z`) or `INTEGER` Unix time | `TEXT` | no date type; date functions work on text, real (Julian day) or integer |
 | SQL Server | `datetimeoffset` | `datetime2` | prefer `datetime2` over the legacy `datetime` |
 
 ```sql
@@ -1368,7 +1368,7 @@ SELECT now() - INTERVAL 30 DAY;
 SELECT date('2024-01-31', '+1 month');                 -- 2024-03-02
 ```
 
-SQL Server `DATEADD(month, 1, '2024-08-31')` returns the last day of the target month (`2024-09-30`).[^56] `NOW() - INTERVAL '30 days'` (PostgreSQL syntax) appears in many snippets; it fails on MySQL and SQLite. SQLite 3.46+ adds `floor`/`ceiling` modifiers to choose the behaviour.
+SQL Server `DATEADD(month, 1, '2024-08-31')` returns the last day of the target month (`2024-09-30`). `NOW() - INTERVAL '30 days'` (PostgreSQL syntax) appears in many snippets; it fails on MySQL and SQLite. SQLite 3.46+ adds `floor`/`ceiling` modifiers to choose the behaviour.
 
 ##### "Today" and half-open ranges
 
@@ -1387,7 +1387,7 @@ SELECT 0.1 + 0.2 = 0.3;                                                      -- 
 
 - Use `numeric(p, s)` / `DECIMAL(p, s)` for currency, with enough precision for totals (e.g. `numeric(19, 4)` or the currency's minor unit), and store the currency code alongside.
 - **SQLite has no decimal type**: `NUMERIC`/`DECIMAL` columns store `REAL` when the value has a fractional part. Store money as `INTEGER` minor units (cents) and format in the application.
-- **PostgreSQL `money`** depends on the server's `lc_monetary` locale for input and output and rounds to the locale's fraction digits; avoid it.[^28]
+- **PostgreSQL `money`** depends on the server's `lc_monetary` locale for input and output and rounds to the locale's fraction digits; avoid it.
 - **Rounding on insert is silent**: `DECIMAL(10,2)` stores `12.345` as `12.35` in MySQL (a note, not an error) and PostgreSQL; round explicitly in the business layer where the rounding rule matters.
 - Never compare floating-point values with `=`; never use `float` for ids or counters.
 - Aggregate money with `SUM` over decimal columns; `AVG` on integer columns returns a decimal in PostgreSQL and MySQL but `REAL` in SQLite.
@@ -1408,7 +1408,7 @@ SELECT 'abc' = 'ABC', 'abc' = 'abc ', 'résumé' = 'resume';                -- 1
 SELECT 'abc' = 'ABC', 'abc' LIKE 'ABC', 'é' LIKE 'É', 'abc' = 'ABC' COLLATE NOCASE;   -- 0, 1, 0, 1
 ```
 
-SQL Server: case and accent sensitivity come from the column or database collation; the default for an "English (United States)" installation is `SQL_Latin1_General_CP1_CI_AS` (case-insensitive, accent-sensitive).[^16]
+SQL Server: case and accent sensitivity come from the column or database collation; the default for an "English (United States)" installation is `SQL_Latin1_General_CP1_CI_AS` (case-insensitive, accent-sensitive).
 
 Review consequences:
 
@@ -1431,7 +1431,7 @@ INSERT INTO c3 VALUES ('ABC');     -- ERROR 1062: Duplicate entry 'ABC' for key 
 | PostgreSQL | `length()`, `char_length()` | `octet_length()` |
 | MySQL | `CHAR_LENGTH()` | **`LENGTH()`** |
 | SQLite | `length()` (characters for text) | `octet_length()` (3.43+) |
-| SQL Server | `LEN()` (**excludes trailing spaces**)[^15] | `DATALENGTH()` |
+| SQL Server | `LEN()` (**excludes trailing spaces**) | `DATALENGTH()` |
 
 ```sql
 -- MySQL (connection character set utf8mb4)
@@ -1448,7 +1448,7 @@ MySQL's `utf8` is the 3-byte `utf8mb3` and cannot store emoji or many CJK charac
 
 - PostgreSQL folds unquoted identifiers to lower case: `CREATE TABLE "Users"` must be queried as `"Users"` forever. Use lower-case snake_case and never quote.
 - MySQL table-name case sensitivity depends on the file system and `lower_case_table_names` (case-sensitive on Linux by default, insensitive on Windows and macOS).
-- Double quotes are **identifiers** in standard SQL (PostgreSQL, SQLite, SQL Server with `QUOTED_IDENTIFIER ON`), but **strings** in MySQL unless `ANSI_QUOTES` is set. SQLite also accepts a double-quoted string as a literal when no such column exists — a typo in a column name silently becomes a string constant.[^53] Use single quotes for strings in every dialect.
+- Double quotes are **identifiers** in standard SQL (PostgreSQL, SQLite, SQL Server with `QUOTED_IDENTIFIER ON`), but **strings** in MySQL unless `ANSI_QUOTES` is set. SQLite also accepts a double-quoted string as a literal when no such column exists — a typo in a column name silently becomes a string constant. Use single quotes for strings in every dialect.
 
 ***
 
@@ -1507,7 +1507,7 @@ SELECT id FROM users FORCE INDEX (users_email_key) WHERE email = 'user@example.c
 ```
 
 - **PostgreSQL** has no query hints. Planner settings (`SET enable_nestloop = off`, `SET max_parallel_workers_per_gather = 4`) apply to the whole session until reset — use `SET LOCAL` inside a transaction to scope them, and treat them as diagnostics, not fixes. The `pg_hint_plan` extension provides per-query hints where installed.
-- **SQL Server**: table hints (`WITH (INDEX(…))`, `NOLOCK`) and query hints (`OPTION (RECOMPILE)`, `OPTION (MAXDOP 1)`). `WITH (NOLOCK)` equals `READ UNCOMMITTED`: it reads uncommitted modifications (dirty reads), and rows can appear or disappear during the read; it is not a performance switch for correctness-sensitive reads.[^10][^18]
+- **SQL Server**: table hints (`WITH (INDEX(…))`, `NOLOCK`) and query hints (`OPTION (RECOMPILE)`, `OPTION (MAXDOP 1)`). `WITH (NOLOCK)` equals `READ UNCOMMITTED`: it reads uncommitted modifications (dirty reads), and rows can appear or disappear during the read; it is not a performance switch for correctness-sensitive reads.
 
 Hints freeze a plan while data distributions change. Require a comment explaining the measured reason.
 
@@ -1542,7 +1542,7 @@ REINDEX INDEX CONCURRENTLY users_email_key;
 
 ##### Monitoring queries (PostgreSQL)
 
-The statistics views use `relname` (table) and `indexrelname` (index) — there are no `tablename`/`indexname` columns in `pg_stat_user_tables`/`pg_stat_user_indexes` (those names belong to the `pg_tables`/`pg_indexes` catalog views).[^19]
+The statistics views use `relname` (table) and `indexrelname` (index) — there are no `tablename`/`indexname` columns in `pg_stat_user_tables`/`pg_stat_user_indexes` (those names belong to the `pg_tables`/`pg_indexes` catalog views).
 
 ```sql
 -- PostgreSQL: tables with the most sequential reading
@@ -1649,69 +1649,3 @@ LIMIT 10;
 - [ ] Connection pool sized and leaks impossible (rows/statements closed on all paths)
 - [ ] Statement and lock timeouts configured
 - [ ] Statistics refreshed after bulk changes; monitoring queries use correct catalog columns (`relname`, `indexrelname`)
-
-***
-
-[^1]: PostgreSQL Versioning Policy and release notes (feature introduction per major version). https://www.postgresql.org/support/versioning/ , https://www.postgresql.org/docs/release/
-[^2]: MySQL 8.4 Reference Manual — What Is New in MySQL 8.0 / 8.4 (row alias 8.0.19, CHECK 8.0.16, functional key parts 8.0.13, SKIP LOCKED 8.0). https://dev.mysql.com/doc/refman/8.0/en/mysql-nutshell.html , https://dev.mysql.com/doc/refman/8.4/en/mysql-nutshell.html
-[^3]: SQLite Release History (UPSERT 3.24.0, window functions 3.25.0, NULLS FIRST/LAST 3.30.0, UPDATE FROM 3.33.0, RETURNING and DROP COLUMN 3.35.0, STRICT 3.37.0, RIGHT/FULL JOIN and IS DISTINCT FROM 3.39.0, concat() 3.44.0, ceiling/floor date modifiers 3.46.0, ALTER TABLE NOT NULL/CHECK constraints 3.53.0; latest 3.54.1, 2026-10-16). https://www.sqlite.org/changes.html
-[^4]: Microsoft Learn — IS [NOT] DISTINCT FROM (Transact-SQL) (SQL Server 2022+). https://learn.microsoft.com/en-us/sql/t-sql/queries/is-distinct-from-transact-sql
-[^5]: Microsoft Learn — || (String Concatenation) (Transact-SQL) (SQL Server 2025, Azure SQL; always NULL on NULL input). https://learn.microsoft.com/en-us/sql/t-sql/language-elements/string-concatenation-pipes-transact-sql
-[^6]: Microsoft Learn — ORDER BY Clause (Transact-SQL) (OFFSET/FETCH from SQL Server 2012, no TOP with OFFSET, NULLs lowest). https://learn.microsoft.com/en-us/sql/t-sql/queries/select-order-by-clause-transact-sql
-[^7]: Microsoft Learn — OUTPUT clause (Transact-SQL) (inserted/deleted, triggers restriction, READPAST queues). https://learn.microsoft.com/en-us/sql/t-sql/queries/output-clause-transact-sql
-[^8]: Microsoft Learn — MERGE (Transact-SQL) (semicolon terminator, concurrency considerations, HOLDLOCK). https://learn.microsoft.com/en-us/sql/t-sql/statements/merge-transact-sql
-[^9]: Microsoft Learn — SCOPE_IDENTITY (Transact-SQL) (vs @@IDENTITY and IDENT_CURRENT with triggers). https://learn.microsoft.com/en-us/sql/t-sql/functions/scope-identity-transact-sql
-[^10]: Microsoft Learn — SET TRANSACTION ISOLATION LEVEL (Transact-SQL) (READ COMMITTED default; READ_COMMITTED_SNAPSHOT default ON in Azure SQL Database). https://learn.microsoft.com/en-us/sql/t-sql/statements/set-transaction-isolation-level-transact-sql
-[^11]: Microsoft Learn — CREATE INDEX (Transact-SQL) (UNIQUE allows one NULL, filtered indexes, INCLUDE, ONLINE edition availability, RESUMABLE not in explicit transactions). https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql
-[^12]: Microsoft Learn — CONCAT (Transact-SQL) (NULL converted to empty string). https://learn.microsoft.com/en-us/sql/t-sql/functions/concat-transact-sql
-[^13]: Microsoft Learn — / (Division) (Transact-SQL) (integer division truncates). https://learn.microsoft.com/en-us/sql/t-sql/language-elements/divide-transact-sql
-[^14]: Microsoft Learn — bit (Transact-SQL). https://learn.microsoft.com/en-us/sql/t-sql/data-types/bit-transact-sql
-[^15]: Microsoft Learn — LEN (Transact-SQL) (excludes trailing spaces; DATALENGTH for bytes). https://learn.microsoft.com/en-us/sql/t-sql/functions/len-transact-sql
-[^16]: Microsoft Learn — Collation and Unicode support (CI/CS/AS options, default setup collation SQL_Latin1_General_CP1_CI_AS for English (United States)). https://learn.microsoft.com/en-us/sql/relational-databases/collations/collation-and-unicode-support
-[^17]: Microsoft Learn — BEGIN TRANSACTION (Transact-SQL) (XACT_ABORT, nested transactions). https://learn.microsoft.com/en-us/sql/t-sql/language-elements/begin-transaction-transact-sql
-[^18]: Microsoft Learn — Table hints (Transact-SQL) (UPDLOCK, SERIALIZABLE/HOLDLOCK, READPAST, NOLOCK). https://learn.microsoft.com/en-us/sql/t-sql/queries/hints-transact-sql-table
-[^19]: PostgreSQL 18 — The Cumulative Statistics System (pg_stat_user_tables.relname, pg_stat_user_indexes.indexrelname). https://www.postgresql.org/docs/18/monitoring-stats.html
-[^20]: Microsoft Learn — sp_executesql (Transact-SQL); QUOTENAME (Transact-SQL). https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-executesql-transact-sql , https://learn.microsoft.com/en-us/sql/t-sql/functions/quotename-transact-sql
-[^21]: PostgreSQL 18 — INSERT (ON CONFLICT, RETURNING). https://www.postgresql.org/docs/18/sql-insert.html
-[^22]: PostgreSQL 18 — MERGE. https://www.postgresql.org/docs/18/sql-merge.html
-[^23]: PostgreSQL 18 — CREATE INDEX (CONCURRENTLY, INCLUDE, partial indexes, NULLS NOT DISTINCT). https://www.postgresql.org/docs/18/sql-createindex.html
-[^24]: PostgreSQL 18 — ALTER TABLE (NOT VALID, VALIDATE CONSTRAINT, lock levels). https://www.postgresql.org/docs/18/sql-altertable.html
-[^25]: PostgreSQL 18 — Using EXPLAIN. https://www.postgresql.org/docs/18/using-explain.html
-[^26]: PostgreSQL 18 — Transaction Isolation. https://www.postgresql.org/docs/18/transaction-iso.html
-[^27]: PostgreSQL 18 — Date/Time Functions and Operators (Current Date/Time: transaction start time). https://www.postgresql.org/docs/18/functions-datetime.html
-[^28]: PostgreSQL Wiki — Don't Do This (NOT IN, BETWEEN with timestamps, timestamp without time zone, money). https://wiki.postgresql.org/wiki/Don%27t_Do_This
-[^29]: PostgreSQL 18 — Message Formats (Bind: Int16 number of parameter values). https://www.postgresql.org/docs/18/protocol-message-formats.html
-[^30]: MySQL 8.4 Reference Manual — INSERT ... ON DUPLICATE KEY UPDATE Statement. https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html
-[^31]: MySQL 8.4 Reference Manual — Row Constructor Expression Optimization. https://dev.mysql.com/doc/refman/8.4/en/row-constructor-optimization.html
-[^32]: MySQL 8.4 Reference Manual — Type Conversion in Expression Evaluation. https://dev.mysql.com/doc/refman/8.4/en/type-conversion.html
-[^33]: MySQL 8.4 Reference Manual — Statements That Cause an Implicit Commit. https://dev.mysql.com/doc/refman/8.4/en/implicit-commit.html
-[^34]: MySQL 8.4 Reference Manual — Online DDL Operations; Metadata Locking. https://dev.mysql.com/doc/refman/8.4/en/innodb-online-ddl-operations.html , https://dev.mysql.com/doc/refman/8.4/en/metadata-locking.html
-[^35]: MySQL 8.4 Reference Manual — Date and Time Functions (NOW() is the statement start time; SYSDATE()). https://dev.mysql.com/doc/refman/8.4/en/date-and-time-functions.html
-[^36]: MySQL 8.4 Reference Manual — The DATE, DATETIME, and TIMESTAMP Types. https://dev.mysql.com/doc/refman/8.4/en/datetime.html
-[^37]: MySQL 8.4 Reference Manual — Transaction Isolation Levels; Locking Reads (NOWAIT, SKIP LOCKED). https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html , https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html
-[^38]: MySQL 8.4 Reference Manual — EXPLAIN Statement. https://dev.mysql.com/doc/refman/8.4/en/explain.html
-[^39]: MySQL 8.4 Reference Manual — Logical Operators (|| as OR deprecated; PIPES_AS_CONCAT). https://dev.mysql.com/doc/refman/8.4/en/logical-operators.html
-[^40]: MySQL 8.4 Reference Manual — Prepared Statements (placeholder limit, error 1390). https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html
-[^41]: SQLite — Datatypes In SQLite (type affinity). https://www.sqlite.org/datatype3.html
-[^42]: SQLite — STRICT Tables. https://www.sqlite.org/stricttables.html
-[^43]: SQLite — Foreign Key Support (PRAGMA foreign_keys). https://www.sqlite.org/foreignkeys.html
-[^44]: SQLite — UPSERT. https://www.sqlite.org/lang_upsert.html
-[^45]: SQLite — RETURNING. https://www.sqlite.org/lang_returning.html
-[^46]: SQLite — The SQLite Query Optimizer Overview (the LIKE optimization). https://www.sqlite.org/optoverview.html
-[^47]: SQLite — Limits In SQLite (SQLITE_MAX_VARIABLE_NUMBER: 999 before 3.32.0, 32766 after). https://www.sqlite.org/limits.html
-[^48]: SQLite — ALTER TABLE (supported operations, generalized table rebuild procedure). https://www.sqlite.org/lang_altertable.html
-[^49]: SQLite — Date And Time Functions (formats, modifiers, ceiling/floor, 'now' constant within one sqlite3_step() call). https://www.sqlite.org/lang_datefunc.html
-[^50]: SQLite — Transaction (BEGIN DEFERRED/IMMEDIATE/EXCLUSIVE); Write-Ahead Logging. https://www.sqlite.org/lang_transaction.html , https://www.sqlite.org/wal.html
-[^51]: Microsoft Learn — Maximum capacity specifications for SQL Server (2,100 parameters per stored procedure). https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
-[^52]: OWASP — SQL Injection Prevention Cheat Sheet. https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
-[^53]: SQLite — Quirks, Caveats, and Gotchas (flexible typing, double-quoted string literals, foreign keys off by default). https://www.sqlite.org/quirks.html
-[^54]: MySQL 8.4 Reference Manual — CHECK Constraints (enforced from 8.0.16). https://dev.mysql.com/doc/refman/8.4/en/create-table-check-constraints.html
-[^55]: Microsoft Learn — Data type precedence (Transact-SQL). https://learn.microsoft.com/en-us/sql/t-sql/data-types/data-type-precedence-transact-sql
-[^56]: Microsoft Learn — DATEADD (Transact-SQL) (month overflow returns the last day of the month). https://learn.microsoft.com/en-us/sql/t-sql/functions/dateadd-transact-sql
-[^57]: Microsoft Learn — SET LOCK_TIMEOUT (Transact-SQL). https://learn.microsoft.com/en-us/sql/t-sql/statements/set-lock-timeout-transact-sql
-[^58]: Microsoft Learn — Primary and foreign key constraints (no automatic index on foreign keys). https://learn.microsoft.com/en-us/sql/relational-databases/tables/primary-and-foreign-key-constraints
-[^59]: MySQL 8.4 Reference Manual — The INFORMATION_SCHEMA TABLES Table (TABLE_ROWS estimate may vary by 40–50 %). https://dev.mysql.com/doc/refman/8.4/en/information-schema-tables-table.html
-[^60]: SQLite — Isolation In SQLite. https://www.sqlite.org/isolation.html
-[^61]: Microsoft Learn — SET ARITHABORT (Transact-SQL) (divide-by-zero ends the query when ANSI_WARNINGS is ON, the default). https://learn.microsoft.com/en-us/sql/t-sql/statements/set-arithabort-transact-sql
-[^62]: Microsoft Learn — MSSQLSERVER_1205 (deadlock victim; the victim's transaction is rolled back; rerun it). https://learn.microsoft.com/en-us/sql/relational-databases/errors-events/mssqlserver-1205-database-engine-error
-[^63]: Microsoft Learn — CREATE DATABASE, ALTER DATABASE, DROP DATABASE, BACKUP and RESTORE (Transact-SQL) ("isn't allowed in an explicit or implicit transaction"). https://learn.microsoft.com/en-us/sql/t-sql/statements/create-database-transact-sql , https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-database-transact-sql , https://learn.microsoft.com/en-us/sql/t-sql/statements/drop-database-transact-sql , https://learn.microsoft.com/en-us/sql/t-sql/statements/backup-transact-sql , https://learn.microsoft.com/en-us/sql/t-sql/statements/restore-statements-transact-sql

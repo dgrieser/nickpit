@@ -6,31 +6,6 @@
 
 ---
 
-#### Table of Contents
-
-1. [What's New in Go 1.20](#whats-new-in-go-120)
-2. [Project Layout & Modules](#project-layout--modules)
-3. [Basic Types & Variables](#basic-types--variables)
-4. [Pointers](#pointers)
-5. [Control Flow](#control-flow)
-6. [Functions](#functions)
-7. [Defer, Panic & Recover](#defer-panic--recover)
-8. [Structs & Methods](#structs--methods)
-9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics](#generics)
-11. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
-12. [Strings](#strings)
-13. [Error Handling](#error-handling)
-14. [Concurrency](#concurrency)
-15. [Context Package](#context-package)
-16. [File I/O & Streaming](#file-io--streaming)
-17. [Testing & Benchmarking](#testing--benchmarking)
-18. [CLI Development](#cli-development)
-19. [Performance Caveats & PGO](#performance-caveats--pgo)
-20. [Idioms & Things to Avoid](#idioms--things-to-avoid)
-
----
-
 #### What's New in Go 1.20
 
 Go 1.20 shipped 2023-02-01, six months after Go 1.19. It includes **four language changes**, major stdlib additions, and notable toolchain improvements. Build speed improved ~10% vs 1.19.

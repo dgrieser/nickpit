@@ -1,11 +1,11 @@
 ### C# 12 on .NET 8 (LTS): The Complete Production Developer Guide
 
-> **Version**: C# 12 ships with the .NET 8 SDK. .NET 8.0.0 was released on November 14, 2023 as a Long Term Support (LTS) release.[^1] The latest patch as of October 2026 is **.NET 8.0.32 (October 13, 2026)** — runtime 8.0.32, ASP.NET Core 8.0.32, SDKs **8.0.426** and 8.0.132; EF Core 8.0.32 shipped the same day.[^2]
-> **Support status**: .NET 8 is in its **maintenance phase** and reaches **end of support on November 10, 2026** — less than three weeks after the date of this guide. After that date it receives no security fixes. The current LTS release is **.NET 10** (C# 14, released November 11, 2025, latest patch 10.0.13 on October 13, 2026, supported until November 14, 2028); .NET 9 (STS, C# 13) also ends support on November 10, 2026, and .NET 11 (C# 15) is at Release Candidate 2 (11.0.0-rc.2, October 13, 2026) — a preview with go-live support, not a stable release.[^3] **Recommend planning the move to .NET 10 LTS** for every .NET 8 service that is still maintained.
+> **Version**: C# 12 ships with the .NET 8 SDK. .NET 8.0.0 was released on November 14, 2023 as a Long Term Support (LTS) release. The latest patch as of October 2026 is **.NET 8.0.32 (October 13, 2026)** — runtime 8.0.32, ASP.NET Core 8.0.32, SDKs **8.0.426** and 8.0.132; EF Core 8.0.32 shipped the same day.
+> **Support status**: .NET 8 is in its **maintenance phase** and reaches **end of support on November 10, 2026** — less than three weeks after the date of this guide. After that date it receives no security fixes. The current LTS release is **.NET 10** (C# 14, released November 11, 2025, latest patch 10.0.13 on October 13, 2026, supported until November 14, 2028); .NET 9 (STS, C# 13) also ends support on November 10, 2026, and .NET 11 (C# 15) is at Release Candidate 2 (11.0.0-rc.2, October 13, 2026) — a preview with go-live support, not a stable release. **Recommend planning the move to .NET 10 LTS** for every .NET 8 service that is still maintained.
 > **Scope**: The C# 12 language and the .NET 8 runtime, base class library (BCL), ASP.NET Core 8 and EF Core 8 as used in production services and libraries: language features, nullable reference types, async/cancellation, collections and LINQ, memory, DI/options/logging, HttpClient, System.Text.Json, ASP.NET Core, EF Core, security, performance, testing, analyzers, trimming and Native AOT.
 > **Note**: This document is self-contained. Everything from C# 1–11 and .NET Core 1.0–7 that still applies is carried forward. Sections marked **New in C# 12** or **New in .NET 8** cover changes specific to this version. Every example compiles and runs on SDK 8.0.426 / runtime 8.0.32 with `<TargetFramework>net8.0</TargetFramework>`, `<LangVersion>12</LangVersion>`, `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>`.
 
-Always run the latest 8.0.x patch: 8.0.32 alone fixes 40 CVEs, several rated remote code execution, and 8.0.21 (October 14, 2025) fixed CVE-2025-55315, a critical HTTP request smuggling flaw in Kestrel.[^2] A `global.json` or Dockerfile pinned to an older 8.0 patch is a security finding.
+Always run the latest 8.0.x patch: 8.0.32 alone fixes 40 CVEs, several rated remote code execution, and 8.0.21 (October 14, 2025) fixed CVE-2025-55315, a critical HTTP request smuggling flaw in Kestrel. A `global.json` or Dockerfile pinned to an older 8.0 patch is a security finding.
 
 Global truths about C# 12 / .NET 8:
 
@@ -32,28 +32,28 @@ Global truths about C# 12 / .NET 8:
 | `[Experimental]` attribute | Using a type or member marked `[Experimental("ID")]` is a compile **error** until the ID is suppressed | [Experimental](#new-in-c-12-experimentalattribute) |
 | Interceptors (*preview*) | Source generators substitute call sites; opt-in via `InterceptorsPreviewNamespaces` | [Interceptors](#new-in-c-12-interceptors-preview-only) |
 
-Each of these features was verified on SDK 8.0.426: with `<LangVersion>11</LangVersion>` every language feature above fails with `error CS9058: Feature '…' is not available in C# 11.0`. Two items are exceptions: the `[Experimental]` attribute (the compiler honors it at any language version, but the attribute type exists only in the .NET 8 BCL) and interceptors (gated only by the `InterceptorsPreviewNamespaces` feature flag, not by the language version — they also work with `LangVersion 11`).[^4]
+Each of these features was verified on SDK 8.0.426: with `<LangVersion>11</LangVersion>` every language feature above fails with `error CS9058: Feature '…' is not available in C# 11.0`. Two items are exceptions: the `[Experimental]` attribute (the compiler honors it at any language version, but the attribute type exists only in the .NET 8 BCL) and interceptors (gated only by the `InterceptorsPreviewNamespaces` feature flag, not by the language version — they also work with `LangVersion 11`).
 
 ##### Runtime and libraries (.NET 8)
 
-- **Time abstraction**: `TimeProvider` (`TimeProvider.System`, `GetUtcNow()`, `GetTimestamp()`, `GetElapsedTime()`, `CreateTimer()`), `ITimer`, and `Task.Delay`/`CancellationTokenSource` overloads that take a `TimeProvider`.[^5]
-- **Performance types**: `System.Collections.Frozen` (`FrozenDictionary<TKey,TValue>`, `FrozenSet<T>`), `System.Buffers.SearchValues<T>`, `System.Text.CompositeFormat`, `IUtf8SpanFormattable`, `Utf8.TryWrite`, `Encoding.TryGetBytes`.[^5]
-- **Randomness**: `Random.GetItems`, `Random.Shuffle`, `RandomNumberGenerator.GetItems/Shuffle/GetString/GetHexString`.[^5]
-- **Throw helpers**: `ArgumentException.ThrowIfNullOrWhiteSpace`, `ArgumentOutOfRangeException.ThrowIfNegative/ThrowIfZero/ThrowIfNegativeOrZero/ThrowIfGreaterThan/ThrowIfLessThan/…` (analyzers CA1510–CA1513 suggest them).[^5]
-- **Async**: `CancellationTokenSource.CancelAsync()`, `ConfigureAwaitOptions` (`SuppressThrowing`, `ForceYielding`, `ContinueOnCapturedContext`).[^6]
-- **System.Text.Json**: snake_case/kebab-case naming policies, `JsonUnmappedMemberHandling.Disallow`, populate mode for read-only members (`JsonObjectCreationHandling.Populate`), non-public members with `[JsonInclude]`, `JsonSerializerOptions.MakeReadOnly()`, `TypeInfoResolverChain`, `JsonStringEnumConverter<TEnum>`, `IAsyncEnumerable` streaming helpers (`GetFromJsonAsAsyncEnumerable`), `Half`/`Int128`/`UInt128`/`Memory<T>` support, an option to disable reflection (`JsonSerializerIsReflectionEnabledByDefault`).[^5]
-- **Extensions**: keyed DI services (`AddKeyedSingleton`, `[FromKeyedServices]`, `GetRequiredKeyedService`), `IHostedLifecycleService`, options validation source generator (`[OptionsValidator]`), configuration-binding source generator, `LoggerMessageAttribute` shorter constructors, `IMeterFactory` and `MetricCollector<T>`.[^5]
-- **Data annotations**: `[Length]`, `[AllowedValues]`, `[DeniedValues]`, `[Base64String]`, `RangeAttribute.MinimumIsExclusive/MaximumIsExclusive`.[^5]
-- **Other**: SHA-3 (`SHA3_256`, `SHA3_384`, `SHA3_512`, with `IsSupported`), `System.Net.IPNetwork` (new BCL type for CIDR ranges with `Parse`/`TryParse`/`Contains`), stream-based `ZipFile` overloads, `GC.RefreshMemoryLimit()`, dynamic PGO on by default, AVX-512/`Vector512<T>`, HTTPS proxy support (`all_proxy`/`WebProxy` with an `https://` proxy), `TensorPrimitives` (System.Numerics.Tensors package), source-generated COM interop (`[GeneratedComInterface]`).[^5]
-- **ASP.NET Core 8**: Native AOT for minimal APIs and gRPC (`WebApplication.CreateSlimBuilder`, Request Delegate Generator), `IExceptionHandler`, `[FromForm]` binding with antiforgery middleware (`UseAntiforgery`), Identity API endpoints (`MapIdentityApi<TUser>()`), keyed services in endpoints, short-circuit routing (`.ShortCircuit()`, `MapShortCircuit`), `HTTP_PORTS`/`HTTPS_PORTS`, request timeouts middleware, new built-in metrics, Blazor Web App unified model.[^7]
-- **EF Core 8**: complex types (`[ComplexType]`/`ComplexProperty`), primitive collections (`List<int>` columns stored as JSON, and `Contains` over parameter collections via `OPENJSON`/`json_each`), raw SQL for unmapped types (`Database.SqlQuery<T>`), lazy loading for no-tracking queries, `HierarchyId`, `DateOnly`/`TimeOnly` on SQL Server, sentinel values for defaults.[^8]
-- **Containers and SDK**: ASP.NET Core images listen on **port 8080** by default, images include a non-root `app` user, Debian 12 base, `dotnet publish`/`dotnet pack` default to **Release**, `dotnet restore` reports known-vulnerable packages (NuGet audit), `BinaryFormatter` is disabled for most project types.[^9]
+- **Time abstraction**: `TimeProvider` (`TimeProvider.System`, `GetUtcNow()`, `GetTimestamp()`, `GetElapsedTime()`, `CreateTimer()`), `ITimer`, and `Task.Delay`/`CancellationTokenSource` overloads that take a `TimeProvider`.
+- **Performance types**: `System.Collections.Frozen` (`FrozenDictionary<TKey,TValue>`, `FrozenSet<T>`), `System.Buffers.SearchValues<T>`, `System.Text.CompositeFormat`, `IUtf8SpanFormattable`, `Utf8.TryWrite`, `Encoding.TryGetBytes`.
+- **Randomness**: `Random.GetItems`, `Random.Shuffle`, `RandomNumberGenerator.GetItems/Shuffle/GetString/GetHexString`.
+- **Throw helpers**: `ArgumentException.ThrowIfNullOrWhiteSpace`, `ArgumentOutOfRangeException.ThrowIfNegative/ThrowIfZero/ThrowIfNegativeOrZero/ThrowIfGreaterThan/ThrowIfLessThan/…` (analyzers CA1510–CA1513 suggest them).
+- **Async**: `CancellationTokenSource.CancelAsync()`, `ConfigureAwaitOptions` (`SuppressThrowing`, `ForceYielding`, `ContinueOnCapturedContext`).
+- **System.Text.Json**: snake_case/kebab-case naming policies, `JsonUnmappedMemberHandling.Disallow`, populate mode for read-only members (`JsonObjectCreationHandling.Populate`), non-public members with `[JsonInclude]`, `JsonSerializerOptions.MakeReadOnly()`, `TypeInfoResolverChain`, `JsonStringEnumConverter<TEnum>`, `IAsyncEnumerable` streaming helpers (`GetFromJsonAsAsyncEnumerable`), `Half`/`Int128`/`UInt128`/`Memory<T>` support, an option to disable reflection (`JsonSerializerIsReflectionEnabledByDefault`).
+- **Extensions**: keyed DI services (`AddKeyedSingleton`, `[FromKeyedServices]`, `GetRequiredKeyedService`), `IHostedLifecycleService`, options validation source generator (`[OptionsValidator]`), configuration-binding source generator, `LoggerMessageAttribute` shorter constructors, `IMeterFactory` and `MetricCollector<T>`.
+- **Data annotations**: `[Length]`, `[AllowedValues]`, `[DeniedValues]`, `[Base64String]`, `RangeAttribute.MinimumIsExclusive/MaximumIsExclusive`.
+- **Other**: SHA-3 (`SHA3_256`, `SHA3_384`, `SHA3_512`, with `IsSupported`), `System.Net.IPNetwork` (new BCL type for CIDR ranges with `Parse`/`TryParse`/`Contains`), stream-based `ZipFile` overloads, `GC.RefreshMemoryLimit()`, dynamic PGO on by default, AVX-512/`Vector512<T>`, HTTPS proxy support (`all_proxy`/`WebProxy` with an `https://` proxy), `TensorPrimitives` (System.Numerics.Tensors package), source-generated COM interop (`[GeneratedComInterface]`).
+- **ASP.NET Core 8**: Native AOT for minimal APIs and gRPC (`WebApplication.CreateSlimBuilder`, Request Delegate Generator), `IExceptionHandler`, `[FromForm]` binding with antiforgery middleware (`UseAntiforgery`), Identity API endpoints (`MapIdentityApi<TUser>()`), keyed services in endpoints, short-circuit routing (`.ShortCircuit()`, `MapShortCircuit`), `HTTP_PORTS`/`HTTPS_PORTS`, request timeouts middleware, new built-in metrics, Blazor Web App unified model.
+- **EF Core 8**: complex types (`[ComplexType]`/`ComplexProperty`), primitive collections (`List<int>` columns stored as JSON, and `Contains` over parameter collections via `OPENJSON`/`json_each`), raw SQL for unmapped types (`Database.SqlQuery<T>`), lazy loading for no-tracking queries, `HierarchyId`, `DateOnly`/`TimeOnly` on SQL Server, sentinel values for defaults.
+- **Containers and SDK**: ASP.NET Core images listen on **port 8080** by default, images include a non-root `app` user, Debian 12 base, `dotnet publish`/`dotnet pack` default to **Release**, `dotnet restore` reports known-vulnerable packages (NuGet audit), `BinaryFormatter` is disabled for most project types.
 
 ##### Do not use or recommend (newer than C# 12 / .NET 8)
 
 The project's compiler language version is C# 12 and its BCL is .NET 8. Never suggest these — they either do not compile or do not exist at run time:
 
-**C# 13 (.NET 9, November 2024)**:[^10]
+**C# 13 (.NET 9, November 2024)**:
 - `params` collections: `params ReadOnlySpan<T>`, `params List<T>`, `params IEnumerable<T>` (C# 12 allows only `params T[]`).
 - The `System.Threading.Lock` type and `lock (myLock)` on it (.NET 9 BCL). Use `private readonly object _gate = new();` with `lock`.
 - The `\e` escape sequence (use `\u001b`).
@@ -63,7 +63,7 @@ The project's compiler language version is C# 12 and its BCL is .NET 8. Never su
 - `partial` properties and indexers.
 - `[OverloadResolutionPriority]` (.NET 9 attribute).
 
-**C# 14 (.NET 10, November 2025)**:[^11]
+**C# 14 (.NET 10, November 2025)**:
 - Extension members / extension blocks: `extension(IEnumerable<T> source) { public bool IsEmpty => … }`, extension properties, static extension members, extension operators.
 - The `field` keyword in property accessors (`set => field = value.Trim();`).
 - Null-conditional assignment: `customer?.Order = …;`, `x?.Count += 1;`.
@@ -72,25 +72,25 @@ The project's compiler language version is C# 12 and its BCL is .NET 8. Never su
 - Modifiers on implicitly typed lambda parameters: `(text, out result) => …`.
 - `partial` constructors and events; user-defined compound assignment operators (`operator +=`).
 
-**C# 15 (.NET 11, preview — RC2 as of October 2026)**:[^12]
+**C# 15 (.NET 11, preview — RC2 as of October 2026)**:
 - Collection expression arguments `[with(capacity: n), ..items]`, union types (`union Pet(Cat, Dog)`), the `closed` class modifier, extension indexers, labeled `break`/`continue` (`continue outer;`), the `unsafe(expr)` expression and pointer relaxations.
 
-**.NET 9 BCL / ASP.NET Core 9 / EF Core 9 APIs** (absent from `net8.0`, verified by compiling against it):[^13]
+**.NET 9 BCL / ASP.NET Core 9 / EF Core 9 APIs** (absent from `net8.0`, verified by compiling against it):
 - `Task.WhenEach`, `Task.WhenAll(ReadOnlySpan<Task>)` and other `params ReadOnlySpan<T>` overloads.
 - LINQ `CountBy`, `AggregateBy`, `Index`.
 - `Guid.CreateVersion7()`, `System.Buffers.Text.Base64Url`, generic `OrderedDictionary<TKey,TValue>`, `Convert.ToHexStringLower`, `Dictionary<,>.GetAlternateLookup<TAlternate>()`, `SearchValues.Create(string[], StringComparison)` (`SearchValues<string>`), `X509CertificateLoader`, `TimeSpan.FromMilliseconds(long, long)`.
 - `JsonSerializerOptions.Web`, `JsonSerializerOptions.RespectNullableAnnotations`, `RespectRequiredConstructorParameters`, `AllowOutOfOrderMetadataProperties`, `JsonSchemaExporter`.
 - ASP.NET Core 9: built-in OpenAPI document generation (`builder.Services.AddOpenApi()` / `app.MapOpenApi()` from `Microsoft.AspNetCore.OpenApi` 9), `MapStaticAssets()`, `TypedResults.InternalServerError`, `HybridCache` as a framework feature (the `Microsoft.Extensions.Caching.Hybrid` package itself does support `net8.0`).
-- EF Core 9 (`UseSeeding`/`UseAsyncSeeding`, `TranslateParameterizedCollectionsToConstants`) — EF Core 9 packages **do** target `net8.0`, so these are available only if the project references EF Core 9.x.[^14]
+- EF Core 9 (`UseSeeding`/`UseAsyncSeeding`, `TranslateParameterizedCollectionsToConstants`) — EF Core 9 packages **do** target `net8.0`, so these are available only if the project references EF Core 9.x.
 
-**.NET 10 BCL / ASP.NET Core 10**: `System.Linq.AsyncEnumerable` (LINQ over `IAsyncEnumerable<T>` in the BCL), LINQ `LeftJoin`/`RightJoin`/`Shuffle`, built-in minimal API validation (`builder.Services.AddValidation()`), file-based apps (`dotnet run app.cs`).[^15]
+**.NET 10 BCL / ASP.NET Core 10**: `System.Linq.AsyncEnumerable` (LINQ over `IAsyncEnumerable<T>` in the BCL), LINQ `LeftJoin`/`RightJoin`/`Shuffle`, built-in minimal API validation (`builder.Services.AddValidation()`), file-based apps (`dotnet run app.cs`).
 
 ##### Deprecated or removed in .NET 8
 
-- **`BinaryFormatter` is disabled** for ASP.NET Core, class library, console and most other project types: `Serialize`/`Deserialize` throw `NotSupportedException` unless `EnableUnsafeBinaryFormatterSerialization` is set. Treat any use as a security finding; it is removed entirely in .NET 9.[^9]
-- New obsoletions with custom diagnostic IDs (SYSLIB0048–SYSLIB0053): `RSA.EncryptValue`/`DecryptValue` (SYSLIB0048), `JsonSerializerOptions.AddContext<T>()` (SYSLIB0049), the formatter-based serialization infrastructure such as `FormatterConverter`/`IFormatter` (SYSLIB0050), the legacy serialization hooks `Exception(SerializationInfo, StreamingContext)` / `Exception.GetObjectData` (SYSLIB0051), the old `Regex` extensibility members such as `Regex.InitializeReferences` (SYSLIB0052) and the `AesGcm(key)` constructor without a tag size (SYSLIB0053) — all verified as warnings against `net8.0` and absent against `net7.0`. `XmlSecureResolver` (SYSLIB0047) was already obsolete in .NET 7.[^9]
+- **`BinaryFormatter` is disabled** for ASP.NET Core, class library, console and most other project types: `Serialize`/`Deserialize` throw `NotSupportedException` unless `EnableUnsafeBinaryFormatterSerialization` is set. Treat any use as a security finding; it is removed entirely in .NET 9.
+- New obsoletions with custom diagnostic IDs (SYSLIB0048–SYSLIB0053): `RSA.EncryptValue`/`DecryptValue` (SYSLIB0048), `JsonSerializerOptions.AddContext<T>()` (SYSLIB0049), the formatter-based serialization infrastructure such as `FormatterConverter`/`IFormatter` (SYSLIB0050), the legacy serialization hooks `Exception(SerializationInfo, StreamingContext)` / `Exception.GetObjectData` (SYSLIB0051), the old `Regex` extensibility members such as `Regex.InitializeReferences` (SYSLIB0052) and the `AesGcm(key)` constructor without a tag size (SYSLIB0053) — all verified as warnings against `net8.0` and absent against `net7.0`. `XmlSecureResolver` (SYSLIB0047) was already obsolete in .NET 7.
 - `JsonSerializerOptions.AddContext<TContext>()` → use `TypeInfoResolver` or `TypeInfoResolverChain`.
-- `dotnet publish` and `dotnet pack` default to the `Release` configuration in .NET 8 projects.[^9]
+- `dotnet publish` and `dotnet pack` default to the `Release` configuration in .NET 8 projects.
 
 ##### Version-aware review
 
@@ -122,7 +122,7 @@ The project's compiler language version is C# 12 and its BCL is .NET 8. Never su
 ```
 
 - `TreatWarningsAsErrors` makes nullable warnings (CS86xx) build-breaking. Reviewers should flag new `#pragma warning disable` and `!` (null-forgiving) without a justification comment.
-- `AnalysisLevel` `8.0-recommended` (or `latest-recommended`) enables the recommended .NET 8 CA rule set; rules worth raising to warnings include CA1510–CA1513 (throw helpers), CA1860 (`Any()` vs `Length/Count`), CA1862 (`StringComparison` overloads), CA1863 (`CompositeFormat`), CA1864 (`TryAdd` instead of `ContainsKey`+`Add`), CA1865–CA1867 (`char` overloads), CA1869 (cache `JsonSerializerOptions`), CA1870 (`SearchValues`) and CA2021 (impossible `Cast<T>`/`OfType<T>`), all present in SDK 8.0.426.[^16]
+- `AnalysisLevel` `8.0-recommended` (or `latest-recommended`) enables the recommended .NET 8 CA rule set; rules worth raising to warnings include CA1510–CA1513 (throw helpers), CA1860 (`Any()` vs `Length/Count`), CA1862 (`StringComparison` overloads), CA1863 (`CompositeFormat`), CA1864 (`TryAdd` instead of `ContainsKey`+`Add`), CA1865–CA1867 (`char` overloads), CA1869 (cache `JsonSerializerOptions`), CA1870 (`SearchValues`) and CA2021 (impossible `Cast<T>`/`OfType<T>`), all present in SDK 8.0.426.
 - Pin the SDK with `global.json` to a **current** 8.0 band and let it roll forward to the latest patch:
 
 ```json
@@ -135,12 +135,12 @@ The project's compiler language version is C# 12 and its BCL is .NET 8. Never su
 ```
 
 - Use `Directory.Build.props` for shared settings and Central Package Management (`Directory.Packages.props` with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`) so every project uses one version of each package.
-- Since SDK 8.0.100, `dotnet restore` runs NuGet audit and warns (NU1901–NU1904) about packages with known vulnerabilities. Do not suppress these warnings without an issue reference.[^9]
+- Since SDK 8.0.100, `dotnet restore` runs NuGet audit and warns (NU1901–NU1904) about packages with known vulnerabilities. Do not suppress these warnings without an issue reference.
 
 ##### SDK-style behavior changes that surprise reviewers
 
 - `dotnet publish` and `dotnet pack` build `Release` by default on .NET 8; CI scripts that pass `-c Debug` intentionally ship debug builds.
-- Specifying a runtime identifier (`-r linux-x64`) no longer implies `--self-contained`; add `--self-contained` explicitly when it is required.[^9]
+- Specifying a runtime identifier (`-r linux-x64`) no longer implies `--self-contained`; add `--self-contained` explicitly when it is required.
 - `.user` files are imported in outer builds; `DebugSymbols=false` disables PDB generation.
 
 ***
@@ -199,7 +199,7 @@ public sealed class FakeRepository : IOrderRepository
 
 #### New in C# 12: Primary Constructors
 
-Any `class` or `struct` can declare a parameter list after its name. The parameters are in scope throughout the type body. Unlike `record` primary constructors, **no public properties are generated** for a plain class or struct: a parameter that is used inside a member is *captured* into a compiler-generated, unnamed, **mutable** field.[^4][^17]
+Any `class` or `struct` can declare a parameter list after its name. The parameters are in scope throughout the type body. Unlike `record` primary constructors, **no public properties are generated** for a plain class or struct: a parameter that is used inside a member is *captured* into a compiler-generated, unnamed, **mutable** field.
 
 ```csharp
 var greeter = new Greeter("Hello");
@@ -314,7 +314,7 @@ Do not convert records to plain classes with primary constructors expecting prop
 
 #### New in C# 12: Collection Expressions
 
-Collection expressions create arrays, spans, lists, sets, immutable collections and interface-typed collections with one syntax. `..e` spreads an enumerable.[^4][^18]
+Collection expressions create arrays, spans, lists, sets, immutable collections and interface-typed collections with one syntax. `..e` spreads an enumerable.
 
 ```csharp
 using System.Collections.Immutable;
@@ -368,7 +368,7 @@ IDE0300–IDE0305 suggest collection expressions in place of `new[] { … }`, `n
 
 #### New in C# 12: Inline Arrays
 
-`[InlineArray(N)]` on a struct with exactly one field makes a fixed-size buffer of N elements, stored inline, without `unsafe` code. It converts implicitly to `Span<T>`/`ReadOnlySpan<T>`, supports indexing and `foreach`.[^4]
+`[InlineArray(N)]` on a struct with exactly one field makes a fixed-size buffer of N elements, stored inline, without `unsafe` code. It converts implicitly to `Span<T>`/`ReadOnlySpan<T>`, supports indexing and `foreach`.
 
 ```csharp
 using System.Runtime.CompilerServices;
@@ -424,7 +424,7 @@ Only `params T[]` is allowed; `params ReadOnlySpan<T>` is C# 13.
 
 #### New in C# 12: `ref readonly` Parameters
 
-`ref readonly` passes a read-only reference like `in`, but tells callers that a *variable* is expected. Passing a variable without a modifier gives `warning CS9192` (pass with `ref` or `in`); passing an rvalue (a constant or temporary) gives `warning CS9193`.[^4]
+`ref readonly` passes a read-only reference like `in`, but tells callers that a *variable* is expected. Passing a variable without a modifier gives `warning CS9192` (pass with `ref` or `in`); passing an rvalue (a constant or temporary) gives `warning CS9193`.
 
 ```csharp
 var big = new Matrix4(1, 2, 3, 4);
@@ -460,7 +460,7 @@ Console.WriteLine(p.X + p.Y + names.Count);   // 5
 
 #### New in C# 12: `ExperimentalAttribute`
 
-Marking an API with `[Experimental("DIAG001")]` (`System.Diagnostics.CodeAnalysis`, .NET 8 BCL) makes every use a **compile error** with that diagnostic ID until the caller suppresses it. All types in an assembly marked `[assembly: Experimental(...)]` are experimental.[^4]
+Marking an API with `[Experimental("DIAG001")]` (`System.Diagnostics.CodeAnalysis`, .NET 8 BCL) makes every use a **compile error** with that diagnostic ID until the caller suppresses it. All types in an assembly marked `[assembly: Experimental(...)]` are experimental.
 
 ```csharp
 using System.Diagnostics.CodeAnalysis;
@@ -482,11 +482,11 @@ Review: a suppression of an experimental diagnostic is an explicit opt-in to an 
 
 #### New in C# 12: Interceptors (preview only)
 
-Interceptors let a source generator replace a specific call site with a call to another method, identified by `[InterceptsLocation]`. In .NET 8 they are an **experimental preview**: using one requires the project property `<InterceptorsPreviewNamespaces>$(InterceptorsPreviewNamespaces);My.Generated</InterceptorsPreviewNamespaces>`; without it the build fails with `CS9137`.[^4][^19] They became stable in later SDKs (.NET 9.0.2xx and newer, property `InterceptorsNamespaces`).
+Interceptors let a source generator replace a specific call site with a call to another method, identified by `[InterceptsLocation]`. In .NET 8 they are an **experimental preview**: using one requires the project property `<InterceptorsPreviewNamespaces>$(InterceptorsPreviewNamespaces);My.Generated</InterceptorsPreviewNamespaces>`; without it the build fails with `CS9137`. They became stable in later SDKs (.NET 9.0.2xx and newer, property `InterceptorsNamespaces`).
 
 What reviewers will see in .NET 8 projects:
 
-- ASP.NET Core's Request Delegate Generator (enabled by Native AOT publishing or `<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>`) and the configuration-binding generator (`<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>`) use interceptors; the SDK adds their namespaces automatically.[^7]
+- ASP.NET Core's Request Delegate Generator (enabled by Native AOT publishing or `<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>`) and the configuration-binding generator (`<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>`) use interceptors; the SDK adds their namespaces automatically.
 - Hand-written `[InterceptsLocation]` attributes in application code are a red flag: they hard-code file paths, line and column numbers and break on the next edit.
 
 ***
@@ -661,7 +661,7 @@ Review rules:
 - Identifiers, protocol tokens, file paths, dictionary keys, headers: use `StringComparison.Ordinal`/`OrdinalIgnoreCase` and `StringComparer.Ordinal(IgnoreCase)`. Analyzer CA1862 flags `a.ToLower() == b.ToLower()`; CA1309/CA1310 flag culture-sensitive comparisons.
 - Parsing and formatting of machine-readable data (JSON you build by hand, CSV, logs, SQL literals): pass `CultureInfo.InvariantCulture` (CA1304/CA1305).
 - `InvariantGlobalization=true` makes all cultures behave as invariant — correct for many services, wrong for user-facing formatting.
-- **New in .NET 8**: the default `TwoDigitYearMax` changed from 2029 to 2049, so parsing `"01/01/49"` with format `yy` yields 2049 on .NET 8 (1949 on .NET 7) — verified.[^9] Never parse two-digit years from external input.
+- **New in .NET 8**: the default `TwoDigitYearMax` changed from 2029 to 2049, so parsing `"01/01/49"` with format `yy` yields 2049 on .NET 8 (1949 on .NET 7) — verified. Never parse two-digit years from external input.
 - Build strings in loops with `StringBuilder` or `string.Join`/`string.Concat`, not `+=`.
 
 ***
@@ -702,7 +702,7 @@ static void Transfer(string from, string to, decimal amount)
 - Use exception filters for conditional handling: `catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)`.
 - Do not use exceptions for expected control flow (parsing user input → `TryParse`).
 - Wrap with context: `throw new OrderProcessingException($"Order {id} failed", ex);` — keep the inner exception.
-- Custom exceptions: derive from `Exception`, provide the standard constructors, and do **not** add `[Serializable]` plus the `(SerializationInfo, StreamingContext)` constructor in new code — that constructor and `GetObjectData` are obsolete in .NET 8 (SYSLIB0051).[^9]
+- Custom exceptions: derive from `Exception`, provide the standard constructors, and do **not** add `[Serializable]` plus the `(SerializationInfo, StreamingContext)` constructor in new code — that constructor and `GetObjectData` are obsolete in .NET 8 (SYSLIB0051).
 
 ```csharp
 try
@@ -919,7 +919,7 @@ cts.Token.Register(() => Console.WriteLine("callback"));
 await cts.CancelAsync();
 ```
 
-`ConfigureAwait(false)` is equivalent to `ConfigureAwait(ConfigureAwaitOptions.None)`; `ConfigureAwait(true)` to `ContinueOnCapturedContext`.[^6] Prefer `await cts.CancelAsync()` inside async code that cancels its own work; `Cancel()` runs all callbacks synchronously on the calling thread.
+`ConfigureAwait(false)` is equivalent to `ConfigureAwait(ConfigureAwaitOptions.None)`; `ConfigureAwait(true)` to `ContinueOnCapturedContext`. Prefer `await cts.CancelAsync()` inside async code that cancels its own work; `Cancel()` runs all callbacks synchronously on the calling thread.
 
 ***
 
@@ -1092,7 +1092,7 @@ Review rules:
 
 #### New in .NET 8: `TimeProvider`
 
-`TimeProvider` abstracts the clock and timers so code is testable without `Thread.Sleep` or wall-clock waits.[^5]
+`TimeProvider` abstracts the clock and timers so code is testable without `Thread.Sleep` or wall-clock waits.
 
 ```csharp
 using Microsoft.Extensions.Time.Testing;   // package Microsoft.Extensions.TimeProvider.Testing
@@ -1269,7 +1269,7 @@ public sealed record User(string Name, bool IsActive, string Department);
 Pitfalls:
 - **Side effects inside `Select`/`Where`** run once per enumeration (and not at all if never enumerated).
 - **Closures over loop variables** are safe in `foreach` (each iteration has a new variable) but a captured variable that changes before enumeration changes the query.
-- **New in .NET 8**: `Enumerable.Sum` over `int[]`/`List<int>` (span-able sources) is vectorized and adds elements in a different order. Whether `OverflowException` is thrown now depends on the source type (verified on 7.0.20 vs 8.0.32): an `int[]` of 64 values alternating +2,000,000,000/−2,000,000,000 sums to 0 on .NET 7 but throws on .NET 8 (lanes overflow); 32 × 100,000,000 followed by 32 × −100,000,000 throws on .NET 7 and returns 0 on .NET 8 as an array, while the same data as a non-span `IEnumerable<int>` (`arr.Select(x => x)`) throws on both. Use `long` accumulation for values near `int` limits.[^9]
+- **New in .NET 8**: `Enumerable.Sum` over `int[]`/`List<int>` (span-able sources) is vectorized and adds elements in a different order. Whether `OverflowException` is thrown now depends on the source type (verified on 7.0.20 vs 8.0.32): an `int[]` of 64 values alternating +2,000,000,000/−2,000,000,000 sums to 0 on .NET 7 but throws on .NET 8 (lanes overflow); 32 × 100,000,000 followed by 32 × −100,000,000 throws on .NET 7 and returns 0 on .NET 8 as an array, while the same data as a non-span `IEnumerable<int>` (`arr.Select(x => x)`) throws on both. Use `long` accumulation for values near `int` limits.
 - LINQ in hot paths allocates enumerators and delegates; loops over arrays/spans are cheaper. Measure before rewriting.
 - `.ToList()` immediately followed by `foreach` is an unnecessary copy unless the source can change during iteration.
 - `Cast<T>()`/`OfType<T>()` with a type that can never match is flagged by CA2021 (**new analyzer in .NET 8**).
@@ -1490,7 +1490,7 @@ public sealed class ReportService([FromKeyedServices("big")] ICache cache)
 
 - A keyed registration is invisible to unkeyed resolution (`GetService<ICache>()` returns `null`).
 - Keys are compared with `Equals`; a typo in a string key fails only at resolution time. Use constants or enums.
-- ASP.NET Core 8 supports `[FromKeyedServices("key")]` on minimal API parameters, MVC action parameters and Blazor `[Inject(Key = "key")]`.[^7]
+- ASP.NET Core 8 supports `[FromKeyedServices("key")]` on minimal API parameters, MVC action parameters and Blazor `[Inject(Key = "key")]`.
 
 ##### Options
 
@@ -1546,7 +1546,7 @@ public sealed partial class EmailSettingsValidator : IValidateOptions<EmailSetti
 
 - `IOptions<T>`: singleton, read once. `IOptionsSnapshot<T>`: scoped, re-read per request (cannot be injected into singletons). `IOptionsMonitor<T>`: singleton with change notifications.
 - `ValidateOnStart()` requires a host (`IHost.StartAsync` runs the validation); without it, invalid configuration surfaces on the first `.Value` access in production traffic.
-- Options classes are mutable and bound by reflection unless `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` (on by default with Native AOT/trimming). An unconvertible scalar value (`Port = "abc"`) throws `InvalidOperationException` on binding. **New in .NET 8**: an unconvertible array/collection element is silently skipped (`["1","x","3"]` binds as `[1, 3]`), unless `BinderOptions.ErrorOnUnknownConfiguration = true`, which now also throws for such mismatches (verified on 8.0.32).[^9]
+- Options classes are mutable and bound by reflection unless `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` (on by default with Native AOT/trimming). An unconvertible scalar value (`Port = "abc"`) throws `InvalidOperationException` on binding. **New in .NET 8**: an unconvertible array/collection element is silently skipped (`["1","x","3"]` binds as `[1, 3]`), unless `BinderOptions.ErrorOnUnknownConfiguration = true`, which now also throws for such mismatches (verified on 8.0.32).
 - Never put secrets in `appsettings.json`; use environment variables, user secrets (development) or a vault provider.
 
 ***
@@ -1649,7 +1649,7 @@ public sealed record Repo(string Name, int StargazersCount);
 Review rules:
 - **Never `new HttpClient()` per request** (socket exhaustion) and never a single static `HttpClient` without `PooledConnectionLifetime` (stale DNS). Use `IHttpClientFactory` (named/typed clients) or a long-lived `HttpClient(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })`.
 - Typed clients are registered as **transient**. Injecting a typed client into a singleton captures one `HttpMessageHandler` forever and defeats handler rotation.
-- Retries need idempotency. The standard resilience handler (defaults: 30 s total timeout, 3 exponential retries with jitter on 5xx/408/429/`HttpRequestException`, circuit breaker, 10 s per-attempt timeout) retries **all HTTP methods**, including `POST`. `options.Retry.DisableForUnsafeHttpMethods()` and `DisableFor(HttpMethod.Post, …)` exist only from package version 9.1.0 (verified: absent in 8.10.0 and 9.0.0; the 9.x packages support `net8.0`). On 8.x, set `options.Retry.ShouldHandle` to exclude unsafe methods, or use idempotency keys.[^20]
+- Retries need idempotency. The standard resilience handler (defaults: 30 s total timeout, 3 exponential retries with jitter on 5xx/408/429/`HttpRequestException`, circuit breaker, 10 s per-attempt timeout) retries **all HTTP methods**, including `POST`. `options.Retry.DisableForUnsafeHttpMethods()` and `DisableFor(HttpMethod.Post, …)` exist only from package version 9.1.0 (verified: absent in 8.10.0 and 9.0.0; the 9.x packages support `net8.0`). On 8.x, set `options.Retry.ShouldHandle` to exclude unsafe methods, or use idempotency keys.
 - Do not stack resilience handlers (`AddStandardResilienceHandler` plus a custom Polly handler on the same client); use one pipeline.
 - Dispose `HttpResponseMessage` (`using var response`). Use `HttpCompletionOption.ResponseHeadersRead` for large/streamed bodies.
 - `HttpClient.Timeout` defaults to 100 seconds; per-call timeouts go through a `CancellationToken`. Timeouts throw `TaskCanceledException` (inner `TimeoutException`).
@@ -1771,7 +1771,7 @@ Review rules:
 - Enums serialize as numbers by default; changing to strings (or back) is a wire-format breaking change.
 - `JsonSerializerOptions` become immutable after first use; mutating them afterwards throws `InvalidOperationException`. Configure once (ASP.NET Core: `builder.Services.ConfigureHttpJsonOptions(...)` for minimal APIs, `AddControllers().AddJsonOptions(...)` for MVC — they are separate).
 - **New in .NET 8**: `JsonObjectCreationHandling.Populate` (deserialize into existing read-only collections), `[JsonInclude]` on non-public members, `JsonSerializerOptions.TypeInfoResolverChain`, `MakeReadOnly()`. `AddContext<T>()` is obsolete (SYSLIB0049).
-- In Native AOT/trimmed apps, reflection-based serialization is disabled (`JsonSerializerIsReflectionEnabledByDefault=false`) — every serialized type must be in a `JsonSerializerContext`.[^5]
+- In Native AOT/trimmed apps, reflection-based serialization is disabled (`JsonSerializerIsReflectionEnabledByDefault=false`) — every serialized type must be in a `JsonSerializerContext`.
 - `DateTime` round-trips as ISO 8601; `DateTime` with `Kind=Unspecified` loses offset information — use `DateTimeOffset` on the wire.
 - `ReferenceHandler.IgnoreCycles` or DTOs instead of serializing EF entities with navigation cycles (`JsonException: A possible object cycle was detected`).
 
@@ -1895,8 +1895,8 @@ Review rules for minimal APIs and controllers:
 - Bind a `CancellationToken` parameter (it is `HttpContext.RequestAborted`) and pass it down.
 - Route constraints (`{id:int}`) are for routing, not validation of business rules; never use them as security checks.
 - Return DTOs, not EF entities (over-posting on input, data exposure and cycles on output).
-- `IExceptionHandler.TryHandleAsync` returning `false` passes the exception to the next handler; multiple handlers run in registration order.[^7]
-- **New in .NET 8**: request timeouts (`AddRequestTimeouts`/`UseRequestTimeouts`/`.WithRequestTimeout(...)`) cancel `HttpContext.RequestAborted` (the response is 504 by default if the handler does not produce one); they only work if the handler observes the token, nothing times out until a policy is configured, and the middleware does not trigger while a debugger is attached.[^21]
+- `IExceptionHandler.TryHandleAsync` returning `false` passes the exception to the next handler; multiple handlers run in registration order.
+- **New in .NET 8**: request timeouts (`AddRequestTimeouts`/`UseRequestTimeouts`/`.WithRequestTimeout(...)`) cancel `HttpContext.RequestAborted` (the response is 504 by default if the handler does not produce one); they only work if the handler observes the token, nothing times out until a policy is configured, and the middleware does not trigger while a debugger is attached.
 
 ##### Middleware order
 
@@ -1949,7 +1949,7 @@ app.Run();
 
 - `UseAuthentication` must come before `UseAuthorization`, and both before the endpoints they protect. `UseCors` goes before authentication/authorization.
 - `AddAuthentication()` without a default scheme works only while exactly one scheme is registered (since ASP.NET Core 7 that single scheme becomes the default; verified 401). Once a second scheme is added (`.AddJwtBearer().AddJwtBearer("Other", …)`, or cookies plus bearer), every challenge fails with `InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found` — a 500 instead of a 401 (verified on 8.0.32). Set the default scheme explicitly.
-- **JwtBearer 8 event change**: `TokenValidatedContext.SecurityToken` is now a `JsonWebToken` (Microsoft.IdentityModel.JsonWebTokens), not a `JwtSecurityToken`; code that does `context.SecurityToken as JwtSecurityToken` silently gets `null` (verified). Use `JsonWebToken` or set `options.UseSecurityTokenValidators = true` only as a temporary migration aid.[^25]
+- **JwtBearer 8 event change**: `TokenValidatedContext.SecurityToken` is now a `JsonWebToken` (Microsoft.IdentityModel.JsonWebTokens), not a `JwtSecurityToken`; code that does `context.SecurityToken as JwtSecurityToken` silently gets `null` (verified). Use `JsonWebToken` or set `options.UseSecurityTokenValidators = true` only as a temporary migration aid.
 - JWT bearer: keep `ValidateIssuer`, `ValidateAudience`, `ValidateLifetime` and `ValidateIssuerSigningKey` enabled (defaults when `Authority`/`Audience` are set); `RequireHttpsMetadata = false` belongs only in development.
 - `AllowAnyOrigin()` combined with `AllowCredentials()` makes the app fail at startup once the policy is used (`InvalidOperationException: The CORS protocol does not allow specifying a wildcard (any) origin and credentials at the same time`, verified); `SetIsOriginAllowed(_ => true)` with credentials bypasses that check and is a security hole.
 - A fallback policy that requires authenticated users makes "forgot `[Authorize]`" fail closed. Without it, endpoints are anonymous by default.
@@ -1957,14 +1957,14 @@ app.Run();
 
 ##### Hosting, ports and proxies
 
-- **New in .NET 8**: container images default to port **8080** (`ASPNETCORE_HTTP_PORTS=8080`) and run as the non-root `app` user; Kubernetes manifests and Dockerfiles that still expose port 80 break.[^9] `HTTP_PORTS`/`HTTPS_PORTS` configuration keys are new in .NET 8.[^7]
-- Behind a reverse proxy, call `app.UseForwardedHeaders()` with `KnownProxies`/`KnownNetworks` configured (or `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` only when the proxy is trusted and the app is not directly reachable). Otherwise `RemoteIpAddress`, scheme and host are wrong — and trusting `X-Forwarded-For` from anyone lets clients spoof IPs for rate limiting and audit logs. **Changed in 8.0.17** (servicing): the middleware now ignores *all* `X-Forwarded-*` headers (including `-Proto`, `-Host`, `-Prefix`) from proxies not listed in `KnownProxies`/`KnownNetworks`; deployments that relied on the old behavior see HTTPS redirect loops or failed authentication after patching. Fix by listing the proxies — clearing both lists, or the `Microsoft.AspNetCore.HttpOverrides.IgnoreUnknownProxiesWithoutFor` switch, restores the insecure behavior and is a finding.[^26]
+- **New in .NET 8**: container images default to port **8080** (`ASPNETCORE_HTTP_PORTS=8080`) and run as the non-root `app` user; Kubernetes manifests and Dockerfiles that still expose port 80 break. `HTTP_PORTS`/`HTTPS_PORTS` configuration keys are new in .NET 8.
+- Behind a reverse proxy, call `app.UseForwardedHeaders()` with `KnownProxies`/`KnownNetworks` configured (or `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` only when the proxy is trusted and the app is not directly reachable). Otherwise `RemoteIpAddress`, scheme and host are wrong — and trusting `X-Forwarded-For` from anyone lets clients spoof IPs for rate limiting and audit logs. **Changed in 8.0.17** (servicing): the middleware now ignores *all* `X-Forwarded-*` headers (including `-Proto`, `-Host`, `-Prefix`) from proxies not listed in `KnownProxies`/`KnownNetworks`; deployments that relied on the old behavior see HTTPS redirect loops or failed authentication after patching. Fix by listing the proxies — clearing both lists, or the `Microsoft.AspNetCore.HttpOverrides.IgnoreUnknownProxiesWithoutFor` switch, restores the insecure behavior and is a finding.
 - `UseHttpsRedirection` + HSTS for internet-facing apps; when TLS terminates at a proxy, forwarded headers must run first or redirects loop.
 - Kestrel request limits (`MaxRequestBodySize` defaults to 30,000,000 bytes, header limits) — raise per endpoint (`[RequestSizeLimit]`, `[DisableRequestSizeLimit]`) only where needed.
 
 ##### Forms and antiforgery (new in .NET 8 for minimal APIs)
 
-Minimal API endpoints that bind `[FromForm]`, `IFormFile` or `IFormCollection` require antiforgery validation in .NET 8. Call `AddAntiforgery()` and `UseAntiforgery()`; without the middleware the request fails with `InvalidOperationException` ("…contains anti-forgery metadata, but a middleware was not found that supports anti-forgery"). For token-authenticated APIs (no cookies), opt out explicitly with `.DisableAntiforgery()`.[^7]
+Minimal API endpoints that bind `[FromForm]`, `IFormFile` or `IFormCollection` require antiforgery validation in .NET 8. Call `AddAntiforgery()` and `UseAntiforgery()`; without the middleware the request fails with `InvalidOperationException` ("…contains anti-forgery metadata, but a middleware was not found that supports anti-forgery"). For token-authenticated APIs (no cookies), opt out explicitly with `.DisableAntiforgery()`.
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
@@ -1991,11 +1991,11 @@ app.Run();
 
 ##### Other ASP.NET Core 8 changes reviewers meet
 
-- **Identity API endpoints**: `builder.Services.AddIdentityApiEndpoints<IdentityUser>()` + `app.MapIdentityApi<IdentityUser>()` add register/login/refresh endpoints with bearer tokens or cookies. They are opaque tokens issued by ASP.NET Core Identity — not JWTs, not OIDC; review that registration/confirmation flows and email sending are configured.[^7]
+- **Identity API endpoints**: `builder.Services.AddIdentityApiEndpoints<IdentityUser>()` + `app.MapIdentityApi<IdentityUser>()` add register/login/refresh endpoints with bearer tokens or cookies. They are opaque tokens issued by ASP.NET Core Identity — not JWTs, not OIDC; review that registration/confirmation flows and email sending are configured.
 - **Keyed services** in endpoints: `([FromKeyedServices("big")] ICache cache) => …`.
 - **`[AsParameters]`** (.NET 7) groups parameters into a type; `IFormFile`/`IFormFileCollection` binding exists since .NET 7, while `[FromForm]` binding of complex types and `IFormCollection` (with the mandatory antiforgery check) are new in .NET 8.
-- **Other ASP.NET Core 8 breaking changes**: `ISystemClock` is obsolete (authentication handlers use `TimeProvider`); `UseHttpLogging()` requires `AddHttpLogging()` and `UseRateLimiter()` requires `AddRateLimiter()` (startup throws otherwise); `ConcurrencyLimiterMiddleware` is obsolete; Web SDK projects that trim default to `TrimMode=full`.[^25]
-- **Metrics**: hosting, Kestrel and SignalR publish `System.Diagnostics.Metrics` instruments (`http.server.request.duration`, …) for OpenTelemetry.[^7]
+- **Other ASP.NET Core 8 breaking changes**: `ISystemClock` is obsolete (authentication handlers use `TimeProvider`); `UseHttpLogging()` requires `AddHttpLogging()` and `UseRateLimiter()` requires `AddRateLimiter()` (startup throws otherwise); `ConcurrencyLimiterMiddleware` is obsolete; Web SDK projects that trim default to `TrimMode=full`.
+- **Metrics**: hosting, Kestrel and SignalR publish `System.Diagnostics.Metrics` instruments (`http.server.request.duration`, …) for OpenTelemetry.
 - **Blazor**: the Blazor Web App template unifies Server and WebAssembly with per-component render modes (`@rendermode InteractiveServer`); code in an interactive WebAssembly component runs in the browser — never place secrets or authorization decisions there.
 - `WebApplication.CreateSlimBuilder()` (Native AOT template) omits HTTPS/HTTP3 and some configuration sources unless added; `WebApplication.CreateEmptyBuilder()` adds nothing.
 
@@ -2003,7 +2003,7 @@ app.Run();
 
 #### EF Core 8
 
-EF Core 8 targets `net8.0` and is supported until November 10, 2026 — the same date as .NET 8. EF Core 9 also targets `net8.0` (same end date); EF Core 10 requires .NET 10.[^14] Keep the provider and EF packages on the same latest 8.0.x patch (8.0.32 as of October 2026).
+EF Core 8 targets `net8.0` and is supported until November 10, 2026 — the same date as .NET 8. EF Core 9 also targets `net8.0` (same end date); EF Core 10 requires .NET 10. Keep the provider and EF packages on the same latest 8.0.x patch (8.0.32 as of October 2026).
 
 ##### Querying correctly
 
@@ -2141,7 +2141,7 @@ public sealed class Item
 }
 ```
 
-##### EF Core 8 behavior changes to check when upgrading from EF Core 7[^22]
+##### EF Core 8 behavior changes to check when upgrading from EF Core 7
 
 - **`Contains` over a parameter collection** (verified with `ToQueryString()` on the SQL Server provider 8.0.32) now sends the list as a JSON parameter: `OPENJSON` on SQL Server, `json_each` on SQLite. On SQL Server 2014 or databases with compatibility level < 130 (including Azure SQL databases migrated with an old level) the query **fails**; fix the compatibility level or configure `UseSqlServer(conn, o => o.UseCompatibilityLevel(120))`. The new translation also caused plan regressions for some queries — `EF.Constant(list).Contains(x)` restores the inlined-constants form per query (EF Core 8.0.2+).
 - **Enums inside JSON columns** (owned types mapped with `ToJson()`) are stored as **integers** by default (EF Core 7 stored strings). Existing JSON data with string enums needs `HasConversion<string>()`.
@@ -2200,28 +2200,28 @@ static bool IsInside(string root, string userPath)
 Review checklist for security findings:
 - **Injection**: SQL built by concatenation or `FromSqlRaw`/`ExecuteSqlRaw` with interpolation; `Process.Start` with a shell (`/bin/sh -c`, `cmd /c`) or a single concatenated argument string — use `ProcessStartInfo.ArgumentList`; LDAP/XPath built from input; `Regex` patterns from input without `Regex.Escape`.
 - **Deserialization**: `BinaryFormatter` (throws in .NET 8 unless re-enabled — re-enabling is a finding), `NetDataContractSerializer`, `SoapFormatter`, `LosFormatter`, Newtonsoft `TypeNameHandling` ≠ `None`, `JavaScriptSerializer` with a type resolver. System.Text.Json polymorphism only through an explicit `[JsonDerivedType]` allow-list.
-- **Crypto**: MD5/SHA1 for security purposes (CA5350/CA5351), `Rfc2898DeriveBytes` constructors without an explicit hash and iteration count (SYSLIB0041, CA5379), ECB mode, static IVs/nonces, `new AesGcm(key)` (SYSLIB0053), custom crypto, hard-coded keys. SHA-3 (`SHA3_256` …, **new in .NET 8**) needs `SHA3_256.IsSupported` checks — it depends on OpenSSL 1.1.1+ or a recent Windows build.[^5]
+- **Crypto**: MD5/SHA1 for security purposes (CA5350/CA5351), `Rfc2898DeriveBytes` constructors without an explicit hash and iteration count (SYSLIB0041, CA5379), ECB mode, static IVs/nonces, `new AesGcm(key)` (SYSLIB0053), custom crypto, hard-coded keys. SHA-3 (`SHA3_256` …, **new in .NET 8**) needs `SHA3_256.IsSupported` checks — it depends on OpenSSL 1.1.1+ or a recent Windows build.
 - **Randomness**: `Random`/`Random.Shared` for tokens, passwords, IDs or nonces (CA5394). `Guid.NewGuid()` is random but not designed as a secret; use `RandomNumberGenerator` for secrets.
 - **ReDoS**: regexes over untrusted input without a timeout. The default timeout is infinite (`Regex.InfiniteMatchTimeout`); `^(a+)+$` on 30 `a`s plus `!` runs for a very long time. Pass a timeout, set `REGEX_DEFAULT_MATCH_TIMEOUT` via `AppContext`, or use `RegexOptions.NonBacktracking` (.NET 7+). Prefer `[GeneratedRegex]` (.NET 7) for static patterns.
 - **XML**: `XmlReaderSettings.DtdProcessing = Parse` with a resolver on untrusted XML (XXE). Defaults in .NET 8 prohibit DTDs and do not resolve external entities; `XmlSecureResolver` is obsolete (SYSLIB0047).
 - **Path traversal**: `Path.Combine(root, userInput)` without the containment check above; `IFormFile.FileName` used as a path.
 - **Secrets**: keys, connection strings or tokens in source, `appsettings.json`, logs, exception messages or ProblemDetails. ASP.NET Core Data Protection keys must be persisted and protected in multi-instance deployments (`PersistKeysTo…` + `ProtectKeysWith…`); the default container location is ephemeral.
 - **Web**: missing `[Authorize]`/fallback policy, IDOR (resource IDs not checked against the current user), CORS `SetIsOriginAllowed(_ => true)` with credentials, cookie auth without antiforgery, open redirects (`Redirect(returnUrl)` without `Url.IsLocalUrl`/`LocalRedirect`), unbounded uploads, `UseForwardedHeaders` trusting everyone.
-- **Patch level**: a runtime or ASP.NET Core older than 8.0.32 (or `mcr.microsoft.com/dotnet/aspnet:8.0.x` pinned to an older tag) is missing security fixes.[^2]
+- **Patch level**: a runtime or ASP.NET Core older than 8.0.32 (or `mcr.microsoft.com/dotnet/aspnet:8.0.x` pinned to an older tag) is missing security fixes.
 
 ***
 
 #### Performance
 
 - **Measure first**: BenchmarkDotNet for micro-benchmarks, `dotnet-counters`, `dotnet-trace`, `dotnet-gcdump` in production. Do not accept "optimizations" without numbers.
-- **.NET 8 defaults**: dynamic PGO is on by default; tiered compilation and ReadyToRun interact with it. Disabling tiered compilation or PGO in `runtimeconfig` usually makes steady-state code slower.[^5]
+- **.NET 8 defaults**: dynamic PGO is on by default; tiered compilation and ReadyToRun interact with it. Disabling tiered compilation or PGO in `runtimeconfig` usually makes steady-state code slower.
 - **Allocation hot spots**: string concatenation in loops, LINQ in per-request hot paths, closures capturing locals in lambdas called per item, boxing value types through `object`/non-generic interfaces, `params object[]` calls, `ToList()`/`ToArray()` copies, `Enum.ToString()` in tight loops.
 - **Strings**: `string.Create`, `StringBuilder` with capacity, span-based parsing (`int.Parse(ReadOnlySpan<char>)`), `CompositeFormat` for repeated runtime formats, UTF-8 literals (`"…"u8`) for protocol bytes, `SearchValues<char>` for repeated `IndexOfAny`.
 - **Collections**: presize (`new List<T>(capacity)`, `new Dictionary<,>(capacity)`), `FrozenDictionary` for static lookups, `TryGetValue`/`TryAdd` instead of double lookups (CA1854/CA1864), `CollectionsMarshal.GetValueRefOrAddDefault` for counters in hot loops.
 - **Async**: avoid `async` state machines in trivial pass-throughs, `ValueTask` for hot, mostly synchronous paths, no `Task.Run` wrappers around async I/O.
 - **JSON**: cache `JsonSerializerOptions`; source-generated `JsonSerializerContext`; stream with `SerializeAsync`/`DeserializeAsync`/`DeserializeAsyncEnumerable` instead of buffering whole payloads into strings.
 - **Regex**: `[GeneratedRegex]` for static patterns; cached `static readonly Regex` with `RegexOptions.Compiled` otherwise; never construct a `Regex` per call.
-- **GC**: Server GC is the default for ASP.NET Core; in containers with small CPU/memory limits, measure `DOTNET_GCHeapHardLimit`/`GCHeapAffinitizeMask` or `DOTNET_GCgen0size` changes before shipping. `GC.RefreshMemoryLimit()` (**new in .NET 8**) applies a changed container memory limit at run time.[^5]
+- **GC**: Server GC is the default for ASP.NET Core; in containers with small CPU/memory limits, measure `DOTNET_GCHeapHardLimit`/`GCHeapAffinitizeMask` or `DOTNET_GCgen0size` changes before shipping. `GC.RefreshMemoryLimit()` (**new in .NET 8**) applies a changed container memory limit at run time.
 - **Database**: N+1 queries, missing indexes and over-fetching dominate service latency far more than micro-optimizations in C#.
 
 ```csharp
@@ -2349,7 +2349,7 @@ Review rules:
 #### Analyzers and Tooling
 
 - Built-in .NET analyzers (CA rules) ship with SDK 8.0.426; enable them with `<AnalysisLevel>8.0-recommended</AnalysisLevel>` (or `latest-recommended`) and `<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>` for IDE rules. Tune severities in `.editorconfig` (`dotnet_diagnostic.CA2007.severity = none` in application projects).
-- Rules introduced with the .NET 8 SDK that are worth enforcing: CA1510–CA1513 (throw helpers), CA1856/CA1857 (`ConstantExpected`), CA1858 (`StartsWith` instead of `IndexOf == 0`), CA1859 (concrete types for performance), CA1860 (`Length/Count` instead of `Any()`), CA1861 (constant arrays as arguments), CA1862 (case-insensitive comparison overloads), CA1863 (`CompositeFormat`), CA1864 (`TryAdd`), CA1865–CA1867 (`char` overloads), CA1868 (unnecessary `Contains` before `Add`/`Remove` on sets), CA1869 (cache `JsonSerializerOptions`), CA1870 (`SearchValues`), CA2021 (impossible casts), CA2261 (`ConfigureAwaitOptions.SuppressThrowing` on `Task<T>`).[^16] Rules such as CA1514, CA1515, CA1871, CA1872, CA2022 and CA2262–CA2265 arrive with the .NET 9 SDK and are not present in SDK 8.0.426.
+- Rules introduced with the .NET 8 SDK that are worth enforcing: CA1510–CA1513 (throw helpers), CA1856/CA1857 (`ConstantExpected`), CA1858 (`StartsWith` instead of `IndexOf == 0`), CA1859 (concrete types for performance), CA1860 (`Length/Count` instead of `Any()`), CA1861 (constant arrays as arguments), CA1862 (case-insensitive comparison overloads), CA1863 (`CompositeFormat`), CA1864 (`TryAdd`), CA1865–CA1867 (`char` overloads), CA1868 (unnecessary `Contains` before `Add`/`Remove` on sets), CA1869 (cache `JsonSerializerOptions`), CA1870 (`SearchValues`), CA2021 (impossible casts), CA2261 (`ConfigureAwaitOptions.SuppressThrowing` on `Task<T>`). Rules such as CA1514, CA1515, CA1871, CA1872, CA2022 and CA2262–CA2265 arrive with the .NET 9 SDK and are not present in SDK 8.0.426.
 - IDE0290 (use primary constructor) and IDE0300–IDE0305 (use collection expressions) are present in SDK 8.0.426; they are style suggestions.
 - Treat nullable warnings as errors (`<WarningsAsErrors>nullable</WarningsAsErrors>` at minimum).
 - `dotnet format` enforces `.editorconfig` style in CI; `dotnet list package --vulnerable --include-transitive` and NuGet audit find vulnerable dependencies.
@@ -2359,7 +2359,7 @@ Review rules:
 
 #### Trimming and Native AOT
 
-.NET 8 supports Native AOT for console apps, worker services, gRPC and ASP.NET Core **minimal APIs** (partially). In ASP.NET Core 8, MVC, Blazor Server, SignalR, Session, SPA middleware and authentication other than JWT bearer are **not** AOT-compatible.[^24] EF Core 8 does not support Native AOT (experimental support with precompiled queries starts in EF Core 9).[^23]
+.NET 8 supports Native AOT for console apps, worker services, gRPC and ASP.NET Core **minimal APIs** (partially). In ASP.NET Core 8, MVC, Blazor Server, SignalR, Session, SPA middleware and authentication other than JWT bearer are **not** AOT-compatible. EF Core 8 does not support Native AOT (experimental support with precompiled queries starts in EF Core 9).
 
 ```xml
 <PropertyGroup>
@@ -2372,7 +2372,7 @@ Review rules:
 - With `PublishAot` (or `PublishTrimmed`) set, the build reports trim/AOT warnings even for `dotnet build`: reflection-based `JsonSerializer.Serialize<T>(value)` produces **IL2026** and **IL3050**, `Type.GetType(userString)` produces **IL2057** (verified). Treat these warnings as errors; each is a potential run-time failure after publishing.
 - The setting also changes **JIT runs**: with `PublishAot=true`, `dotnet run` throws `InvalidOperationException: Reflection-based serialization has been disabled for this application` on the same call (verified), because the `JsonSerializerIsReflectionEnabledByDefault` feature switch is set to `false`. Use source-generated `JsonSerializerContext`s.
 - AOT-incompatible patterns: `Assembly.LoadFrom`, `Activator.CreateInstance(Type.GetType(name))`, `MakeGenericType` over value types, `System.Reflection.Emit`, `dynamic`, runtime-compiled expression trees (they fall back to interpretation), libraries that scan assemblies (AutoMapper profiles, MediatR assembly scanning, reflection-based DI conventions).
-- ASP.NET Core minimal APIs under AOT use the Request Delegate Generator; `ConfigureHttpJsonOptions(o => o.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default))` registers source-generated metadata.[^7]
+- ASP.NET Core minimal APIs under AOT use the Request Delegate Generator; `ConfigureHttpJsonOptions(o => o.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default))` registers source-generated metadata.
 
 ***
 
@@ -2422,8 +2422,8 @@ public sealed class CheckoutMetrics
 
 #### Containers and Deployment
 
-- **New in .NET 8**: official images listen on port 8080 (`ASPNETCORE_HTTP_PORTS=8080`) and include a non-root `app` user (`USER app` or `USER $APP_UID`); Debian 12 is the default base; chiseled Ubuntu images (`8.0-jammy-chiseled`) have no shell or package manager. Also changed in the 8.0 images: Alpine images no longer contain `ca-certificates` and `libintl`, Alpine and Debian images no longer contain the Kerberos package (`krb5-libs`/`libkrb5`; add it for Negotiate/Kerberos auth), and multi-platform tags are Linux-only.[^9]
-- `dotnet publish` can build container images without a Dockerfile (`dotnet publish -t:PublishContainer`, .NET 8 SDK); since SDK 8 the default tag is `latest` — pin explicit tags in CI.[^9]
+- **New in .NET 8**: official images listen on port 8080 (`ASPNETCORE_HTTP_PORTS=8080`) and include a non-root `app` user (`USER app` or `USER $APP_UID`); Debian 12 is the default base; chiseled Ubuntu images (`8.0-jammy-chiseled`) have no shell or package manager. Also changed in the 8.0 images: Alpine images no longer contain `ca-certificates` and `libintl`, Alpine and Debian images no longer contain the Kerberos package (`krb5-libs`/`libkrb5`; add it for Negotiate/Kerberos auth), and multi-platform tags are Linux-only.
+- `dotnet publish` can build container images without a Dockerfile (`dotnet publish -t:PublishContainer`, .NET 8 SDK); since SDK 8 the default tag is `latest` — pin explicit tags in CI.
 - Do not run as root; do not bake secrets into images; set `DOTNET_gcServer`/memory limits consciously; configure `HEALTHCHECK`/Kubernetes probes against health endpoints.
 - Graceful shutdown: hosted services must honor the `CancellationToken` in `StopAsync`/`ExecuteAsync`; `HostOptions.ShutdownTimeout` defaults to 30 seconds in .NET 8.
 - `BackgroundService.ExecuteAsync` that throws stops the host by default (`BackgroundServiceExceptionBehavior.StopHost`, .NET 6+) — catch and log per iteration in long-running loops.
@@ -2498,9 +2498,9 @@ public sealed class QueueWorker(ILogger<QueueWorker> logger, TimeProvider clock)
 
 ##### Planning the move to .NET 10 LTS
 
-.NET 8 ends support on November 10, 2026. .NET 10 (LTS, supported until November 14, 2028) is the target; skipping .NET 9 (STS, also ending November 10, 2026) is normal.[^3] When reviewing code that will move soon:
+.NET 8 ends support on November 10, 2026. .NET 10 (LTS, supported until November 14, 2028) is the target; skipping .NET 9 (STS, also ending November 10, 2026) is normal. When reviewing code that will move soon:
 
-- Code written for C# 12 compiles on C# 14 with few changes. Watch for the C# 14 `field` keyword (a member named `field` used inside property accessors changes meaning — rename it or use `@field`), the C# 13 `params` collection overload preferences, and first-class span conversions that change which extension overload is chosen.[^11]
+- Code written for C# 12 compiles on C# 14 with few changes. Watch for the C# 14 `field` keyword (a member named `field` used inside property accessors changes meaning — rename it or use `@field`), the C# 13 `params` collection overload preferences, and first-class span conversions that change which extension overload is chosen.
 - .NET 9 removed `BinaryFormatter` entirely, and .NET 9/10 add analyzers (CA2022, CA2262–CA2265, …) that may flag existing code.
 - Third-party packages pinned to 8.x `Microsoft.Extensions.*`/EF Core 8 must move to 10.x together.
 - Until the migration ships, keep .NET 8 on the newest patch every month (Patch Tuesday) and track the runtime version in container images.
@@ -2582,32 +2582,3 @@ public sealed class QueueWorker(ILogger<QueueWorker> logger, TimeProvider clock)
 - [ ] Message-template logging (no interpolation); source-generated `LoggerMessage` in hot paths; no PII in logs
 - [ ] Metrics via `IMeterFactory`; bounded tag cardinality; `ActivitySource` usage null-safe
 - [ ] Health checks split into liveness and readiness
-
-***
-
-[^1]: Announcing .NET 8. Microsoft .NET Blog, November 14, 2023. https://devblogs.microsoft.com/dotnet/announcing-dotnet-8/
-[^2]: .NET 8.0.32 release notes (October 13, 2026) and the .NET 8 release metadata (latest release, SDKs, CVE lists incl. CVE-2025-55315 in 8.0.21). https://github.com/dotnet/core/blob/main/release-notes/8.0/8.0.32/8.0.32.md , https://builds.dotnet.microsoft.com/dotnet/release-metadata/8.0/releases.json
-[^3]: .NET and .NET Core support policy; .NET releases index (support phases and end-of-support dates for .NET 8, 9, 10, 11). https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core , https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json
-[^4]: What's new in C# 12. https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-12
-[^5]: What's new in the .NET 8 runtime and libraries. https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-8/runtime
-[^6]: ConfigureAwaitOptions enum; CancellationTokenSource.CancelAsync. https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.configureawaitoptions , https://learn.microsoft.com/en-us/dotnet/api/system.threading.cancellationtokensource.cancelasync
-[^7]: What's new in ASP.NET Core in .NET 8. https://learn.microsoft.com/en-us/aspnet/core/release-notes/aspnetcore-8.0
-[^8]: What's new in EF Core 8. https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/whatsnew
-[^9]: Breaking changes in .NET 8 (containers, core libraries, cryptography, extensions, globalization, SDK, serialization). https://learn.microsoft.com/en-us/dotnet/core/compatibility/8.0
-[^10]: What's new in C# 13. https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-13
-[^11]: What's new in C# 14. https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-14
-[^12]: What's new in C# 15 (preview). https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-15
-[^13]: What's new in .NET 9 libraries. https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-9/libraries
-[^14]: EF Core releases and planning (target frameworks and support dates for EF Core 8, 9, 10). https://learn.microsoft.com/en-us/ef/core/what-is-new/
-[^15]: What's new in .NET 10. https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/overview
-[^16]: Code quality rules (CA) reference. https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/
-[^17]: Tutorial: Explore primary constructors. https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/tutorials/primary-constructors
-[^18]: Collection expressions — C# language reference. https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/collection-expressions
-[^19]: Interceptors feature specification (Roslyn). https://github.com/dotnet/roslyn/blob/main/docs/features/interceptors.md
-[^20]: Build resilient HTTP apps (Microsoft.Extensions.Http.Resilience defaults, DisableFor/DisableForUnsafeHttpMethods). https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience
-[^21]: Request timeouts middleware in ASP.NET Core. https://learn.microsoft.com/en-us/aspnet/core/performance/timeouts?view=aspnetcore-8.0
-[^22]: Breaking changes in EF Core 8. https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/breaking-changes
-[^23]: What's new in EF Core 9 (experimental Native AOT and precompiled queries). https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-9.0/whatsnew
-[^24]: ASP.NET Core support for Native AOT (.NET 8 compatibility table). https://learn.microsoft.com/en-us/aspnet/core/fundamentals/native-aot?view=aspnetcore-8.0
-[^25]: Breaking changes in ASP.NET Core 8 (security token events return a JsonWebToken, ISystemClock obsolete, AddHttpLogging/AddRateLimiter required, TrimMode full). https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/8/overview
-[^26]: Breaking change: Forwarded headers middleware ignores X-Forwarded-* headers from unknown proxies (ASP.NET Core 8.0.17 / 9.0.6). https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies

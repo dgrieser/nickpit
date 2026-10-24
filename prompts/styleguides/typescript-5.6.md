@@ -2,12 +2,12 @@
 
 #### Overview
 
-> **Version**: TypeScript 5.6. The GA build, **5.6.2, shipped on September 9, 2024**; the latest and final patch is **5.6.3 (published to npm on October 8, 2024)**.[^1][^2][^3]
-> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.6 received no fixes after 5.6.3. Newer lines followed: 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today.[^3][^9][^10]
+> **Version**: TypeScript 5.6. The GA build, **5.6.2, shipped on September 9, 2024**; the latest and final patch is **5.6.3 (published to npm on October 8, 2024)**.
+> **Support status (October 2026)**: unsupported. The TypeScript team ships patches only for the newest release line, so 5.6 received no fixes after 5.6.3. Newer lines followed: 5.7 (November 2024), 5.8 (February 2025), 5.9 (July 2025), **6.0** (the last JavaScript-based compiler, 6.0.2 on March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** (the native Go port, 7.0.2 on July 8, 2026), which is the npm `latest` tag today.
 > **Scope**: the complete TypeScript language and compiler as usable in 5.6 — the type system, narrowing, generics, classes and decorators, `using`, modules and resolution, declaration emit, strictness flags, tsconfig, tooling — with every 5.6 change versus 5.5 marked **New in 5.6**.
 > **Note**: this document is self-contained. Everything that shipped before 5.6 is carried forward. Every code block was compiled with `tsc` 5.6.3 (`strict`, `target: es2022`, `module: nodenext`, `lib: ["esnext", "dom"]`, `@types/node` 26) unless the block says otherwise; lines marked `// error` fail on 5.6 exactly as described.
 
-TypeScript 5.6 is a mid-sized release. Its headline changes are **errors for syntactically always-truthy or always-nullish checks** (`if (/re/)`, `x => 0` instead of `x >= 0`, `a < b ?? c`), **types for ECMAScript iterator helpers** (`.map()`, `.filter()`, `.take()` … on built-in iterators, plus the new `IteratorObject` / `BuiltinIteratorReturn` types), the strict-family flag **`--strictBuiltinIteratorReturn`**, **arbitrary module namespace identifiers** (`export { x as "🍌" }`), **`--noUncheckedSideEffectImports`**, **`--noCheck`**, **`tsc --build` continuing past errors in upstream projects** (with the opt-out `--stopBuildOnErrors`), and several *behaviour changes that break existing builds*: module-format detection for `node_modules` in every module mode, `.mts`/`.cts` files that never emit the wrong module format, correct `override` checks on computed members, and `.tsbuildinfo` files written for every project in `--build` mode.[^1]
+TypeScript 5.6 is a mid-sized release. Its headline changes are **errors for syntactically always-truthy or always-nullish checks** (`if (/re/)`, `x => 0` instead of `x >= 0`, `a < b ?? c`), **types for ECMAScript iterator helpers** (`.map()`, `.filter()`, `.take()` … on built-in iterators, plus the new `IteratorObject` / `BuiltinIteratorReturn` types), the strict-family flag **`--strictBuiltinIteratorReturn`**, **arbitrary module namespace identifiers** (`export { x as "🍌" }`), **`--noUncheckedSideEffectImports`**, **`--noCheck`**, **`tsc --build` continuing past errors in upstream projects** (with the opt-out `--stopBuildOnErrors`), and several *behaviour changes that break existing builds*: module-format detection for `node_modules` in every module mode, `.mts`/`.cts` files that never emit the wrong module format, correct `override` checks on computed members, and `.tsbuildinfo` files written for every project in `--build` mode.
 
 Global truths about TypeScript 5.6:
 
@@ -52,7 +52,7 @@ The project pins TypeScript 5.6.x. Before flagging code as wrong because of an A
 
 #### New in 5.6: Disallowed nullish and truthy checks
 
-TypeScript 5.6 reports an error whenever it can tell *from the syntax alone* that a condition or the left operand of `??` always has the same truthiness or nullishness.[^1][^11] These are errors, not suggestions, and no flag turns them off (they apply with `strict: false` too). They catch real bugs:
+TypeScript 5.6 reports an error whenever it can tell *from the syntax alone* that a condition or the left operand of `??` always has the same truthiness or nullishness. These are errors, not suggestions, and no flag turns them off (they apply with `strict: false` too). They catch real bugs:
 
 ```ts
 declare const x: number;
@@ -117,7 +117,7 @@ Review notes:
 
 #### New in 5.6: Iterator helpers and `IteratorObject`
 
-ECMAScript iterator helpers (TC39 Stage 4, part of ES2025) add `map`, `filter`, `take`, `drop`, `flatMap`, `reduce`, `toArray`, `forEach`, `some`, `every` and `find` to built-in iterators, a global `Iterator` constructor that can be subclassed, and `Iterator.from()`.[^12] TypeScript 5.6 declares them in `lib.esnext.iterator.d.ts` — so you need `lib: ["esnext"]` (or `"esnext.iterator"`); there is no `es2025` lib in 5.6.[^1]
+ECMAScript iterator helpers (TC39 Stage 4, part of ES2025) add `map`, `filter`, `take`, `drop`, `flatMap`, `reduce`, `toArray`, `forEach`, `some`, `every` and `find` to built-in iterators, a global `Iterator` constructor that can be subclassed, and `Iterator.from()`. TypeScript 5.6 declares them in `lib.esnext.iterator.d.ts` — so you need `lib: ["esnext"]` (or `"esnext.iterator"`); there is no `es2025` lib in 5.6.
 
 ```ts
 // @run
@@ -146,7 +146,7 @@ const wrapped = Iterator.from({ next: () => ({ value: "x", done: false as const 
 console.log(wrapped.take(2).toArray());                  // [ 'x', 'x' ]
 ```
 
-The name `Iterator` already meant the *protocol* type (anything with `next()`), so 5.6 adds **`IteratorObject<T, TReturn = unknown, TNext = unknown>`** for objects that really inherit from `%IteratorPrototype%` and therefore have the helper methods, plus **`AsyncIteratorObject`** for parity (async iterator helpers are still a proposal; `AsyncIteratorObject` has no helper methods). Lib methods now return specific subtypes: `ArrayIterator<T>`, `MapIterator<T>`, `SetIterator<T>`, `StringIterator<T>`, `RegExpStringIterator<T>`; generators return `Generator<…>`, which extends `IteratorObject`.[^1][^13]
+The name `Iterator` already meant the *protocol* type (anything with `next()`), so 5.6 adds **`IteratorObject<T, TReturn = unknown, TNext = unknown>`** for objects that really inherit from `%IteratorPrototype%` and therefore have the helper methods, plus **`AsyncIteratorObject`** for parity (async iterator helpers are still a proposal; `AsyncIteratorObject` has no helper methods). Lib methods now return specific subtypes: `ArrayIterator<T>`, `MapIterator<T>`, `SetIterator<T>`, `StringIterator<T>`, `RegExpStringIterator<T>`; generators return `Generator<…>`, which extends `IteratorObject`.
 
 ```ts
 const it: ArrayIterator<number> = [1, 2].values();
@@ -208,13 +208,13 @@ Prefer composition (wrap a `Map`, expose only what you need) over re-implementin
 
 ##### `@types/node` needs 5.6 now
 
-Current `@types/node` releases (for example 26.x) reference `IteratorObject`, `AsyncIteratorObject` and `BuiltinIteratorReturn` and ship a `typesVersions` mapping (`"<=5.6": ["ts5.6/*"]`) for older compilers. On TypeScript 5.5 they fail with `Cannot find name 'IteratorObject'` / `'BuiltinIteratorReturn'`; on 5.6 they compile. Conversely, a 5.6 project cannot assume that every future `@types/*` release keeps working: DefinitelyTyped only tests packages on TypeScript versions that are less than two years old, and 5.6 left that window in September 2026.[^14] Pin `@types/*` versions in lockfiles and treat `@types` bumps as compiler-compatibility changes.
+Current `@types/node` releases (for example 26.x) reference `IteratorObject`, `AsyncIteratorObject` and `BuiltinIteratorReturn` and ship a `typesVersions` mapping (`"<=5.6": ["ts5.6/*"]`) for older compilers. On TypeScript 5.5 they fail with `Cannot find name 'IteratorObject'` / `'BuiltinIteratorReturn'`; on 5.6 they compile. Conversely, a 5.6 project cannot assume that every future `@types/*` release keeps working: DefinitelyTyped only tests packages on TypeScript versions that are less than two years old, and 5.6 left that window in September 2026. Pin `@types/*` versions in lockfiles and treat `@types` bumps as compiler-compatibility changes.
 
 ***
 
 #### New in 5.6: `--strictBuiltinIteratorReturn`
 
-`IteratorResult<T, TReturn = any>` made `.value` effectively `any` once an iterator was done. 5.6 types the built-in iterators as `IteratorObject<T, BuiltinIteratorReturn, …>`, where the intrinsic `BuiltinIteratorReturn` is `any` by default and **`undefined` under `--strictBuiltinIteratorReturn`**, which is part of the `strict` family.[^1][^15] Enabling `strict` on 5.6 therefore turns on new errors:
+`IteratorResult<T, TReturn = any>` made `.value` effectively `any` once an iterator was done. 5.6 types the built-in iterators as `IteratorObject<T, BuiltinIteratorReturn, …>`, where the intrinsic `BuiltinIteratorReturn` is `any` by default and **`undefined` under `--strictBuiltinIteratorReturn`**, which is part of the `strict` family. Enabling `strict` on 5.6 therefore turns on new errors:
 
 ```ts
 const m = new Map<string, number>([["a", 1]]);
@@ -259,7 +259,7 @@ Review notes:
 
 #### New in 5.6: Arbitrary module identifiers
 
-ES2022 allows string literals as import/export names. TypeScript 5.6 parses, checks and emits them (5.5 reports `Identifier expected`).[^1][^16] Use them for interop with generated code, WebAssembly or tools such as esbuild's `inject`, not as a style:
+ES2022 allows string literals as import/export names. TypeScript 5.6 parses, checks and emits them (5.5 reports `Identifier expected`). Use them for interop with generated code, WebAssembly or tools such as esbuild's `inject`, not as a style:
 
 ```ts
 // @skip: two-module example, verified as separate files on 5.6.3 and 5.5.4
@@ -280,7 +280,7 @@ console.log(banana, fruit);
 
 #### New in 5.6: `--noUncheckedSideEffectImports`
 
-Before 5.6 (and by default in 5.6), a side-effect import `import "x"` that cannot be resolved is **silently ignored**. The new flag makes it an error (TS2307).[^1][^17]
+Before 5.6 (and by default in 5.6), a side-effect import `import "x"` that cannot be resolved is **silently ignored**. The new flag makes it an error (TS2307).
 
 ```ts
 // @skip: verified with a project on 5.6.3 (option unknown on 5.5.4: TS5023)
@@ -294,13 +294,13 @@ import "./button.css";           // TS2307 with the flag unless an ambient decla
 declare module "*.css" {}
 ```
 
-Recommendation: enable it in new 5.6 projects. It becomes the default in TypeScript 6.0.[^9] Note that a `.ts` file imported by side effect must resolve under the project's resolution rules (`./polyfill.js` under `nodenext` for a `polyfill.ts` file).
+Recommendation: enable it in new 5.6 projects. It becomes the default in TypeScript 6.0. Note that a `.ts` file imported by side effect must resolve under the project's resolution rules (`./polyfill.js` under `nodenext` for a `polyfill.ts` file).
 
 ***
 
 #### New in 5.6: `--noCheck`
 
-`--noCheck` skips semantic type checking for all input files and still emits JavaScript (and declarations).[^1] It is a CLI flag *and* a tsconfig option in 5.6; 5.5 rejects it (TS5023).
+`--noCheck` skips semantic type checking for all input files and still emits JavaScript (and declarations). It is a CLI flag *and* a tsconfig option in 5.6; 5.5 rejects it (TS5023).
 
 ```bash
 # Emit fast while iterating, type-check separately (possibly in parallel):
@@ -318,7 +318,7 @@ Review notes:
 
 #### New in 5.6: `--build` continues past errors
 
-Before 5.6, `tsc -b` behaved as if `noEmitOnError` were set and stopped at the first project with errors. In 5.6 it **reports errors, emits outputs on a best-effort basis, and continues building downstream projects**; the exit code is still non-zero.[^1][^18] Verified on 5.6.3 with project `b` referencing composite project `a` that has a type error:
+Before 5.6, `tsc -b` behaved as if `noEmitOnError` were set and stopped at the first project with errors. In 5.6 it **reports errors, emits outputs on a best-effort basis, and continues building downstream projects**; the exit code is still non-zero. Verified on 5.6.3 with project `b` referencing composite project `a` that has a type error:
 
 | | 5.5.4 | 5.6.3 | 5.6.3 `--stopBuildOnErrors` |
 |---|---|---|---|
@@ -336,7 +336,7 @@ Before 5.6, `tsc -b` behaved as if `noEmitOnError` were set and stopped at the f
 
 #### New in 5.6: Module format detection in `node_modules`
 
-TypeScript 4.7 began reading `.mjs`/`.cjs`/`.mts`/`.cts` extensions and the `package.json` `"type"` field, but only under `module: node16`/`nodenext`. 5.6 uses this format information **in all module modes except `amd`, `umd` and `system`** for files in `node_modules`, and `.mts`/`.cts` files are respected everywhere.[^1][^19]
+TypeScript 4.7 began reading `.mjs`/`.cjs`/`.mts`/`.cts` extensions and the `package.json` `"type"` field, but only under `module: node16`/`nodenext`. 5.6 uses this format information **in all module modes except `amd`, `umd` and `system`** for files in `node_modules`, and `.mts`/`.cts` files are respected everywhere.
 
 Effect 1 — unsafe default imports of ESM-only packages are now caught under `module: esnext` + `moduleResolution: bundler`:
 
@@ -370,13 +370,13 @@ export class Derived extends Base {
 }
 ```
 
-Both lines compiled without error on 5.5.[^1]
+Both lines compiled without error on 5.5.
 
 ***
 
 #### New in 5.6: Editor features
 
-These affect editors only, not `tsc` output:[^1]
+These affect editors only, not `tsc` output:
 
 - **Region-prioritized diagnostics**: the language server can check the visible region of a large file first (VS Code with TypeScript 5.6+).
 - **Granular commit characters** for completions.
@@ -386,7 +386,7 @@ These affect editors only, not `tsc` output:[^1]
 
 #### Do not use or recommend (not in TypeScript 5.6)
 
-The project's compiler is 5.6. None of the following exists in it; never suggest them, and flag them if they appear in code or config (they will fail to compile, or silently do nothing in editors that bundle a newer TypeScript):[^5][^6][^7][^9][^10]
+The project's compiler is 5.6. None of the following exists in it; never suggest them, and flag them if they appear in code or config (they will fail to compile, or silently do nothing in editors that bundle a newer TypeScript):
 
 **TypeScript 5.7** (November 2024)
 - `--rewriteRelativeImportExtensions` (5.6: `Unknown compiler option`). In 5.6, `.ts` import specifiers require `allowImportingTsExtensions`, which in turn requires `noEmit` or `emitDeclarationOnly`.
@@ -415,13 +415,13 @@ The project's compiler is 5.6. None of the following exists in it; never suggest
 
 ##### Deprecated or removed as of 5.6
 
-- **Removed in 5.5** (deprecated in 5.0): `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `preserveValueImports` (use `verbatimModuleSyntax`), `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out` (use `outFile`), `prepend` in project references, implicitly OS-specific `newLine`.[^4] On 5.6 setting any of these options is a hard configuration error (the `newLine` item only means the default is now LF) (`error TS5102: Option 'charset' has been removed. Please remove it from your configuration.`, `TS5108` for `target: "ES3"`); a tsconfig that still contains them does not build.
+- **Removed in 5.5** (deprecated in 5.0): `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `preserveValueImports` (use `verbatimModuleSyntax`), `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out` (use `outFile`), `prepend` in project references, implicitly OS-specific `newLine`. On 5.6 setting any of these options is a hard configuration error (the `newLine` item only means the default is now LF) (`error TS5102: Option 'charset' has been removed. Please remove it from your configuration.`, `TS5108` for `target: "ES3"`); a tsconfig that still contains them does not build.
 - `ignoreDeprecations: "5.0"` no longer silences them (verified: TS5102 is still reported).
 - Legacy `experimentalDecorators` still works but is not the standard; new code should use standard decorators (see Decorators).
 
 ##### Future-proofing (works in 5.6, removed in 7.0)
 
-TypeScript 6.0 deprecates and 7.0 removes: `target: "es5"`, `--downlevelIteration`, `moduleResolution: "node"`/`"node10"` and `"classic"`, `module: "amd" | "umd" | "system"`, `baseUrl`, `outFile`, `esModuleInterop: false` / `allowSyntheticDefaultImports: false`, `alwaysStrict: false`, the `module Foo {}` namespace keyword (use `namespace`), import `assert { … }` (use `with { … }`), and `/// <reference no-default-lib="true"/>`.[^9] New 5.6 code and configs should avoid them so a future upgrade is mechanical.
+TypeScript 6.0 deprecates and 7.0 removes: `target: "es5"`, `--downlevelIteration`, `moduleResolution: "node"`/`"node10"` and `"classic"`, `module: "amd" | "umd" | "system"`, `baseUrl`, `outFile`, `esModuleInterop: false` / `allowSyntheticDefaultImports: false`, `alwaysStrict: false`, the `module Foo {}` namespace keyword (use `namespace`), import `assert { … }` (use `with { … }`), and `/// <reference no-default-lib="true"/>`. New 5.6 code and configs should avoid them so a future upgrade is mechanical.
 
 ***
 
@@ -439,7 +439,7 @@ TypeScript 6.0 deprecates and 7.0 removes: `target: "es5"`, `--downlevelIteratio
 | `noUncheckedSideEffectImports` | `false` | `true` |
 | `types` | all `node_modules/@types/*` | list them explicitly (`["node"]`) to avoid ambient leakage |
 
-Option semantics are documented in the TSConfig reference.[^24] `tsc --init` in 5.6 still writes the long commented template with `target: es2016`, `module: commonjs`, `esModuleInterop`, `forceConsistentCasingInFileNames`, `strict` and `skipLibCheck` enabled — a starting point, not a recommendation for a modern Node or bundler project.
+Option semantics are documented in the TSConfig reference. `tsc --init` in 5.6 still writes the long commented template with `target: es2016`, `module: commonjs`, `esModuleInterop`, `forceConsistentCasingInFileNames`, `strict` and `skipLibCheck` enabled — a starting point, not a recommendation for a modern Node or bundler project.
 
 ##### Node.js application or library compiled by `tsc` (ESM)
 
@@ -512,7 +512,7 @@ Option semantics are documented in the TSConfig reference.[^24] `tsc --init` in 
 
 ##### Shared base configs: `${configDir}` (5.5+)
 
-Paths in a tsconfig are relative to the file that contains them. In a shared base config, use `${configDir}` so `outDir`, `rootDir`, `typeRoots`, `paths`, `include` and similar resolve relative to the *extending* project:[^4]
+Paths in a tsconfig are relative to the file that contains them. In a shared base config, use `${configDir}` so `outDir`, `rootDir`, `typeRoots`, `paths`, `include` and similar resolve relative to the *extending* project:
 
 ```json
 {
@@ -806,7 +806,7 @@ Use `assertNever` (or `satisfies never`) in the `default` branch so adding a var
 
 ##### Inferred type predicates (5.5+)
 
-Since 5.5, TypeScript infers `x is T` for functions whose single `return` expression narrows the parameter, e.g. `x => x !== undefined`.[^4]
+Since 5.5, TypeScript infers `x is T` for functions whose single `return` expression narrows the parameter, e.g. `x => x !== undefined`.
 
 ```ts
 const nums = [1, 2, null, 4].filter((x) => x !== null);   // number[] (was (number | null)[] before 5.5)
@@ -857,7 +857,7 @@ assert(url.length > 0, "empty");
 
 ##### Narrowing in closures and after `await`
 
-5.4+ preserves narrowing inside closures created **after the last assignment** of a `let` or parameter:[^20]
+5.4+ preserves narrowing inside closures created **after the last assignment** of a `let` or parameter:
 
 ```ts
 function getUrls(url: string | URL, names: string[]) {
@@ -1098,7 +1098,7 @@ export { H };
 
 #### Decorators
 
-TypeScript 5.0+ implements **standard ECMAScript decorators** (TC39 Stage 3) when `experimentalDecorators` is **off** (the default). Legacy decorators remain behind `experimentalDecorators: true`; the two have different signatures, emit and evaluation order and cannot be mixed in one project.[^8]
+TypeScript 5.0+ implements **standard ECMAScript decorators** (TC39 Stage 3) when `experimentalDecorators` is **off** (the default). Legacy decorators remain behind `experimentalDecorators: true`; the two have different signatures, emit and evaluation order and cannot be mixed in one project.
 
 ```ts
 // @run
@@ -1157,7 +1157,7 @@ export { Svc };
 
 #### Explicit resource management: `using` and `await using` (5.2+)
 
-`using` disposes a resource at the end of the enclosing block, in reverse order, even when an exception is thrown — the TypeScript form of `try/finally` cleanup.[^21]
+`using` disposes a resource at the end of the enclosing block, in reverse order, even when an exception is thrown — the TypeScript form of `try/finally` cleanup.
 
 ```ts
 // @run
@@ -1288,7 +1288,7 @@ None of the lines above produce a `tsc` error. Additional rules:
 | Library for both | `nodenext` | implied | strictest; output works in Node and bundlers |
 | Legacy CommonJS | `commonjs` | `node10` | avoid for new code; `node10` ignores `exports` |
 
-See the Modules reference for the exact rules of each mode.[^25] `--module node18` and `node20` are **not** in 5.6 (5.8/5.9). In 5.6 `nodenext` models the then-current Node behaviour: it does **not** allow `require()` of ESM from CommonJS (5.8 added that), even though Node 22.12+ supports it at runtime.
+See the Modules reference for the exact rules of each mode. `--module node18` and `node20` are **not** in 5.6 (5.8/5.9). In 5.6 `nodenext` models the then-current Node behaviour: it does **not** allow `require()` of ESM from CommonJS (5.8 added that), even though Node 22.12+ supports it at runtime.
 
 ```ts
 // @skip: multi-file example (module: nodenext, "type": "module"), verified on 5.6.3
@@ -1334,7 +1334,7 @@ console.log(server.listening);
 
 ##### Node.js type stripping
 
-Node 22.18+ (and 23.6+) run `.ts` files directly by stripping types, without type checking; the feature is marked stable in Node 24.12/25.2.[^22] Constraints for code that must run this way under TypeScript 5.6:
+Node 22.18+ (and 23.6+) run `.ts` files directly by stripping types, without type checking; the feature is marked stable in Node 24.12/25.2. Constraints for code that must run this way under TypeScript 5.6:
 
 - Only erasable syntax: no `enum`, no `namespace` with values, no parameter properties (`constructor(private x)`), no `import x = require()`, no legacy decorators. Node reports `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. 5.6 has no `--erasableSyntaxOnly` to enforce this; use a lint rule or code review.
 - Imports must use the real `.ts` extension (`import "./lib.ts"`), which in 5.6 requires `allowImportingTsExtensions` and therefore `noEmit`. 5.6 cannot both accept `.ts` specifiers and emit JavaScript (`--rewriteRelativeImportExtensions` is 5.7+).
@@ -1397,7 +1397,7 @@ Enable it for libraries and monorepo packages consumed through project reference
 
 #### Regular expression checking (5.5+)
 
-TypeScript parses regular expression **literals** (not `new RegExp("…")` strings) and reports syntax errors, missing backreference groups, and flags or features newer than `target`:[^4]
+TypeScript parses regular expression **literals** (not `new RegExp("…")` strings) and reports syntax errors, missing backreference groups, and flags or features newer than `target`:
 
 ```ts
 const a = /@robot(\s+(please|immediately)))? do some task/;  // error TS1508: Unexpected ')'. Did you mean to escape it with backslash?
@@ -1494,7 +1494,7 @@ export { u1, u2 };
 
 #### Tooling
 
-- **Type-aware linting**: typescript-eslint v8 (8.72.0 supports TypeScript `>=4.8.4 <6.1.0`, so 5.6 is supported).[^23] Use `tseslint.configs.strictTypeChecked` + `stylisticTypeChecked` with `parserOptions.projectService: true`. Key rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unnecessary-condition`, `strict-boolean-expressions` (opinionated), `switch-exhaustiveness-check`, `consistent-type-imports`, `no-explicit-any`, `no-unsafe-*`, `prefer-nullish-coalescing`, `only-throw-error`, `ban-ts-comment`, `no-non-null-assertion`, `restrict-template-expressions`.
+- **Type-aware linting**: typescript-eslint v8 (8.72.0 supports TypeScript `>=4.8.4 <6.1.0`, so 5.6 is supported). Use `tseslint.configs.strictTypeChecked` + `stylisticTypeChecked` with `parserOptions.projectService: true`. Key rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unnecessary-condition`, `strict-boolean-expressions` (opinionated), `switch-exhaustiveness-check`, `consistent-type-imports`, `no-explicit-any`, `no-unsafe-*`, `prefer-nullish-coalescing`, `only-throw-error`, `ban-ts-comment`, `no-non-null-assertion`, `restrict-template-expressions`.
 - **Formatting**: Prettier or dprint/Biome; never hand-format. Formatting changes should be separate from logic changes in review.
 - **Editors**: VS Code ships its own TypeScript; select the workspace version ("TypeScript: Select TypeScript Version") so the editor uses 5.6 and does not show errors or quick fixes from a newer compiler.
 - **Running TypeScript**: `tsx` / `ts-node` (`--transpile-only`) / Node type stripping for scripts; `tsc` for production builds or a bundler with a separate `tsc --noEmit` check.
@@ -1562,31 +1562,3 @@ Upgrading from 5.5 (items 1–8 verified on 5.5.4 vs. 5.6.3):
 - [ ] No prototype-pollution-prone merges of untrusted objects
 - [ ] Parameterized SQL, argument-array process spawning, no `innerHTML` with user data, no `eval`
 - [ ] Response DTOs constructed explicitly (no structural over-sharing)
-
-***
-
-[^1]: TypeScript 5.6 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html
-[^2]: Announcing TypeScript 5.6 (Microsoft DevBlogs, September 9, 2024). https://devblogs.microsoft.com/typescript/announcing-typescript-5-6/
-[^3]: npm registry — typescript package versions and publish dates (5.6.2: 2024-09-09, 5.6.3: 2024-10-08, 6.0.3: 2026-04-16, 7.0.2: 2026-07-08). https://www.npmjs.com/package/typescript?activeTab=versions
-[^4]: TypeScript 5.5 release notes (inferred type predicates, constant indexed access narrowing, regex checking, isolatedDeclarations, `${configDir}`, disabled 5.0 deprecations). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html
-[^5]: TypeScript 5.7 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html
-[^6]: TypeScript 5.8 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html
-[^7]: TypeScript 5.9 release notes. https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html
-[^8]: TypeScript 5.0 release notes (decorators, const type parameters, verbatimModuleSyntax, bundler resolution, deprecations). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html
-[^9]: TypeScript 6.0 release notes (new defaults, deprecations, preparing for 7.0). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
-[^10]: Announcing TypeScript 7.0 (Microsoft DevBlogs, July 8, 2026). https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/
-[^11]: microsoft/TypeScript PR #59217 — Disallow truthy/nullish checks on syntactically never-nullish expressions. https://github.com/microsoft/TypeScript/pull/59217
-[^12]: TC39 proposal: Iterator helpers. https://github.com/tc39/proposal-iterator-helpers
-[^13]: microsoft/TypeScript PR #58222 — Iterator helper types (IteratorObject). https://github.com/microsoft/TypeScript/pull/58222
-[^14]: DefinitelyTyped README — support window (packages are tested only on TypeScript versions less than two years old). https://github.com/DefinitelyTyped/DefinitelyTyped#support-window
-[^15]: microsoft/TypeScript PR #58243 — BuiltinIteratorReturn and --strictBuiltinIteratorReturn. https://github.com/microsoft/TypeScript/pull/58243
-[^16]: microsoft/TypeScript PR #58640 — Arbitrary module namespace identifiers. https://github.com/microsoft/TypeScript/pull/58640
-[^17]: microsoft/TypeScript PR #58941 — --noUncheckedSideEffectImports. https://github.com/microsoft/TypeScript/pull/58941
-[^18]: microsoft/TypeScript PR #58838 — Allow --build with intermediate errors (--stopBuildOnErrors). https://github.com/microsoft/TypeScript/pull/58838
-[^19]: microsoft/TypeScript PR #58825 — Respect file extensions and package.json "type" in node_modules for all module modes. https://github.com/microsoft/TypeScript/pull/58825
-[^20]: TypeScript 5.4 release notes (preserved narrowing in closures, NoInfer, module preserve). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html
-[^21]: TypeScript 5.2 release notes (`using` declarations, decorator metadata). https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html
-[^22]: Node.js — Modules: TypeScript (type stripping); Node.js v22.18.0 release notes. https://nodejs.org/api/typescript.html , https://nodejs.org/en/blog/release/v22.18.0
-[^23]: typescript-eslint — supported TypeScript versions (`SUPPORTED_TYPESCRIPT_VERSIONS = '>=4.8.4 <6.1.0'` in v8.72.0). https://typescript-eslint.io/users/dependency-versions
-[^24]: TSConfig reference. https://www.typescriptlang.org/tsconfig/
-[^25]: TypeScript Modules reference (module, moduleResolution, nodenext, bundler, preserve). https://www.typescriptlang.org/docs/handbook/modules/reference.html
