@@ -32,6 +32,12 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.APIKey != "" {
 		base.APIKey = override.APIKey
 	}
+	if override.Auth != "" {
+		base.Auth = override.Auth
+	}
+	if override.API != "" {
+		base.API = override.API
+	}
 	if override.SupportedModels != nil {
 		base.SupportedModels = cloneSupportedModels(override.SupportedModels)
 	}

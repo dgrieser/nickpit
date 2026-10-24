@@ -116,7 +116,7 @@ func CapabilityFromResult(result Result) config.ModelCapabilities {
 		Model:           result.Model,
 		Compatible:      summary.Compatible,
 		Response:        summary.Response,
-		Reasoning:       config.ReasoningCapabilities(summary.Reasoning),
+		Reasoning:       config.ReasoningCapabilities{Traces: summary.Reasoning.Traces, Efforts: summary.Reasoning.Efforts},
 		Tools:           summary.Tools,
 		JSONSchema:      cloneBoolPtr(summary.JSONSchema),
 		JSONResponse:    cloneBoolPtr(summary.JSONResponse),

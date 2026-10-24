@@ -24,6 +24,12 @@ func registerRootCompletions(root *cobra.Command, a *app) {
 	registerEnumCompletion(root, "diff-format", []string{"git", "git-json"})
 	registerEnumCompletion(root, "reasoning-effort", reasoningEffortCompletions)
 	registerEnumCompletion(root, "small-reasoning-effort", reasoningEffortCompletions)
+	for _, flag := range []string{"api", "small-api"} {
+		registerEnumCompletion(root, flag, []string{config.APIChatCompletions, config.APIResponses})
+	}
+	for _, flag := range []string{"auth", "small-auth"} {
+		registerEnumCompletion(root, flag, []string{config.AuthAPIKey, config.AuthChatGPT})
+	}
 	registerEnumCompletion(root, "verify-drop-policy", model.ValidDropPolicies)
 	registerEnumCompletion(root, "priority-threshold", []string{"0", "1", "2", "3"})
 	registerEnumCompletion(root, "disable-styleguide", append([]string{"all"}, mappings.StyleGuideOrder()...))

@@ -2434,6 +2434,33 @@ func TestSmallModelConfiguredIgnoresAPIKeyOnlyDifference(t *testing.T) {
 	}
 }
 
+// A small model may switch protocol or authentication on the primary's host;
+// either way it needs its own client, a probe of its own, and shows up as a
+// distinct target.
+func TestSmallModelOnSameHostWithAnotherAPIOrAuth(t *testing.T) {
+	for _, small := range []config.SmallModelConfig{
+		{API: config.APIResponses},
+		{Auth: config.AuthChatGPT},
+	} {
+		profile := config.Profile{
+			Model:   "same-model",
+			BaseURL: config.ChatGPTBaseURL,
+			APIKey:  "primary-key",
+			Small:   small,
+		}
+		effective := config.EffectiveSmallProfile(profile)
+		if !smallEndpointDistinct(profile, effective) {
+			t.Fatalf("small %+v must get its own client", small)
+		}
+		if !smallModelConfigured(profile) {
+			t.Fatalf("small %+v must get its own capability check", small)
+		}
+		if !smallModelDistinctTarget(profile, effective) {
+			t.Fatalf("small %+v must be shown as a distinct target", small)
+		}
+	}
+}
+
 func TestSmallModelDistinctTargetCoversEndpointAndModel(t *testing.T) {
 	tests := []struct {
 		name  string

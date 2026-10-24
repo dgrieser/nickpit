@@ -25,7 +25,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
-	openai "github.com/sashabaranov/go-openai"
 )
 
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
@@ -88,19 +87,25 @@ type Client interface {
 	Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error)
 }
 
-type OpenAIClient struct {
+// APIClient is the provider-neutral LLM client. It owns the HTTP round trip,
+// retries, the reasoning-effort ladder, reasoning budgets, loop detection, and
+// response parsing; the Protocol it is built with owns the wire format.
+type APIClient struct {
 	baseURL         string
 	model           string
+	protocol        Protocol
+	tokens          TokenSource
 	httpClient      *http.Client
-	sdkClient       *openai.Client
 	retrier         *Retrier
 	logger          *logging.Logger
-	transport       *capturingTransport
+	transport       *clientTransport
 	allowedEfforts  map[string]struct{}
 	maxRequestBytes int
 	// idleStreamTimeout overrides defaultIdleStreamTimeout when > 0; tests use
 	// it to exercise the idle-stream watchdog without waiting minutes.
 	idleStreamTimeout time.Duration
+	// errorBodyTimeout overrides defaultErrorBodyTimeout when > 0.
+	errorBodyTimeout time.Duration
 }
 
 type SchemaKind string
@@ -184,6 +189,18 @@ type Message struct {
 	Name       string
 	ToolCallID string
 	ToolCalls  []ToolCall
+	// ProviderState is protocol-private context of an assistant turn that
+	// must be sent back with it, such as the encrypted reasoning a stateless
+	// Responses request needs to continue after its tool calls. Callers only
+	// carry it along; ReviewResponse.AssistantMessage sets it.
+	ProviderState *ProviderState
+}
+
+// ProviderState is opaque context one endpoint asked to have replayed. It is
+// sent back only to the protocol, endpoint, and model that produced it.
+type ProviderState struct {
+	Origin string
+	Items  []json.RawMessage
 }
 
 type ToolDefinition struct {
@@ -211,57 +228,22 @@ type ReviewResponse struct {
 	ReasoningEffort        string                       `json:"reasoning_effort,omitempty"`
 	Reasoned               bool                         `json:"-"`
 	ToolsOmitted           bool                         `json:"-"`
+	// ProviderState is what the protocol needs replayed with this turn; it
+	// travels with the message AssistantMessage builds.
+	ProviderState *ProviderState `json:"-"`
 }
 
-type capture struct {
-	status string
-	code   int
-	header http.Header
-	body   []byte
-}
-
-type extraBodyContextKey struct{}
-
-type captureSlot struct {
-	mu  sync.Mutex
-	cap *capture
-}
-
-func (s *captureSlot) set(c *capture) {
-	s.mu.Lock()
-	s.cap = c
-	s.mu.Unlock()
-}
-
-func (s *captureSlot) snapshot() *capture {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cap == nil {
-		return nil
-	}
-	cloned := *s.cap
-	if cloned.header != nil {
-		cloned.header = cloned.header.Clone()
-	}
-	if cloned.body != nil {
-		cloned.body = append([]byte(nil), cloned.body...)
-	}
-	return &cloned
-}
-
-type captureSlotContextKey struct{}
-
-func contextWithCaptureSlot(ctx context.Context) (context.Context, *captureSlot) {
-	slot := &captureSlot{}
-	return context.WithValue(ctx, captureSlotContextKey{}, slot), slot
-}
-
-func captureSlotFromContext(ctx context.Context) *captureSlot {
-	slot, _ := ctx.Value(captureSlotContextKey{}).(*captureSlot)
-	return slot
+// AssistantMessage is the history entry for this response's turn: its text,
+// its tool calls, and the provider state the next request has to replay.
+func (r *ReviewResponse) AssistantMessage() Message {
+	return Message{Role: RoleAssistant, Content: r.RawResponse, ToolCalls: r.ToolCalls, ProviderState: r.ProviderState}
 }
 
 type streamedResponse struct {
+	// stateOrigin is the origin of the attempt that produced stateItems.
+	stateOrigin      string
+	stateItems       []json.RawMessage
+	refusal          string
 	content          string
 	toolCalls        []ToolCall
 	usage            model.TokenUsage
@@ -300,11 +282,41 @@ type llmHTTPStatusError struct {
 	statusCode int
 	status     string
 	message    string
-	cause      error
+	// code and param are the provider's machine-readable error code and the
+	// request field it names, when it reports them.
+	code     string
+	param    string
+	provider *ProviderError
+	cause    error
 }
 
 type ReasoningBudgetExhaustedError struct {
 	ReasoningEffort string
+	// Truncated marks a response that had begun its answer when the token
+	// limit cut it off, rather than one that never got past reasoning.
+	Truncated bool
+}
+
+// RefusalError is returned when the model refused the request and the
+// provider reported the refusal apart from the answer. It is terminal.
+type RefusalError struct {
+	Message         string
+	ReasoningEffort string
+}
+
+func (e *RefusalError) Error() string {
+	return "llm: the model refused the request: " + model.ClipLine(e.Message, 300)
+}
+
+// ContentFilteredError is returned when the provider stopped the response
+// for its content policy. It is terminal: a lower effort or a retry of the
+// same request cannot satisfy the policy.
+type ContentFilteredError struct {
+	ReasoningEffort string
+}
+
+func (e *ContentFilteredError) Error() string {
+	return "llm: the provider stopped the response for its content policy (finish reason content_filter)"
 }
 
 type reasoningTimeoutController struct {
@@ -338,6 +350,9 @@ func (e *llmHTTPStatusError) Unwrap() error {
 }
 
 func (e *ReasoningBudgetExhaustedError) Error() string {
+	if e.Truncated {
+		return "llm: model exhausted its token budget before finishing the response; the output was cut off"
+	}
 	return reasoningBudgetExhaustedMessage
 }
 
@@ -364,8 +379,8 @@ func (e *ReasoningOnlyEmptyResponseError) Error() string {
 // stay terminal (a lower effort cannot satisfy a policy refusal) and surface
 // their real cause instead of being masked by a reasoning-budget retry storm.
 func reasoningOnlyEmptyFinish(finishReason string) bool {
-	switch finishReason {
-	case "", string(openai.FinishReasonStop), string(openai.FinishReasonNull):
+	switch FinishReason(finishReason) {
+	case "", FinishStop, FinishNull:
 		return true
 	default:
 		return false
@@ -422,7 +437,29 @@ func (t *reasoningTimeoutController) Expired() bool {
 	return t.expired
 }
 
-func NewOpenAIClient(baseURL, apiKey, modelName string) *OpenAIClient {
+// ClientOptions configures an APIClient.
+type ClientOptions struct {
+	BaseURL string
+	Model   string
+	// Protocol is the wire API; nil selects Chat Completions.
+	Protocol Protocol
+	// Tokens supplies the credential; nil sends none.
+	Tokens TokenSource
+}
+
+// NewOpenAIClient returns a client for an OpenAI-compatible Chat Completions
+// endpoint authenticated with a static API key.
+func NewOpenAIClient(baseURL, apiKey, modelName string) *APIClient {
+	return NewAPIClient(ClientOptions{
+		BaseURL:  baseURL,
+		Model:    modelName,
+		Protocol: ChatCompletionsProtocol(),
+		Tokens:   StaticToken(apiKey),
+	})
+}
+
+// NewAPIClient returns a client speaking opts.Protocol.
+func NewAPIClient(opts ClientOptions) *APIClient {
 	// Clone the default transport and bound the time to receive response
 	// headers. The default already bounds dial (30s) and TLS handshake (10s),
 	// but leaves ResponseHeaderTimeout unset, so a server that accepts the
@@ -439,41 +476,89 @@ func NewOpenAIClient(baseURL, apiKey, modelName string) *OpenAIClient {
 		clone.ResponseHeaderTimeout = 120 * time.Second
 		base = clone
 	}
-	transport := &capturingTransport{base: base}
-	httpClient := &http.Client{
-		Transport: transport,
+	transport := &clientTransport{base: base}
+	protocol := opts.Protocol
+	if protocol == nil {
+		protocol = ChatCompletionsProtocol()
 	}
-
-	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = model.NormalizeBaseURL(baseURL)
-	config.HTTPClient = httpClient
-	config.EmptyMessagesLimit = 100000
-
-	return &OpenAIClient{
-		baseURL:    model.NormalizeBaseURL(baseURL),
-		model:      modelName,
-		httpClient: httpClient,
-		sdkClient:  openai.NewClientWithConfig(config),
+	tokens := opts.Tokens
+	if tokens == nil {
+		tokens = StaticToken("")
+	}
+	return &APIClient{
+		baseURL:    model.NormalizeBaseURL(opts.BaseURL),
+		model:      opts.Model,
+		protocol:   protocol,
+		tokens:     tokens,
+		httpClient: &http.Client{Transport: transport},
 		retrier:    NewRetrier(),
 		transport:  transport,
 	}
 }
 
-func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
+// Protocol returns the wire API the client speaks.
+func (c *APIClient) Protocol() Protocol {
+	return c.protocol
+}
+
+// stateOrigin identifies the producer of provider state: the protocol, the
+// endpoint, the model, and the account the credential belongs to — state one
+// account's request produced is never sent under another's.
+func (c *APIClient) stateOrigin(model, account string) string {
+	return c.protocol.Name() + " " + c.baseURL + " " + model + " " + account
+}
+
+// credential takes the token for one request and the account it belongs to,
+// as one snapshot where the source can provide it.
+func (c *APIClient) credential(ctx context.Context) (Credential, error) {
+	if source, ok := c.tokens.(CredentialSource); ok {
+		return source.Credential(ctx)
+	}
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return Credential{}, err
+	}
+	cred := Credential{Token: token}
+	if account, ok := c.tokens.(AccountIdentifier); ok {
+		cred.Account = account.AccountID()
+	}
+	return cred, nil
+}
+
+// withStateFor returns req with provider state from any other origin removed:
+// another endpoint, protocol, model, or account cannot read (or would reject)
+// it. req itself is left untouched.
+func withStateFor(req *CompletionRequest, origin string) *CompletionRequest {
+	filtered := *req
+	filtered.Messages = slices.Clone(req.Messages)
+	for i, msg := range filtered.Messages {
+		if msg.ProviderState != nil && msg.ProviderState.Origin != origin {
+			filtered.Messages[i].ProviderState = nil
+		}
+	}
+	return &filtered
+}
+
+// Capabilities implements CapabilityReporter.
+func (c *APIClient) Capabilities() Capabilities {
+	return c.protocol.Capabilities()
+}
+
+func (c *APIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
 // SetMaxRequestBytes limits the final serialized JSON request body. Zero
 // disables the limit.
-func (c *OpenAIClient) SetMaxRequestBytes(maxBytes int) {
+func (c *APIClient) SetMaxRequestBytes(maxBytes int) {
 	c.maxRequestBytes = maxBytes
 }
 
-func (c *OpenAIClient) SetMaxRateLimitDelay(delay time.Duration) {
+func (c *APIClient) SetMaxRateLimitDelay(delay time.Duration) {
 	c.retrier.SetMaxRateLimitDelay(delay)
 }
 
-func (c *OpenAIClient) SetAllowedReasoningEfforts(efforts []string) {
+func (c *APIClient) SetAllowedReasoningEfforts(efforts []string) {
 	c.allowedEfforts = make(map[string]struct{}, len(efforts))
 	for _, effort := range efforts {
 		effort = strings.ToLower(strings.TrimSpace(effort))
@@ -495,39 +580,41 @@ func LowerReasoningEfforts(effort string) []string {
 	return fallbackReasoningEfforts(effort)
 }
 
-func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (json.RawMessage, error) {
-	return serializedRequestPayload(payload, redactExtraBodyForLog(extraBody))
-}
-
-func serializedRequestPayload(payload openai.ChatCompletionRequest, extraBody map[string]any) (json.RawMessage, error) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
+// requestPayloadForLog renders req as protocol sends it, with sensitive extra
+// fields redacted.
+func requestPayloadForLog(protocol Protocol, req *CompletionRequest) (json.RawMessage, error) {
+	redacted := *req
+	redacted.ExtraBody = redactExtraBodyForLog(req.ExtraBody)
+	if logged, ok := protocol.(interface {
+		encodeForLog(*CompletionRequest) (json.RawMessage, error)
+	}); ok {
+		return logged.encodeForLog(&redacted)
 	}
-	return mergeOrderedJSONObject(data, extraBody)
+	return protocol.EncodeRequest(&redacted)
 }
 
 const requestContentOmitted = "[Content omitted to fit request byte limit.]"
 
-// trimSerializedRequestToBytes shrinks message content without changing the
-// message/tool-call structure providers validate. Bulky tool results and older
-// turns go first; the latest user message and system prompt retain more
-// headroom and are trimmed only when necessary.
-func trimSerializedRequestToBytes(payload openai.ChatCompletionRequest, extraBody map[string]any, maxBytes int) (openai.ChatCompletionRequest, int, int, bool, error) {
-	serialized, err := serializedRequestPayload(payload, extraBody)
+// trimRequestToBytes shrinks message content until protocol renders req in at
+// most maxBytes, without changing the message/tool-call structure providers
+// validate. Bulky tool results and older turns go first; the latest user
+// message and system prompt retain more headroom and are trimmed only when
+// necessary.
+func trimRequestToBytes(protocol Protocol, req *CompletionRequest, maxBytes int) (*CompletionRequest, int, int, bool, error) {
+	serialized, err := protocol.EncodeRequest(req)
 	if err != nil {
-		return payload, 0, 0, false, err
+		return req, 0, 0, false, err
 	}
 	before := len(serialized)
 	if maxBytes <= 0 || before <= maxBytes {
-		return payload, before, before, false, nil
+		return req, before, before, false, nil
 	}
 
-	trimmed := payload
-	trimmed.Messages = append([]openai.ChatCompletionMessage(nil), payload.Messages...)
+	trimmed := *req
+	trimmed.Messages = append([]Message(nil), req.Messages...)
 	latestUser := -1
 	for i := range slices.Backward(trimmed.Messages) {
-		if trimmed.Messages[i].Role == openai.ChatMessageRoleUser {
+		if trimmed.Messages[i].Role == RoleUser {
 			latestUser = i
 			break
 		}
@@ -547,9 +634,9 @@ func trimSerializedRequestToBytes(payload openai.ChatCompletionRequest, extraBod
 			break
 		}
 		trimmed.Messages[index].Content = compacted
-		serialized, err = serializedRequestPayload(trimmed, extraBody)
+		serialized, err = protocol.EncodeRequest(&trimmed)
 		if err != nil {
-			return payload, before, current, false, err
+			return req, before, current, false, err
 		}
 		next := len(serialized)
 		if next >= current {
@@ -557,10 +644,10 @@ func trimSerializedRequestToBytes(payload openai.ChatCompletionRequest, extraBod
 		}
 		current = next
 	}
-	return trimmed, before, current, current < before, nil
+	return &trimmed, before, current, current < before, nil
 }
 
-func requestTrimCandidate(messages []openai.ChatCompletionMessage, latestUser int) (int, int) {
+func requestTrimCandidate(messages []Message, latestUser int) (int, int) {
 	bestIndex := -1
 	bestPriority := 5
 	bestReducible := 0
@@ -569,9 +656,9 @@ func requestTrimCandidate(messages []openai.ChatCompletionMessage, latestUser in
 		minimum := len(requestContentOmitted)
 		priority := 1
 		switch {
-		case msg.Role == openai.ChatMessageRoleTool:
+		case msg.Role == RoleTool:
 			priority = 0
-		case msg.Role == openai.ChatMessageRoleSystem:
+		case msg.Role == RoleSystem:
 			priority = 3
 			minimum = 256
 		case i == latestUser:
@@ -757,18 +844,6 @@ func mergeOrderedJSONObject(base []byte, extra map[string]any) (json.RawMessage,
 	return json.RawMessage(out.Bytes()), nil
 }
 
-func contextWithExtraBody(ctx context.Context, extraBody map[string]any) context.Context {
-	if len(extraBody) == 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, extraBodyContextKey{}, cloneRequestExtraBody(extraBody))
-}
-
-func extraBodyFromContext(ctx context.Context) map[string]any {
-	extraBody, _ := ctx.Value(extraBodyContextKey{}).(map[string]any)
-	return extraBody
-}
-
 func cloneRequestExtraBody(extraBody map[string]any) map[string]any {
 	if extraBody == nil {
 		return nil
@@ -850,6 +925,9 @@ func cloneMessages(messages []Message) []Message {
 	copy(cloned, messages)
 	for i := range cloned {
 		cloned[i].ToolCalls = cloneToolCalls(messages[i].ToolCalls)
+		if state := messages[i].ProviderState; state != nil {
+			cloned[i].ProviderState = &ProviderState{Origin: state.Origin, Items: append([]json.RawMessage(nil), state.Items...)}
+		}
 	}
 	return cloned
 }
@@ -890,41 +968,7 @@ func setRequestExtraBodyField(extraBody map[string]any, key string, value any) m
 	return extraBody
 }
 
-func injectExtraBody(req *http.Request) error {
-	extraBody := extraBodyFromContext(req.Context())
-	if len(extraBody) == 0 || req.Body == nil {
-		return nil
-	}
-
-	data, err := io.ReadAll(req.Body)
-	if err != nil {
-		return fmt.Errorf("llm: reading request body for extra_body: %w", err)
-	}
-	if err := req.Body.Close(); err != nil {
-		return fmt.Errorf("llm: closing request body for extra_body: %w", err)
-	}
-
-	body := map[string]any{}
-	if strings.TrimSpace(string(data)) != "" {
-		if err := json.Unmarshal(data, &body); err != nil {
-			return fmt.Errorf("llm: decoding request body for extra_body: %w", err)
-		}
-	}
-	maps.Copy(body, extraBody)
-
-	merged, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("llm: encoding request body with extra_body: %w", err)
-	}
-	req.Body = io.NopCloser(bytes.NewReader(merged))
-	req.ContentLength = int64(len(merged))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(merged)), nil
-	}
-	return nil
-}
-
-func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
+func (c *APIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("llm: nil review request")
 	}
@@ -941,14 +985,18 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 // reviewLadder runs one review down the reasoning-effort ladder, retrying at a
 // lower effort when the model exhausts its reasoning budget, loops, or answers
 // with reasoning only, and finally once without tools.
-func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, progress *retryProgress) (response *ReviewResponse, resultErr error) {
+func (c *APIClient) reviewLadder(ctx context.Context, req *ReviewRequest, progress *retryProgress) (response *ReviewResponse, resultErr error) {
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	if req.Finalize {
+	switch {
+	case !c.protocol.Capabilities().ReasoningEffort:
+		// The API takes no effort, so every rung of the ladder would send the
+		// same request; the one attempt is all there is.
+	case req.Finalize:
 		efforts = []string{finalizationReasoningEffort(originalEffort, c.allowedEfforts)}
-	} else if req.Urgent {
+	case req.Urgent:
 		efforts = urgentReasoningEfforts(originalEffort, c.allowedEfforts)
-	} else if !req.DisableReasoningEffortFallback {
+	case !req.DisableReasoningEffortFallback:
 		for _, effort := range fallbackReasoningEfforts(originalEffort) {
 			if attemptReasoningEffortAllowed(effort, c.allowedEfforts) {
 				efforts = append(efforts, effort)
@@ -1236,13 +1284,15 @@ func sanitizeMessagesForNoTools(messages []Message) []Message {
 	}
 	sanitized := make([]Message, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Content) == "" {
+		if msg.Role == RoleAssistant && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Content) == "" {
 			continue
 		}
 		next := msg
 		next.ToolCalls = nil
-		if next.Role == openai.ChatMessageRoleTool {
-			next.Role = openai.ChatMessageRoleUser
+		// The state belonged to the tool calls this history no longer has.
+		next.ProviderState = nil
+		if next.Role == RoleTool {
+			next.Role = RoleUser
 			next.Name = ""
 			next.ToolCallID = ""
 		}
@@ -1288,19 +1338,19 @@ func addReasoningRetryHint(req *ReviewRequest, hint string) {
 		return
 	}
 	for _, v := range slices.Backward(req.Messages) {
-		if v.Role == openai.ChatMessageRoleUser {
+		if v.Role == RoleUser {
 			if strings.Contains(v.Content, hint) {
 				return
 			}
 		}
 	}
 	for i, v := range slices.Backward(req.Messages) {
-		if v.Role == openai.ChatMessageRoleUser && strings.TrimSpace(v.Content) != "" {
-			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: openai.ChatMessageRoleUser, Content: hint}}, req.Messages[i+1:]...)...)
+		if v.Role == RoleUser && strings.TrimSpace(v.Content) != "" {
+			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: RoleUser, Content: hint}}, req.Messages[i+1:]...)...)
 			return
 		}
 	}
-	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: hint})
+	req.Messages = append(req.Messages, Message{Role: RoleUser, Content: hint})
 }
 
 func appendUserHint(content, hint string) string {
@@ -1434,6 +1484,10 @@ func isReasoningEffortRejection(err error, effort string) bool {
 	default:
 		return false
 	}
+	// A provider that names the rejected field says it outright.
+	if strings.Contains(strings.ToLower(statusErr.param), "reasoning") {
+		return true
+	}
 	message := strings.ToLower(statusErr.message)
 	if message == "" {
 		message = strings.ToLower(statusErr.Error())
@@ -1465,152 +1519,56 @@ func isUnknownVariantRejection(message, effort string) bool {
 // reviewOnce performs one logical review call. The returned TokenUsage is the
 // total spend of the call including stream-level retries, and is reported even
 // when the call fails so Review can accumulate spend across fallback attempts.
-func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress *retryProgress) (*ReviewResponse, model.TokenUsage, error) {
+func (c *APIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progress *retryProgress) (*ReviewResponse, model.TokenUsage, error) {
 	var callUsage model.TokenUsage
 	if req == nil {
 		return nil, callUsage, fmt.Errorf("llm: nil review request")
 	}
 
-	payload := openai.ChatCompletionRequest{
-		Model:    req.Model,
-		Messages: buildMessages(req),
-		Stream:   true,
-		Tools:    buildTools(req.Tools),
-		StreamOptions: &openai.StreamOptions{
-			IncludeUsage: true,
-		},
+	toolsOmitted := false
+	if len(req.Tools) > 0 && !c.protocol.Capabilities().Tools {
+		// The API has no function calling: send the conversation the way the
+		// no-tools fallback would, and say so on the response.
+		noTools := cloneReviewRequest(req)
+		noTools.Messages = noToolsFallbackMessages(req)
+		noTools.Tools = nil
+		noTools.ParallelToolCalls = false
+		req = &noTools
+		toolsOmitted = true
 	}
-	if len(req.Tools) > 0 {
-		payload.ParallelToolCalls = req.ParallelToolCalls
-	}
-	if payload.Model == "" {
-		payload.Model = c.model
-	}
-	maxTokensLog := "unset"
-	if req.MaxTokens != nil {
-		payload.MaxTokens = *req.MaxTokens
-		maxTokensLog = fmt.Sprintf("%d", *req.MaxTokens)
-	}
-	requestExtraBody := cloneRequestExtraBody(req.ExtraBody)
-	if req.Finalize {
-		// Provider extras must not restore tools or override finalization's
-		// selected effort. All other sampling/provider settings still apply.
-		delete(requestExtraBody, "tools")
-		delete(requestExtraBody, "tool_choice")
-		delete(requestExtraBody, "parallel_tool_calls")
-		delete(requestExtraBody, "reasoning_effort")
-		payload.Tools = nil
-		payload.ParallelToolCalls = false
+	completion, dropped := c.completionRequest(req)
+	if len(dropped) > 0 {
+		c.logf(ctx, "LLM request omits settings the %s protocol does not accept: %s", c.protocol.Name(), strings.Join(dropped, ","))
 	}
 
-	temperatureLog := "unset"
-	if req.Temperature != nil {
-		payload.Temperature = float32(*req.Temperature)
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "temperature", *req.Temperature)
-		temperatureLog = fmt.Sprintf("%.2f", *req.Temperature)
-	}
-	topPLog := "unset"
-	if req.TopP != nil {
-		payload.TopP = float32(*req.TopP)
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "top_p", *req.TopP)
-		topPLog = fmt.Sprintf("%.2f", *req.TopP)
-	}
-	topKLog := "unset"
-	if req.TopK != nil {
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "top_k", *req.TopK)
-		topKLog = fmt.Sprintf("%d", *req.TopK)
-	}
-	minPLog := "unset"
-	if req.MinP != nil {
-		// min_p has no field on the OpenAI request type, so it rides in
-		// extra_body like top_k.
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "min_p", *req.MinP)
-		minPLog = fmt.Sprintf("%.2f", *req.MinP)
-	}
-	presencePenaltyLog := "unset"
-	if req.PresencePenalty != nil {
-		payload.PresencePenalty = float32(*req.PresencePenalty)
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "presence_penalty", *req.PresencePenalty)
-		presencePenaltyLog = fmt.Sprintf("%.2f", *req.PresencePenalty)
-	}
-	repetitionPenaltyLog := "unset"
-	if req.RepetitionPenalty != nil {
-		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "repetition_penalty", *req.RepetitionPenalty)
-		repetitionPenaltyLog = fmt.Sprintf("%.2f", *req.RepetitionPenalty)
+	maxTokensLog := "unset"
+	if completion.MaxTokens != nil {
+		maxTokensLog = fmt.Sprintf("%d", *completion.MaxTokens)
 	}
 	extraBodyLog := "unset"
-	if len(requestExtraBody) > 0 {
-		extraBodyLog = fmt.Sprintf("%d", len(requestExtraBody))
+	if fields := len(completion.ExtraBody) + completion.samplingCount(); fields > 0 {
+		extraBodyLog = fmt.Sprintf("%d", fields)
 	}
-	if req.ReasoningEffort != "" {
-		payload.ReasoningEffort = req.ReasoningEffort
-	}
-	if len(req.Schema) > 0 {
-		payload.ResponseFormat = &openai.ChatCompletionResponseFormat{
-			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
-			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-				Name:   responseFormatName(req.SchemaKind),
-				Schema: json.RawMessage(req.Schema),
-				// Strict is intentionally false: our schemas use optional
-				// properties, which OpenAI strict mode forbids (it requires
-				// every property in `required` and additionalProperties:false
-				// on every object). Claiming strict would make any endpoint
-				// that actually validates it reject every request.
-				Strict: false,
-			},
-		}
-	}
-
-	serializedPayload, err := serializedRequestPayload(payload, requestExtraBody)
-	if err != nil {
-		progress.recordFailure("request could not be encoded")
-		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
-	}
-	requestBodyBytes := len(serializedPayload)
-	c.logf(ctx, "LLM request size: request_body_bytes=%d max_request_bytes=%d", requestBodyBytes, c.maxRequestBytes)
-	if c.maxRequestBytes > 0 && requestBodyBytes > c.maxRequestBytes {
-		trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, requestExtraBody, c.maxRequestBytes)
-		if trimErr != nil {
-			progress.recordFailure("request could not be trimmed")
-			return nil, callUsage, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
-		}
-		if !changed || after > c.maxRequestBytes {
-			progress.recordFailure("request too large after trimming")
-			return nil, callUsage, fmt.Errorf(
-				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
-				after,
-				c.maxRequestBytes,
-			)
-		}
-		payload = trimmed
-		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
-	}
-	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)
-	if err != nil {
-		progress.recordFailure("request could not be encoded")
-		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
-	}
-
 	c.logf(ctx,
-		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s top_p=%s top_k=%s min_p=%s presence_penalty=%s repetition_penalty=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
-		payload.Model,
-		c.baseURL+"/chat/completions",
+		"LLM request prepared: model=%s endpoint=%s protocol=%s max_tokens=%s temperature=%s top_p=%s top_k=%s min_p=%s presence_penalty=%s repetition_penalty=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
+		completion.Model,
+		c.baseURL+c.protocol.Path(),
+		c.protocol.Name(),
 		maxTokensLog,
-		temperatureLog,
-		topPLog,
-		topKLog,
-		minPLog,
-		presencePenaltyLog,
-		repetitionPenaltyLog,
+		floatLog(completion.Temperature),
+		floatLog(completion.TopP),
+		intLog(completion.TopK),
+		floatLog(completion.MinP),
+		floatLog(completion.PresencePenalty),
+		floatLog(completion.RepetitionPenalty),
 		extraBodyLog,
-		payload.ReasoningEffort,
+		completion.ReasoningEffort,
 		true,
-		len(payload.Messages),
-		len(payload.Tools),
+		len(completion.Messages),
+		len(completion.Tools),
 	)
-	c.logJSON(ctx, "LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, &callUsage, progress)
+	streamed, err := c.reviewStream(ctx, completion, req.ReasoningSink, req.MaxReasoning, &callUsage, progress)
 	if err != nil {
 		return nil, callUsage, err
 	}
@@ -1625,15 +1583,44 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progr
 	)
 	c.logRawModelResponse(ctx, streamed)
 
-	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
+	// A refusal the provider reports as such is terminal, and it is checked first: a refusal
+	// after reasoning has no content either, but it is no reasoning-only
+	// answer for a lower effort to fix. Re-prompting cannot
+	// change the decision, and parsing it as an answer would only produce an
+	// invalid response for the callers' output retry to spend attempts on.
+	if strings.TrimSpace(streamed.refusal) != "" {
+		progress.recordFailure("model refused the request")
+		return nil, callUsage, &RefusalError{Message: streamed.refusal, ReasoningEffort: completion.ReasoningEffort}
+	}
+	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(FinishLength) {
 		progress.recordFailure("reasoning budget exhausted")
-		return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
+		return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: completion.ReasoningEffort}
 	}
 	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls && reasoningOnlyEmptyFinish(streamed.lastFinishReason) {
 		progress.recordFailure("reasoning-only empty response")
 		return nil, callUsage, &ReasoningOnlyEmptyResponseError{
-			ReasoningEffort: payload.ReasoningEffort,
+			ReasoningEffort: completion.ReasoningEffort,
 			FinishReason:    streamed.lastFinishReason,
+		}
+	}
+	// A response the provider reports as cut short is never a result, even
+	// when the text it got as far as happens to parse.
+	switch FinishReason(streamed.lastFinishReason) {
+	case FinishContentFilter:
+		progress.recordFailure("response blocked by content filter")
+		return nil, callUsage, &ContentFilteredError{ReasoningEffort: completion.ReasoningEffort}
+	case FinishLength:
+		if streamed.reasoned {
+			// Reasoning spent the output budget: the effort ladder's lower
+			// rungs leave more of it for the answer.
+			progress.recordFailure("output cut off at the token limit")
+			return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: completion.ReasoningEffort, Truncated: true}
+		}
+		progress.recordFailure("invalid response")
+		return nil, callUsage, &InvalidResponseError{
+			RawContent:      streamed.content,
+			Reason:          "the response was cut off at the output-token limit and is incomplete",
+			ReasoningEffort: completion.ReasoningEffort,
 		}
 	}
 
@@ -1652,11 +1639,11 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progr
 		if err != nil {
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
-				invalidResp.ReasoningEffort = payload.ReasoningEffort
+				invalidResp.ReasoningEffort = completion.ReasoningEffort
 				if resp != nil {
 					resp.RawResponse = content
 					resp.TokensUsed = callUsage
-					resp.ReasoningEffort = payload.ReasoningEffort
+					resp.ReasoningEffort = completion.ReasoningEffort
 					resp.Reasoned = streamed.reasoned
 					invalidResp.PartialResponse = resp
 				}
@@ -1670,8 +1657,14 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progr
 	}
 	resp.RawResponse = content
 	resp.TokensUsed = callUsage
-	resp.ReasoningEffort = payload.ReasoningEffort
+	resp.ReasoningEffort = completion.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
+	if len(streamed.stateItems) > 0 {
+		resp.ProviderState = &ProviderState{Origin: streamed.stateOrigin, Items: streamed.stateItems}
+	}
+	if toolsOmitted {
+		resp.ToolsOmitted = true
+	}
 	c.logf(ctx,
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s",
 		len(resp.Findings),
@@ -1690,70 +1683,129 @@ func responseFormatName(kind SchemaKind) string {
 	return "review_response"
 }
 
-func buildMessages(req *ReviewRequest) []openai.ChatCompletionMessage {
+// completionRequest resolves req into the neutral request the protocol
+// encodes, and names the settings left out because the protocol does not
+// accept them.
+func (c *APIClient) completionRequest(req *ReviewRequest) (*CompletionRequest, []string) {
+	caps := c.protocol.Capabilities()
+	out := &CompletionRequest{
+		Model:           req.Model,
+		Messages:        requestMessages(req),
+		Tools:           cloneToolDefinitions(req.Tools),
+		MaxTokens:       req.MaxTokens,
+		ReasoningEffort: req.ReasoningEffort,
+		ExtraBody:       cloneRequestExtraBody(req.ExtraBody),
+	}
+	if out.Model == "" {
+		out.Model = c.model
+	}
+	if req.Finalize {
+		// Provider extras must not restore tools or override finalization's
+		// selected effort. All other sampling/provider settings still apply.
+		delete(out.ExtraBody, "tools")
+		delete(out.ExtraBody, "tool_choice")
+		delete(out.ExtraBody, "parallel_tool_calls")
+		delete(out.ExtraBody, "reasoning_effort")
+		out.Tools = nil
+	}
+	switch {
+	case req.Finalize:
+		// Finalization asks for no parallel calls outright, tools or not.
+		off := false
+		out.ParallelToolCalls = &off
+	case len(out.Tools) > 0:
+		parallel := req.ParallelToolCalls
+		out.ParallelToolCalls = &parallel
+	}
+
+	var dropped []string
+	sampling := func(name string, set bool) bool {
+		if !set {
+			return false
+		}
+		if caps.AcceptsSampling(name) {
+			return true
+		}
+		dropped = append(dropped, name)
+		return false
+	}
+	if sampling("temperature", req.Temperature != nil) {
+		out.Temperature = req.Temperature
+	}
+	if sampling("top_p", req.TopP != nil) {
+		out.TopP = req.TopP
+	}
+	if sampling("top_k", req.TopK != nil) {
+		out.TopK = req.TopK
+	}
+	if sampling("min_p", req.MinP != nil) {
+		out.MinP = req.MinP
+	}
+	if sampling("presence_penalty", req.PresencePenalty != nil) {
+		out.PresencePenalty = req.PresencePenalty
+	}
+	if sampling("repetition_penalty", req.RepetitionPenalty != nil) {
+		out.RepetitionPenalty = req.RepetitionPenalty
+	}
+	if len(req.Schema) > 0 {
+		if caps.StructuredOutput {
+			out.Schema = cloneRawMessage(req.Schema)
+			out.SchemaName = responseFormatName(req.SchemaKind)
+		} else {
+			dropped = append(dropped, "response_schema")
+		}
+	}
+	if out.MaxTokens != nil && !caps.OutputTokenLimit {
+		dropped = append(dropped, "max_tokens")
+		out.MaxTokens = nil
+	}
+	for _, field := range slices.Concat(caps.UnsupportedFields, caps.ReservedFields) {
+		if _, ok := out.ExtraBody[field]; ok {
+			dropped = append(dropped, "extra_body."+field)
+			delete(out.ExtraBody, field)
+		}
+	}
+	if out.ReasoningEffort != "" && !caps.ReasoningEffort {
+		dropped = append(dropped, "reasoning_effort")
+		out.ReasoningEffort = ""
+	}
+	return out, dropped
+}
+
+func (r *CompletionRequest) samplingCount() int {
+	count := 0
+	for _, set := range []bool{r.Temperature != nil, r.TopP != nil, r.TopK != nil, r.MinP != nil, r.PresencePenalty != nil, r.RepetitionPenalty != nil} {
+		if set {
+			count++
+		}
+	}
+	return count
+}
+
+func floatLog(value *float64) string {
+	if value == nil {
+		return "unset"
+	}
+	return fmt.Sprintf("%.2f", *value)
+}
+
+func intLog(value *int) string {
+	if value == nil {
+		return "unset"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+// requestMessages is the conversation a request sends: its sanitized history,
+// or the system prompt and user content of a single-turn request.
+func requestMessages(req *ReviewRequest) []Message {
 	if len(req.Messages) > 0 {
-		sanitized := sanitizeMessageHistory(req.Messages)
-		messages := make([]openai.ChatCompletionMessage, 0, len(sanitized))
-		for _, msg := range sanitized {
-			messages = append(messages, toOpenAIMessage(msg))
-		}
-		return messages
+		return sanitizeMessageHistory(req.Messages)
 	}
-	return []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
-		{Role: openai.ChatMessageRoleUser, Content: req.UserContent},
+	return []Message{
+		{Role: RoleSystem, Content: req.SystemPrompt},
+		{Role: RoleUser, Content: req.UserContent},
 	}
-}
-
-func buildTools(tools []ToolDefinition) []openai.Tool {
-	if len(tools) == 0 {
-		return nil
-	}
-	converted := make([]openai.Tool, 0, len(tools))
-	for _, tool := range tools {
-		converted = append(converted, openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  tool.Parameters,
-				// Strict is intentionally not set: tool parameter schemas use
-				// optional properties, which OpenAI strict mode forbids, so a
-				// strict-validating endpoint would 400 every request.
-			},
-		})
-	}
-	return converted
-}
-
-func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
-	converted := openai.ChatCompletionMessage{
-		Role:       msg.Role,
-		Content:    msg.Content,
-		Name:       msg.Name,
-		ToolCallID: msg.ToolCallID,
-	}
-	if len(msg.ToolCalls) > 0 {
-		converted.ToolCalls = make([]openai.ToolCall, 0, len(msg.ToolCalls))
-		for _, call := range msg.ToolCalls {
-			arguments, ok := NormalizeToolCallArguments(call.Arguments)
-			if !ok || strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
-				continue
-			}
-			converted.ToolCalls = append(converted.ToolCalls, openai.ToolCall{
-				ID:   call.ID,
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
-					Name:      call.Name,
-					Arguments: arguments,
-				},
-			})
-		}
-		if len(converted.ToolCalls) == 0 {
-			converted.ToolCalls = nil
-		}
-	}
-	return converted
 }
 
 func sanitizeMessageHistory(messages []Message) []Message {
@@ -1763,13 +1815,13 @@ func sanitizeMessageHistory(messages []Message) []Message {
 	sanitized := make([]Message, 0, len(messages))
 	validToolCallIDs := make(map[string]struct{})
 	for _, msg := range messages {
-		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 {
+		if msg.Role == RoleAssistant && len(msg.ToolCalls) > 0 {
 			msg.ToolCalls = sanitizeToolCalls(msg.ToolCalls)
 			for _, call := range msg.ToolCalls {
 				validToolCallIDs[call.ID] = struct{}{}
 			}
 		}
-		if msg.Role == openai.ChatMessageRoleTool {
+		if msg.Role == RoleTool {
 			if _, ok := validToolCallIDs[msg.ToolCallID]; !ok {
 				continue
 			}
@@ -1892,101 +1944,37 @@ func (r requestRetries) backoffAttempt(status int) int {
 	return r.bounded
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage, progress *retryProgress) (*streamedResponse, error) {
-	ctx = contextWithExtraBody(ctx, extraBody)
+func (c *APIClient) reviewStream(ctx context.Context, req *CompletionRequest, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage, progress *retryProgress) (*streamedResponse, error) {
 	requestTooLargeRetried := false
+	tokenRefreshed := false
+	lastOrigin := ""
 	var retries requestRetries
 	for attempt := 0; ; attempt++ {
+		// Each attempt takes its credential afresh — a refresh or a new
+		// sign-in may have replaced it since the last one — and sends only the
+		// provider state of that credential's account.
+		cred, credErr := c.credential(ctx)
+		origin := c.stateOrigin(req.Model, cred.Account)
+		attemptReq, body, err := c.prepareAttempt(ctx, req, origin, attempt == 0 || origin != lastOrigin, progress)
+		if err != nil {
+			return nil, err
+		}
+		lastOrigin = origin
 		streamCtx, streamCancel := context.WithCancel(ctx)
-		streamCtx, slot := contextWithCaptureSlot(streamCtx)
 		detector := newReasoningLoopDetector(streamCancel, maxReasoning)
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf(ctx, "Sending LLM request: attempt=%d request_retries=%d rate_limit_retries=%d", attempt+1, retries.bounded, retries.rateLimit)
 
-		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)
-		capture := slot.snapshot()
-		if capture != nil && capture.code != 0 {
-			c.logf(ctx, "LLM stream opened: status=%s", capture.status)
+		var httpResp *http.Response
+		if credErr != nil {
+			err = credErr
+		} else {
+			httpResp, err = c.openStream(streamCtx, body, cred.Token)
 		}
 		if err != nil {
 			// The stream never opened, so nothing else can cancel the child
 			// context; release it here to avoid leaking one per failed attempt.
 			streamCancel()
-			if status := statusCodeFromError(err, capture); status > 0 {
-				statusErr := newLLMHTTPStatusError(err, capture)
-				c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
-				if body := httpErrorBody(err, capture); len(body) > 0 {
-					c.logMaybeJSON(ctx, "LLM raw response body:", body)
-				}
-				if isRequestTooLarge(status, statusErr.message) && !requestTooLargeRetried {
-					serialized, serializeErr := serializedRequestPayload(payload, extraBody)
-					if serializeErr != nil {
-						progress.recordFailure("oversized request could not be encoded")
-						return nil, fmt.Errorf("llm: encoding oversized retry request: %w", serializeErr)
-					}
-					target := len(serialized) * 3 / 4
-					if c.maxRequestBytes > 0 {
-						target = min(target, c.maxRequestBytes)
-					}
-					trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, extraBody, target)
-					if trimErr != nil {
-						progress.recordFailure("oversized request could not be trimmed")
-						return nil, fmt.Errorf("llm: trimming oversized retry request: %w", trimErr)
-					}
-					if changed && after < before {
-						requestTooLargeRetried = true
-						payload = trimmed
-						// requestTooLargeRetried gates this to one shot, so no
-						// count bounds it and the line carries no gauge; the
-						// number in front is the call's own retry total.
-						c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryBudgetLine(progress.recordRetry(), "prompt too long, trimmed request", 0, ""))
-						c.logf(ctx, "Retrying oversized request with trimmed payload: status=%d before_bytes=%d request_body_bytes=%d target_bytes=%d", status, before, after, target)
-						continue
-					}
-				}
-				if !c.shouldRetryHTTPStatus(status, retries) {
-					progress.recordFailure(httpFailureReason(status, statusErr.message))
-					return nil, statusErr
-				}
-				resp := responseFromCapture(capture)
-				// Back off by the counter that bounds this failure rather than by
-				// the loop's attempt number: attempt also counts retries spent on
-				// other budgets, so a burst of 429s would push the first 5xx retry
-				// straight to the backoff ceiling.
-				waitFor := c.retrier.BackoffForHTTPStatus(retries.backoffAttempt(status), status, resp, statusErr.message)
-				var retryLine string
-				if status == http.StatusTooManyRequests {
-					if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
-						c.logf(ctx, "Retry honoring 429 reset hint: %s", waitFor)
-					}
-					if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && retries.waited+waitFor > budget {
-						c.logf(ctx, "Rate limit retry budget exhausted: waited=%s next_wait=%s budget=%s", retries.waited, waitFor, budget)
-						// The budget is not spent, the next wait simply does not
-						// fit in what is left of it — saying it was exceeded
-						// would contradict the "(waited X/Y)" gauge on the line
-						// right above, which is still under the budget.
-						progress.recordFailure(fmt.Sprintf("rate limited (429), no retry left within the %s wait budget", model.HumanWait(budget)))
-						return nil, fmt.Errorf("llm: rate limit wait budget of %s exhausted after waiting %s: %w", budget, retries.waited, statusErr)
-					}
-					retries.rateLimit++
-					// Rendered after waitFor joins the spent budget, so the
-					// "(waited X/Y)" gauge counts the wait the line itself
-					// announces. Rendering it before left the last gauge a full
-					// backoff short of what had been waited, which is precisely
-					// the number the give-up above points back at.
-					retries.waited += waitFor
-					retryLine = c.retryHTTPStatusLine(progress.recordRetry(), status, retries, waitFor)
-				} else {
-					retries.bounded++
-					retryLine = c.retryHTTPStatusLine(progress.recordRetry(), status, retries, waitFor)
-				}
-				c.logProgress(ctx, logging.StageModel, logging.StateRetry, retryLine)
-				c.logf(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
-				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
-					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
-				}
-				continue
-			}
 			c.logf(ctx, "LLM request failed: attempt=%d request_retries=%d rate_limit_retries=%d error=%v", attempt+1, retries.bounded, retries.rateLimit, err)
 			if !isRetryableNetworkError(err) || retries.bounded >= c.retrier.MaxRetries {
 				progress.recordFailure("network error")
@@ -2000,88 +1988,327 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			}
 			continue
 		}
+		c.logf(ctx, "LLM stream opened: status=%s", httpResp.Status)
 
-		resp, streamErr := c.collectStream(ctx, stream, sink, detector, timeout, streamCancel)
-		closeErr := stream.Close()
-		timeout.Stop()
-		streamCancel()
-		if totalUsage != nil {
-			// Count what this attempt consumed even when it fails and is
-			// retried, so the response's TokensUsed reflects total spend.
-			if streamErr == nil {
-				addTokenUsage(totalUsage, resp.usage)
+		var statusErr *llmHTTPStatusError
+		var errBody []byte
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusBadRequest {
+			errBody, err = c.readErrorBody(ctx, httpResp, streamCancel)
+			if err != nil {
+				progress.recordFailure("request canceled")
+				return nil, err
+			}
+			statusErr = c.statusError(httpResp, c.protocol.ParseError(httpResp.StatusCode, errBody))
+		} else {
+			resp, streamErr := c.collectStream(ctx, c.protocol.NewEventReader(httpResp.Body), sink, detector, timeout, streamCancel)
+			closeErr := httpResp.Body.Close()
+			timeout.Stop()
+			streamCancel()
+			if totalUsage != nil {
+				// Count what this attempt consumed even when it fails and is
+				// retried, so the response's TokensUsed reflects total spend.
+				if streamErr == nil {
+					addTokenUsage(totalUsage, resp.usage)
+				} else {
+					var usageErr *streamReadError
+					if errors.As(streamErr, &usageErr) && usageErr.partial != nil {
+						addTokenUsage(totalUsage, usageErr.partial.usage)
+					}
+				}
+			}
+			// A provider that admits a request only after the stream opened
+			// reports its refusal as the stream's first event. Before any
+			// output it is the same failure an error status would have been,
+			// so it takes the same retry policy.
+			if perr := admissionError(streamErr); perr != nil {
+				statusErr = c.statusError(httpResp, perr)
 			} else {
-				var usageErr *streamReadError
-				if errors.As(streamErr, &usageErr) && usageErr.partial != nil {
-					addTokenUsage(totalUsage, usageErr.partial.usage)
+				if streamErr != nil {
+					if closeErr != nil {
+						c.logf(ctx, "LLM stream close failed after error: %v", closeErr)
+					}
+					var loopErr *ReasoningLoopDetectedError
+					if errors.As(streamErr, &loopErr) {
+						loopErr.ReasoningEffort = req.ReasoningEffort
+						c.logf(ctx, "Reasoning loop detected: effort=%q", req.ReasoningEffort)
+						if c.logger != nil {
+							if loopErr.LoopStartContent != "" {
+								c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
+							}
+							c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
+						}
+						progress.recordFailure("reasoning loop detected")
+						return nil, loopErr
+					}
+					var outputLoopErr *OutputLoopDetectedError
+					if errors.As(streamErr, &outputLoopErr) {
+						outputLoopErr.ReasoningEffort = req.ReasoningEffort
+						c.logf(ctx, "Model repeated output chunk: effort=%q", req.ReasoningEffort)
+						if c.logger != nil {
+							if outputLoopErr.LoopStartContent != "" {
+								c.logBlock(ctx, "Repeated chunk - content before repeat:", outputLoopErr.LoopStartContent)
+							}
+							c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", outputLoopErr.RepeatedContent)
+						}
+						progress.recordFailure("repeated output chunk")
+						return nil, outputLoopErr
+					}
+					if timeout.Expired() {
+						c.logf(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", req.ReasoningEffort, maxReasoning)
+						progress.recordFailure("reasoning time limit exceeded")
+						return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: req.ReasoningEffort}
+					}
+					var readErr *streamReadError
+					if errors.As(streamErr, &readErr) {
+						if isReasoningOnlyPeerInternalStreamError(readErr) {
+							progress.recordFailure("reasoning budget exhausted")
+							return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: req.ReasoningEffort}
+						}
+						if retryableStreamReadError(readErr) {
+							if retries.bounded >= c.retrier.MaxRetries {
+								progress.recordFailure("stream network error")
+								return nil, streamErr
+							}
+							waitFor := c.retrier.Backoff(retries.bounded, nil)
+							retries.bounded++
+							c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryBudgetLine(progress.recordRetry(), "stream network error", waitFor, model.RetryBudget(retries.bounded, c.retrier.MaxRetries, "request retries")))
+							c.logf(ctx, "Retrying request: stream network error")
+							if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
+								return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+							}
+							continue
+						}
+					}
+					progress.recordFailure("stream error")
+					return nil, streamErr
 				}
+				if closeErr != nil {
+					progress.recordFailure("closing stream failed")
+					return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
+				}
+				resp.stateOrigin = origin
+				return resp, nil
 			}
 		}
-		if streamErr != nil {
-			if closeErr != nil {
-				c.logf(ctx, "LLM stream close failed after error: %v", closeErr)
-			}
-			var loopErr *ReasoningLoopDetectedError
-			if errors.As(streamErr, &loopErr) {
-				loopErr.ReasoningEffort = payload.ReasoningEffort
-				c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
-				if c.logger != nil {
-					if loopErr.LoopStartContent != "" {
-						c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
-					}
-					c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
-				}
-				progress.recordFailure("reasoning loop detected")
-				return nil, loopErr
-			}
-			var outputLoopErr *OutputLoopDetectedError
-			if errors.As(streamErr, &outputLoopErr) {
-				outputLoopErr.ReasoningEffort = payload.ReasoningEffort
-				c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
-				if c.logger != nil {
-					if outputLoopErr.LoopStartContent != "" {
-						c.logBlock(ctx, "Repeated chunk - content before repeat:", outputLoopErr.LoopStartContent)
-					}
-					c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", outputLoopErr.RepeatedContent)
-				}
-				progress.recordFailure("repeated output chunk")
-				return nil, outputLoopErr
-			}
-			if timeout.Expired() {
-				c.logf(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
-				progress.recordFailure("reasoning time limit exceeded")
-				return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
-			}
-			var readErr *streamReadError
-			if errors.As(streamErr, &readErr) {
-				if isReasoningOnlyPeerInternalStreamError(readErr) {
-					progress.recordFailure("reasoning budget exhausted")
-					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
-				}
-				if retryableStreamReadError(readErr) {
-					if retries.bounded >= c.retrier.MaxRetries {
-						progress.recordFailure("stream network error")
-						return nil, streamErr
-					}
-					waitFor := c.retrier.Backoff(retries.bounded, nil)
-					retries.bounded++
-					c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryBudgetLine(progress.recordRetry(), "stream network error", waitFor, model.RetryBudget(retries.bounded, c.retrier.MaxRetries, "request retries")))
-					c.logf(ctx, "Retrying request: stream network error")
-					if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
-						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
-					}
+
+		status := statusErr.statusCode
+		c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
+		if len(errBody) > 0 {
+			c.logMaybeJSON(ctx, "LLM raw response body:", errBody)
+		}
+		if status == http.StatusUnauthorized && !tokenRefreshed {
+			if refresher, ok := c.tokens.(TokenRefresher); ok {
+				tokenRefreshed = true
+				if _, refreshErr := refresher.ForceRefresh(ctx); refreshErr == nil {
+					c.logf(ctx, "Retrying request with a refreshed credential")
 					continue
+				} else {
+					c.logf(ctx, "Credential refresh failed: %v", refreshErr)
 				}
 			}
-			progress.recordFailure("stream error")
-			return nil, streamErr
 		}
-		if closeErr != nil {
-			progress.recordFailure("closing stream failed")
-			return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
+		if dropper, ok := c.protocol.(ParamDropper); ok && statusErr.provider != nil && dropper.DropUnsupported(statusErr.provider) {
+			c.logf(ctx, "Retrying without unsupported optional field: param=%q", statusErr.param)
+			continue
 		}
-		return resp, nil
+		errResp := httpResp
+		if isRequestTooLarge(status, statusErr.message) && !requestTooLargeRetried {
+			target := len(body) * 3 / 4
+			if c.maxRequestBytes > 0 {
+				target = min(target, c.maxRequestBytes)
+			}
+			trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, attemptReq, target)
+			if trimErr != nil {
+				progress.recordFailure("oversized request could not be trimmed")
+				return nil, fmt.Errorf("llm: trimming oversized retry request: %w", trimErr)
+			}
+			if changed && after < before {
+				requestTooLargeRetried = true
+				req = trimmed
+				// requestTooLargeRetried gates this to one shot, so no
+				// count bounds it and the line carries no gauge; the
+				// number in front is the call's own retry total.
+				c.logProgress(ctx, logging.StageModel, logging.StateRetry, model.RetryBudgetLine(progress.recordRetry(), "prompt too long, trimmed request", 0, ""))
+				c.logf(ctx, "Retrying oversized request with trimmed payload: status=%d before_bytes=%d request_body_bytes=%d target_bytes=%d", status, before, after, target)
+				continue
+			}
+		}
+		if !c.shouldRetryHTTPStatus(status, retries) {
+			progress.recordFailure(httpFailureReason(status, statusErr.message))
+			return nil, statusErr
+		}
+		// Back off by the counter that bounds this failure rather than by
+		// the loop's attempt number: attempt also counts retries spent on
+		// other budgets, so a burst of 429s would push the first 5xx retry
+		// straight to the backoff ceiling.
+		waitFor := c.retrier.BackoffForHTTPStatus(retries.backoffAttempt(status), status, errResp, statusErr.message)
+		var retryLine string
+		if status == http.StatusTooManyRequests {
+			if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
+				c.logf(ctx, "Retry honoring 429 reset hint: %s", waitFor)
+			}
+			if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && retries.waited+waitFor > budget {
+				c.logf(ctx, "Rate limit retry budget exhausted: waited=%s next_wait=%s budget=%s", retries.waited, waitFor, budget)
+				// The budget is not spent, the next wait simply does not
+				// fit in what is left of it — saying it was exceeded
+				// would contradict the "(waited X/Y)" gauge on the line
+				// right above, which is still under the budget.
+				progress.recordFailure(fmt.Sprintf("rate limited (429), no retry left within the %s wait budget", model.HumanWait(budget)))
+				return nil, fmt.Errorf("llm: rate limit wait budget of %s exhausted after waiting %s: %w", budget, retries.waited, statusErr)
+			}
+			retries.rateLimit++
+			// Rendered after waitFor joins the spent budget, so the
+			// "(waited X/Y)" gauge counts the wait the line itself
+			// announces. Rendering it before left the last gauge a full
+			// backoff short of what had been waited, which is precisely
+			// the number the give-up above points back at.
+			retries.waited += waitFor
+			retryLine = c.retryHTTPStatusLine(progress.recordRetry(), status, retries, waitFor)
+		} else {
+			retries.bounded++
+			retryLine = c.retryHTTPStatusLine(progress.recordRetry(), status, retries, waitFor)
+		}
+		c.logProgress(ctx, logging.StageModel, logging.StateRetry, retryLine)
+		c.logf(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
+		if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
+			return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+		}
+		continue
 	}
+}
+
+// prepareAttempt renders req for one attempt under the credential of origin:
+// provider state from any other origin is removed first, and the request that
+// remains — the one actually sent — is fitted to max_request_bytes. Measuring
+// before the filter would count state that is never sent, and could reject a
+// request that fits. The payload is logged when logPayload is set.
+func (c *APIClient) prepareAttempt(ctx context.Context, req *CompletionRequest, origin string, logPayload bool, progress *retryProgress) (*CompletionRequest, []byte, error) {
+	attempt := withStateFor(req, origin)
+	body, err := c.protocol.EncodeRequest(attempt)
+	if err != nil {
+		progress.recordFailure("request could not be encoded")
+		return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+	}
+	if logPayload {
+		c.logf(ctx, "LLM request size: request_body_bytes=%d max_request_bytes=%d", len(body), c.maxRequestBytes)
+	}
+	if c.maxRequestBytes > 0 && len(body) > c.maxRequestBytes {
+		trimmed, before, after, changed, trimErr := trimRequestToBytes(c.protocol, attempt, c.maxRequestBytes)
+		if trimErr != nil {
+			progress.recordFailure("request could not be trimmed")
+			return nil, nil, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
+		}
+		if !changed || after > c.maxRequestBytes {
+			progress.recordFailure("request too large after trimming")
+			return nil, nil, fmt.Errorf(
+				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
+				after,
+				c.maxRequestBytes,
+			)
+		}
+		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
+		attempt = trimmed
+		if body, err = c.protocol.EncodeRequest(attempt); err != nil {
+			progress.recordFailure("request could not be encoded")
+			return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+		}
+	}
+	if logPayload {
+		payload, err := requestPayloadForLog(c.protocol, attempt)
+		if err != nil {
+			progress.recordFailure("request could not be encoded")
+			return nil, nil, fmt.Errorf("llm: encoding request: %w", err)
+		}
+		c.logJSON(ctx, "LLM request payload:", payload)
+	}
+	return attempt, body, nil
+}
+
+// maxErrorBodyBytes bounds how much of an error response body is read; it
+// is defense-in-depth against a misbehaving upstream.
+const maxErrorBodyBytes = 16 << 20 // 16 MiB
+
+// defaultErrorBodyTimeout bounds how long an error response's body may take
+// once its headers arrived. ResponseHeaderTimeout ends at the headers and the
+// idle-stream watchdog only covers successful streams, so without it a server
+// that sends an error status and never finishes the body would hang the call.
+const defaultErrorBodyTimeout = 30 * time.Second
+
+// readErrorBody reads a failed response's body and then cancels its request.
+// The body is read first because it may still be in flight behind the
+// headers, and cancelling would cut it off and lose the provider's error. The
+// read is bounded in time: past errorBodyTimeout, or on a broken connection,
+// whatever arrived is kept and the status alone drives the retry policy. Only
+// cancellation of the call itself is returned as an error.
+func (c *APIClient) readErrorBody(ctx context.Context, resp *http.Response, cancel context.CancelFunc) ([]byte, error) {
+	limit := c.errorBodyTimeout
+	if limit <= 0 {
+		limit = defaultErrorBodyTimeout
+	}
+	timer := time.AfterFunc(limit, cancel)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	timer.Stop()
+	_ = resp.Body.Close()
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("llm: reading error response: %w", ctx.Err())
+		}
+		c.logf(ctx, "LLM error response body incomplete (status=%s, read %d bytes): %v", resp.Status, len(body), err)
+	}
+	return body, nil
+}
+
+// openStream sends one streaming request with token.
+func (c *APIClient) openStream(ctx context.Context, body []byte, token string) (*http.Response, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+c.protocol.Path(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Cache-Control", "no-cache")
+	httpReq.Header.Set("Connection", "keep-alive")
+	c.protocol.SetHeaders(httpReq.Header, token)
+	return c.httpClient.Do(httpReq)
+}
+
+// statusError describes a failed request by the status the protocol assigned
+// its error. The HTTP status line is kept only while the two agree, so a
+// remapped error never reports a status the server did not send.
+func (c *APIClient) statusError(resp *http.Response, perr *ProviderError) *llmHTTPStatusError {
+	statusCode := resp.StatusCode
+	status := resp.Status
+	if perr.Status > 0 && perr.Status != statusCode {
+		statusCode = perr.Status
+		status = ""
+	}
+	return &llmHTTPStatusError{
+		statusCode: statusCode,
+		status:     status,
+		message:    cleanHTTPErrorText(perr.Message),
+		code:       perr.Code,
+		param:      perr.Param,
+		provider:   perr,
+		cause:      perr,
+	}
+}
+
+// admissionError returns the provider error a stream failed with before it
+// produced any output, when the protocol gave it a status to act on.
+func admissionError(streamErr error) *ProviderError {
+	var readErr *streamReadError
+	if !errors.As(streamErr, &readErr) {
+		return nil
+	}
+	var perr *ProviderError
+	if !errors.As(readErr, &perr) || perr.Status == 0 {
+		return nil
+	}
+	if partial := readErr.partial; partial != nil && (partial.reasoned || partial.sawContent || partial.sawToolCalls) {
+		return nil
+	}
+	return perr
 }
 
 var requestTooLargeBadRequestMessages = []string{
@@ -2109,7 +2336,7 @@ func isRequestTooLarge(status int, message string) bool {
 	})
 }
 
-func (c *OpenAIClient) shouldRetryHTTPStatus(status int, retries requestRetries) bool {
+func (c *APIClient) shouldRetryHTTPStatus(status int, retries requestRetries) bool {
 	// Retrying a byte-identical 413 request cannot succeed and can amplify load
 	// on an already constrained gateway. Keep this invariant explicit even if
 	// the retrier's generic status set changes later.
@@ -2142,7 +2369,7 @@ func (c *OpenAIClient) shouldRetryHTTPStatus(status int, retries requestRetries)
 // disabled, MaxRetries bounds them like every other retryable status. Keeping
 // the two apart matters: a single "0 means both" answer made an endpoint that
 // always answers 429 retryable forever whenever both were disabled.
-func (c *OpenAIClient) rateLimitWaitBounded() bool {
+func (c *APIClient) rateLimitWaitBounded() bool {
 	return c.retrier.MaxTotalRateLimitWait > 0
 }
 
@@ -2152,7 +2379,7 @@ func (c *OpenAIClient) rateLimitWaitBounded() bool {
 // the rate-limit wait is gone once the wait this line announces is over (or
 // their count when that cap is disabled), and every other status carries the
 // count shouldRetryHTTPStatus gates on MaxRetries.
-func (c *OpenAIClient) retryHTTPStatusLine(retry, status int, retries requestRetries, waitFor time.Duration) string {
+func (c *APIClient) retryHTTPStatusLine(retry, status int, retries requestRetries, waitFor time.Duration) string {
 	if status == http.StatusTooManyRequests {
 		gauge := model.RetryBudget(retries.rateLimit, c.retrier.MaxRetries, "rate-limit retries")
 		if c.rateLimitWaitBounded() {
@@ -2195,7 +2422,7 @@ func httpFailureReason(status int, message string) string {
 //
 // A nil progress reports nothing, the way recordRetry and recordFailure record
 // nothing, so tracking retries stays optional for a caller of reviewLadder.
-func (c *OpenAIClient) logRetryOutcome(ctx context.Context, progress *retryProgress, err error, callerRetries func(error) bool) {
+func (c *APIClient) logRetryOutcome(ctx context.Context, progress *retryProgress, err error, callerRetries func(error) bool) {
 	if progress == nil {
 		return
 	}
@@ -2245,7 +2472,7 @@ func (c *OpenAIClient) logRetryOutcome(ctx context.Context, progress *retryProgr
 	c.logProgress(ctx, logging.StageModel, logging.StateWarn, reason)
 }
 
-func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController, cancel context.CancelFunc) (*streamedResponse, error) {
+func (c *APIClient) collectStream(ctx context.Context, stream EventReader, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController, cancel context.CancelFunc) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -2256,6 +2483,8 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 		sawToolCalls     bool
 		lastFinishReason string
 		receivedChunk    bool
+		stateItems       []json.RawMessage
+		refusal          strings.Builder
 	)
 	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
 	ownsSink := false
@@ -2275,6 +2504,8 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 	}
 	partialResponse := func() *streamedResponse {
 		return &streamedResponse{
+			stateItems:       stateItems,
+			refusal:          refusal.String(),
 			content:          contentBuilder.String(),
 			toolCalls:        finalizeToolCalls(toolCalls),
 			usage:            usage,
@@ -2306,7 +2537,7 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 	defer idleTimer.Stop()
 
 	for {
-		chunk, err := stream.Recv()
+		chunk, err := stream.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// A finish reason marks the response as complete even when the
@@ -2351,51 +2582,52 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 
 		if chunk.Usage != nil {
 			sawUsage = true
-			usage = model.TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-			}
+			usage = *chunk.Usage
 		}
 		if !receivedChunk {
 			receivedChunk = true
 			c.logf(ctx, "LLM first stream chunk received")
 		}
 
-		for _, choice := range chunk.Choices {
-			if choice.Index != 0 {
-				continue
+		if chunk.FinishReason != "" {
+			lastFinishReason = string(chunk.FinishReason)
+		}
+		if len(chunk.StateItem) > 0 {
+			stateItems = append(stateItems, chunk.StateItem)
+		}
+		if chunk.Refusal != "" {
+			timeout.Stop()
+			refusal.WriteString(chunk.Refusal)
+		}
+		if chunk.Reasoning != "" {
+			if !reasoningStarted {
+				reasoningStarted = true
+				timeout.Start()
 			}
-			if choice.FinishReason != "" {
-				lastFinishReason = string(choice.FinishReason)
+			if s := ensureSink(); s != nil {
+				s.Append(chunk.Reasoning)
 			}
-			if choice.Delta.ReasoningContent != "" {
-				if !reasoningStarted {
-					reasoningStarted = true
-					timeout.Start()
-				}
-				if s := ensureSink(); s != nil {
-					s.Append(choice.Delta.ReasoningContent)
-				}
-				if detector != nil {
-					detector.onDelta(choice.Delta.ReasoningContent)
-				}
+			// Loop detection reads the model's own tokens; a provider's
+			// summary of hidden reasoning is paraphrase, not a token stream
+			// that can loop.
+			if detector != nil && chunk.ReasoningKind != ReasoningSummary {
+				detector.onDelta(chunk.Reasoning)
 			}
-			if choice.Delta.Content != "" {
-				timeout.Stop()
-				contentBuilder.WriteString(choice.Delta.Content)
-				sawContent = true
-			}
-			if len(choice.Delta.ToolCalls) > 0 {
-				timeout.Stop()
-				sawToolCalls = true
-				mergeToolCallDeltas(&toolCalls, choice.Delta.ToolCalls)
-			}
+		}
+		if chunk.Text != "" {
+			timeout.Stop()
+			contentBuilder.WriteString(chunk.Text)
+			sawContent = true
+		}
+		if len(chunk.ToolCalls) > 0 {
+			timeout.Stop()
+			sawToolCalls = true
+			mergeToolCallDeltas(&toolCalls, chunk.ToolCalls)
 		}
 	}
 }
 
-func mergeToolCallDeltas(builders *[]*toolCallBuilder, deltas []openai.ToolCall) {
+func mergeToolCallDeltas(builders *[]*toolCallBuilder, deltas []ToolCallDelta) {
 	for _, delta := range deltas {
 		var builder *toolCallBuilder
 		if delta.Index != nil && *delta.Index >= 0 {
@@ -2429,11 +2661,11 @@ func mergeToolCallDeltas(builders *[]*toolCallBuilder, deltas []openai.ToolCall)
 		if delta.ID != "" {
 			builder.id = delta.ID
 		}
-		if delta.Function.Name != "" {
-			builder.name = delta.Function.Name
+		if delta.Name != "" {
+			builder.name = delta.Name
 		}
-		if delta.Function.Arguments != "" {
-			builder.arguments.WriteString(delta.Function.Arguments)
+		if delta.Arguments != "" {
+			builder.arguments.WriteString(delta.Arguments)
 		}
 	}
 }
@@ -2456,181 +2688,14 @@ func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
 	return toolCalls
 }
 
-type capturingTransport struct {
+// clientTransport is the client's HTTP transport. Its base is the seam tests
+// replace to script server behaviour.
+type clientTransport struct {
 	base http.RoundTripper
 }
 
-func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	slot := captureSlotFromContext(req.Context())
-	if err := injectExtraBody(req); err != nil {
-		if slot != nil {
-			slot.set(nil)
-		}
-		return nil, err
-	}
-
-	resp, err := t.base.RoundTrip(req)
-	if err != nil {
-		if slot != nil {
-			slot.set(nil)
-		}
-		return nil, err
-	}
-
-	captured := &capture{
-		status: resp.Status,
-		code:   resp.StatusCode,
-		header: resp.Header.Clone(),
-	}
-
-	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") &&
-		resp.StatusCode >= http.StatusOK &&
-		resp.StatusCode < http.StatusBadRequest {
-		if slot != nil {
-			slot.set(captured)
-		}
-		return resp, nil
-	}
-
-	data, readErr := readAndRestoreBody(resp)
-	captured.body = data
-	if slot != nil {
-		slot.set(captured)
-	}
-	if readErr != nil {
-		return nil, readErr
-	}
-
-	return resp, nil
-}
-
-// maxCapturedBodyBytes bounds how much of a non-streaming/error response body
-// the capturing transport buffers. Streaming completion responses are returned
-// earlier without buffering, so this only caps the (small) error/metadata
-// bodies; it is defense-in-depth against a misbehaving upstream.
-const maxCapturedBodyBytes = 16 << 20 // 16 MiB
-
-func readAndRestoreBody(resp *http.Response) ([]byte, error) {
-	if resp.Body == nil {
-		return nil, nil
-	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCapturedBodyBytes))
-	if err != nil {
-		_ = resp.Body.Close()
-		return nil, err
-	}
-	if err := resp.Body.Close(); err != nil {
-		return nil, err
-	}
-
-	resp.Body = io.NopCloser(bytes.NewReader(data))
-	return data, nil
-}
-
-func responseFromCapture(c *capture) *http.Response {
-	if c == nil || c.code == 0 {
-		return nil
-	}
-	return &http.Response{
-		Status:     c.status,
-		StatusCode: c.code,
-		Header:     c.header.Clone(),
-	}
-}
-
-func statusCodeFromError(err error, c *capture) int {
-	var statusErr *llmHTTPStatusError
-	if errors.As(err, &statusErr) {
-		if statusErr.statusCode > 0 {
-			return statusErr.statusCode
-		}
-	}
-
-	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.HTTPStatusCode > 0 {
-			return apiErr.HTTPStatusCode
-		}
-	}
-
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
-		if reqErr.HTTPStatusCode > 0 {
-			return reqErr.HTTPStatusCode
-		}
-	}
-
-	if c != nil {
-		return c.code
-	}
-
-	return 0
-}
-
-func newLLMHTTPStatusError(err error, c *capture) *llmHTTPStatusError {
-	statusCode := statusCodeFromError(err, c)
-	status := ""
-	if c != nil {
-		status = c.status
-	}
-	message := ""
-
-	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.HTTPStatus != "" {
-			status = apiErr.HTTPStatus
-		}
-		if apiErr.HTTPStatusCode > 0 {
-			statusCode = apiErr.HTTPStatusCode
-		}
-		message = apiErr.Message
-	}
-
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
-		if reqErr.HTTPStatus != "" {
-			status = reqErr.HTTPStatus
-		}
-		if reqErr.HTTPStatusCode > 0 {
-			statusCode = reqErr.HTTPStatusCode
-		}
-		if message == "" {
-			message = providerErrorMessage(reqErr.Body)
-		}
-		if message == "" {
-			message = cleanHTTPErrorText(string(reqErr.Body))
-		}
-		if message == "" && reqErr.Err != nil {
-			message = cleanHTTPErrorText(reqErr.Err.Error())
-		}
-	}
-
-	if message == "" && c != nil {
-		message = providerErrorMessage(c.body)
-		if message == "" {
-			message = cleanHTTPErrorText(string(c.body))
-		}
-	}
-	message = cleanHTTPErrorText(message)
-
-	return &llmHTTPStatusError{
-		statusCode: statusCode,
-		status:     status,
-		message:    message,
-		cause:      err,
-	}
-}
-
-func httpErrorBody(err error, c *capture) []byte {
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) && len(reqErr.Body) > 0 {
-		return reqErr.Body
-	}
-	if c != nil && len(c.body) > 0 {
-		return c.body
-	}
-	return nil
+func (t *clientTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(req)
 }
 
 func formatHTTPStatus(code int, status string) string {
@@ -2736,42 +2801,42 @@ func retryableStreamReadError(err *streamReadError) bool {
 		strings.Contains(message, "received from peer")
 }
 
-func (c *OpenAIClient) logf(ctx context.Context, format string, args ...any) {
+func (c *APIClient) logf(ctx context.Context, format string, args ...any) {
 	if c.logger == nil {
 		return
 	}
 	c.logger.Verbosef(ctx, format, args...)
 }
 
-func (c *OpenAIClient) logBlock(ctx context.Context, label, content string) {
+func (c *APIClient) logBlock(ctx context.Context, label, content string) {
 	if c.logger == nil {
 		return
 	}
 	c.logger.VerboseBlock(ctx, label, content)
 }
 
-func (c *OpenAIClient) logJSON(ctx context.Context, label string, value any) {
+func (c *APIClient) logJSON(ctx context.Context, label string, value any) {
 	if c.logger == nil {
 		return
 	}
 	c.logger.VerboseJSON(ctx, label, value)
 }
 
-func (c *OpenAIClient) logMaybeJSON(ctx context.Context, label string, data []byte) {
+func (c *APIClient) logMaybeJSON(ctx context.Context, label string, data []byte) {
 	if c.logger == nil {
 		return
 	}
 	c.logger.VerboseMaybeJSON(ctx, label, data)
 }
 
-func (c *OpenAIClient) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {
+func (c *APIClient) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {
 	if c.logger == nil {
 		return
 	}
 	c.logger.Progress(ctx, stage, state, msg)
 }
 
-func (c *OpenAIClient) logRawModelResponse(ctx context.Context, streamed *streamedResponse) {
+func (c *APIClient) logRawModelResponse(ctx context.Context, streamed *streamedResponse) {
 	if streamed == nil {
 		return
 	}
