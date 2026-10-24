@@ -2,8 +2,8 @@
 
 #### Overview
 
-> **Version**: TypeScript 4.x, targeting **4.9** and valid for every project pinned to 4.0–4.9. TypeScript 4.9 was released on November 15, 2022 (npm `4.9.3`); its latest and **final** patch is **4.9.5**, published to npm on January 30, 2023 (GitHub release dated January 31, 2023). 4.9.5 contains only two backports, one of which teaches 4.9 to accept `"ignoreDeprecations": "5.0"` for smoother upgrades.[^1][^2][^3]
-> **Status as of October 2026**: the entire 4.x line is **unmaintained and receives no updates** — no bug fixes, no security fixes, no new `lib.d.ts` declarations. TypeScript has no LTS releases; fixes only ever ship in new minor versions. The successor 5.0 shipped on March 16, 2023; 5.9.3 (September 30, 2025) is the final 5.x; **6.0** (6.0.3, April 16, 2026) is the last JavaScript-based compiler; the current release is **TypeScript 7.0.2** (the native Go compiler, July 8, 2026), with 7.1 in beta.[^2][^4] DefinitelyTyped only tests `@types/*` packages against TypeScript versions less than two years old, so every 4.x version has left that window (4.9 left it in November 2024): new `@types` releases routinely use 5.x syntax and **fail to parse on 4.x** (see [`@types` pinning](#types-packages-must-be-pinned)).[^5]
+> **Version**: TypeScript 4.x, targeting **4.9** and valid for every project pinned to 4.0–4.9. TypeScript 4.9 was released on November 15, 2022 (npm `4.9.3`); its latest and **final** patch is **4.9.5**, published to npm on January 30, 2023 (GitHub release dated January 31, 2023). 4.9.5 contains only two backports, one of which teaches 4.9 to accept `"ignoreDeprecations": "5.0"` for smoother upgrades.
+> **Status as of October 2026**: the entire 4.x line is **unmaintained and receives no updates** — no bug fixes, no security fixes, no new `lib.d.ts` declarations. TypeScript has no LTS releases; fixes only ever ship in new minor versions. The successor 5.0 shipped on March 16, 2023; 5.9.3 (September 30, 2025) is the final 5.x; **6.0** (6.0.3, April 16, 2026) is the last JavaScript-based compiler; the current release is **TypeScript 7.0.2** (the native Go compiler, July 8, 2026), with 7.1 in beta. DefinitelyTyped only tests `@types/*` packages against TypeScript versions less than two years old, so every 4.x version has left that window (4.9 left it in November 2024): new `@types` releases routinely use 5.x syntax and **fail to parse on 4.x** (see [`@types` pinning](#types-packages-must-be-pinned)).
 > **Scope**: the TypeScript language and type system as usable in 4.x, with every feature marked by the minor version that introduced it, the compiler options and module resolution modes of 4.x, reviewer-relevant compiler bugs and pitfalls, tooling versions that still support 4.x, and migration notes to 5.0.
 > **Note**: this document is self-contained. Sections and examples that need a minor newer than 4.0 are marked **(4.N+)**. Every `ts` example was compiled with the final patch of each minor — 4.0.8, 4.1.6, 4.2.4, 4.3.5, 4.4.4, 4.5.5, 4.6.4, 4.7.4, 4.8.4 and 4.9.5 — and each "(4.N+)" claim was proven by showing that the previous minor rejects or mis-types the example (and 5.0.4 was used for the 5.0 boundary). Unless an example states otherwise with a `// @option: value` line (the TypeScript playground convention), it is compiled with `strict: true`, `target: es2020`, `module: commonjs`. `// @since: 4.N` marks the minimum version; `// error` marks a line that must fail to compile, `// error 4.N+` a line that fails only from 4.N on, and `// error <4.N` a line that fails only before 4.N.
 
@@ -35,7 +35,7 @@ Global truths about TypeScript 4.x:
 
 This section lists every reviewer-relevant change in 4.0–4.9. A project pinned to 4.N has every feature up to and including 4.N and **none** after it. Check the pinned version (`package.json`, the lockfile, `npx tsc -v`) before flagging or recommending anything in this list.
 
-##### 4.0 (August 2020)[^6]
+##### 4.0 (August 2020)
 
 - **Variadic tuple types**: spreads of generic tuples in tuple types (`[...T, ...U]`) and in rest parameters; spreads may appear anywhere in a tuple type.
 - **Labeled tuple elements**: `[start: number, end: number]`, `[first: string, ...rest: number[]]`.
@@ -46,7 +46,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - Editor: `/** @deprecated */` support (strike-through), "convert to optional chaining".
 - **Breaking**: a property in a derived class can no longer override a base accessor (and vice versa) — always an error now (TS2610/TS2611); the operand of `delete` must be optional/`any`/`unknown`/`never` under `strictNullChecks` (TS2790); `document.origin` removed from `lib.dom.d.ts`.
 
-##### 4.1 (November 2020)[^7]
+##### 4.1 (November 2020)
 
 - **Template literal types** (`` `${A}-${B}` ``) with the intrinsic string types `Uppercase`, `Lowercase`, `Capitalize`, `Uncapitalize`.
 - **Key remapping in mapped types**: `{ [K in keyof T as NewKey]: … }`, including filtering with `never`.
@@ -55,7 +55,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - `paths` without `baseUrl`; `checkJs` implies `allowJs`; `jsx: react-jsx` / `react-jsxdev` (React 17 automatic runtime); JSDoc `@see`.
 - **Breaking**: `abstract` members cannot be `async`; `any`/`unknown` propagate through falsy positions of `&&` (`x && y` with `x: unknown` is `unknown`); **`resolve` in `new Promise(resolve => …)` is no longer optional** — use `new Promise<void>(…)`; conditional spreads (`...(c && obj)`) produce optional properties; unmatched parameters are no longer related to `any`.
 
-##### 4.2 (February 2021)[^8]
+##### 4.2 (February 2021)
 
 - Smarter type-alias preservation in error messages and hovers.
 - **Leading and middle rest elements in tuples**: `[...string[], number]`, `[boolean, ...string[], number]`.
@@ -68,7 +68,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - Destructured variables prefixed with `_` can be explicitly unused (`noUnusedLocals`).
 - **Breaking**: `noImplicitAny` errors for unused-context `yield` expressions (TS7057); import paths ending in `.d.ts` are an error; spread-tuple size limits; parsing of `f<T>(x)` in JavaScript files changed.
 
-##### 4.3 (May 2021)[^9]
+##### 4.3 (May 2021)
 
 - **Separate write types on properties**: a setter may accept a wider type than the getter returns (the getter type must still be assignable to the setter type — unrelated types arrive only in 5.1).
 - **`override` keyword** and **`--noImplicitOverride`**.
@@ -78,7 +78,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - `target`/`lib` **`es2021`** (`String.prototype.replaceAll`, `Promise.any`, `AggregateError`, `WeakRef`, `FinalizationRegistry`, logical-assignment kept native).
 - **Breaking**: comparing a **union enum** with a numeric literal it can never equal is an error (TS2367); `useDefineForClassFields` defaults to `true` for `target: esnext`; DOM types for non-implemented APIs removed.
 
-##### 4.4 (August 2021)[^10]
+##### 4.4 (August 2021)
 
 - **Control-flow analysis of aliased conditions and discriminants**: `const isString = typeof x === "string"; if (isString) x.toUpperCase()` narrows `x` (if `x` is a `const`, `readonly` property or unassigned parameter).
 - **`symbol` and template-string-pattern index signatures** (`[key: symbol]: T`, `` [key: `data-${string}`]: T ``) and union index signatures.
@@ -88,7 +88,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - Faster declaration emit and incremental builds; inlay hints in editors.
 - **Breaking**: `strict` now includes `useUnknownInCatchVariables`; imported functions are called with an undefined `this` (`(0, mod.fn)()` emit); always-truthy promise checks extend to call expressions (`if (foo())`); `abstract` properties cannot have initializers.
 
-##### 4.5 (November 2021)[^11]
+##### 4.5 (November 2021)
 
 - **`Awaited<T>`** utility type; `Promise.all`/`race`/`allSettled`/`any` and `await` use it.
 - **`type` modifiers on import names**: `import { fn, type T } from "./m"` (and `export { type T }`).
@@ -98,7 +98,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - **`--preserveValueImports`** (requires `module` ≥ `es2015`, TS5095 otherwise; combined with `isolatedModules`, every type must be imported with `type`, TS1444); `lib` replacement via `@typescript/lib-*` packages in `node_modules`.
 - **Breaking**: `Awaited` changes some inferred generic types; a compiler option at the root of a tsconfig without a `compilerOptions` object is an error.
 
-##### 4.6 (February 2022)[^12]
+##### 4.6 (February 2022)
 
 - **Code before `super()`** in constructors, as long as it does not reference `this`.
 - **Control-flow analysis for destructured discriminated unions** (`const { kind, payload } = action; if (kind === "a") payload…`).
@@ -108,7 +108,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - `--generateTrace` output analysable with the `@typescript/analyze-trace` tool; JavaScript files always get grammar/binding errors.
 - **Breaking**: object rest on generic objects drops methods and non-public members (`const { a, ...rest } = genericT` — `rest` no longer has the methods).
 
-##### 4.7 (May 2022)[^13]
+##### 4.7 (May 2022)
 
 - **ECMAScript-module support for Node.js**: `module`/`moduleResolution` `node16` and `nodenext`, `"type": "module"` in `package.json`, `.mts`/`.cts` source files (`.mjs`/`.cjs`, `.d.mts`/`.d.cts` output), `package.json` `exports`/`imports`, self-referencing. (In 4.5 and 4.6 `node12`/`nodenext` existed only in nightly builds; stable 4.5/4.6 reject them with TS4124.)
 - **`moduleDetection`** (`auto`, `legacy`, `force`).
@@ -120,7 +120,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - **`moduleSuffixes`** (React Native style `.ios.ts` lookups); `resolution-mode` on `/// <reference types>` (on `import type` it is nightly-only in 4.7–5.2).
 - **Breaking**: `readonly` tuples have a `readonly length`; JSX spreads of `unknown`/`never` rejected; template-string interpolation of a generic constrained to `symbol` is an error (TS2731).
 
-##### 4.8 (August 2022)[^14]
+##### 4.8 (August 2022)
 
 - **Improved intersection reduction, union compatibility and narrowing** under `strictNullChecks`: `unknown` behaves like `{} | null | undefined`; `{}` intersected with an object type simplifies; `NonNullable<T>` is now `T & {}`; narrowing a generic `T` against `null`/`undefined` produces `T & {}`.
 - Improved inference for `infer X extends number/bigint/boolean` inside template literal types (`"100"` → `100`).
@@ -128,7 +128,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - Binding patterns no longer contribute inference candidates; `--build`/`--watch`/`--incremental` speedups; file-watching fixes across `git checkout`.
 - **Breaking**: **an unconstrained type parameter is no longer assignable to `{}`** (`function f<T>(x: T) { const o: {} = x; }` → TS2322); `Error.cause` is typed `unknown`; unused renames in binding patterns inside type signatures (`declare function f({ a: string }): void`) are errors (TS2842; earlier versions only report implicit `any`, TS7031, under `noImplicitAny`); JavaScript files cannot `import`/`export` types.
 
-##### 4.9 (November 2022)[^1]
+##### 4.9 (November 2022)
 
 - **`satisfies` operator**: validates an expression against a type without widening its inferred type.
 - **Unlisted-property narrowing with `in`**: `"name" in obj` narrows `object` to `object & Record<"name", unknown>`; the left operand must be `string | number | symbol` and the right operand `object` — so `"a" in x` with an **unconstrained** type parameter `x: T` becomes an error (TS2322 "Type 'T' is not assignable to type 'object'"; 4.8 accepts it). Constrain `T extends object`.
@@ -136,7 +136,7 @@ This section lists every reviewer-relevant change in 4.0–4.9. A project pinned
 - **Errors on direct `NaN` equality** (`x === NaN`, TS2845, suggests `Number.isNaN`).
 - File watching uses file-system events by default; "Remove Unused Imports" and "Sort Imports" editor commands; go-to-definition on `return`.
 - **Breaking**: `Promise.resolve` uses `Awaited` (can change inferred types); `.js` emit no longer elides imports; under `node16`/`nodenext`, **`exports` is prioritized over `typesVersions`**.
-- 4.9.5 accepts `"ignoreDeprecations": "5.0"` (4.8.4 rejects it with TS5023).[^3]
+- 4.9.5 accepts `"ignoreDeprecations": "5.0"` (4.8.4 rejects it with TS5023).
 
 ##### Do not use or recommend (TypeScript 5.0 and later)
 
@@ -215,7 +215,7 @@ Notes for reviewers:
 
 ##### The `strict` family by version
 
-Option availability below was verified by passing each flag to every 4.x compiler.[^18]
+Option availability below was verified by passing each flag to every 4.x compiler.
 
 `strict: true` enables every flag in this table that exists in the pinned version, and new members are added in minor releases — upgrading 4.3 → 4.4 with `strict` adds `useUnknownInCatchVariables` and can break the build.
 
@@ -265,7 +265,7 @@ export function message(run: () => void): string {
 
 New `@types/*` versions are written for current TypeScript and frequently contain 5.x-only syntax (`const` type parameters, newer lib types). With 4.x they fail to parse inside `node_modules` — and **`skipLibCheck` does not help with syntax errors**. Installing the latest `@types/node` (26.x in October 2026) on 4.9.5 produces dozens of errors such as `node_modules/@types/node/ffi.d.ts(94,21): error TS1139: Type parameter declaration expected.`
 
-DefinitelyTyped publishes a dist-tag per supported compiler version. `npm install -D @types/node@ts4.9` installs the newest release tested with 4.9 (22.9.3); the tags `ts4.0` … `ts4.8` exist likewise (`ts4.2` → 18.15.3, `ts4.7` → 20.14.8, `ts4.8` → 22.9.0).[^5] Prefer a version that matches the **runtime** Node.js major and was published for the compiler, e.g. for 4.9: `@types/node@18.19.65`, `20.17.7` or `22.9.3`; for 4.7: `20.14.8` (these were the last releases declaring support for that TypeScript version; `@types/node` 18.19.65 does not compile on 4.7.4). Review every `@types/*` or library upgrade in a 4.x project by running `tsc` in CI — Renovate/Dependabot bumps of `@types/*` are a common cause of sudden 4.x build breaks.
+DefinitelyTyped publishes a dist-tag per supported compiler version. `npm install -D @types/node@ts4.9` installs the newest release tested with 4.9 (22.9.3); the tags `ts4.0` … `ts4.8` exist likewise (`ts4.2` → 18.15.3, `ts4.7` → 20.14.8, `ts4.8` → 22.9.0). Prefer a version that matches the **runtime** Node.js major and was published for the compiler, e.g. for 4.9: `@types/node@18.19.65`, `20.17.7` or `22.9.3`; for 4.7: `20.14.8` (these were the last releases declaring support for that TypeScript version; `@types/node` 18.19.65 does not compile on 4.7.4). Review every `@types/*` or library upgrade in a 4.x project by running `tsc` in CI — Renovate/Dependabot bumps of `@types/*` are a common cause of sudden 4.x build breaks.
 
 ***
 
@@ -273,7 +273,7 @@ DefinitelyTyped publishes a dist-tag per supported compiler version. `npm instal
 
 ##### Resolution modes in 4.x
 
-See the TypeScript modules reference for the full algorithm.[^19]
+See the TypeScript modules reference for the full algorithm.
 
 | `moduleResolution` | Since | Use for | Behaviour |
 |---|---|---|---|
@@ -1513,7 +1513,7 @@ TypeScript types disappear at runtime; every security property must be enforced 
 ##### Validate untrusted input
 
 - Treat `JSON.parse`, `req.body`, `process.env`, query strings, message events and database rows as `unknown` and validate with a schema library or hand-written guards. A cast (`as User`) or a generic `parse<T>()` is not validation.
-- Pin validation libraries to versions that support the project's compiler: `zod` 3.22 documents "TypeScript 4.5+"; Zod 4 is tested only against TypeScript 5.5+.[^15] A schema library whose `.d.ts` no longer parses on 4.x leaves the build broken, not insecure — but the temptation to replace it with casts is the real risk.
+- Pin validation libraries to versions that support the project's compiler: `zod` 3.22 documents "TypeScript 4.5+"; Zod 4 is tested only against TypeScript 5.5+. A schema library whose `.d.ts` no longer parses on 4.x leaves the build broken, not insecure — but the temptation to replace it with casts is the real risk.
 
 ##### Prototype pollution and dynamic keys
 
@@ -1598,13 +1598,13 @@ export const check: Equal<Pick<User, "id">, { id: string }> = true;
 - **`typescript` 4.9.5** declares `engines.node >= 4.2.0` and runs on every current Node.js; 5.0 requires Node.js ≥ 12.20.
 - Pin the exact compiler (`"typescript": "4.9.5"` or `~4.9.5`) and commit the lockfile. A caret range on 4.x never moves to 5.0, but within 4.x a lockfile refresh from `^4.2.0` jumps to 4.9.5 and brings every breaking change listed in this guide.
 - **Editors** bundle the newest TypeScript. In VS Code, set `"typescript.tsdk": "node_modules/typescript/lib"` and select "Use Workspace Version", otherwise the editor shows 5.x/7.x diagnostics and quick fixes (`satisfies`, `const T`, …) that the project compiler rejects.
-- **`ts-node` 10.9.2** (peer `typescript >= 2.7`)[^20] works with 4.9.5: CommonJS directly, ESM via `node --loader ts-node/esm` (verified on Node.js 22.23.4; Node prints deprecation warnings for `--loader`). ts-node type-checks by default; `transpileOnly`/`swc` modes skip checking.
+- **`ts-node` 10.9.2** (peer `typescript >= 2.7`) works with 4.9.5: CommonJS directly, ESM via `node --loader ts-node/esm` (verified on Node.js 22.23.4; Node prints deprecation warnings for `--loader`). ts-node type-checks by default; `transpileOnly`/`swc` modes skip checking.
 - **`tsx`, `esbuild`, `swc`, Babel** strip types with their own parsers, independent of the project's compiler version, and never type-check. They support `isolatedModules`-compatible code only (no cross-file `const enum` inlining, no `emitDecoratorMetadata` in esbuild).
 - **Node.js built-in type stripping** (Node.js 22.18+/23.6+ by default) also ignores the project's TypeScript version; it rejects non-erasable syntax such as `enum` and parameter properties (verified on Node.js 22.23.4) — common in 4.x codebases.
 
 ##### Linting: `typescript-eslint` versions for 4.x
 
-`typescript-eslint` checks the running compiler against its supported range and warns outside it.[^16]
+`typescript-eslint` checks the running compiler against its supported range and warns outside it.
 
 | typescript-eslint | Supported TypeScript | ESLint | Node.js |
 |---|---|---|---|
@@ -1632,7 +1632,7 @@ Rules with the highest review value on 4.x: `no-floating-promises`, `no-misused-
 
 #### Migrating from 4.x to 5.0 (and beyond)
 
-TypeScript 5.0 (March 16, 2023) is the next release after 4.9; there is no 4.10.[^17]
+TypeScript 5.0 (March 16, 2023) is the next release after 4.9; there is no 4.10.
 
 ##### Before the upgrade, on 4.9.5
 
@@ -1643,7 +1643,7 @@ TypeScript 5.0 (March 16, 2023) is the next release after 4.9; there is no 4.10.
 
 ##### 5.0 deprecations (errors TS5101/TS5107 in 5.0–5.4, no effect in 5.5, hard errors from 5.6)
 
-In 5.0, each of these is an **error** unless `"ignoreDeprecations": "5.0"` is set (verified on 5.0.4: TS5101 for `importsNotUsedAsValues: "preserve"`/`"error"`, TS5107 for `target: ES3`; the default values such as `importsNotUsedAsValues: "remove"` are not reported):[^17]
+In 5.0, each of these is an **error** unless `"ignoreDeprecations": "5.0"` is set (verified on 5.0.4: TS5101 for `importsNotUsedAsValues: "preserve"`/`"error"`, TS5107 for `target: ES3`; the default values such as `importsNotUsedAsValues: "remove"` are not reported):
 
 - `target: ES3`
 - `out` (use `outFile`)

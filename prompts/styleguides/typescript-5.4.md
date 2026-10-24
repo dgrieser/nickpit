@@ -1,7 +1,7 @@
 ### TypeScript 5.4: The Complete Production Developer Guide
 
-> **Version**: TypeScript 5.4.2 (the first stable 5.4 release) was published on **March 6, 2024**; the latest and final patch is **5.4.5 (April 10, 2024)**.[^1][^2]
-> **Support status (October 2026)**: unmaintained. The TypeScript team ships patches only for the newest minor line; 5.4 received none after 5.4.5. Newer lines are 5.5–5.9 (5.9.3, September 30, 2025), 6.0 (6.0.3, April 16, 2026, the last JavaScript-based compiler) and 7.0 (7.0.2, July 8, 2026, the native Go port, now `latest` on npm); 7.1 is in beta (7.1.0-beta, October 20, 2026).[^2] DefinitelyTyped tests `@types/*` packages only against TypeScript versions younger than two years, so 5.4 dropped out of that window in March 2026 and current `@types` releases may no longer compile with it (see Tooling).[^3]
+> **Version**: TypeScript 5.4.2 (the first stable 5.4 release) was published on **March 6, 2024**; the latest and final patch is **5.4.5 (April 10, 2024)**.
+> **Support status (October 2026)**: unmaintained. The TypeScript team ships patches only for the newest minor line; 5.4 received none after 5.4.5. Newer lines are 5.5–5.9 (5.9.3, September 30, 2025), 6.0 (6.0.3, April 16, 2026, the last JavaScript-based compiler) and 7.0 (7.0.2, July 8, 2026, the native Go port, now `latest` on npm); 7.1 is in beta (7.1.0-beta, October 20, 2026). DefinitelyTyped tests `@types/*` packages only against TypeScript versions younger than two years, so 5.4 dropped out of that window in March 2026 and current `@types` releases may no longer compile with it (see Tooling).
 > **Scope**: the whole TypeScript language and type system as usable in 5.4, every 5.4 change against 5.3, `tsconfig` and module resolution, runtime/Node.js interplay, async, errors, security, performance, testing, tooling and declaration publishing — with examples that were all compiled with `tsc` 5.4.5 (and boundary examples also with 5.3.3 and 5.5.4).
 > **Note**: this document is self-contained. Everything from earlier releases that still applies is carried forward. Sections covering 5.4-specific behaviour are marked **New in 5.4**.
 
@@ -11,7 +11,7 @@ Unless an example says otherwise, it compiles with `tsc --strict --target es2022
 
 #### What's New in TypeScript 5.4
 
-TypeScript 5.4 is a small, mostly type-system release. Its changes against 5.3:[^1][^4]
+TypeScript 5.4 is a small, mostly type-system release. Its changes against 5.3:
 
 | Change | Kind | Section |
 | --- | --- | --- |
@@ -32,11 +32,11 @@ TypeScript 5.4 is a small, mostly type-system release. Its changes against 5.3:[
 | DOM `lib.d.ts` refresh; new `dom.asynciterable`, `webworker.asynciterable`, `es2016.intl` libs | `lib.d.ts` | Behavioural changes |
 | Last release in which the options deprecated in 5.0 still *work* with `"ignoreDeprecations": "5.0"` | Deprecation | Deprecations |
 
-The 5.4.0 release notes also announced that enum members may no longer be named `Infinity`, `-Infinity` or `NaN`. That change shipped in 5.4.2 only: it was **reverted in 5.4.3** (PR #57853), so 5.4.3–5.4.5 accept those names again, exactly like 5.3.[^5] Verified: 5.4.2 reports TS2452 on `enum E { Infinity = 0 }`; 5.4.5 compiles it.
+The 5.4.0 release notes also announced that enum members may no longer be named `Infinity`, `-Infinity` or `NaN`. That change shipped in 5.4.2 only: it was **reverted in 5.4.3** (PR #57853), so 5.4.3–5.4.5 accept those names again, exactly like 5.3. Verified: 5.4.2 reports TS2452 on `enum E { Infinity = 0 }`; 5.4.5 compiles it.
 
 ##### Do not use or recommend (not available in 5.4)
 
-The project's compiler is 5.4. These features exist only in later releases — never suggest them, and flag code that relies on them (it does not compile, or the option is rejected as unknown):[^6][^7][^8][^9][^10][^11]
+The project's compiler is 5.4. These features exist only in later releases — never suggest them, and flag code that relies on them (it does not compile, or the option is rejected as unknown):
 
 - **5.5** — inferred type predicates (`arr.filter(x => x !== undefined)` still yields `(T | undefined)[]` in 5.4); control-flow narrowing of `obj[key]` with a non-literal `key`; regular-expression syntax checking (5.4 accepts `/(?<y>\d)\k<m>/`); `lib` declarations for the new `Set` methods (`union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`), `Array.fromAsync`, `String.prototype.isWellFormed`/`toWellFormed`; `--isolatedDeclarations`; the `${configDir}` template variable in `tsconfig.json`; the JSDoc `@import` tag; `--target es2023`; the `transpileDeclaration` API.
 - **5.6** — "this condition is always truthy/nullish" errors (TS2869/TS2872); iterator helper methods (`Iterator.prototype.map`, `lib esnext.iterator`); `--strictBuiltinIteratorReturn` and the `BuiltinIteratorReturn`/`IteratorObject` types; `--noUncheckedSideEffectImports`; `--noCheck`; arbitrary module namespace identifiers (`export { x as "a-b" }`); `--build` continuing past errors.
@@ -49,8 +49,8 @@ Runtime availability is a separate question from `lib` declarations: Node.js 22 
 
 ##### Deprecated and on the way out
 
-- **Options deprecated in 5.0** — `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out`, `preserveValueImports`, `prepend` in project references and an implicitly OS-specific `newLine`. In 5.4 each one is error TS5101/TS5107 unless `"ignoreDeprecations": "5.0"` is set, in which case it still **works** (verified: `keyofStringsOnly` still changes `keyof`). 5.4 is the last release where that is true: in 5.5 the options are accepted but have **no effect**, and from **5.6** on (not 6.0, as the 5.5 notes suggest) setting them is error TS5102 "has been removed".[^1][^7] Replace `importsNotUsedAsValues`/`preserveValueImports` with `verbatimModuleSyntax`, `out` with `outFile`, `suppressImplicitAnyIndexErrors` with real index signatures.
-- **`moduleResolution: "node"`** (alias `node10`) models Node.js 10 and ignores `package.json` `"exports"`; use `node16`/`nodenext` for Node.js and `bundler` for bundlers. TypeScript 6.0 deprecates `node10`, `classic`, `baseUrl`, `target: es5`, `downlevelIteration`, `module` `amd`/`umd`/`system`, `outFile` and the `assert` import syntax.[^11]
+- **Options deprecated in 5.0** — `charset`, `target: "ES3"`, `importsNotUsedAsValues`, `noImplicitUseStrict`, `noStrictGenericChecks`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `out`, `preserveValueImports`, `prepend` in project references and an implicitly OS-specific `newLine`. In 5.4 each one is error TS5101/TS5107 unless `"ignoreDeprecations": "5.0"` is set, in which case it still **works** (verified: `keyofStringsOnly` still changes `keyof`). 5.4 is the last release where that is true: in 5.5 the options are accepted but have **no effect**, and from **5.6** on (not 6.0, as the 5.5 notes suggest) setting them is error TS5102 "has been removed". Replace `importsNotUsedAsValues`/`preserveValueImports` with `verbatimModuleSyntax`, `out` with `outFile`, `suppressImplicitAnyIndexErrors` with real index signatures.
+- **`moduleResolution: "node"`** (alias `node10`) models Node.js 10 and ignores `package.json` `"exports"`; use `node16`/`nodenext` for Node.js and `bundler` for bundlers. TypeScript 6.0 deprecates `node10`, `classic`, `baseUrl`, `target: es5`, `downlevelIteration`, `module` `amd`/`umd`/`system`, `outFile` and the `assert` import syntax.
 - **Import assertions** (`import x from "./a.json" assert { type: "json" }`) still compile in 5.4, but Node.js 22 and later reject the `assert` keyword with a `SyntaxError`. Write `with`.
 - **`experimentalDecorators`** still works and is still needed for `emitDecoratorMetadata`-based frameworks, but new code should use standard (TC39) decorators, available since 5.0.
 
@@ -75,7 +75,7 @@ Everything below compiles on 5.4.5; do not report it as unavailable. Boundaries 
 
 #### New in 5.4: Preserved Narrowing in Closures After the Last Assignment
 
-Before 5.4, a narrowing of a parameter or `let` variable was discarded inside any callback, because the variable *might* be reassigned before the callback runs. 5.4 keeps the narrowing when the closure is created **after the last assignment** to the variable and the variable is **not assigned inside any nested function**.[^1][^12]
+Before 5.4, a narrowing of a parameter or `let` variable was discarded inside any callback, because the variable *might* be reassigned before the callback runs. 5.4 keeps the narrowing when the closure is created **after the last assignment** to the variable and the variable is **not assigned inside any nested function**.
 
 ```ts
 function getUrls(url: string | URL, names: string[]) {
@@ -130,7 +130,7 @@ Review notes:
 
 #### New in 5.4: The `NoInfer<T>` Utility Type
 
-`NoInfer<T>` is an intrinsic type (declared as `type NoInfer<T> = intrinsic` in `lib.es5.d.ts`, so it exists for every `lib` setting). It evaluates to `T`, but blocks the occurrence from contributing inference candidates. Use it when one parameter is the "source of truth" for a type parameter and another must merely conform to it.[^1][^13]
+`NoInfer<T>` is an intrinsic type (declared as `type NoInfer<T> = intrinsic` in `lib.es5.d.ts`, so it exists for every `lib` setting). It evaluates to `T`, but blocks the occurrence from contributing inference candidates. Use it when one parameter is the "source of truth" for a type parameter and another must merely conform to it.
 
 ```ts
 function createStreetLight<C extends string>(colors: C[], defaultColor?: NoInfer<C>) {
@@ -163,7 +163,7 @@ Before 5.4, libraries emulated it with `[T][T extends any ? 0 : never]` or a sec
 
 #### New in 5.4: `Object.groupBy`, `Map.groupBy` and `Promise.withResolvers`
 
-5.4 adds declarations for three ES2024 APIs. They live in `esnext` libraries, so they are visible only with `--target esnext`, `--lib esnext`, or the specific sub-libraries (`esnext.object`, `esnext.collection`, `esnext.promise`). There is no `es2024` target or lib in 5.4 (added in 5.7).[^1][^14]
+5.4 adds declarations for three ES2024 APIs. They live in `esnext` libraries, so they are visible only with `--target esnext`, `--lib esnext`, or the specific sub-libraries (`esnext.object`, `esnext.collection`, `esnext.promise`). There is no `es2024` target or lib in 5.4 (added in 5.7).
 
 ```ts
 // tsc: --lib es2022,esnext.object,esnext.collection,esnext.promise
@@ -191,7 +191,7 @@ Review notes:
 
 #### New in 5.4: `--module preserve` and `require()` with `--moduleResolution bundler`
 
-`--module preserve` (new in 5.4) models bundlers and runtimes such as Bun that accept both ESM `import` and CommonJS `require()` in the same file. It implies `moduleResolution: "bundler"`, `esModuleInterop: true` and `resolveJsonModule: true` (shown by `tsc --module preserve --showConfig`). ESM imports are emitted unchanged and `import x = require("...")` is emitted as a `require()` call; the syntax chosen also selects the `"import"` or `"require"` condition of the dependency's `package.json` `"exports"`.[^1][^15]
+`--module preserve` (new in 5.4) models bundlers and runtimes such as Bun that accept both ESM `import` and CommonJS `require()` in the same file. It implies `moduleResolution: "bundler"`, `esModuleInterop: true` and `resolveJsonModule: true` (shown by `tsc --module preserve --showConfig`). ESM imports are emitted unchanged and `import x = require("...")` is emitted as a `require()` call; the syntax chosen also selects the `"import"` or `"require"` condition of the dependency's `package.json` `"exports"`.
 
 ```ts
 // file: src/main.ts — tsc --module preserve
@@ -214,7 +214,7 @@ Rules verified on 5.4.5:
 
 #### New in 5.4: Checked Import Attributes
 
-Import attributes (`with { type: "json" }`, 5.3) and import assertions (`assert { ... }`) are now checked against a global `ImportAttributes` interface. Runtimes or projects can declare which attributes they accept:[^1][^16]
+Import attributes (`with { type: "json" }`, 5.3) and import assertions (`assert { ... }`) are now checked against a global `ImportAttributes` interface. Runtimes or projects can declare which attributes they accept:
 
 ```ts
 // file: src/attributes.d.ts
@@ -238,7 +238,7 @@ JSON imports under `--module nodenext` (verified with 5.4.5 and Node.js 18.20/20
 
 #### New in 5.4: Behavioural Changes That Can Break a Build
 
-These are correctness fixes; upgrading from 5.3 can surface new errors (or remove old ones).[^1]
+These are correctness fixes; upgrading from 5.3 can surface new errors (or remove old ones).
 
 ##### More accurate conditional-type constraints
 
@@ -322,11 +322,11 @@ Promise.all(["", ...([] as any)]).then((result) => {
 
 ##### `lib.d.ts`
 
-The DOM declarations were regenerated, and 5.4 adds the `dom.asynciterable` / `webworker.asynciterable` libraries (async iteration of `FileSystemDirectoryHandle`), `es2016.intl` (`Intl.getCanonicalLocales`) and the `esnext.object`, `esnext.collection`, `esnext.promise` libraries described above. Code that declared these APIs itself may now see duplicate-declaration errors.[^17]
+The DOM declarations were regenerated, and 5.4 adds the `dom.asynciterable` / `webworker.asynciterable` libraries (async iteration of `FileSystemDirectoryHandle`), `es2016.intl` (`Intl.getCanonicalLocales`) and the `esnext.object`, `esnext.collection`, `esnext.promise` libraries described above. Code that declared these APIs itself may now see duplicate-declaration errors.
 
 ##### Emit changes
 
-Not breaking per se, but visible in diffs of compiled output: type-parameter names are preserved more often when shadowed in declaration emit, complex parameter lists of downlevelled `async` functions move into the generator body, binding aliases in function declarations are kept, and import attributes in `import()` types go through the normal emit pipeline.[^1]
+Not breaking per se, but visible in diffs of compiled output: type-parameter names are preserved more often when shadowed in declaration emit, complex parameter lists of downlevelled `async` functions move into the generator body, binding aliases in function declarations are kept, and import attributes in `import()` types go through the normal emit pipeline.
 
 ***
 
@@ -451,7 +451,7 @@ export async function load(): Promise<number> {
 }
 ```
 
-- `__dirname`, `__filename`, `require` and `module` are declared **globally** by `@types/node`, so `tsc` does not flag them in ESM files — but they throw `ReferenceError` at runtime in ESM. Use `import.meta.dirname`/`import.meta.filename`[^21] (Node.js 20.11+/21.2+; `undefined` on Node.js 18 although `@types/node` types them as `string`), or `fileURLToPath(new URL(".", import.meta.url))`, and `createRequire(import.meta.url)`.
+- `__dirname`, `__filename`, `require` and `module` are declared **globally** by `@types/node`, so `tsc` does not flag them in ESM files — but they throw `ReferenceError` at runtime in ESM. Use `import.meta.dirname`/`import.meta.filename` (Node.js 20.11+/21.2+; `undefined` on Node.js 18 although `@types/node` types them as `string`), or `fileURLToPath(new URL(".", import.meta.url))`, and `createRequire(import.meta.url)`.
 
 ```ts
 // BAD — compiles in an ESM file, ReferenceError at runtime
@@ -501,7 +501,7 @@ Side-effect-only imports (`import "./polyfills.js";`) are **not** checked for ex
 import { helper } from "#internal/helper.js"; // resolves to src/internal/helper.ts at type-check time
 ```
 
-`"imports"` is understood by Node.js, bundlers and `tsc` (`nodenext`, `bundler`), so no tool needs a separate alias. Specifiers must start with `#` (`#/` alone is supported only from TypeScript 6.0 and recent Node.js). New in 5.4: auto-import completions in editors suggest these `#...` specifiers.[^1] For a compiled package, point the mapping at the build output (`"./dist/internal/*"`) or use conditions (`{"types": "./src/...", "default": "./dist/..."}`).
+`"imports"` is understood by Node.js, bundlers and `tsc` (`nodenext`, `bundler`), so no tool needs a separate alias. Specifiers must start with `#` (`#/` alone is supported only from TypeScript 6.0 and recent Node.js). New in 5.4: auto-import completions in editors suggest these `#...` specifiers. For a compiled package, point the mapping at the build output (`"./dist/internal/*"`) or use conditions (`{"types": "./src/...", "default": "./dist/..."}`).
 
 `compilerOptions.paths` is purely a type-checking alias; emitted JavaScript keeps `@/foo` and fails at runtime unless the bundler or a runtime loader also resolves it. Flag `paths` in packages run by plain Node.js.
 
@@ -1572,7 +1572,7 @@ function handle(body: unknown): CreateUser {
 export { handle };
 ```
 
-(Zod is a dependency, not part of TypeScript; the example compiles with TypeScript 5.4.5 against both Zod 3.25 and Zod 4.6. Check that the chosen library version still supports TypeScript 5.4 — current Zod documentation states it is tested against TypeScript 5.5 and later only.[^18])
+(Zod is a dependency, not part of TypeScript; the example compiles with TypeScript 5.4.5 against both Zod 3.25 and Zod 4.6. Check that the chosen library version still supports TypeScript 5.4 — current Zod documentation states it is tested against TypeScript 5.5 and later only.)
 
 Environment variables are `string | undefined` under `@types/node`'s `process.env` (index signature): validate and convert once at startup.
 
@@ -1676,13 +1676,13 @@ The last case is the protection `@ts-expect-error` gives: when the expected erro
 
 - Pin the compiler exactly (`"typescript": "5.4.5"` or `~5.4.5`); a caret range `^5.4.5` silently upgrades to 5.9 and changes diagnostics. Editors should use the workspace version ("TypeScript: Select TypeScript Version" → workspace) — a newer editor-bundled `tsserver` shows 5.5+ behaviour (e.g. inferred type predicates) that `tsc` 5.4 then rejects in CI.
 - `tsc -v` must print `Version 5.4.5`. `npx tsc --showConfig` prints the effective configuration including implied options.
-- 5.4 editor features: auto-imports of `package.json` `"imports"` subpaths and the "Add missing parameters" / "Add optional parameters" quick fixes for calls with too many arguments.[^1] Verified through the language-service API (`getCodeFixesAtPosition`): for an unresolved `helperFn` defined under an `"imports": {"#internal/*": ...}` mapping, 5.3.3 offers `Add import from "./internal/helper.js"` while 5.4.5 offers `Add import from "#internal/helper.js"`; the parameter quick fixes appear only in 5.4.5. These do not change what `tsc` accepts.
+- 5.4 editor features: auto-imports of `package.json` `"imports"` subpaths and the "Add missing parameters" / "Add optional parameters" quick fixes for calls with too many arguments. Verified through the language-service API (`getCodeFixesAtPosition`): for an unresolved `helperFn` defined under an `"imports": {"#internal/*": ...}` mapping, 5.3.3 offers `Add import from "./internal/helper.js"` while 5.4.5 offers `Add import from "#internal/helper.js"`; the parameter quick fixes appear only in 5.4.5. These do not change what `tsc` accepts.
 - `tsc --init` in 5.4 writes the long, commented template (the minimal template is 5.9).
 - The `typescript` 5.4.5 package declares `engines: node >= 14.17`.
 
 ##### `@types` packages: pin versions that still support 5.4
 
-DefinitelyTyped publishes each `@types` package with `typesVersions` and a minimum `typeScriptVersion`, and stops testing compiler versions older than two years.[^3] For TypeScript 5.4 this has practical consequences (verified):
+DefinitelyTyped publishes each `@types` package with `typesVersions` and a minimum `typeScriptVersion`, and stops testing compiler versions older than two years. For TypeScript 5.4 this has practical consequences (verified):
 
 - Current `@types/node` (26.x) declares `"typeScriptVersion": "5.6"` and uses `IteratorObject`/`BuiltinIteratorReturn`, types that do not exist in 5.4. With 5.4 it produces errors such as TS2304 "Cannot find name 'BuiltinIteratorReturn'" in `node_modules/@types/node`; `skipLibCheck` hides those but user code still breaks (`for await (const d of await opendir("."))` → TS2504 "Type 'Dir' must have a '[Symbol.asyncIterator]()' method").
 - npm dist-tags name the last version tested with each compiler: `npm install -D @types/node@ts5.4` installs `@types/node` 25.9.3 (which declares `typeScriptVersion` 5.3) — the right choice for a 5.4 project. The same `tsX.Y` tags exist for every `@types` package.
@@ -1693,7 +1693,7 @@ Flag dependency bumps that pull in `@types/*` (or libraries with bundled types) 
 
 ##### Linting: typescript-eslint
 
-typescript-eslint 8.x supports TypeScript `>=4.8.4 <6.1.0` (peer dependency of 8.72.0), so it works with 5.4.[^19] Use the type-aware presets (`strictTypeChecked`, `stylisticTypeChecked`) with `parserOptions.projectService: true`. Rules with the highest bug-catching value:
+typescript-eslint 8.x supports TypeScript `>=4.8.4 <6.1.0` (peer dependency of 8.72.0), so it works with 5.4. Use the type-aware presets (`strictTypeChecked`, `stylisticTypeChecked`) with `parserOptions.projectService: true`. Rules with the highest bug-catching value:
 
 | Rule | Catches |
 | --- | --- |
@@ -1714,7 +1714,7 @@ Format with Prettier (or dprint/Biome); do not hand-format.
 ##### Running TypeScript without a build step
 
 - **`tsx`** (esbuild-based) and **`ts-node --transpile-only`/`--swc`**: fast, no type checking.
-- **Node.js type stripping**: Node.js 22.6 added `--experimental-strip-types`; it is on by default from Node.js 23.6 and 22.18 and marked stable from 24.12 and 25.2; `--experimental-transform-types` (22.7+) was removed in Node.js 26.[^20] It only erases types. Verified on Node.js 22.23 and 24.22:
+- **Node.js type stripping**: Node.js 22.6 added `--experimental-strip-types`; it is on by default from Node.js 23.6 and 22.18 and marked stable from 24.12 and 25.2; `--experimental-transform-types` (22.7+) was removed in Node.js 26. It only erases types. Verified on Node.js 22.23 and 24.22:
   - `enum`, `namespace` with values, parameter properties and `import x = require()` throw `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` (on Node.js 22–25 they need `--experimental-transform-types`; Node.js 26 has no transform mode at all). TypeScript 5.4 cannot warn about them (`--erasableSyntaxOnly` is 5.8).
   - A type imported without `type` (`import { User, make } from "./user.ts"` where `User` is an interface) fails at runtime: `SyntaxError: The requested module './user.ts' does not provide an export named 'User'`. Use `verbatimModuleSyntax` so `tsc` forces `import { type User, make }`.
   - Imports must name the `.ts` file. In 5.4 that requires `allowImportingTsExtensions` with `noEmit` (or `emitDeclarationOnly`); `tsc` cannot then emit runnable JavaScript (`--rewriteRelativeImportExtensions` is 5.7). Choose one model per package: "Node.js runs `.ts` directly" or "`tsc` emits `.js` with `.js` specifiers".

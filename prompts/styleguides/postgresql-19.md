@@ -1,7 +1,7 @@
 ### PostgreSQL 19: The Complete Production SQL Review Guide
 
-> **Version**: PostgreSQL 19 is **not generally available yet**. As of October 22, 2026 the newest build is **19 RC 1, released October 15, 2026**. The project plans **19 RC 2 for November 12, 2026** (together with the next minor releases of the supported branches) and **general availability on November 19, 2026**, "unless an issue is discovered that requires a delay or an additional release candidate". A release candidate is "mostly identical to the initial release", but fixes can still land before GA, so RC behaviour may still change.[^1][^3]
-> **Support**: Once released, 19 follows the versioning policy (five years of minor releases); its final-release date is not yet listed. The newest *released* major is **18 (latest minor 18.6, August 13, 2026)**; supported majors are 18, 17, 16, 15 and 14, and 14 receives its final release on November 12, 2026.[^2][^4][^5]
+> **Version**: PostgreSQL 19 is **not generally available yet**. As of October 22, 2026 the newest build is **19 RC 1, released October 15, 2026**. The project plans **19 RC 2 for November 12, 2026** (together with the next minor releases of the supported branches) and **general availability on November 19, 2026**, "unless an issue is discovered that requires a delay or an additional release candidate". A release candidate is "mostly identical to the initial release", but fixes can still land before GA, so RC behaviour may still change.
+> **Support**: Once released, 19 follows the versioning policy (five years of minor releases); its final-release date is not yet listed. The newest *released* major is **18 (latest minor 18.6, August 13, 2026)**; supported majors are 18, 17, 16, 15 and 14, and 14 receives its final release on November 12, 2026.
 > **Scope**: SQL that runs on a PostgreSQL 19 server: schema migrations, queries embedded in application code, functions/procedures/triggers, schema design, indexing, transactions, security, JSON, partitioning, connection handling and upgrades from 18. Every SQL example was executed on **PostgreSQL 19rc1** (`postgres:19rc1` Docker image, `server_version_num = 190000`); every "new in 19" claim was additionally checked to fail or behave differently on **18.6**.
 > **Note**: This document is self-contained. Everything usable from PostgreSQL 14–18 is carried forward and marked with the version that introduced it. Sections marked **New in 19** cover behaviour specific to this release.
 
@@ -11,15 +11,15 @@
 
 The project pins PostgreSQL 19. Judge code against what 19 actually does:
 
-- **19 is a release candidate until GA.** A deployment or CI image pinned to `postgres:19rc1`, `19beta*` or any pre-release build is acceptable for testing only. Production must move to 19.0 (planned November 19, 2026) or the latest 19.x minor once available. Do not ship code that depends on a behaviour that the release notes describe as still being fixed (the RC 1 announcement lists fixes for `REPACK (CONCURRENTLY)`, `pg_plan_advice`, planner optimizations that rely on whether an expression can be `NULL`, automatic logical-replication enablement and parallel autovacuum during the beta period).[^3]
+- **19 is a release candidate until GA.** A deployment or CI image pinned to `postgres:19rc1`, `19beta*` or any pre-release build is acceptable for testing only. Production must move to 19.0 (planned November 19, 2026) or the latest 19.x minor once available. Do not ship code that depends on a behaviour that the release notes describe as still being fixed (the RC 1 announcement lists fixes for `REPACK (CONCURRENTLY)`, `pg_plan_advice`, planner optimizations that rely on whether an expression can be `NULL`, automatic logical-replication enablement and parallel autovacuum during the beta period).
 - **Verify before you claim something is unavailable.** Many "new" features are older than reviewers remember: `MERGE` is 15, `MERGE ... RETURNING` and `JSON_TABLE` are 17, `uuidv7()`, virtual generated columns and `RETURNING old/new` are 18, `gen_random_uuid()` is core since 13. Check the version tables in "Features from 18" and "Features from 14–17" before asking for a workaround.
 - **Say "not available in PostgreSQL 19" only when 19 proves it.** The "Do not use or recommend" list below is verified: each item fails on 19rc1.
 - **Code that must also run on 18** cannot use anything marked **New in 19** — each of those was verified to fail (or behave differently) on 18.6. Several 19 changes alter behaviour without any syntax difference (`json_array()` over zero rows, backslashes in old scripts that set `standard_conforming_strings = off`, `COPY ... WHERE` on system columns, `postgres_fdw` inheriting `READ ONLY`, defaults such as `jit = off`); see the migration notes.
-- **Client and pooler versions are part of the contract.** Dumps made with a pre-19 `pg_dump` under `standard_conforming_strings = off` do not restore correctly into 19; use 19's `pg_dump`/`pg_dumpall` for the upgrade.[^1]
+- **Client and pooler versions are part of the contract.** Dumps made with a pre-19 `pg_dump` under `standard_conforming_strings = off` do not restore correctly into 19; use 19's `pg_dump`/`pg_dumpall` for the upgrade.
 
 ##### Do not use or recommend (PostgreSQL 20 development, or never committed)
 
-PostgreSQL 20 is in development (`20devel`); its release notes are a placeholder and nothing below is released. Each item is documented in the official development documentation (built from the master branch on 2026-10-21) and fails on 19rc1 (verified). Never suggest these for a 19 codebase:[^24]
+PostgreSQL 20 is in development (`20devel`); its release notes are a placeholder and nothing below is released. Each item is documented in the official development documentation (built from the master branch on 2026-10-21) and fails on 19rc1 (verified). Never suggest these for a 19 codebase:
 
 | Feature (committed to master for 20) | Error on 19rc1 |
 | --- | --- |
@@ -38,10 +38,10 @@ Also not available — these are frequently assumed but are neither in 19 nor in
 
 ##### Deprecated in 19 (still works, flag new uses)
 
-- **`VACUUM FULL` and `CLUSTER`** are superseded by `REPACK` ("The old commands have been retained for compatibility"). Both still run on 19rc1.[^1][^6]
-- **MD5 passwords** (deprecated since 18). 19 now also warns at **login**: `WARNING: authenticated with an MD5-encrypted password` (verified). Both warnings are controlled by `md5_password_warnings` (default `on`; the setting itself exists since 18, where it only covers setting a password).[^1][^15]
-- **`pg_verifybackup --wal-directory`** is deprecated in favour of `--wal-path`.[^1]
-- **`pg_buffercache_numa_pages()`** remains only for backward compatibility; use `pg_buffercache_os_pages()`.[^1]
+- **`VACUUM FULL` and `CLUSTER`** are superseded by `REPACK` ("The old commands have been retained for compatibility"). Both still run on 19rc1.
+- **MD5 passwords** (deprecated since 18). 19 now also warns at **login**: `WARNING: authenticated with an MD5-encrypted password` (verified). Both warnings are controlled by `md5_password_warnings` (default `on`; the setting itself exists since 18, where it only covers setting a password).
+- **`pg_verifybackup --wal-directory`** is deprecated in favour of `--wal-path`.
+- **`pg_buffercache_numa_pages()`** remains only for backward compatibility; use `pg_buffercache_os_pages()`.
 
 ##### Error-text changes observed on 19rc1 (not in the release notes)
 
@@ -56,7 +56,7 @@ SQLSTATE codes did not change in these cases; match on SQLSTATE, not on message 
 
 #### What's new in PostgreSQL 19 (overview)
 
-Release-note highlights plus the incompatibilities a reviewer must know.[^1]
+Release-note highlights plus the incompatibilities a reviewer must know.
 
 | Area | Change | Section |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ Release-note highlights plus the incompatibilities a reviewer must know.[^1]
 | Removed | `MULE_INTERNAL` encoding; `escape_string_warning`; `io_workers`; btree_gist as default `inet`/`cidr` GiST opclass | Migration notes |
 | Monitoring | `pg_stat_lock`, `pg_stat_recovery`, `pg_stat_autovacuum_scores`, `pg_stat_progress_repack`, `stats_reset` columns, `log_min_messages` per process type, `log_autoanalyze_min_duration`; wait-event type `BufferPin` renamed `Buffer`; `pg_stat_subscription_stats.sync_error_count` renamed | Observability |
 
-Smaller release-note items that are not covered in their own section:[^1]
+Smaller release-note items that are not covered in their own section:
 
 - **Encodings and Unicode**: the client-side `GB18030` encoding is updated from the 2000 to the 2022 standard, so conversions of a few code points change for `client_encoding = GB18030` applications; Unicode data is updated to 17.0 (`SELECT unicode_version()` → `17.0` on 19rc1), which affects case mapping and normalization only for characters newly assigned since 16.0.
 - **Queries**: `GROUP BY` handles target-list subqueries that reference non-grouped outer columns, and `GROUPING()` handles target-list subquery aliases correctly.
@@ -91,7 +91,7 @@ Smaller release-note items that are not covered in their own section:[^1]
 
 #### New in 19: `REPACK` (replaces `VACUUM FULL` / `CLUSTER`)
 
-`REPACK` rewrites a table (and all its indexes) into new files without dead tuples, returning the space to the operating system. With `USING INDEX` it also clusters the rows. `VACUUM FULL` and `CLUSTER` still work but are superseded.[^1][^6]
+`REPACK` rewrites a table (and all its indexes) into new files without dead tuples, returning the space to the operating system. With `USING INDEX` it also clusters the rows. `VACUUM FULL` and `CLUSTER` still work but are superseded.
 
 ```sql
 REPACK orders;                                     -- like VACUUM FULL: ACCESS EXCLUSIVE for the whole rewrite
@@ -106,16 +106,16 @@ Verified on 19rc1 (and every form is a syntax error on 18.6):
 - Plain `REPACK` holds `AccessExclusiveLock` (plus a `ShareLock`) on the table for the whole rewrite (`pg_locks` inside `BEGIN; REPACK r2; ...`) — the same outage as `VACUUM FULL`.
 - `REPACK (CONCURRENTLY)` holds `ShareUpdateExclusiveLock` while copying: in a test on a 750,000-row table, six `INSERT`s issued during the rewrite all succeeded immediately and all six rows were present afterwards. Concurrent changes are captured with logical decoding, which works on the default `wal_level = replica` in 19 (no restart, no permanent slot left behind).
 - **The final swap still needs `ACCESS EXCLUSIVE`.** With another session holding a plain `SELECT`'s `AccessShareLock` in an open transaction, `REPACK (CONCURRENTLY)` waited for it, and a concurrent `INSERT` queued **behind** the waiting `REPACK` for about three seconds — the same lock-queue outage as any `ALTER TABLE`. With `SET lock_timeout = '1s'`, `REPACK (CONCURRENTLY)` failed with `canceling statement due to lock timeout` / `CONTEXT: waiting for AccessExclusiveLock on relation ...` **after** doing the copy work.
-- `REPACK (CONCURRENTLY)` refuses: tables without a primary key or index-based replica identity (`DETAIL: Relation "rp_nopk" has no identity index.`), unlogged tables (`This operation is only supported for permanent relations.`), and execution inside a transaction block. The documentation also excludes partitioned tables, materialized views, system catalogs, TOAST tables, non-heap access methods and `user_catalog_table` tables.[^6]
+- `REPACK (CONCURRENTLY)` refuses: tables without a primary key or index-based replica identity (`DETAIL: Relation "rp_nopk" has no identity index.`), unlogged tables (`This operation is only supported for permanent relations.`), and execution inside a transaction block. The documentation also excludes partitioned tables, materialized views, system catalogs, TOAST tables, non-heap access methods and `user_catalog_table` tables.
 
 Review rules:
 
-- **`REPACK (CONCURRENTLY)` is not MVCC-safe**: "After the repacking transaction commits, the table will appear empty to concurrent transactions, if they are using a snapshot taken before repacking started" (documented). Do not run it while long `REPEATABLE READ`/`SERIALIZABLE` transactions may still read the table.[^6]
+- **`REPACK (CONCURRENTLY)` is not MVCC-safe**: "After the repacking transaction commits, the table will appear empty to concurrent transactions, if they are using a snapshot taken before repacking started" (documented). Do not run it while long `REPEATABLE READ`/`SERIALIZABLE` transactions may still read the table.
 - Run it with `lock_timeout` and retry logic, outside peak hours, and only when no long transaction touches the table; otherwise the end-of-run lock request blocks all traffic.
-- It needs free disk space for a full copy of the table plus all indexes, and more with `USING INDEX` when the planner sorts. It "might fail to complete if DDL commands are executed on the table by other transactions", and fails if more than about 104 million rows are updated or deleted concurrently.[^6]
+- It needs free disk space for a full copy of the table plus all indexes, and more with `USING INDEX` when the planner sorts. It "might fail to complete if DDL commands are executed on the table by other transactions", and fails if more than about 104 million rows are updated or deleted concurrently.
 - Each concurrent run uses a replication slot; `max_repack_replication_slots` (default 5, restart required) limits how many run at once.
 - `REPACK` refuses tables with an invalid index — drop or rebuild failed `CREATE INDEX CONCURRENTLY` leftovers first.
-- `REPACK` is a single long transaction for vacuum purposes; it is not a substitute for `VACUUM` against wraparound.[^6]
+- `REPACK` is a single long transaction for vacuum purposes; it is not a substitute for `VACUUM` against wraparound.
 - Progress is in `pg_stat_progress_repack` (column `command` distinguishes `CLUSTER`/`VACUUM FULL`/`REPACK`); `pg_stat_progress_cluster` still exists.
 - Replace third-party `pg_repack` jobs only after testing: the concurrency model (logical decoding, final `ACCESS EXCLUSIVE`) is different.
 
@@ -132,7 +132,7 @@ REPACK (CONCURRENTLY) orders;            -- outside a transaction block; table n
 
 #### New in 19: `INSERT ... ON CONFLICT DO SELECT`
 
-`DO SELECT` returns the existing conflicting row instead of doing nothing or updating it — an atomic "get or create".[^1][^7]
+`DO SELECT` returns the existing conflicting row instead of doing nothing or updating it — an atomic "get or create".
 
 ```sql
 CREATE TABLE tags (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text UNIQUE NOT NULL);
@@ -159,7 +159,7 @@ Verified on 19rc1 (all forms are `syntax error at or near "SELECT"` on 18.6):
 - Unlike `DO UPDATE`, two input rows with the same key in one statement do **not** raise "command cannot affect row a second time": `VALUES ('b'), ('b')` inserted one row and returned it twice.
 - `RETURNING old.*` and `new.*` (18) both show the existing row on the `SELECT` path; `old.id IS NULL` still identifies inserted rows.
 - **Sequence values are consumed on every attempt**: after the statements above (two rows actually inserted) the identity sequence's `last_value` was 6. Never rely on gap-free ids.
-- Privileges: `SELECT` on the table is required; `FOR UPDATE/SHARE` additionally needs `UPDATE` on at least one column.[^7]
+- Privileges: `SELECT` on the table is required; `FOR UPDATE/SHARE` additionally needs `UPDATE` on at least one column.
 
 ```sql
 -- BAD (pre-19 idioms): racy, or writes a new row version just to get the id
@@ -180,7 +180,7 @@ RETURNING id;
 
 #### New in 19: `IGNORE NULLS` in window functions
 
-`lag()`, `lead()`, `first_value()`, `last_value()` and `nth_value()` accept the SQL-standard `IGNORE NULLS` / `RESPECT NULLS` (default) clause.[^1][^10]
+`lag()`, `lead()`, `first_value()`, `last_value()` and `nth_value()` accept the SQL-standard `IGNORE NULLS` / `RESPECT NULLS` (default) clause.
 
 ```sql
 SELECT i, x,
@@ -225,7 +225,7 @@ COPY (SELECT id AS ident FROM cj) TO STDOUT (FORMAT json);   -- {"ident":1} ... 
 Verified on 19rc1 (18.6: `syntax error at or near "FORMAT"` for `FORMAT json`):
 
 - **JSON is output-only**: `COPY cj FROM STDIN (FORMAT json)` → `COPY FORMAT JSON is not supported for COPY FROM`. Use `json_populate_recordset`/`JSON_TABLE` to load JSON.
-- SQL `NULL` and a `json`/`jsonb` value that is JSON `null` both become `null` — indistinguishable in the output (row 2 above). Consumers that need the difference must not rely on `COPY ... (FORMAT json)`.[^9]
+- SQL `NULL` and a `json`/`jsonb` value that is JSON `null` both become `null` — indistinguishable in the output (row 2 above). Consumers that need the difference must not rely on `COPY ... (FORMAT json)`.
 - `jsonb` columns are embedded as JSON (not as strings); `numeric` keeps its scale (`1.50`). JavaScript consumers lose precision for numbers beyond 2^53.
 - `HEADER`, `DELIMITER`, `NULL` and `DEFAULT` are rejected with JSON (`cannot specify HEADER in JSON mode`).
 - The default form is newline-delimited JSON (one object per line); `FORCE_ARRAY` produces one JSON array with **leading commas**, as shown.
@@ -247,7 +247,7 @@ Verified pitfalls:
 - **Bad data is stored as `NULL` silently** (only a summary `NOTICE`). Use it only for columns where `NULL` is an acceptable "unknown"; add `LOG_VERBOSITY verbose` to get one notice per replaced value.
 - **Domain `CHECK` violations are also nulled**: a `-5` loaded into a domain `posint AS int CHECK (VALUE > 0)` became `NULL` instead of failing. Domains no longer protect such columns during `COPY ... ON_ERROR set_null`.
 - A `NOT NULL` column still fails the whole `COPY` when its value is replaced (`null value in column "b" ... violates not-null constraint`); `set_null` does not skip the row.
-- `REJECT_LIMIT` works only with `ON_ERROR ignore`. Both `ignore` and `set_null` are for `text`/`csv` formats only.[^9]
+- `REJECT_LIMIT` works only with `ON_ERROR ignore`. Both `ignore` and `set_null` are for `text`/`csv` formats only.
 - On 18.6: `COPY ON_ERROR "set_null" not recognized`.
 
 ##### Multi-line headers, partitioned tables, `WHERE` restrictions
@@ -258,9 +258,9 @@ COPY pt TO STDOUT;                            -- pt is partitioned: copies all p
 ```
 
 - `HEADER n` with `n > 1` is input-only: `COPY ... TO ... (HEADER 2)` → `cannot use multi-line header in COPY TO`.
-- `COPY partitioned TO` copies the same rows as `SELECT * FROM partitioned`; for plain tables `COPY t TO` still means `ONLY t` (inheritance children are not included).[^9]
+- `COPY partitioned TO` copies the same rows as `SELECT * FROM partitioned`; for plain tables `COPY t TO` still means `ONLY t` (inheritance children are not included).
 - **System columns in `COPY FROM ... WHERE` are now rejected**: `WHERE tableoid > 0` loaded rows on 18.6 and fails on 19 with `system columns are not supported in COPY FROM WHERE conditions`. `xmin` was already rejected in 18 (`cannot retrieve a system column in this context`).
-- `COPY FROM` for `text` and `csv` uses SIMD and is faster; nothing to change in SQL.[^1]
+- `COPY FROM` for `text` and `csv` uses SIMD and is faster; nothing to change in SQL.
 - `psql` (18.6+ and 19) skips inline data after a scripted `COPY ... FROM STDIN` that fails at startup — **up to the next `\.` line**. A failing `COPY ... FROM STDIN` without data followed by more SQL swallowed the rest of the script in testing. Always terminate inline data with `\.`.
 
 ***
@@ -277,13 +277,13 @@ SELECT pg_current_wal_insert_lsn();                 -- e.g. 0/0306EE20, hand it 
 WAIT FOR LSN '0/0306EE20' WITH (TIMEOUT '100ms', NO_THROW);   -- status: success | timeout | not in recovery
 ```
 
-Options are `MODE 'standby_replay'` (default), `'standby_write'`, `'standby_flush'` and `'primary_flush'`, `TIMEOUT '...'` and `NO_THROW`.[^8] Verified on a 19rc1 primary (no standby available in the test environment, so standby modes were not executed):
+Options are `MODE 'standby_replay'` (default), `'standby_write'`, `'standby_flush'` and `'primary_flush'`, `TIMEOUT '...'` and `NO_THROW`. Verified on a 19rc1 primary (no standby available in the test environment, so standby modes were not executed):
 
 - On a primary the default mode fails: `ERROR: recovery is not in progress` / `HINT: Waiting for the standby_replay LSN can only be executed during recovery.` With `NO_THROW` it returns `not in recovery` instead.
 - `WITH (MODE 'primary_flush')` on an already flushed LSN returned `success`; `WITH (MODE 'primary_flush', TIMEOUT '50ms', NO_THROW)` on an unreachable LSN returned `timeout`.
-- `WAIT` must be a top-level statement: inside `DO`/functions it fails (`WAIT can only be executed as a top-level statement`). It cannot run while the transaction holds a snapshot, and on a standby it is rejected when the session already holds locks and the target is not yet reached (deadlock avoidance). Issue it **first**, outside a transaction or as the first statement.[^8]
+- `WAIT` must be a top-level statement: inside `DO`/functions it fails (`WAIT can only be executed as a top-level statement`). It cannot run while the transaction holds a snapshot, and on a standby it is rejected when the session already holds locks and the target is not yet reached (deadlock avoidance). Issue it **first**, outside a transaction or as the first statement.
 - **Without `TIMEOUT`, it waits forever.** Application code must set a timeout and handle `timeout` (with `NO_THROW`, check the returned status — it does not raise).
-- `WAIT` compares only the numeric LSN, not the timeline; after a failover the status `not in recovery` means "re-evaluate", not "done".[^8]
+- `WAIT` compares only the numeric LSN, not the timeline; after a failover the status `not in recovery` means "re-evaluate", not "done".
 - On 18.6: `syntax error at or near "WAIT"`.
 
 ##### Logical decoding with `wal_level = replica`
@@ -295,16 +295,16 @@ SHOW effective_wal_level;                                               -- logic
 SELECT pg_drop_replication_slot('s1');                                  -- effective_wal_level returns to replica
 ```
 
-Verified: on 18.6 the slot creation fails with `logical decoding requires "wal_level" >= "logical"`. In 19, `effective_wal_level` (read-only) reports what is in force; it switched to `logical` while a logical slot existed and back to `replica` about a second after dropping it. Setting up CDC (Debezium, logical replication, `REPACK (CONCURRENTLY)`) no longer needs a restart, but WAL volume rises while any logical slot exists — and an abandoned slot still retains WAL (`idle_replication_slot_timeout`, 18, default `0` = off).[^1][^17]
+Verified: on 18.6 the slot creation fails with `logical decoding requires "wal_level" >= "logical"`. In 19, `effective_wal_level` (read-only) reports what is in force; it switched to `logical` while a logical slot existed and back to `replica` about a second after dropping it. Setting up CDC (Debezium, logical replication, `REPACK (CONCURRENTLY)`) no longer needs a restart, but WAL volume rises while any logical slot exists — and an abandoned slot still retains WAL (`idle_replication_slot_timeout`, 18, default `0` = off).
 
 ##### Other replication changes
 
-- **Sequences**: `CREATE PUBLICATION ... FOR ALL SEQUENCES`; subscribers synchronize sequence values at `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` and `ALTER SUBSCRIPTION ... REFRESH SEQUENCES`. This closes the classic "sequences are behind after logical-replication failover" gap — only at those refresh points, not continuously.[^1][^18]
+- **Sequences**: `CREATE PUBLICATION ... FOR ALL SEQUENCES`; subscribers synchronize sequence values at `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` and `ALTER SUBSCRIPTION ... REFRESH SEQUENCES`. This closes the classic "sequences are behind after logical-replication failover" gap — only at those refresh points, not continuously.
 - **`FOR ALL TABLES EXCEPT (TABLE t1, t2)`** (verified: the excluded table is absent from `pg_publication_tables`; 18.6: syntax error).
-- **`retain_dead_tuples`** subscription option (with `max_retention_duration`) for `update_deleted` conflict detection; `CREATE SUBSCRIPTION ... SERVER foreign_server` reuses `postgres_fdw` connection parameters; `wal_receiver_timeout` can be set per subscription/role.[^1]
+- **`retain_dead_tuples`** subscription option (with `max_retention_duration`) for `update_deleted` conflict detection; `CREATE SUBSCRIPTION ... SERVER foreign_server` reuses `postgres_fdw` connection parameters; `wal_receiver_timeout` can be set per subscription/role.
 - `pg_stat_subscription_stats.sync_error_count` is renamed `sync_table_error_count`; `sync_seq_error_count` and `confl_update_deleted` are new (verified in the catalog).
 - `wal_sender_shutdown_timeout` (default `-1`: senders still wait forever at shutdown).
-- `pg_sync_replication_slots()` now waits for synchronization to complete.[^1]
+- `pg_sync_replication_slots()` now waits for synchronization to complete.
 
 ***
 
@@ -337,10 +337,10 @@ SELECT 'postgres'::regdatabase, to_regdatabase('nope');         -- postgres | NU
 Pitfalls found while testing:
 
 - `'\x01'::bytea::uuid` fails (`invalid input length for type uuid`, `DETAIL: Expected 16 bytes, got 1.`). The cast is a 16-byte binary reinterpretation, **not** a text parse: `'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::text::bytea::uuid` fails (`Expected 16 bytes, got 36.`, SQLSTATE `22P03`). Use it for binary UUID columns migrated from other databases, and keep `uuid` as the storage type.
-- There is **no `'base32'`** encoding — only `base32hex`[^20]; the error hint lists `"base32hex", "base64", "base64url", "escape", and "hex"`. `base64url` output omits padding (`-_8`, not `-_8=`).
+- There is **no `'base32'`** encoding — only `base32hex`; the error hint lists `"base32hex", "base64", "base64url", "escape", and "hex"`. `base64url` output omits padding (`-_8`, not `-_8=`).
 - `'-1'::oid8` is accepted and yields `18446744073709551615` (wrap-around like `oid`); do not use `oid8` as a general unsigned integer for user data — use `bigint`/`numeric` with a `CHECK`.
 - `error_on_null()` raises SQLSTATE `22004` (`null value not allowed`); it asserts non-null values inline, e.g. `SELECT error_on_null((SELECT id FROM t WHERE ...))` in a SQL-language function body.
-- The `-` operator on ranges still fails when the result would have a gap (`result of range difference would not be contiguous`); `range_minus_multi()` returns a set of ranges instead (zero rows when nothing remains).[^21]
+- The `-` operator on ranges still fails when the result would have a gap (`result of range difference would not be contiguous`); `range_minus_multi()` returns a set of ranges instead (zero rows when nothing remains).
 
 ##### jsonpath string methods
 
@@ -353,7 +353,7 @@ SELECT jsonb_path_query('42', '$.lower()');
 -- ERROR:  jsonpath item method .lower() can only be applied to a string
 ```
 
-New methods: `.ltrim()`, `.rtrim()`, `.btrim()`, `.lower()`, `.upper()`, `.initcap()`, `.replace()`, `.split_part()` — immutable like their SQL counterparts (release notes). On 18.6 every one is `syntax error at or near "(" of jsonpath input`. In non-`silent` mode they raise on non-string items; filter with `? (@.type() == "string")` or pass `silent => true` where data is heterogeneous.[^19]
+New methods: `.ltrim()`, `.rtrim()`, `.btrim()`, `.lower()`, `.upper()`, `.initcap()`, `.replace()`, `.split_part()` — immutable like their SQL counterparts (release notes). On 18.6 every one is `syntax error at or near "(" of jsonpath input`. In non-`silent` mode they raise on non-string items; filter with `? (@.type() == "string")` or pass `silent => true` where data is heterogeneous.
 
 ##### SQL/JSON behaviour changes
 
@@ -368,7 +368,7 @@ SELECT '{"a":1}'::my_jsonb_domain IS JSON OBJECT; -- 19: t       18: cannot use 
 
 ##### Text search
 
-New built-in configurations `polish` and `esperanto` (with `polish_stem`/`esperanto_stem` dictionaries; 18: `text search configuration "polish" does not exist`). The Dutch stemmer behind the `dutch` configuration and `dutch_stem` was updated. The old algorithm is not a configuration (`to_tsvector('dutch_porter', ...)` fails with `text search configuration "dutch_porter" does not exist`) but a Snowball language: `CREATE TEXT SEARCH DICTIONARY dutch_old (TEMPLATE = snowball, LANGUAGE = dutch_porter)` (verified). After upgrading, rebuild Dutch full-text indexes and stored `tsvector` columns, because stems can differ — or build a configuration on such a dictionary to keep the old stems.[^1]
+New built-in configurations `polish` and `esperanto` (with `polish_stem`/`esperanto_stem` dictionaries; 18: `text search configuration "polish" does not exist`). The Dutch stemmer behind the `dutch` configuration and `dutch_stem` was updated. The old algorithm is not a configuration (`to_tsvector('dutch_porter', ...)` fails with `text search configuration "dutch_porter" does not exist`) but a Snowball language: `CREATE TEXT SEARCH DICTIONARY dutch_old (TEMPLATE = snowball, LANGUAGE = dutch_porter)` (verified). After upgrading, rebuild Dutch full-text indexes and stored `tsvector` columns, because stems can differ — or build a configuration on such a dictionary to keep the old stems.
 
 ***
 
@@ -409,7 +409,7 @@ Migration and admin scripts can now record the owner as grantor, so `REVOKE` by 
 - **`CHECKPOINT (MODE FAST)`** (the default behaviour), `CHECKPOINT (MODE SPREAD, FLUSH_UNLOGGED)` (18: syntax error). `MODE SPREAD` spreads the writes like a scheduled checkpoint, which "can reduce the rate of I/O"; `FLUSH_UNLOGGED` also flushes unlogged tables. `CHECKPOINT` needs superuser or `pg_checkpoint`.
 - **List-valued settings can be emptied with `NULL`**: `SET search_path = NULL` gives an empty `search_path` (18: syntax error). An empty `search_path` means every unqualified name fails to resolve — treat it like `search_path = ''`.
 - **`log_min_messages` per process type**: `SET log_min_messages = 'warning, checkpointer:debug1'` (18: invalid value).
-- `CREATE AGGREGATE ... SUPPORT`, `CREATE FOREIGN DATA WRAPPER ... CONNECTION` (extension authors).[^1]
+- `CREATE AGGREGATE ... SUPPORT`, `CREATE FOREIGN DATA WRAPPER ... CONNECTION` (extension authors).
 - `VACUUM (VERBOSE)` and autovacuum logs report memory usage and parallelism.
 
 ***
@@ -435,7 +435,7 @@ EXPLAIN (COSTS OFF) SELECT d.name, sum(f.v) FROM fact f JOIN dim d ON d.id = f.d
 
 - **`NOT IN` is still a correctness trap**: with a nullable subquery column it still returns no rows when a `NULL` is present. The anti-join conversion only happens when the planner can prove there are no `NULL`s (`NOT NULL` columns). Keep recommending `NOT EXISTS`; do recommend declaring `NOT NULL` where it is true.
 - Eager aggregation is controlled by `enable_eager_aggregate` (default `on`) and `min_eager_agg_group_size` (default 8). Plan-regression tests that pin plan shapes will change.
-- Also new: more `LEFT JOIN ... WHERE right IS NULL` → anti join, Memoize for anti joins with unique inner sides, constant folding of `IS [NOT] DISTINCT FROM NULL` and `IS [NOT] NULL` on provably non-null expressions, better semijoin planning, faster join selectivity with large statistics targets, startup costs for partial paths, faster foreign-key checks, radix sort.[^1]
+- Also new: more `LEFT JOIN ... WHERE right IS NULL` → anti join, Memoize for anti joins with unique inner sides, constant folding of `IS [NOT] DISTINCT FROM NULL` and `IS [NOT] NULL` on provably non-null expressions, better semijoin planning, faster join selectivity with large statistics targets, startup costs for partial paths, faster foreign-key checks, radix sort.
 - **Plain scans set visibility-map bits**: after `INSERT` of 50,000 rows into a table with autovacuum off, two `SELECT count(*)` scans changed `pg_visibility_map_summary()` from `0` all-visible pages to `221` on 19 (still `0` on 18.6). Index-only scans become effective sooner after bulk loads; `VACUUM` is still required for freezing and dead-tuple removal.
 
 ##### `EXPLAIN (ANALYZE, IO)`
@@ -448,13 +448,13 @@ EXPLAIN (ANALYZE, IO, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM b
 --    Buffers: shared hit=2499 read=2560 dirtied=2501 written=4
 ```
 
-- `IO` requires `ANALYZE` (`EXPLAIN option IO requires ANALYZE`); 18.6: `unrecognized EXPLAIN option "io"`. `auto_explain.log_io` adds it to `auto_explain`.[^1][^13]
-- The documented fields are the prefetch queue (average/maximum distance, capacity) and the issued I/O requests (`count`, average `size` in blocks, number of I/O `waits`, average number of concurrent requests). In text format only non-zero values are printed. Many `waits` relative to `count` on a hot query suggest read-ahead did not keep up (check `effective_io_concurrency`, `io_max_workers`, storage latency).[^13]
+- `IO` requires `ANALYZE` (`EXPLAIN option IO requires ANALYZE`); 18.6: `unrecognized EXPLAIN option "io"`. `auto_explain.log_io` adds it to `auto_explain`.
+- The documented fields are the prefetch queue (average/maximum distance, capacity) and the issued I/O requests (`count`, average `size` in blocks, number of I/O `waits`, average number of concurrent requests). In text format only non-zero values are printed. Many `waits` relative to `count` on a hot query suggest read-ahead did not keep up (check `effective_io_concurrency`, `io_max_workers`, storage latency).
 - `EXPLAIN (ANALYZE, WAL)` also reports full-page-image bytes; Memoize nodes show cache estimates.
 
 ##### `pg_plan_advice` and `pg_stash_advice` (contrib)
 
-`pg_plan_advice` describes and constrains planner decisions with a "plan advice" mini-language; it is loaded with `LOAD 'pg_plan_advice'`, `session_preload_libraries` or `shared_preload_libraries` (no `CREATE EXTENSION`).[^11]
+`pg_plan_advice` describes and constrains planner decisions with a "plan advice" mini-language; it is loaded with `LOAD 'pg_plan_advice'`, `session_preload_libraries` or `shared_preload_libraries` (no `CREATE EXTENSION`).
 
 ```sql
 EXPLAIN (COSTS OFF, PLAN_ADVICE)
@@ -476,15 +476,15 @@ EXPLAIN (COSTS OFF) SELECT ...;     -- Nested Loop, "Disabled: true", JOIN_ORDER
 
 Review notes (verified on 19rc1 unless stated):
 
-- Advice only **constrains** the planner. A string that does not parse is rejected when it is set (`SET pg_plan_advice.advice = 'BOGUS_TAG(f)'` → `ERROR: invalid value for parameter "pg_plan_advice.advice"` / `DETAIL: Could not parse advice: syntax error at or near "BOGUS_TAG"`), but well-formed advice that names unknown aliases or indexes, or asks for something impossible, never fails planning: it is reported as `/* not matched */`, `/* partially matched */`, `/* inapplicable */`, `/* conflicting */` or `/* failed */` and can yield a plan with `Disabled: true` nodes that is much worse than no advice. Every stored advice string needs a test that checks the feedback is `/* matched */`; `pg_plan_advice.feedback_warnings = on` (default `off`) turns unenforced advice into warnings.[^11]
+- Advice only **constrains** the planner. A string that does not parse is rejected when it is set (`SET pg_plan_advice.advice = 'BOGUS_TAG(f)'` → `ERROR: invalid value for parameter "pg_plan_advice.advice"` / `DETAIL: Could not parse advice: syntax error at or near "BOGUS_TAG"`), but well-formed advice that names unknown aliases or indexes, or asks for something impossible, never fails planning: it is reported as `/* not matched */`, `/* partially matched */`, `/* inapplicable */`, `/* conflicting */` or `/* failed */` and can yield a plan with `Disabled: true` nodes that is much worse than no advice. Every stored advice string needs a test that checks the feedback is `/* matched */`; `pg_plan_advice.feedback_warnings = on` (default `off`) turns unenforced advice into warnings.
 - **On 18 (or when the module is not loaded) `SET pg_plan_advice.advice = '...'` succeeds silently** (custom placeholder setting) and does nothing; `EXPLAIN (PLAN_ADVICE)` fails with `unrecognized EXPLAIN option "plan_advice"`.
-- Advice cannot control aggregation strategy or set operations (documented limitation).[^11]
-- `pg_stash_advice` (`CREATE EXTENSION pg_stash_advice`, module preloaded) maps query ids to advice strings in shared memory (`pg_create_advice_stash()`, `pg_set_stashed_advice()`, setting `pg_stash_advice.stash_name`). Any user can set the stash name for their session and may see stashed advice, so do not embed sensitive values in advice strings.[^12]
+- Advice cannot control aggregation strategy or set operations (documented limitation).
+- `pg_stash_advice` (`CREATE EXTENSION pg_stash_advice`, module preloaded) maps query ids to advice strings in shared memory (`pg_create_advice_stash()`, `pg_set_stashed_advice()`, setting `pg_stash_advice.stash_name`). Any user can set the stash name for their session and may see stashed advice, so do not embed sensitive values in advice strings.
 - Prefer fixing statistics (`ANALYZE`, `CREATE STATISTICS`, now restorable with `pg_restore_extended_stats()` and removable with `pg_clear_extended_stats()`) over pinning plans. Pinned plans do not adapt to data growth.
 
 ##### `pg_stat_statements` 1.13
 
-New `generic_plan_calls` and `custom_plan_calls` columns (verified: a prepared statement run twice with `force_generic_plan` and once with `force_custom_plan` showed `2 | 1`); `FETCH` sizes are normalized to constants. Constant lists in `IN (...)`/`= ANY(ARRAY[...])` are still squashed into one entry (`IN ($1 /*, ... */)`, 18 behaviour, re-verified). Run `ALTER EXTENSION pg_stat_statements UPDATE` after `pg_upgrade`.[^22]
+New `generic_plan_calls` and `custom_plan_calls` columns (verified: a prepared statement run twice with `force_generic_plan` and once with `force_custom_plan` showed `2 | 1`); `FETCH` sizes are normalized to constants. Constant lists in `IN (...)`/`= ANY(ARRAY[...])` are still squashed into one entry (`IN ($1 /*, ... */)`, 18 behaviour, re-verified). Run `ALTER EXTENSION pg_stat_statements UPDATE` after `pg_upgrade`.
 
 ***
 
@@ -506,14 +506,14 @@ New `generic_plan_calls` and `custom_plan_calls` columns (verified: a prepared s
 
 ##### Asynchronous I/O (18) in 19
 
-`io_method` (default `worker`; `io_uring`, `sync`) is unchanged. In 19 the worker pool is dynamic: `io_min_workers` (2), `io_max_workers` (8), `io_worker_idle_timeout` (60s) and `io_worker_launch_interval` (100ms). Read-ahead scheduling for large requests is improved, and hash-index bulk deletion, GIN vacuuming, `bloom` and `pgstattuple` use streaming reads.[^1][^16] As in 18, AIO is a server feature — do not attribute query regressions to it without `EXPLAIN (ANALYZE, IO)` evidence.
+`io_method` (default `worker`; `io_uring`, `sync`) is unchanged. In 19 the worker pool is dynamic: `io_min_workers` (2), `io_max_workers` (8), `io_worker_idle_timeout` (60s) and `io_worker_launch_interval` (100ms). Read-ahead scheduling for large requests is improved, and hash-index bulk deletion, GIN vacuuming, `bloom` and `pgstattuple` use streaming reads. As in 18, AIO is a server feature — do not attribute query regressions to it without `EXPLAIN (ANALYZE, IO)` evidence.
 
 ##### Autovacuum
 
 - **Parallel index vacuuming in autovacuum**: `autovacuum_max_parallel_workers` (default `0` = off) and the per-table storage parameter `autovacuum_parallel_workers` (verified: `ALTER TABLE b1 SET (autovacuum_parallel_workers = 2)` works on 19, `unrecognized parameter` on 18.6).
 - **Scoring**: autovacuum processes tables in order of a score; weights `autovacuum_freeze_score_weight`, `autovacuum_multixact_freeze_score_weight`, `autovacuum_vacuum_score_weight`, `autovacuum_vacuum_insert_score_weight`, `autovacuum_analyze_score_weight` (all default 1). `pg_stat_autovacuum_scores` shows each table's scores and whether it is due.
 - `log_autovacuum_min_duration` now covers only vacuum; autoanalyze logging uses the new `log_autoanalyze_min_duration` (default 10min). Monitoring that relied on autoanalyze lines must set the new parameter.
-- `vacuumdb --analyze-only` / `--analyze-in-stages` without targets now analyze partitioned parents (verified with `--dry-run`, new in 19: `ANALYZE ONLY public.pt;` appears; 18.6's `--echo` output had no parent).[^1]
+- `vacuumdb --analyze-only` / `--analyze-in-stages` without targets now analyze partitioned parents (verified with `--dry-run`, new in 19: `ANALYZE ONLY public.pt;` appears; 18.6's `--echo` output had no parent).
 
 ***
 
@@ -527,31 +527,31 @@ SET standard_conforming_strings = off;
 -- 18: SET
 ```
 
-This is a **silent data change** for old dumps and scripts: a file that starts with `SET standard_conforming_strings = off;` and then inserts `'C:\\temp\\new'` stored `C:\temp\new` (11 characters) on 18.6. On 19 the `SET` fails, psql continues, and the same `INSERT` stores `C:\\temp\\new` (13 characters). Restore dumps with 19's `pg_dump`/`pg_restore`, run scripts with `ON_ERROR_STOP`, and use `E'...'` for backslash escapes. `escape_string_warning` is gone (`unrecognized configuration parameter`). Client libraries still support old servers with the setting off.[^1]
+This is a **silent data change** for old dumps and scripts: a file that starts with `SET standard_conforming_strings = off;` and then inserts `'C:\\temp\\new'` stored `C:\temp\new` (11 characters) on 18.6. On 19 the `SET` fails, psql continues, and the same `INSERT` stores `C:\\temp\\new` (13 characters). Restore dumps with 19's `pg_dump`/`pg_restore`, run scripts with `ON_ERROR_STOP`, and use `E'...'` for backslash escapes. `escape_string_warning` is gone (`unrecognized configuration parameter`). Client libraries still support old servers with the setting off.
 
 ##### Authentication
 
 - **RADIUS removed**: a `pg_hba.conf` line with `radius` shows `invalid authentication method "radius"` in `pg_hba_file_rules.error`, and a reload logs `pg_hba.conf was not reloaded` (verified) — the whole file is rejected. Migrate to LDAP, certificates, OAuth or SCRAM before upgrading.
 - **MD5**: successful MD5 logins emit `WARNING: authenticated with an MD5-encrypted password` / `DETAIL: MD5 password support is deprecated and will be removed in a future release of PostgreSQL.` (verified; 18.6 warns only when setting the password). Applications that treat any server warning as an error, or log it per connection, will notice.
-- **Password expiry warning**: `password_expiration_warning_threshold` (default 7 days) — a SCRAM login of a role whose `VALID UNTIL` is less than the threshold away produced `WARNING: role password will expire soon` / `DETAIL: The password for role "exp" will expire in 1 day.` (verified; nothing on 18.6). `0` disables it.[^15]
-- **OAuth** (18): validators can register custom `pg_hba.conf` options and supply failure details; libpq gains `oauth_ca_file` (`PGOAUTHCAFILE`) and a v2 bearer-token hook.[^1]
+- **Password expiry warning**: `password_expiration_warning_threshold` (default 7 days) — a SCRAM login of a role whose `VALID UNTIL` is less than the threshold away produced `WARNING: role password will expire soon` / `DETAIL: The password for role "exp" will expire in 1 day.` (verified; nothing on 18.6). `0` disables it.
+- **OAuth** (18): validators can register custom `pg_hba.conf` options and supply failure details; libpq gains `oauth_ca_file` (`PGOAUTHCAFILE`) and a v2 bearer-token hook.
 - **Server-side SNI**: `ssl_sni` (default `off`) with host/key pairs in `pg_hosts.conf` (setting `hosts_file`).
-- **CR/LF in names**: `CREATE ROLE "bad<newline>name"` → `role name "..." contains a newline or carriage return character` (verified; 18.6 accepted it). The same applies to database and tablespace names, and `pg_upgrade` refuses clusters that contain such names.[^1]
+- **CR/LF in names**: `CREATE ROLE "bad<newline>name"` → `role name "..." contains a newline or carriage return character` (verified; 18.6 accepted it). The same applies to database and tablespace names, and `pg_upgrade` refuses clusters that contain such names.
 - **`pg_read_all_data` / `pg_write_all_data`** now cover large objects.
 
 ##### `postgres_fdw` sessions inherit `READ ONLY` / `DEFERRABLE`
 
-Verified with a loopback server: in `BEGIN READ ONLY`, `SELECT * FROM foreign_view` where the remote view calls a function that inserts into an audit table succeeded on 18.6 (the remote row was written) and fails on 19 with `cannot execute INSERT in a read-only transaction` (`remote SQL command: SELECT x FROM public.rv`). Read-only reporting transactions that relied on side effects on the remote server break; that is the intended fix.[^1]
+Verified with a loopback server: in `BEGIN READ ONLY`, `SELECT * FROM foreign_view` where the remote view calls a function that inserts into an audit table succeeded on 18.6 (the remote row was written) and fails on 19 with `cannot execute INSERT in a read-only transaction` (`remote SQL command: SELECT x FROM public.rv`). Read-only reporting transactions that relied on side effects on the remote server break; that is the intended fix.
 
-`ANALYZE` on `postgres_fdw` foreign tables can import remote statistics with the `import_stats` option instead of sampling rows; it runs as the foreign table owner.[^1][^3]
+`ANALYZE` on `postgres_fdw` foreign tables can import remote statistics with the `import_stats` option instead of sampling rows; it runs as the foreign table owner.
 
 ***
 
 #### Features from 18 that a PostgreSQL 19 codebase uses
 
-Most code reviewed for 19 is written with 18 idioms. These 18 features are available in 19 unchanged unless noted (behaviour re-verified on 19rc1).[^25]
+Most code reviewed for 19 is written with 18 idioms. These 18 features are available in 19 unchanged unless noted (behaviour re-verified on 19rc1).
 
-##### `uuidv7()` (18)[^45]
+##### `uuidv7()` (18)
 
 ```sql
 CREATE TABLE orders (
@@ -569,7 +569,7 @@ SELECT uuidv7(interval '-1 hour');                                          -- s
 
 ##### Virtual generated columns are the default (18)
 
-`GENERATED ALWAYS AS (expr)` without `STORED` creates a **virtual** column (computed on read). Verified on 19rc1: an index on it fails (`indexes on virtual generated columns are not supported`) and a user-defined function in the expression fails (`Virtual generated columns that make use of user-defined functions are not yet supported`). Adding one is metadata-only; adding a `STORED` one rewrites the table. Virtual columns cannot be part of a `UNIQUE`/`PRIMARY KEY` (`unique constraints on virtual generated columns are not supported`), a `FOREIGN KEY` or a partition key, and cannot be published (`cannot use virtual generated column "b" in publication column list`) — all verified on 19rc1.[^46]
+`GENERATED ALWAYS AS (expr)` without `STORED` creates a **virtual** column (computed on read). Verified on 19rc1: an index on it fails (`indexes on virtual generated columns are not supported`) and a user-defined function in the expression fails (`Virtual generated columns that make use of user-defined functions are not yet supported`). Adding one is metadata-only; adding a `STORED` one rewrites the table. Virtual columns cannot be part of a `UNIQUE`/`PRIMARY KEY` (`unique constraints on virtual generated columns are not supported`), a `FOREIGN KEY` or a partition key, and cannot be published (`cannot use virtual generated column "b" in publication column list`) — all verified on 19rc1.
 
 ```sql
 -- BAD: meant to be indexed, but the omitted keyword made it virtual
@@ -591,7 +591,7 @@ RETURNING old.bal, new.bal, (old.id IS NULL) AS inserted;                       
 UPDATE acct SET bal = 1 RETURNING WITH (OLD AS o, NEW AS n) o.bal, n.bal;                    -- rename on clashes
 ```
 
-Replace `RETURNING (xmax = 0) AS inserted` hacks with `old.<pk> IS NULL`; test a non-nullable column, not `old IS NULL`. Works for `INSERT`, `UPDATE`, `DELETE`, `MERGE` and, in 19, `ON CONFLICT DO SELECT`.[^47]
+Replace `RETURNING (xmax = 0) AS inserted` hacks with `old.<pk> IS NULL`; test a non-nullable column, not `old IS NULL`. Works for `INSERT`, `UPDATE`, `DELETE`, `MERGE` and, in 19, `ON CONFLICT DO SELECT`.
 
 ##### Temporal constraints (18)
 
@@ -605,7 +605,7 @@ CREATE TABLE booking (bid int, room_id int, during tstzrange,
     FOREIGN KEY (room_id, PERIOD during) REFERENCES room (id, PERIOD valid));
 ```
 
-The constraint is a GiST exclusion constraint. There is still no `UPDATE ... FOR PORTION OF` in 19; splitting periods stays application work. 19's `range_minus_multi()` helps compute the remaining pieces.[^48]
+The constraint is a GiST exclusion constraint. There is still no `UPDATE ... FOR PORTION OF` in 19; splitting periods stays application work. 19's `range_minus_multi()` helps compute the remaining pieces.
 
 ##### `NOT NULL ... NOT VALID`, `NOT ENFORCED` (18)
 
@@ -615,7 +615,7 @@ ALTER TABLE child VALIDATE CONSTRAINT child_id_nn;                    -- SHARE U
 ```
 
 - `NOT NULL` constraints live in `pg_constraint` (`contype = 'n'`) with names; adding a second one under another name fails (`A not-null constraint named "child_id_nn" already exists for this column.`, verified on 19rc1).
-- `NOT ENFORCED` (18) is accepted for `CHECK` and foreign keys only. In 18 only FKs could be switched with `ALTER CONSTRAINT ... [NOT] ENFORCED`; 19 adds `CHECK`. Re-enforcing scans the table under `ACCESS EXCLUSIVE`.[^14]
+- `NOT ENFORCED` (18) is accepted for `CHECK` and foreign keys only. In 18 only FKs could be switched with `ALTER CONSTRAINT ... [NOT] ENFORCED`; 19 adds `CHECK`. Re-enforcing scans the table under `ACCESS EXCLUSIVE`.
 
 ##### Planner and `EXPLAIN` (18)
 
@@ -637,7 +637,7 @@ EXPLAIN (COSTS OFF) SELECT a.id, b.email FROM u a JOIN u b ON a.id = b.id WHERE 
 
 - Skip scan helps only with a **low-cardinality** leading column; with 200,000 distinct leading values the planner chose a `Seq Scan` (verified on 19rc1).
 - `EXPLAIN ANALYZE` prints `Buffers:` by default and fractional row counts (`rows=1.00`); plan parsers that match `rows=(\d+)` break.
-- Do not ask authors to rewrite `OR` chains into `= ANY(...)` or to remove redundant self-joins for performance — the planner does it.[^49]
+- Do not ask authors to rewrite `OR` chains into `= ANY(...)` or to remove redundant self-joins for performance — the planner does it.
 
 ##### Other 18 features in daily use
 
@@ -660,7 +660,7 @@ EXPLAIN (COSTS OFF) SELECT a.id, b.email FROM u a JOIN u b ON a.id = b.id WHERE 
 
 #### Features from 14–17 that a PostgreSQL 19 codebase can use
 
-The version that introduced each feature is taken from the release notes; representative items of every row (`date_bin()`, `MERGE`, `UNIQUE NULLS NOT DISTINCT`, `security_invoker`, `1_000`/`0x1F` literals, `JSON_OBJECT`, `JSON_TABLE`, `JSON_VALUE`, `MERGE ... RETURNING`, `transaction_timeout`) were executed on 19rc1.[^38]
+The version that introduced each feature is taken from the release notes; representative items of every row (`date_bin()`, `MERGE`, `UNIQUE NULLS NOT DISTINCT`, `security_invoker`, `1_000`/`0x1F` literals, `JSON_OBJECT`, `JSON_TABLE`, `JSON_VALUE`, `MERGE ... RETURNING`, `transaction_timeout`) were executed on 19rc1.
 
 | Since | Feature |
 | --- | --- |
@@ -675,7 +675,7 @@ On 19rc1, `SELECT 1_000, 0x1F;` returns `1000 | 31`. Code that must also run on 
 
 #### Schema migrations and locking safety
 
-Most production incidents caused by migrations are lock problems, not data problems. Every `ALTER TABLE` takes a table-level lock; the dangerous ones take `ACCESS EXCLUSIVE`, which conflicts with **every** other lock including plain `SELECT`.[^26][^14]
+Most production incidents caused by migrations are lock problems, not data problems. Every `ALTER TABLE` takes a table-level lock; the dangerous ones take `ACCESS EXCLUSIVE`, which conflicts with **every** other lock including plain `SELECT`.
 
 ##### The lock queue: why a "fast" ALTER takes the site down
 
@@ -825,7 +825,7 @@ SELECT 'NaN'::numeric = 'NaN'::numeric;           -- t   (PostgreSQL treats NaN 
 ```
 
 - Money and quantities that must add up exactly: `numeric(p,s)` (or integer minor units). Never `float8`/`real`.
-- Avoid the `money` type: its output and input depend on `lc_monetary`, and it has fixed fractional precision.[^39]
+- Avoid the `money` type: its output and input depend on `lc_monetary`, and it has fixed fractional precision.
 - `numeric` without precision stores any scale; add `(p,s)` when the domain has one so bad data fails on insert.
 
 ##### Text types
@@ -837,7 +837,7 @@ INSERT INTO vt VALUES ('abc');    -- with vt(v varchar(2)): ERROR: value too lon
 ```
 
 - Use `text` (or `varchar` without a limit) by default. A length limit is a business rule; if it matters, `CHECK (length(col) <= n)` can be changed without a rewrite, while widening `varchar(n)` is also metadata-only but narrowing is a rewrite and validation.
-- Never use `char(n)`: it pads with spaces, strips them in comparisons and `length()`, and wastes space.[^39]
+- Never use `char(n)`: it pads with spaces, strips them in comparisons and `length()`, and wastes space.
 - `''` is not `NULL` in PostgreSQL (unlike Oracle).
 - Case-insensitive uniqueness: a unique index on `lower(email)` (or `casefold(email)` (18) with a suitable collation), or a nondeterministic ICU collation; the `citext` extension also works but is slower and has its own operator pitfalls.
 
@@ -852,13 +852,13 @@ SELECT '2025-01-31'::date + interval '1 month';               -- 2025-02-28 00:0
 SELECT '2025-01-31 23:59:59.5'::timestamp BETWEEN '2025-01-01' AND '2025-01-31';  -- f
 ```
 
-- **Store instants as `timestamptz`**, never `timestamp` (without time zone): `timestamptz` stores UTC and converts on input/output using the session `TimeZone`; `timestamp` stores whatever wall-clock value the client sent, losing the offset.[^39][^42]
+- **Store instants as `timestamptz`**, never `timestamp` (without time zone): `timestamptz` stores UTC and converts on input/output using the session `TimeZone`; `timestamp` stores whatever wall-clock value the client sent, losing the offset.
 - Use half-open ranges for periods: `created_at >= $1 AND created_at < $2`. `BETWEEN '2025-01-01' AND '2025-01-31'` misses everything after midnight on the 31st.
 - `now()`/`current_timestamp` are the transaction start time — identical for every row and statement in a transaction. Use `clock_timestamp()` for wall-clock time inside long transactions.
 - `date + interval '1 month'` clamps to the month end; repeated monthly addition drifts (`Jan 31 → Feb 28 → Mar 28`). Compute from the anchor date.
 - `timestamptz::date` depends on the session `TimeZone`; the same query returns different days for different clients. Use `(ts AT TIME ZONE 'Europe/Berlin')::date` explicitly.
-- Do not use `timetz` (time with time zone): an offset without a date is meaningless across DST.[^39]
-- Since 18, time zone abbreviation resolution changed: abbreviations of the session's `TimeZone` are checked before `timezone_abbreviations`.[^25]
+- Do not use `timetz` (time with time zone): an offset without a date is meaningless across DST.
+- Since 18, time zone abbreviation resolution changed: abbreviations of the session's `TimeZone` are checked before `timezone_abbreviations`.
 
 ##### UUIDs
 
@@ -907,7 +907,7 @@ INSERT INTO nd VALUES (1, NULL);   -- ERROR: duplicate key value violates unique
 
 #### Indexing
 
-Index types: B-tree (default; equality, ranges, sorting, `LIKE 'prefix%'` with the right operator class), Hash (equality only), GIN (`jsonb`, arrays, full-text, trigram), GiST (ranges, geometry, exclusion constraints, trigram), SP-GiST, BRIN (huge append-only tables whose physical order correlates with the column).[^34]
+Index types: B-tree (default; equality, ranges, sorting, `LIKE 'prefix%'` with the right operator class), Hash (equality only), GIN (`jsonb`, arrays, full-text, trigram), GiST (ranges, geometry, exclusion constraints, trigram), SP-GiST, BRIN (huge append-only tables whose physical order correlates with the column).
 
 ```sql
 CREATE INDEX orders_user_status ON orders (user_id, status);            -- composite: column order matters
@@ -961,7 +961,7 @@ for user in users:
 cur.execute("SELECT * FROM orders WHERE user_id = ANY(%s)", (user_ids,))
 ```
 
-`= ANY($1::int[])` with an array parameter is preferable to building `IN ($1, $2, ..., $n)` with a variable number of placeholders: one statement text, one prepared plan. (Since 18, `pg_stat_statements` squashes constant lists: verified on 19rc1, `IN (1,2)`, `IN (1,2,3,4,5)` and `= ANY(ARRAY[1,2,3])` all land in one entry shown as `IN ($1 /*, ... */)` with 3 calls.)[^25][^22]
+`= ANY($1::int[])` with an array parameter is preferable to building `IN ($1, $2, ..., $n)` with a variable number of placeholders: one statement text, one prepared plan. (Since 18, `pg_stat_statements` squashes constant lists: verified on 19rc1, `IN (1,2)`, `IN (1,2,3,4,5)` and `= ANY(ARRAY[1,2,3])` all land in one entry shown as `IN ($1 /*, ... */)` with 3 calls.)
 
 ##### Pagination
 
@@ -1027,7 +1027,7 @@ Run `ANALYZE` after bulk loads into new tables; autovacuum's analyze may come to
 
 ##### Materialized views
 
-`REFRESH MATERIALIZED VIEW` takes `ACCESS EXCLUSIVE` and blocks readers; `REFRESH MATERIALIZED VIEW CONCURRENTLY` needs a unique index on the view (since 18 the unique index may also be a non-B-tree index that supports equality) and allows reads during the refresh.[^25]
+`REFRESH MATERIALIZED VIEW` takes `ACCESS EXCLUSIVE` and blocks readers; `REFRESH MATERIALIZED VIEW CONCURRENTLY` needs a unique index on the view (since 18 the unique index may also be a non-B-tree index that supports equality) and allows reads during the refresh.
 
 ##### Planner settings
 
@@ -1048,7 +1048,7 @@ EXPLAIN (ANALYZE, IO) ...;                           -- 19: asynchronous I/O / p
 
 `EXPLAIN ANALYZE` **executes** the statement: wrap `INSERT/UPDATE/DELETE/MERGE` in `BEGIN; ... ROLLBACK;`.
 
-What to look for:[^35]
+What to look for:
 
 - **Estimated vs actual rows** off by orders of magnitude → stale or insufficient statistics (`ANALYZE`, extended statistics for correlated columns).
 - **`Rows Removed by Filter`** large on a Seq Scan or Index Scan → missing or wrong index, or non-sargable predicate.
@@ -1074,7 +1074,7 @@ Example (19rc1, `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)`):
 
 #### Transactions, isolation and concurrency
 
-The default isolation level is **READ COMMITTED**: each statement sees data committed before it started.[^30]
+The default isolation level is **READ COMMITTED**: each statement sees data committed before it started.
 
 ##### Lost updates
 
@@ -1115,7 +1115,7 @@ ON CONFLICT (k) DO UPDATE
 RETURNING old.v, new.v;                            -- 18
 ```
 
-- `ON CONFLICT` is atomic against concurrent inserts of the same key. **`MERGE` is not**: verified, two concurrent `MERGE ... WHEN NOT MATCHED THEN INSERT` statements for the same key → one fails with `duplicate key value violates unique constraint`, while the same race with `ON CONFLICT DO UPDATE` succeeds. Use `ON CONFLICT` for upserts; use `MERGE` (15+) for set-based synchronization where conflicts are handled or impossible.[^7][^31]
+- `ON CONFLICT` is atomic against concurrent inserts of the same key. **`MERGE` is not**: verified, two concurrent `MERGE ... WHEN NOT MATCHED THEN INSERT` statements for the same key → one fails with `duplicate key value violates unique constraint`, while the same race with `ON CONFLICT DO UPDATE` succeeds. Use `ON CONFLICT` for upserts; use `MERGE` (15+) for set-based synchronization where conflicts are handled or impossible.
 - `ON CONFLICT DO UPDATE` affecting the same key twice in one statement fails (`command cannot affect row a second time`): deduplicate the input first.
 - `ON CONFLICT DO NOTHING RETURNING` returns nothing for skipped rows. In 19, use `ON CONFLICT (k) DO SELECT RETURNING ...` to get the existing row atomically, instead of a follow-up `SELECT` or `DO UPDATE SET k = excluded.k` (which writes a new row version — bloat, triggers).
 - A deferrable unique constraint cannot be an arbiter (`ON CONFLICT does not support deferrable unique constraints/exclusion constraints as arbiters`).
@@ -1154,7 +1154,7 @@ COMMIT;
 
 #### JSONB and SQL/JSON
 
-Use `jsonb`, not `json`, unless exact input text (key order, duplicate keys, whitespace) must be preserved.[^32]
+Use `jsonb`, not `json`, unless exact input text (key order, duplicate keys, whitespace) must be preserved.
 
 ```sql
 SELECT '{"a":1,"a":2}'::jsonb, '{"a":1,"a":2}'::json;   -- {"a": 2} | {"a":1,"a":2}
@@ -1212,7 +1212,7 @@ SELECT * FROM JSON_TABLE(
 
 #### Partitioning
 
-Declarative partitioning (`PARTITION BY RANGE | LIST | HASH`) is for very large tables where partition pruning or dropping whole partitions (retention) pays off. It adds planning overhead and constraints; do not partition small tables.[^33]
+Declarative partitioning (`PARTITION BY RANGE | LIST | HASH`) is for very large tables where partition pruning or dropping whole partitions (retention) pays off. It adds planning overhead and constraints; do not partition small tables.
 
 ```sql
 CREATE TABLE m (
@@ -1243,7 +1243,7 @@ ALTER INDEX m_v_idx ATTACH PARTITION m_2025_02_v;        -- parent index becomes
 - **Default partition**: rows that match no partition go there; creating a new partition then has to scan the default partition to verify no rows belong to the new range, and `DETACH PARTITION ... CONCURRENTLY` (14+) is refused while a default partition exists (`cannot detach partitions concurrently when a default partition exists`). Prefer pre-creating partitions (pg_partman or a scheduled job) over a catch-all default.
 - **Retention**: `ALTER TABLE m DETACH PARTITION m_2024_01 CONCURRENTLY; DROP TABLE m_2024_01;` instead of `DELETE` — no bloat, no long transaction.
 - **Unlogged partitioned tables are rejected** since 18 (`partitioned tables cannot be unlogged`).
-- **Statistics**: autovacuum analyzes partitions but never the partitioned parent; queries that need parent-level statistics (joins, `GROUP BY` across partitions) require a scheduled `ANALYZE parent`. Since 18, `VACUUM`/`ANALYZE` of a parent recurse into children by default; `ANALYZE ONLY parent` analyzes just the parent. In 19, `vacuumdb --analyze-only`/`--analyze-in-stages` also issue `ANALYZE ONLY parent` for partitioned tables.[^25][^41]
+- **Statistics**: autovacuum analyzes partitions but never the partitioned parent; queries that need parent-level statistics (joins, `GROUP BY` across partitions) require a scheduled `ANALYZE parent`. Since 18, `VACUUM`/`ANALYZE` of a parent recurse into children by default; `ANALYZE ONLY parent` analyzes just the parent. In 19, `vacuumdb --analyze-only`/`--analyze-in-stages` also issue `ANALYZE ONLY parent` for partitioned tables.
 - `NOT VALID` foreign keys can be added to partitioned tables (18). Identity columns and exclusion constraints on partitioned tables are supported (exclusion constraints since 17).
 - `ALTER TABLE ... MERGE PARTITIONS` / `SPLIT PARTITION` do not exist in 19 (syntax errors on 19rc1); re-partitioning means create-new-partitions-and-move-rows.
 - `COPY partitioned_table TO ...` works in 19; `REPACK (CONCURRENTLY)` does not accept a partitioned table (repack partitions individually).
@@ -1255,7 +1255,7 @@ ALTER INDEX m_v_idx ATTACH PARTITION m_2025_02_v;        -- parent index becomes
 ##### Roles and privileges
 
 - **Applications never connect as a superuser or as the table owner.** Superusers and roles with `BYPASSRLS` skip row-level security; owners skip it unless `FORCE ROW LEVEL SECURITY` is set. Use separate roles for migrations (owner) and runtime (DML only).
-- **Schema `public`**: since 15, `PUBLIC` has no `CREATE` privilege on `public` in new databases and the schema is owned by `pg_database_owner` (verified on 19rc1: `permission denied for schema public` for an ordinary role). Databases upgraded from ≤14 with `pg_upgrade` keep the old, permissive ACL — check `\dn+ public` and `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.[^40]
+- **Schema `public`**: since 15, `PUBLIC` has no `CREATE` privilege on `public` in new databases and the schema is owned by `pg_database_owner` (verified on 19rc1: `permission denied for schema public` for an ordinary role). Databases upgraded from ≤14 with `pg_upgrade` keep the old, permissive ACL — check `\dn+ public` and `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.
 - **Functions are executable by `PUBLIC` by default** (verified: a fresh function is executable by any role). `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC` for anything sensitive — especially `SECURITY DEFINER` functions — or set `ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`.
 - `GRANT SELECT ON ALL TABLES IN SCHEMA s` covers existing tables only; future tables need `ALTER DEFAULT PRIVILEGES ... GRANT ...` (per creating role).
 - Predefined roles instead of superuser: `pg_read_all_data`/`pg_write_all_data` (14), `pg_checkpoint` (15), `pg_create_subscription`, `pg_use_reserved_connections` (16), `pg_maintain` (17), `pg_signal_autovacuum_worker` (18; in 19 `pg_read_all_data`/`pg_write_all_data` also cover large objects), plus older `pg_monitor`, `pg_read_server_files`, `pg_signal_backend`.
@@ -1276,13 +1276,13 @@ Verified on 19rc1:
 
 - Without `FORCE`, the **table owner sees all rows**; with `FORCE` and no tenant set, the owner sees 0 rows. Superusers always bypass.
 - A policy with only `USING` also applies its expression as `WITH CHECK` for `INSERT`/`UPDATE` (inserting another tenant's row fails with `new row violates row-level security policy`). Write `WITH CHECK` explicitly anyway: it is clearer and required when the read and write rules differ.
-- **Views bypass RLS of their owner**: a normal view owned by a superuser (or the table owner) showed all rows to an unprivileged role; the same view `WITH (security_invoker = true)` (15+) applied the caller's privileges and the policy (0 rows for a reader without tenant context; a caller without a grant on the table gets `permission denied for table docs`). Views over RLS tables must be `security_invoker` or owned by a role subject to the policies.[^43]
+- **Views bypass RLS of their owner**: a normal view owned by a superuser (or the table owner) showed all rows to an unprivileged role; the same view `WITH (security_invoker = true)` (15+) applied the caller's privileges and the policy (0 rows for a reader without tenant context; a caller without a grant on the table gets `permission denied for table docs`). Views over RLS tables must be `security_invoker` or owned by a role subject to the policies.
 - `current_setting('app.tenant', true)` returns `NULL` when unset (policy matches nothing — fail closed). Set it with `SET LOCAL app.tenant = ...` or `set_config('app.tenant', $1, true)` **inside the transaction**: a session-level `SET` leaks to the next client of a pooled connection.
-- Functions used in policies should be `LEAKPROOF` or simple operators; non-leakproof functions in a query can be evaluated before the policy filter and leak values through errors.[^28]
+- Functions used in policies should be `LEAKPROOF` or simple operators; non-leakproof functions in a query can be evaluated before the policy filter and leak values through errors.
 
 ##### `SECURITY DEFINER` functions and `search_path`
 
-A `SECURITY DEFINER` function runs with its owner's privileges. Any unqualified name it uses is resolved through the **caller's** `search_path` unless the function pins it.[^27]
+A `SECURITY DEFINER` function runs with its owner's privileges. Any unqualified name it uses is resolved through the **caller's** `search_path` unless the function pins it.
 
 ```sql
 -- BAD: unqualified lower() resolved via the caller's search_path
@@ -1324,7 +1324,7 @@ EXECUTE format('SELECT count(*) FROM %I WHERE relname = $1', tbl) INTO n USING v
 - Prefer `EXECUTE ... USING` parameters over `%L`: no quoting at all, and types are preserved.
 - `quote_literal(NULL)` returns `NULL`, so `'... ' || quote_literal(v)` yields a `NULL` query string (`query string argument of EXECUTE is null`). Use `quote_nullable()` or `%L`.
 - Identifiers from users must additionally be validated against an allow-list (or `regclass` cast: `$1::regclass`) — quoting prevents injection, not access to other tables.
-- In application code: bind parameters only. `ORDER BY` columns and directions cannot be parameters; map user input to a fixed allow-list.[^29]
+- In application code: bind parameters only. `ORDER BY` columns and directions cannot be parameters; map user input to a fixed allow-list.
 
 ***
 
@@ -1397,7 +1397,7 @@ Also: no string-built `LIKE` patterns without escaping `%`/`_` (`LIKE $1 ESCAPE 
 
 Each PostgreSQL connection is an OS process; hundreds of idle connections cost memory and snapshot overhead. Use a pooler (PgBouncer, pgcat, Odyssey, or the driver's pool) and size the server pool to roughly the number of concurrently active queries the hardware sustains, not to the number of application threads.
 
-In PgBouncer **transaction pooling** mode, consecutive transactions of one client can run on different server connections:[^36][^37]
+In PgBouncer **transaction pooling** mode, consecutive transactions of one client can run on different server connections:
 
 | Feature | Transaction pooling |
 | --- | --- |
@@ -1426,7 +1426,7 @@ ALTER ROLE app SET lock_timeout = '5s';
 
 ##### TLS and connection strings
 
-`sslmode=verify-full` (with `sslrootcert`) in production; libpq's default `prefer` allows unencrypted fallback and does not verify the server. Do not commit connection strings with passwords. libpq (18+) supports `sslkeylogfile` for debugging — never enable it in production. Wire protocol 3.2 (18) is opt-in via `max_protocol_version=3.2`/`latest` (19's libpq still defaults to 3.0); poolers and proxies must support it before you enable it. 19's libpq adds the `servicefile` connection parameter.[^44]
+`sslmode=verify-full` (with `sslrootcert`) in production; libpq's default `prefer` allows unencrypted fallback and does not verify the server. Do not commit connection strings with passwords. libpq (18+) supports `sslkeylogfile` for debugging — never enable it in production. Wire protocol 3.2 (18) is opt-in via `max_protocol_version=3.2`/`latest` (19's libpq still defaults to 3.0); poolers and proxies must support it before you enable it. 19's libpq adds the `servicefile` connection parameter.
 
 ***
 
@@ -1434,7 +1434,7 @@ ALTER ROLE app SET lock_timeout = '5s';
 
 ##### Vacuum and statistics
 
-- Autovacuum must stay on. Tables with heavy updates/deletes need per-table tuning (`ALTER TABLE t SET (autovacuum_vacuum_scale_factor = 0.02)`). 18 added `autovacuum_vacuum_max_threshold` (default 100,000,000 dead tuples), which caps the threshold for huge tables, and eager freezing of all-visible pages during normal vacuums (`vacuum_max_eager_freeze_failure_rate`).[^25][^41]
+- Autovacuum must stay on. Tables with heavy updates/deletes need per-table tuning (`ALTER TABLE t SET (autovacuum_vacuum_scale_factor = 0.02)`). 18 added `autovacuum_vacuum_max_threshold` (default 100,000,000 dead tuples), which caps the threshold for huge tables, and eager freezing of all-visible pages during normal vacuums (`vacuum_max_eager_freeze_failure_rate`).
 - Long transactions, abandoned replication slots and prepared transactions prevent vacuum from removing dead rows and advancing `relfrozenxid` (wraparound risk). 18 added `idle_replication_slot_timeout` (default `0` = disabled) to invalidate idle slots.
 - `VACUUM FULL` is a blocking rewrite; regular `VACUUM` does not shrink files except trailing empty pages (`vacuum_truncate`, also a server setting since 18). Use `REPACK` (19) to shrink a bloated table.
 - `REINDEX ... CONCURRENTLY` (12+) for bloated indexes; plain `REINDEX` blocks writes.
@@ -1472,7 +1472,7 @@ FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;
 - **Renamed**: `pg_stat_subscription_stats.sync_error_count` → `sync_table_error_count`; wait-event type `BufferPin` → `Buffer` (`SELECT DISTINCT type FROM pg_wait_events` lists `Buffer` on 19, `BufferPin` on 18.6). Dashboards filtering `wait_event_type = 'BufferPin'` silently show nothing.
 - **Logging**: `log_lock_waits` on by default; `log_min_messages` per process type; `log_autoanalyze_min_duration`; messages from remote servers (replication, `postgres_fdw`, `dblink`) use the local log format; new I/O wait events for `COPY` to/from files, pipes and programs.
 - **Functions**: `pg_get_multixact_stats()`, `pg_get_sequence_data()` returns the page LSN, `pg_buffercache_os_pages()`, `pg_buffercache_mark_dirty*()`.
-- `pg_stat_statements` 1.13: `generic_plan_calls`, `custom_plan_calls`.[^1][^23]
+- `pg_stat_statements` 1.13: `generic_plan_calls`, `custom_plan_calls`.
 
 ```sql
 -- 19: which lock types make sessions wait
@@ -1485,7 +1485,7 @@ SELECT relname, score, do_vacuum, do_analyze, for_wraparound FROM pg_stat_autova
 
 #### Removed / changed in 19 — migration notes from 18
 
-Behaviour changes that can break code or operations when moving from 18 to 19 (verified on 19rc1 vs 18.6 where executable):[^1]
+Behaviour changes that can break code or operations when moving from 18 to 19 (verified on 19rc1 vs 18.6 where executable):
 
 | Change | Impact | Action |
 | --- | --- | --- |
@@ -1512,9 +1512,9 @@ Behaviour changes that can break code or operations when moving from 18 to 19 (v
 | Index AM API (`IndexAmRoutine` static), planner hooks (`get_relation_info_hook` removed) | Out-of-tree extensions need 19-compatible releases | Upgrade extensions |
 | Build: C11, Meson ≥ 0.57.2, Visual Studio 2019+ | Old build environments fail | Update toolchain |
 
-Upgrade path: `pg_upgrade` (checks: CR/LF names, btree_gist `inet`/`cidr` indexes, logical slots, checksums must match — 18 `initdb` enables them by default), dump/restore with **19's** `pg_dump`, or logical replication (19 also synchronizes sequences). After `pg_upgrade`, run `vacuumdb --all --analyze-in-stages --missing-stats-only` and then `vacuumdb --all --analyze-only`; 19's `pg_dump` can include restorable extended statistics, and 19's `pg_upgrade` documentation no longer lists `CREATE STATISTICS` statistics among the ones it does not transfer (18's did); custom statistics added by extensions and cumulative statistics are still not transferred. Update extensions (`ALTER EXTENSION ... UPDATE`; e.g. `pg_stat_statements` 1.13, `btree_gist` 1.9, `postgres_fdw` 1.3 ship with 19rc1).[^1][^50]
+Upgrade path: `pg_upgrade` (checks: CR/LF names, btree_gist `inet`/`cidr` indexes, logical slots, checksums must match — 18 `initdb` enables them by default), dump/restore with **19's** `pg_dump`, or logical replication (19 also synchronizes sequences). After `pg_upgrade`, run `vacuumdb --all --analyze-in-stages --missing-stats-only` and then `vacuumdb --all --analyze-only`; 19's `pg_dump` can include restorable extended statistics, and 19's `pg_upgrade` documentation no longer lists `CREATE STATISTICS` statistics among the ones it does not transfer (18's did); custom statistics added by extensions and cumulative statistics are still not transferred. Update extensions (`ALTER EXTENSION ... UPDATE`; e.g. `pg_stat_statements` 1.13, `btree_gist` 1.9, `postgres_fdw` 1.3 ship with 19rc1).
 
-**Before GA**: the RC 1 announcement asks for a major-version upgrade strategy (`pg_upgrade` or `pg_dump`/`pg_restore`) to move to RC 1 "from earlier versions of PostgreSQL"; do not put data you cannot reload on a pre-release build.[^3]
+**Before GA**: the RC 1 announcement asks for a major-version upgrade strategy (`pg_upgrade` or `pg_dump`/`pg_restore`) to move to RC 1 "from earlier versions of PostgreSQL"; do not put data you cannot reload on a pre-release build.
 
 ***
 

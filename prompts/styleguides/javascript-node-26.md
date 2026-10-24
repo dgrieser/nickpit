@@ -1,7 +1,7 @@
 ### JavaScript on Node.js 26: The Complete Production Developer Guide
 
-> **Version**: Node.js 26.0.0 was released on **2026-05-05**; the latest patch is **Node.js 26.12.1 (2026-10-21, security release)**. It ships V8 **14.6** (`14.6.202.34-node.40`), Undici **8.12.2**, OpenSSL **3.5.9**, SQLite **3.54.0**, ICU 78.3 / Unicode 17 and npm 11.20.0.[^1][^2]
-> **Support status (as of October 2026)**: Node.js 26 is the **Current** release line. It is scheduled to be promoted to **Active LTS on 2026-10-28**, enters **Maintenance LTS on 2027-10-20** and reaches **End-of-Life on 2029-04-30**. Node.js 24 "Krypton" moved to Maintenance LTS on 2026-10-20 (EOL 2028-04-30), Node.js 22 is in Maintenance LTS until 2027-04-30, and Node.js 25 reached EOL on 2026-06-01.[^3]
+> **Version**: Node.js 26.0.0 was released on **2026-05-05**; the latest patch is **Node.js 26.12.1 (2026-10-21, security release)**. It ships V8 **14.6** (`14.6.202.34-node.40`), Undici **8.12.2**, OpenSSL **3.5.9**, SQLite **3.54.0**, ICU 78.3 / Unicode 17 and npm 11.20.0.
+> **Support status (as of October 2026)**: Node.js 26 is the **Current** release line. It is scheduled to be promoted to **Active LTS on 2026-10-28**, enters **Maintenance LTS on 2027-10-20** and reaches **End-of-Life on 2029-04-30**. Node.js 24 "Krypton" moved to Maintenance LTS on 2026-10-20 (EOL 2028-04-30), Node.js 22 is in Maintenance LTS until 2027-04-30, and Node.js 25 reached EOL on 2026-06-01.
 > **Scope**: Server-side and tooling JavaScript running on Node.js 26.x: the ECMAScript features shipped by V8 14.6 (ES2025 plus most of ES2026 and Temporal) and the Node.js 26 runtime APIs — modules, async patterns, errors, streams, HTTP, file system, child processes, security, performance, testing, tooling and observability.
 > **Note**: This document is self-contained. Everything from earlier Node.js versions that is still valid is carried forward. Sections marked **New in 26** cover behaviour introduced in the 26.x line; **New in 25** marks features that Node.js 26 inherits from the (now EOL) 25.x line and that Node.js 24 does not have.
 
@@ -9,9 +9,9 @@
 
 #### Overview
 
-Node.js 26 is the **last release line under the old two-majors-per-year model**. Starting with Node.js 27, the project ships **one major release per year**: a six-month **Alpha** channel (October–March, prerelease versions such as `27.0.0-alpha.1`, semver-major changes still allowed), a **Current** phase from April to October, and then **30 months of LTS** — every major becomes LTS, the odd/even distinction disappears and version numbers follow the calendar year of the first Current release (27.0.0 in 2027, 28.0.0 in 2028). The Node.js 27 alpha channel starts in late October 2026 (scheduled 2026-10-28), and **27.0.0 is planned for April 2027** (2027-04-22 in the release schedule). As of 2026-10-22 no 27.x release — not even `27.0.0-alpha.1` — has been published; only untested automated nightly builds (`v27.0.0-nightly…`) exist, and Node.js 26.12.1 is the newest release of any line.[^3][^4]
+Node.js 26 is the **last release line under the old two-majors-per-year model**. Starting with Node.js 27, the project ships **one major release per year**: a six-month **Alpha** channel (October–March, prerelease versions such as `27.0.0-alpha.1`, semver-major changes still allowed), a **Current** phase from April to October, and then **30 months of LTS** — every major becomes LTS, the odd/even distinction disappears and version numbers follow the calendar year of the first Current release (27.0.0 in 2027, 28.0.0 in 2028). The Node.js 27 alpha channel starts in late October 2026 (scheduled 2026-10-28), and **27.0.0 is planned for April 2027** (2027-04-22 in the release schedule). As of 2026-10-22 no 27.x release — not even `27.0.0-alpha.1` — has been published; only untested automated nightly builds (`v27.0.0-nightly…`) exist, and Node.js 26.12.1 is the newest release of any line.
 
-Headline changes in Node.js 26 relative to 25 and 24:[^1][^5]
+Headline changes in Node.js 26 relative to 25 and 24:
 
 - **Temporal is enabled by default** (`globalThis.Temporal`, `Date.prototype.toTemporalInstant()`), backed by V8's Rust-based implementation.
 - **V8 14.6** (Chromium 146) brings **upsert** (`Map`/`WeakMap.prototype.getOrInsert()` and `getOrInsertComputed()`) and **iterator sequencing** (`Iterator.concat()`), and removes the old `Intl.Locale` getters (`weekInfo`, `hourCycles`, `timeZones`, ...).
@@ -54,12 +54,12 @@ Native addons must be rebuilt for Node.js 26 (ABI 147) unless they use Node-API.
 | `WebAssembly.Memory.prototype.toFixedLengthBuffer()`/`toResizableBuffer()` | shipped | no | no |
 | `Math.sumPrecise()` (ES2026) | **not shipped** (only behind `--js-sum-precise`) | no | no |
 
-Everything from ES2025 and earlier is available: iterator helpers, new `Set` methods, `RegExp.escape()`, `Promise.try()`, `Float16Array`/`Math.f16round()`, RegExp modifiers `(?i:...)`, duplicate named capture groups, import attributes and JSON modules. From ES2026, `Error.isError()`, `Array.fromAsync()`, `JSON.rawJSON()`/source-text access in `JSON.parse` revivers, `Uint8Array` base64/hex, upsert and `Iterator.concat()` ship; `Math.sumPrecise()` does not. Explicit resource management (`using`, `await using`, `DisposableStack`, `AsyncDisposableStack`, `SuppressedError`) and `Atomics.pause()` — both Stage 4 and expected in ES2027 — ship in 26 (and already in 24).[^6][^7]
+Everything from ES2025 and earlier is available: iterator helpers, new `Set` methods, `RegExp.escape()`, `Promise.try()`, `Float16Array`/`Math.f16round()`, RegExp modifiers `(?i:...)`, duplicate named capture groups, import attributes and JSON modules. From ES2026, `Error.isError()`, `Array.fromAsync()`, `JSON.rawJSON()`/source-text access in `JSON.parse` revivers, `Uint8Array` base64/hex, upsert and `Iterator.concat()` ship; `Math.sumPrecise()` does not. Explicit resource management (`using`, `await using`, `DisposableStack`, `AsyncDisposableStack`, `SuppressedError`) and `Atomics.pause()` — both Stage 4 and expected in ES2027 — ship in 26 (and already in 24).
 
 ##### Runtime changes in 26.0.0 **New in 26**
 
-- **Temporal on by default.** `--no-harmony-temporal` disables it; APIs that need it then throw `ERR_NO_TEMPORAL` (added 26.2.0; verified with `fs.statSync('.').mtimeInstant`).[^1][^8]
-- **Undici 8.** `fetch()` negotiates HTTP/2 via ALPN for `https:` URLs (verified: a local `http2.createSecureServer({ allowHTTP1: true })` sees `req.httpVersion === '2.0'` on 26.12.1 and `'1.1'` on 24/25). Legacy undici handler wrappers and "fake" `Blob` objects are gone.[^9]
+- **Temporal on by default.** `--no-harmony-temporal` disables it; APIs that need it then throw `ERR_NO_TEMPORAL` (added 26.2.0; verified with `fs.statSync('.').mtimeInstant`).
+- **Undici 8.** `fetch()` negotiates HTTP/2 via ALPN for `https:` URLs (verified: a local `http2.createSecureServer({ allowHTTP1: true })` sees `req.httpVersion === '2.0'` on 26.12.1 and `'1.1'` on 24/25). Legacy undici handler wrappers and "fake" `Blob` objects are gone.
 - **`readable.read()` returns one chunk at a time** (PR #60441). Code that calls `read()` with no argument and expects all buffered data concatenated now gets only the first chunk.
 - **HTTP upgrades with bodies** (PR #60016): `Content-Length`/`Transfer-Encoding` on an `Upgrade` request are now honoured. The request body is no longer exposed raw on the socket argument: when a body is received, the second argument of the `'upgrade'` event is a `Duplex` that emits socket data only after the body, and the parsed body is emitted from `req`. Use `req.socket` for socket-specific fields.
 - **`localStorage` returns `undefined`** when `--localstorage-file` is not set (25.x exposed an object); `sessionStorage` is still an in-memory `Storage` object.
@@ -75,7 +75,7 @@ Everything from ES2025 and earlier is available: iterator helpers, new `Set` met
 
 ##### Additions in 26.x minor releases **New in 26**
 
-Many of these were later backported to Node.js 24.x[^27] (24.22.1 has `util.debounce`/`throttle`, `crypto.randomUUIDv7()`, `process.permission.drop()` and others), but **not to 25.x**. Within the 26 line the minor version matters: `engines: { "node": ">=26" }` does not guarantee any API below.
+Many of these were later backported to Node.js 24.x (24.22.1 has `util.debounce`/`throttle`, `crypto.randomUUIDv7()`, `process.permission.drop()` and others), but **not to 25.x**. Within the 26 line the minor version matters: `engines: { "node": ">=26" }` does not guarantee any API below.
 
 | Release (date) | Notable additions |
 |---|---|
@@ -96,11 +96,11 @@ Many of these were later backported to Node.js 24.x[^27] (24.22.1 has `util.debo
 | 26.12.0 (2026-10-14) | `http.websocketMask()`/`websocketUnmask()`; startup throws when WebAssembly or RX memory is unavailable; `t.assert.called()`/`callCount()`/`lastCalledWith()`/`nthCalledWith()`; `process.finalization` marked release candidate; "module: synchronously load most ES modules" (#62530) landed here and was **reverted in 26.12.1** — do not rely on 26.12.0-only loader timing |
 | 26.12.1 (2026-10-21) | security release: TLS non-canonical IP rejection and IP normalization, `dns` NUL-byte validation, Brotli decoder fix, `http` agent data guard, crypto random-cache reset across snapshots, permission-model fixes (wildcards, `realpathSync`), invalid ZIP local headers no longer cached, NSS 3.131.1 root certificates, Undici 8.12.2; reverts the 26.12.0 synchronous ESM loading change |
 
-**Always pin the latest 26.x patch.** Three 26.x patch releases were security releases (26.3.1, 26.5.1, 26.12.1). A project on 26.x older than 26.12.1 runs with known High-severity TLS and DNS vulnerabilities.[^1]
+**Always pin the latest 26.x patch.** Three 26.x patch releases were security releases (26.3.1, 26.5.1, 26.12.1). A project on 26.x older than 26.12.1 runs with known High-severity TLS and DNS vulnerabilities.
 
 ##### New in 25 (inherited by 26, missing in 24)
 
-Node.js 25 is EOL; projects on it should move to 26. Features that arrived in 25.x and are **not** in 24.22.1:[^10]
+Node.js 25 is EOL; projects on it should move to 26. Features that arrived in 25.x and are **not** in 24.22.1:
 
 - `Uint8Array.fromBase64()`, `fromHex()`, `prototype.toBase64()`, `toHex()`, `setFromBase64()`, `setFromHex()` (V8 14.1).
 - Web Storage globals (`localStorage`, `sessionStorage`, `Storage`) unflagged (25.0) — but see the 26 change: `localStorage` is `undefined` without `--localstorage-file`.
@@ -119,7 +119,7 @@ The project's runtime is Node.js 26. The following do **not** exist in it (or ex
 
 ##### Node.js 27 (main branch, alpha channel from late October 2026 — unreleased)
 
-As of 2026-10-22 these exist only on the Node.js `main` branch (built on V8 15.x), destined for the 27.0.0 alpha. Some semver-minor items may still be backported to a later 26.x release — check the installed version before claiming them:[^11]
+As of 2026-10-22 these exist only on the Node.js `main` branch (built on V8 15.x), destined for the 27.0.0 alpha. Some semver-minor items may still be backported to a later 26.x release — check the installed version before claiming them:
 
 - `http.Server` `keepAliveTimeout` default of **65 s**: in 26 it is still **5000 ms** (verified). Do not assume the longer default when reviewing keep-alive behind load balancers — set it explicitly.
 - `node:net/promises` (`netPromises.connect()`, `netPromises.listen()`) and `server[Symbol.asyncIterator]()` for `net.Server`.
@@ -277,7 +277,7 @@ JSON modules require `with { type: 'json' }` (the old `assert { ... }` syntax wa
 
 ##### `require(esm)` — stable
 
-`require()` can load an ES module synchronously **if the ESM graph has no top-level `await`** (enabled by default since 23.0/22.12, marked stable in 25.4.0 and in 24.x):[^13]
+`require()` can load an ES module synchronously **if the ESM graph has no top-level `await`** (enabled by default since 23.0/22.12, marked stable in 25.4.0 and in 24.x):
 
 ```cjs
 // main.cjs
@@ -350,7 +350,7 @@ console.log(answer); // 42
 hooks.deregister();
 ```
 
-**New in 26:** `module.register()` (off-thread async hooks) emits a runtime deprecation warning (DEP0205).[^22] Migrate loaders to `module.registerHooks()`; `--import` a file that calls it instead of `--loader`. Since 26.7.0, the object returned by `registerHooks()` also implements `Symbol.dispose`, so `using hooks = registerHooks({...})` scopes a hook.
+**New in 26:** `module.register()` (off-thread async hooks) emits a runtime deprecation warning (DEP0205). Migrate loaders to `module.registerHooks()`; `--import` a file that calls it instead of `--loader`. Since 26.7.0, the object returned by `registerHooks()` also implements `Symbol.dispose`, so `using hooks = registerHooks({...})` scopes a hook.
 
 ##### Compile cache
 
@@ -360,7 +360,7 @@ hooks.deregister();
 
 #### TypeScript: Built-in Type Stripping
 
-Node.js 26 runs `.ts`, `.mts` and `.cts` files directly by **erasing type annotations** (stable; `process.features.typescript === 'strip'`). No warning, no flag:[^14]
+Node.js 26 runs `.ts`, `.mts` and `.cts` files directly by **erasing type annotations** (stable; `process.features.typescript === 'strip'`). No warning, no flag:
 
 ```ts
 // a.ts — run with: node a.ts
@@ -381,7 +381,7 @@ console.log(norm({ x: 3, y: 4 }), describe(undefined)); // 5 '/'
 
 Rules a reviewer must enforce (all verified on 26.12.1):
 
-- **Only erasable syntax.** `enum`, `namespace` with values, parameter properties (`constructor(private x: number)`), and angle-bracket assertions (`<T>x`) fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. `--experimental-transform-types` was **removed in 26.0.0** — use `as const` objects instead of enums, explicit fields instead of parameter properties, `x as T` instead of `<T>x`. Turn on `"erasableSyntaxOnly": true` (TypeScript 5.8+) so `tsc` rejects them too.[^25]
+- **Only erasable syntax.** `enum`, `namespace` with values, parameter properties (`constructor(private x: number)`), and angle-bracket assertions (`<T>x`) fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. `--experimental-transform-types` was **removed in 26.0.0** — use `as const` objects instead of enums, explicit fields instead of parameter properties, `x as T` instead of `<T>x`. Turn on `"erasableSyntaxOnly": true` (TypeScript 5.8+) so `tsc` rejects them too.
 - **Type-only imports must be marked.** `import { Foo } from './types.ts'` where `Foo` is only a type fails at runtime with `SyntaxError: The requested module './types.ts' does not provide an export named 'Foo'`. Use `import type { Foo }` / `import { type Foo }` and enable `"verbatimModuleSyntax": true`.
 - **Write the real extension.** `import { helper } from './helper.ts'`; `'./helper'` fails with `ERR_MODULE_NOT_FOUND`. In `tsconfig.json` use `"allowImportingTsExtensions": true` (with `noEmit`) or `"rewriteRelativeImportExtensions": true` if you also emit JS.
 - **`tsconfig.json` is ignored** at runtime: `paths`, `baseUrl` and `target` downlevelling have no effect, and decorator syntax (`@d m() {}`) is a `SyntaxError` because V8 14.6 does not implement decorators. Use `package.json` `"imports"` instead of `paths`.
@@ -621,7 +621,7 @@ console.log('a-b-c'.replaceAll('-', '+'), 'x'.padStart(3, '0'));    // a+b+c 00x
 
 ##### `Intl.Locale` getters removed **New in 26**
 
-V8 14 removed the accessor properties `calendars`, `collations`, `hourCycles`, `numberingSystems`, `textInfo`, `timeZones` and `weekInfo` from `Intl.Locale.prototype`; the Intl Locale Info proposal replaced them with `get*()` methods because each access returned a new object. On Node 26 they read as `undefined` — silently (verified against 24.22.1 and 25.9.0, where they still return values):[^24]
+V8 14 removed the accessor properties `calendars`, `collations`, `hourCycles`, `numberingSystems`, `textInfo`, `timeZones` and `weekInfo` from `Intl.Locale.prototype`; the Intl Locale Info proposal replaced them with `get*()` methods because each access returned a new object. On Node 26 they read as `undefined` — silently (verified against 24.22.1 and 25.9.0, where they still return values):
 
 ```mjs
 const loc = new Intl.Locale('de-DE');
@@ -664,7 +664,7 @@ console.log(Buffer.stringLength(buf), buf.toString().length);         // 6 6
 
 #### Dates and Times: Temporal **New in 26**
 
-`Temporal` is a global in Node 26. Use it for new date/time code; keep `Date` only at boundaries that require it.[^19]
+`Temporal` is a global in Node 26. Use it for new date/time code; keep `Date` only at boundaries that require it.
 
 ```mjs
 const instant = Temporal.Instant.from('2026-10-22T10:00:00Z');
@@ -872,7 +872,7 @@ const save = debounce((x) => x * 2, 50);
 console.log(await Promise.all([save(1), save(2), save(3)])); // [ 6, 6, 6 ]
 ```
 
-Both return functions that return **promises**, and both accept a `signal`.[^20] `limit` must be a positive integer (`Infinity` throws `ERR_OUT_OF_RANGE`); use the `concurrency` option to cap in-flight calls. They exist from **26.10.0** (also in 24.22.x), not in 26.0–26.9 — check `engines`.
+Both return functions that return **promises**, and both accept a `signal`. `limit` must be a positive integer (`Infinity` throws `ERR_OUT_OF_RANGE`); use the `concurrency` option to cap in-flight calls. They exist from **26.10.0** (also in 24.22.x), not in 26.0–26.9 — check `engines`.
 
 ##### Cancellation with AbortSignal
 
@@ -1056,7 +1056,7 @@ r.once('readable', () => {
 });
 ```
 
-Code that calls `read()` once per `'readable'` event and assumes it drained the buffer loses data on Node 26[^17] (or stalls, waiting for another `'readable'`). Loop `while ((chunk = r.read()) !== null)` or use `for await (const chunk of r)`.
+Code that calls `read()` once per `'readable'` event and assumes it drained the buffer loses data on Node 26 (or stalls, waiting for another `'readable'`). Loop `while ((chunk = r.read()) !== null)` or use `for await (const chunk of r)`.
 
 ##### Backpressure and object mode
 
@@ -1142,7 +1142,7 @@ Review rules:
 
 - **`fetch` does not reject on HTTP errors** — check `res.ok`/`res.status`.
 - **Always consume or cancel the body.** An unread body keeps the connection (and memory) busy until GC; with HTTP/2 it holds a stream slot.
-- **There is no default overall timeout**[^28] — undici only applies a 300 s headers timeout and a 300 s timeout *between* body chunks, so a slow server can hold a request for hours. Always pass `AbortSignal.timeout()`.
+- **There is no default overall timeout** — undici only applies a 300 s headers timeout and a 300 s timeout *between* body chunks, so a slow server can hold a request for hours. Always pass `AbortSignal.timeout()`.
 - **New in 26: HTTP/2 by default.** Undici 8 offers `h2` via ALPN for `https:` requests, so servers and proxies that negotiate HTTP/2 now receive HTTP/2 from `fetch`. Header names are lower-cased, connection-specific headers (`connection`, `keep-alive`, `transfer-encoding`) are invalid in HTTP/2, and server-side code that inspects `req.httpVersion` sees `'2.0'`.
 - **Proxies**: `fetch` ignores `HTTP_PROXY`/`HTTPS_PROXY` unless the process runs with `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` (active development), or calls `http.setGlobalProxyFromEnv()`; `NO_PROXY` is honoured in that mode.
 - `fetch` follows redirects by default (`redirect: 'follow'`, up to 20). For SSRF-sensitive code use `redirect: 'manual'` and validate every hop.
@@ -1204,7 +1204,7 @@ Review rules:
 - **`res.writeHeader()` is removed** in Node 26 — use `writeHead()`.
 - **Never set headers from unvalidated input**: Node throws `ERR_INVALID_CHAR` on CR/LF, but values can still carry other injection (e.g., open redirects in `Location`). `http.isValidHeaderName()`/`isValidHeaderValue()` (26.11) validate before setting.
 - **Error handling**: an exception thrown in an `async` request listener is an unhandled rejection that kills the process. Catch in the handler (or use a framework that does) and respond with 500.
-- **HTTP upgrades (New in 26)**: request bodies on `Upgrade` requests are parsed;[^18] read the body from `req` and the upgraded protocol from the stream argument; use `req.socket` for socket-level fields.
+- **HTTP upgrades (New in 26)**: request bodies on `Upgrade` requests are parsed; read the body from `req` and the upgraded protocol from the stream argument; use `req.socket` for socket-level fields.
 - **1xx**: `res.writeInformation(status, headers)` (26.2) sends any 1xx (e.g., 103 Early Hints via `writeEarlyHints()`).
 - **Shutdown**: on `SIGTERM` call `server.close()` (stops accepting), then `closeIdleConnections()`; give in-flight requests a deadline and finally `closeAllConnections()`. `http.Server` implements `Symbol.asyncDispose` (calls `server.close()`, which also closes idle connections since Node 19, and resolves when the server has closed).
 - Security headers, CORS, rate limiting and request IDs belong in middleware; validate `Host` when generating absolute URLs.
@@ -1323,7 +1323,7 @@ console.log(lines > 0, code);                             // true 0
 ```
 
 - **`exec()`/`execSync()` and `{ shell: true }` with user input are command injection.** Since 23.11/22.15, passing an `args` array together with `shell: true` emits DEP0190 because the arguments are only space-joined, not escaped (verified: `spawnSync('echo', ['hello; echo INJECTED'], { shell: true })` runs the second command).
-- On Windows, `.bat`/`.cmd` files run through `cmd.exe`; Node refuses to spawn them without `shell: true` since the 2024 security fix (CVE-2024-27980)[^23] — treat such code paths as shell execution.
+- On Windows, `.bat`/`.cmd` files run through `cmd.exe`; Node refuses to spawn them without `shell: true` since the 2024 security fix (CVE-2024-27980) — treat such code paths as shell execution.
 - Always set `timeout` (or a `signal`) and `maxBuffer`; the default `maxBuffer` is 1 MiB and overflowing it kills the child.
 - `stdio: 'inherit'` for CLI wrappers; pipe and consume `stdout`/`stderr` otherwise — an unread pipe fills and blocks the child.
 - Pass a minimal `env` (`{ PATH: process.env.PATH, ... }`) to children that should not see secrets.
@@ -1336,7 +1336,7 @@ console.log(lines > 0, code);                             // true 0
 
 ##### The permission model
 
-The permission model is **stable** (Stability 2) in Node 26.[^15] It restricts what *the process* can do — it is defence in depth against compromised dependencies, not a sandbox for running hostile code (once native addons, `node:ffi` or child processes are allowed they can bypass it, and several 26.x security releases fixed bypasses).
+The permission model is **stable** (Stability 2) in Node 26. It restricts what *the process* can do — it is defence in depth against compromised dependencies, not a sandbox for running hostile code (once native addons, `node:ffi` or child processes are allowed they can bypass it, and several 26.x security releases fixed bypasses).
 
 ```bash
 node --permission \
@@ -1503,7 +1503,7 @@ console.log(crypto.createHash('shake256', { outputLength: 32 }).update('x').dige
 
 #### Data: `node:sqlite`
 
-`node:sqlite` is unflagged and a **release candidate** (Stability 1.2).[^16] In Node 26.11+ the classes are named `Database` and `Statement`; `DatabaseSync` and `StatementSync` are deprecated aliases (DEP0210/DEP0211) and the only names that exist on 24/25 and on 26.0–26.10.
+`node:sqlite` is unflagged and a **release candidate** (Stability 1.2). In Node 26.11+ the classes are named `Database` and `Statement`; `DatabaseSync` and `StatementSync` are deprecated aliases (DEP0210/DEP0211) and the only names that exist on 24/25 and on 26.0–26.10.
 
 ```mjs
 import { Database } from 'node:sqlite';    // 26.11+; use DatabaseSync for older versions
@@ -1690,7 +1690,7 @@ describe('makeRetry', () => {
 });
 ```
 
-Run with `node --test`[^21] (globs `**/*.test.{js,mjs,cjs,ts,mts,cts}`, `**/test/**/*.js` and similar by default). Useful flags: `--test-reporter=spec|dot|junit|lcov`, `--test-concurrency`, `--test-isolation=process|none`, `--test-shard=1/3`, `--test-name-pattern`, `--test-only`, `--test-timeout`, `--test-force-exit`, `--test-update-snapshots`, `--experimental-test-coverage` with `--test-coverage-lines=80` thresholds, `--test-rerun-failures=state.json`. **New in 26:** `--test-randomize`/`--test-random-seed` (26.1), test tags with `--experimental-test-tag-filter` (26.2), `context.log()` and the `test:log` event (26.6), `--test-coverage-include-all` (26.7), `t.assert.called()`/`callCount()`/`lastCalledWith()`/`nthCalledWith()` (26.12).
+Run with `node --test` (globs `**/*.test.{js,mjs,cjs,ts,mts,cts}`, `**/test/**/*.js` and similar by default). Useful flags: `--test-reporter=spec|dot|junit|lcov`, `--test-concurrency`, `--test-isolation=process|none`, `--test-shard=1/3`, `--test-name-pattern`, `--test-only`, `--test-timeout`, `--test-force-exit`, `--test-update-snapshots`, `--experimental-test-coverage` with `--test-coverage-lines=80` thresholds, `--test-rerun-failures=state.json`. **New in 26:** `--test-randomize`/`--test-random-seed` (26.1), test tags with `--experimental-test-tag-filter` (26.2), `context.log()` and the `test:log` event (26.6), `--test-coverage-include-all` (26.7), `t.assert.called()`/`callCount()`/`lastCalledWith()`/`nthCalledWith()` (26.12).
 
 Review rules:
 
@@ -1710,7 +1710,7 @@ Review rules:
 
 ##### ESLint 10 flat config
 
-ESLint 10 (February 2026; 10.13.0 is current) **removed eslintrc entirely**: `.eslintrc.*`, `.eslintignore`, `ESLINT_USE_FLAT_CONFIG`, `--env`, `--rulesdir`, `--no-eslintrc` and `--ignore-path` are gone, and the config is looked up from each linted file's directory. ESLint 9 reached end-of-life on 2026-08-06.[^12]
+ESLint 10 (February 2026; 10.13.0 is current) **removed eslintrc entirely**: `.eslintrc.*`, `.eslintignore`, `ESLINT_USE_FLAT_CONFIG`, `--env`, `--rulesdir`, `--no-eslintrc` and `--ignore-path` are gone, and the config is looked up from each linted file's directory. ESLint 9 reached end-of-life on 2026-08-06.
 
 ```js
 // eslint.config.js (verified with eslint 10.13.0, @eslint/js 10, globals 17, eslint-plugin-n 18)
@@ -1787,7 +1787,7 @@ console.log(await jobs.tracePromise(async () => 7, { id: 1 }));
 // fetch GET /x / server GET /x / job start 1 / job end 1 7 / 7
 ```
 
-OpenTelemetry instrumentations build on these channels[^26]; prefer them over monkey-patching. Built-in channels exist for `http`, `http2`, `net`, `undici`, `worker_threads`, `process`, the module loader, Web Locks (25.9), SQLite (26.8), crypto (26.9) and the permission model (`node:permission-model:*` in audit mode).
+OpenTelemetry instrumentations build on these channels; prefer them over monkey-patching. Built-in channels exist for `http`, `http2`, `net`, `undici`, `worker_threads`, `process`, the module loader, Web Locks (25.9), SQLite (26.8), crypto (26.9) and the permission model (`node:permission-model:*` in audit mode).
 
 ##### Process lifecycle and diagnostics
 

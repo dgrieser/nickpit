@@ -215,7 +215,7 @@ This document maps the production Go code. Test files live beside the code they 
 ## Non-Go Assets
 
 - `prompts/`: Agent system prompts and shared prompt snippets.
-- `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts. Each guide's footnote sources live beside it in `<guide>.citations.md`, which is embedded but never sent to the model.
+- `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts. Guides carry no footnote markers; each guide's sources live beside it in `<guide>.citations.md` with back-references to the section and block that cite them. Citation files are embedded but never sent to the model.
 - `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews, internal-only `update.yaml` for chat corrections, and `import_sources.yaml` with the per-source defaults of `import-findings`.
 - `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, styleguide detectors, version-keyed styleguide selection with per-language version-source priority, and `toolchain_companions` (dialect guides such as PostgreSQL/MySQL that replace the generic SQL guide when the project pins that server). All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
 - `assets/`: Static assets used by output or packaging.

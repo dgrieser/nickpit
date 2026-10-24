@@ -2,14 +2,14 @@
 
 #### Overview
 
-Python 3.11 was released on October 24, 2022.[^1] Its regular bugfix phase ended with 3.11.9 (April 2024), the last release with python.org binary installers; since then it gets **source-only security releases**. The latest is **3.11.17 (October 1, 2026)**, and security support ends in **October 2027** (five years after 3.11.0).[^2] As of October 2026, 3.11 is in its final security-only year. Treat it as a supported but legacy target: plan the move to 3.12+ now, and always run the newest 3.11.x patch, because several security fixes (tarfile extraction filters, `email` header injection, `http.client` limits) only exist in late point releases.
+Python 3.11 was released on October 24, 2022. Its regular bugfix phase ended with 3.11.9 (April 2024), the last release with python.org binary installers; since then it gets **source-only security releases**. The latest is **3.11.17 (October 1, 2026)**, and security support ends in **October 2027** (five years after 3.11.0). As of October 2026, 3.11 is in its final security-only year. Treat it as a supported but legacy target: plan the move to 3.12+ now, and always run the newest 3.11.x patch, because several security fixes (tarfile extraction filters, `email` header injection, `http.client` limits) only exist in late point releases.
 
 3.11 is best known for two things:
 
-- **Speed.** The Faster CPython project (PEP 659 specializing adaptive interpreter, zero-cost exceptions, cheaper frames, inlined Python-to-Python calls) makes 3.11 about **1.25× faster than 3.10** on average (10–60% depending on workload) with no source changes.[^1]
+- **Speed.** The Faster CPython project (PEP 659 specializing adaptive interpreter, zero-cost exceptions, cheaper frames, inlined Python-to-Python calls) makes 3.11 about **1.25× faster than 3.10** on average (10–60% depending on workload) with no source changes.
 - **Better failure handling.** It adds exception groups and `except*` (PEP 654), exception notes (PEP 678), fine-grained traceback locations (PEP 657), and structured concurrency with `asyncio.TaskGroup` and `asyncio.timeout()`.
 
-It also adds `tomllib` (PEP 680) to the standard library, a set of typing features (`Self`, `LiteralString`, `Required`/`NotRequired`, `TypeVarTuple`, `dataclass_transform`, `Never`/`assert_never`/`reveal_type`/`assert_type`), `StrEnum` and a large `enum` overhaul, the `-P`/`PYTHONSAFEPATH` safe-path option, and a 4300-digit limit on int/str conversion (CVE-2020-10735).[^1]
+It also adds `tomllib` (PEP 680) to the standard library, a set of typing features (`Self`, `LiteralString`, `Required`/`NotRequired`, `TypeVarTuple`, `dataclass_transform`, `Never`/`assert_never`/`reveal_type`/`assert_type`), `StrEnum` and a large `enum` overhaul, the `-P`/`PYTHONSAFEPATH` safe-path option, and a 4300-digit limit on int/str conversion (CVE-2020-10735).
 
 This guide targets **Python 3.11 specifically**. Everything from earlier versions remains available and is used freely here:
 
@@ -35,8 +35,8 @@ Global truths about Python 3.11:
 - **Dynamic typing with optional static checking.** Annotations are not enforced at runtime. A type checker (mypy, pyright) configured for 3.11 enforces them.
 - **Reference counting plus a cyclic GC, and one GIL.** CPython 3.11 has a single global interpreter lock and no free-threaded build (that starts with 3.13).
 - **`str` is Unicode and `bytes` is binary.** The two never mix implicitly.
-- **Dicts keep insertion order.** This is a language guarantee since 3.7.[^3]
-- **Annotations are evaluated eagerly** unless you write `from __future__ import annotations` (PEP 563). PEP 563 did not become the default. It was "put on hold indefinitely" in 3.11[^1] and replaced by PEP 649 in 3.14.
+- **Dicts keep insertion order.** This is a language guarantee since 3.7.
+- **Annotations are evaluated eagerly** unless you write `from __future__ import annotations` (PEP 563). PEP 563 did not become the default. It was "put on hold indefinitely" in 3.11 and replaced by PEP 649 in 3.14.
 - **Exceptions can now travel in groups.** Any API built on `asyncio.TaskGroup`, or one that opts into `ExceptionGroup`, raises a group that a plain `except ValueError:` does **not** catch. Review error handling around such APIs.
 
 ***
@@ -76,7 +76,7 @@ class Base:
 _module_cache: dict[str, bytes] = {}
 ```
 
-In Python 3, every class implicitly inherits from `object`, so `class Foo:` and `class Foo(object):` are identical. Never write the latter in new code.[^4]
+In Python 3, every class implicitly inherits from `object`, so `class Foo:` and `class Foo(object):` are identical. Never write the latter in new code.
 
 ##### Import Ordering
 
@@ -151,12 +151,12 @@ class UserService:
 
 #### New in 3.11: Faster CPython — What It Means for Code Review
 
-CPython 3.11 is on average **25% faster than 3.10** on the pyperformance suite, and 10–60% faster depending on workload.[^1] Nothing has to change in your code. The speedup comes from interpreter internals:
+CPython 3.11 is on average **25% faster than 3.10** on the pyperformance suite, and 10–60% faster depending on workload. Nothing has to change in your code. The speedup comes from interpreter internals:
 
 | Change | Effect |
 |---|---|
-| **PEP 659 specializing adaptive interpreter** | Hot bytecode is rewritten in place into type-specialized instructions (e.g. `int + int`, `list[i]`, cached attribute and global lookups). It de-specializes when types change.[^5] |
-| **"Zero-cost" exceptions** | A `try` block costs nothing when no exception is raised. Setup moved from bytecode (`SETUP_FINALLY`) to a side exception table.[^1] |
+| **PEP 659 specializing adaptive interpreter** | Hot bytecode is rewritten in place into type-specialized instructions (e.g. `int + int`, `list[i]`, cached attribute and global lookups). It de-specializes when types change. |
+| **"Zero-cost" exceptions** | A `try` block costs nothing when no exception is raised. Setup moved from bytecode (`SETUP_FINALLY`) to a side exception table. |
 | **Cheaper, lazy frames** | Frame objects are created only when something asks for them (`sys._getframe()`, `inspect.currentframe()`, tracebacks, debuggers). |
 | **Inlined Python-to-Python calls** | Most Python function calls use no C stack, so recursion is about 1.7× faster in simple cases. |
 | **Frozen startup modules** | Interpreter startup is 10–15% faster. |
@@ -183,15 +183,15 @@ print(hasattr(parse.__code__, 'co_exceptiontable'))  # True — handlers live in
 - **Type-stable code is fastest.** The specializer works best when a given line sees the same types every time. Code that alternates between `int` and `float` at the same operation, or that mutates class attributes in hot loops, de-specializes.
 - **Introspection has a cost.** Calling `sys._getframe()` or `inspect.stack()` in hot paths forces frame objects to materialize, which undoes the lazy-frame savings. Avoid it in logging adapters and decorators that run on every call.
 - **Deep recursion.** Pure-Python recursion no longer consumes C stack per call, so raising `sys.setrecursionlimit()` is safer than before. The default limit is still 1000, and an iterative algorithm is still the right fix for unbounded depth.
-- **Workloads that don't benefit.** Code that is I/O-bound or spends its time in C extensions (NumPy, pandas) sees little change. What's New says so explicitly.[^1]
-- **Memory.** Expect at most about 20% more memory than 3.10, typically offset by the smaller frames and dicts.[^1] PEP 657 column tables also make `.pyc` files somewhat larger.
+- **Workloads that don't benefit.** Code that is I/O-bound or spends its time in C extensions (NumPy, pandas) sees little change. What's New says so explicitly.
+- **Memory.** Expect at most about 20% more memory than 3.10, typically offset by the smaller frames and dicts. PEP 657 column tables also make `.pyc` files somewhat larger.
 - **Bytecode tools break.** Bytecode changed heavily (new `CACHE` entries, `BINARY_OP`, `CALL`/`PRECALL`, relative jumps). Anything that parses or rewrites bytecode (old `bytecode` versions, some coverage, tracing and decompiler tools) needs a 3.11-aware release.
 
 ***
 
 #### New in 3.11: Fine-Grained Error Locations in Tracebacks (PEP 657)
 
-Tracebacks now point to the exact sub-expression that failed, not just the line:[^6]
+Tracebacks now point to the exact sub-expression that failed, not just the line:
 
 ```text
 Traceback (most recent call last):
@@ -217,15 +217,15 @@ column_positions()
 **Review guidance:**
 
 - With PEP 657, putting several risky operations on one line no longer makes the traceback ambiguous. Readability is still the reason to split them up.
-- The column tables cost memory and disk. To drop them (for example in memory-constrained containers) and lose the carets, run with `-X no_debug_ranges` or `PYTHONNODEBUGRANGES=1`.[^6]
+- The column tables cost memory and disk. To drop them (for example in memory-constrained containers) and lose the carets, run with `-X no_debug_ranges` or `PYTHONNODEBUGRANGES=1`.
 - Tools that render tracebacks themselves should use `traceback.TracebackException` / `traceback.format_exception()` so the carets and notes are preserved. `TracebackException.print()` is new in 3.11.
-- `inspect.getframeinfo()`, `inspect.stack()` and related functions now return `FrameInfo`/`Traceback` objects with a `positions` attribute. They remain backward compatible with the old named-tuple interface.[^1]
+- `inspect.getframeinfo()`, `inspect.stack()` and related functions now return `FrameInfo`/`Traceback` objects with a `positions` attribute. They remain backward compatible with the old named-tuple interface.
 
 ***
 
 #### New in 3.11: Exception Groups and `except*` (PEP 654)
 
-`ExceptionGroup` and `BaseExceptionGroup` bundle several unrelated exceptions, so they can be raised and handled together. The new `except*` clause matches the *parts* of a group by type.[^7] This is the error model of `asyncio.TaskGroup`. It is also the right tool for any "run many things, report all failures" code: validation of many fields, retries across several hosts, batch jobs.
+`ExceptionGroup` and `BaseExceptionGroup` bundle several unrelated exceptions, so they can be raised and handled together. The new `except*` clause matches the *parts* of a group by type. This is the error model of `asyncio.TaskGroup`. It is also the right tool for any "run many things, report all failures" code: validation of many fields, retries across several hosts, batch jobs.
 
 ##### Creating and Raising Groups
 
@@ -378,7 +378,7 @@ for cls in (BatchError, LossyError):
 # LossyError -> ExceptionGroup
 ```
 
-`derive()` does not copy `__traceback__`, `__cause__`, `__context__` or `__notes__` to the new group; `split()`/`subgroup()` do that for you.[^7]
+`derive()` does not copy `__traceback__`, `__cause__`, `__context__` or `__notes__` to the new group; `split()`/`subgroup()` do that for you.
 
 ##### `contextlib.suppress` and Other Tools Don't Unwrap Groups in 3.11
 
@@ -407,7 +407,7 @@ In 3.11 `contextlib.suppress` does **not** handle groups whose leaves all match.
 
 #### New in 3.11: Exception Notes — `add_note()` (PEP 678)
 
-`BaseException.add_note(str)` attaches extra context to an exception *after* it was raised, without changing its type or message. Notes appear in the standard traceback below the message.[^8]
+`BaseException.add_note(str)` attaches extra context to an exception *after* it was raised, without changing its type or message. Notes appear in the standard traceback below the message.
 
 ```python
 import traceback
@@ -454,7 +454,7 @@ except TypeError as err:
 
 #### New in 3.11: `tomllib` — TOML Parsing in the Standard Library (PEP 680)
 
-`tomllib` parses TOML 1.0 (`pyproject.toml`, tool configs). It is **read-only**: there is no `dump`/`dumps`. To write TOML, use the third-party `tomli-w` or `tomlkit` (which preserves comments and style).[^9]
+`tomllib` parses TOML 1.0 (`pyproject.toml`, tool configs). It is **read-only**: there is no `dump`/`dumps`. To write TOML, use the third-party `tomli-w` or `tomlkit` (which preserves comments and style).
 
 ```python
 import tomllib
@@ -529,7 +529,7 @@ print(tomllib.loads('x = 1'))   # {'x': 1}
 
 #### New in 3.11: Structured Concurrency — `asyncio.TaskGroup` and `asyncio.timeout()`
 
-3.11 adds two context managers that What's New recommends over raw `create_task()`/`gather()` and `wait_for()` for new code.[^1][^10]
+3.11 adds two context managers that What's New recommends over raw `create_task()`/`gather()` and `wait_for()` for new code.
 
 ##### `asyncio.TaskGroup`
 
@@ -550,7 +550,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Semantics that reviewers must know:[^10]
+Semantics that reviewers must know:
 
 1. **When one task fails, the others are cancelled.** On the first exception other than `CancelledError`, the group cancels the remaining tasks. If the `async with` body is still running, the task containing it is cancelled too. That `CancelledError` does not escape the block.
 2. **Failures always arrive as a group, even a single one.** After all tasks finish, the failures are raised as `ExceptionGroup`/`BaseExceptionGroup`. `except ValueError:` around a `TaskGroup` never fires. Use `except*`.
@@ -663,10 +663,10 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Key facts:[^10]
+Key facts:
 
 - **The timeout works by cancelling the current task.** Inside the block the code sees `CancelledError`. The context manager converts it into `TimeoutError` on exit, so `TimeoutError` can only be caught **outside** the `async with`.
-- **In 3.11, `asyncio.TimeoutError` *is* the builtin `TimeoutError`.** So is `concurrent.futures.TimeoutError`.[^11] Write `except TimeoutError:`. In 3.10 they were different classes, so if you share code with 3.10, catch `asyncio.TimeoutError` explicitly.
+- **In 3.11, `asyncio.TimeoutError` *is* the builtin `TimeoutError`.** So is `concurrent.futures.TimeoutError`. Write `except TimeoutError:`. In 3.10 they were different classes, so if you share code with 3.10, catch `asyncio.TimeoutError` explicitly.
 - **It must run inside a task on a running loop.** Calling `asyncio.timeout()` outside a running loop raises `RuntimeError: no running event loop`.
 - **Prefer `timeout()` over `wait_for()` in 3.11.** `wait_for()` wraps the awaitable in a new task. In 3.11 it still has cancellation races, and was reimplemented on top of `timeout()` only in 3.12.
 
@@ -699,7 +699,7 @@ asyncio.run(main())
 
 ##### Integers
 
-`int` has arbitrary precision. Arithmetic never overflows, and memory grows as needed.[^4]
+`int` has arbitrary precision. Arithmetic never overflows, and memory grows as needed.
 
 ```python
 import sys
@@ -719,7 +719,7 @@ print(int.from_bytes(b'\x01\x02'))   # 258 — byteorder now defaults to 'big'
 
 ##### New in 3.11: The Integer/String Conversion Length Limit (CVE-2020-10735)
 
-Converting between `int` and `str` in a non-power-of-two base, such as decimal, has quadratic cost. A request containing a 1-million-digit number could pin a CPU, so 3.11 raises `ValueError` when such a conversion exceeds **4300 digits**.[^12] The limit shipped in 3.11.0 and was **backported to security releases 3.10.7, 3.9.14, 3.8.14 and 3.7.14** (September 2022), so it is not strictly new behavior. 3.11 is the first feature release that has it from day one.[^13]
+Converting between `int` and `str` in a non-power-of-two base, such as decimal, has quadratic cost. A request containing a 1-million-digit number could pin a CPU, so 3.11 raises `ValueError` when such a conversion exceeds **4300 digits**. The limit shipped in 3.11.0 and was **backported to security releases 3.10.7, 3.9.14, 3.8.14 and 3.7.14** (September 2022), so it is not strictly new behavior. 3.11 is the first feature release that has it from day one.
 
 ```python
 import json
@@ -772,7 +772,7 @@ Other ways to set it: `python -X int_max_str_digits=0` and the environment varia
 
 ##### Floats
 
-Floats are C `double` (IEEE 754 binary64). New `math` functions in 3.11:[^1]
+Floats are C `double` (IEEE 754 binary64). New `math` functions in 3.11:
 
 ```python
 import math
@@ -810,7 +810,7 @@ print(True + True)               # 2
 
 **Falsy values:** `None`, `False`, zero of any numeric type (`0`, `0.0`, `0j`, `Decimal(0)`, `Fraction(0)`), empty sequences and collections (`''`, `b''`, `()`, `[]`, `{}`, `set()`, `range(0)`), and objects whose `__bool__` returns `False` or whose `__len__` returns `0`.
 
-**Deprecated in 3.11:** `int()` delegating to `__trunc__()` emits `DeprecationWarning` (the delegation is removed in 3.14). Implement `__int__` or `__index__` on numeric types instead.[^1]
+**Deprecated in 3.11:** `int()` delegating to `__trunc__()` emits `DeprecationWarning` (the delegation is removed in 3.14). Implement `__int__` or `__index__` on numeric types instead.
 
 ***
 
@@ -854,7 +854,7 @@ print(s.removeprefix('Hello, '), s.partition(', ')[2])   # World! World!
 
 ##### f-strings in 3.11 — Know the Pre-PEP 701 Limits
 
-3.11 f-strings follow the **old grammar**. PEP 701 (3.12) lifted all of these restrictions, so code written for 3.12+ often fails to compile on 3.11:[^14]
+3.11 f-strings follow the **old grammar**. PEP 701 (3.12) lifted all of these restrictions, so code written for 3.12+ often fails to compile on 3.11:
 
 ```python
 d = {'key': 'value'}
@@ -882,7 +882,7 @@ Other f-string facts that still hold in 3.11:
 
 - `f'{x=}'` (3.8+) is for debugging. Don't use it in production log messages.
 - `f'{value:z.2f}'` (the `z` option, new in 3.11) suppresses negative zero.
-- **New in 3.11 optimization:** simple `%s`/`%r`/`%a` formatting on string literals compiles as fast as an equivalent f-string.[^1] Performance is no longer a reason to rewrite `'%s' % x`.
+- **New in 3.11 optimization:** simple `%s`/`%r`/`%a` formatting on string literals compiles as fast as an equivalent f-string. Performance is no longer a reason to rewrite `'%s' % x`.
 
 ##### String Literal Deprecations in 3.11
 
@@ -939,11 +939,11 @@ print(process(['a'], {'a': 1}))      # {'a': [1]}
 
 - Use `X | None`, not `Optional[X]`. Use `list[int]`, not `typing.List[int]`. Use `collections.abc.Callable`, not `typing.Callable`. Ruff's `UP` rules with `target-version = "py311"` rewrite all of these automatically.
 - `isinstance(x, list[int])` still raises `TypeError`. Parameterized generics can't be used in `isinstance`.
-- **New in 3.11:** `typing.get_type_hints()` no longer adds `Optional[...]` for a `None` default. `def f(x: int = None)` reports `{'x': int}` (3.10 reported `Optional[int]`).[^1] Code that introspects hints, such as serializers and CLI builders, may see different types after upgrading. Annotate `x: int | None = None` explicitly.
+- **New in 3.11:** `typing.get_type_hints()` no longer adds `Optional[...]` for a `None` default. `def f(x: int = None)` reports `{'x': int}` (3.10 reported `Optional[int]`). Code that introspects hints, such as serializers and CLI builders, may see different types after upgrading. Annotate `x: int | None = None` explicitly.
 
 ##### New in 3.11: `typing.Self` (PEP 673)
 
-`Self` annotates "an instance of the current class". It replaces the bound-`TypeVar` boilerplate for fluent methods, alternative constructors and `__enter__`:[^15]
+`Self` annotates "an instance of the current class". It replaces the bound-`TypeVar` boilerplate for fluent methods, alternative constructors and `__enter__`:
 
 ```python
 from typing import Self, TypeVar
@@ -986,7 +986,7 @@ print(type(c).__name__, c.scale)     # Circle 2.0
 
 ##### New in 3.11: `LiteralString` (PEP 675)
 
-`LiteralString` accepts only strings that a type checker can prove come from literals, or from combining literals. It exists to stop injection at the type level for SQL, shell commands and templates:[^16]
+`LiteralString` accepts only strings that a type checker can prove come from literals, or from combining literals. It exists to stop injection at the type level for SQL, shell commands and templates:
 
 ```python
 from typing import LiteralString
@@ -1027,7 +1027,7 @@ print(m.get('year', 'unknown'))      # unknown — always .get() NotRequired key
 
 `NotRequired[int]` means "the key may be absent". It does **not** mean "the value may be `None`". If both are possible, write `NotRequired[int | None]`.
 
-**Deprecated in 3.11:** the keyword-argument form `TypedDict('TD', x=int)` emits `DeprecationWarning`, and 3.13 rejects it with `TypeError`. Use the class syntax or `TypedDict('TD', {'x': int})`.[^1]
+**Deprecated in 3.11:** the keyword-argument form `TypedDict('TD', x=int)` emits `DeprecationWarning`, and 3.13 rejects it with `TypeError`. Use the class syntax or `TypedDict('TD', {'x': int})`.
 
 ##### New in 3.11: Generic `TypedDict` and `NamedTuple`
 
@@ -1053,7 +1053,7 @@ Both raise `TypeError` on 3.10 at class-creation time. The `class Envelope[T](Ty
 
 ##### New in 3.11: Variadic Generics — `TypeVarTuple` and `Unpack` (PEP 646)
 
-`TypeVarTuple` stands for an arbitrary number of types. It is mainly for array-shape typing and for typing `*args` precisely:[^17]
+`TypeVarTuple` stands for an arbitrary number of types. It is mainly for array-shape typing and for typing `*args` precisely:
 
 ```python
 from typing import Generic, TypeVar, TypeVarTuple
@@ -1075,7 +1075,7 @@ print(args_to_tuple(1, 'a'))               # (1, 'a')
 
 ##### New in 3.11: `dataclass_transform` (PEP 681)
 
-Marks a decorator, base class or metaclass as creating dataclass-like classes, so type checkers synthesize `__init__` for ORMs and model libraries (Pydantic, SQLAlchemy, attrs use it):[^18]
+Marks a decorator, base class or metaclass as creating dataclass-like classes, so type checkers synthesize `__init__` for ORMs and model libraries (Pydantic, SQLAlchemy, attrs use it):
 
 ```python
 from typing import Any, dataclass_transform
@@ -1172,7 +1172,7 @@ print(describe(1), describe(2.5), describe('s'))   # number number other
 
 #### New in 3.11: `enum` Overhaul — `StrEnum`, Formatting Changes, `verify()`
 
-The 3.11 `enum` module was largely rewritten.[^19] Two changes are **behavior breaks** that silently change output in upgraded code.
+The 3.11 `enum` module was largely rewritten. Two changes are **behavior breaks** that silently change output in upgraded code.
 
 ##### Breaking Change 1: `IntEnum`/`IntFlag` `str()` Now Returns the Value
 
@@ -1330,7 +1330,7 @@ print(time.fromisoformat('04:23:01.000384+00:00'))         # 04:23:01.000384+00:
 **Pitfalls:**
 
 - **Don't call `datetime.utcnow()` or `utcfromtimestamp()`.** They return *naive* datetimes that many libraries treat as local time. They are not yet deprecated in 3.11 (the `DeprecationWarning` arrives in 3.12), but they are already wrong. Use `datetime.now(UTC)` and `datetime.fromtimestamp(ts, UTC)`.
-- **`fromisoformat()` isn't a full ISO 8601 validator.** It still rejects fractional hours and minutes.[^1] Don't use it as an input validator for strict formats. It accepts many variants, so a 3.11 service accepts inputs that a 3.10 service rejected. That can split behavior across a mixed fleet.
+- **`fromisoformat()` isn't a full ISO 8601 validator.** It still rejects fractional hours and minutes. Don't use it as an input validator for strict formats. It accepts many variants, so a 3.11 service accepts inputs that a 3.10 service rejected. That can split behavior across a mixed fleet.
 - **For named zones, use `zoneinfo` (3.9).** Attach with `tzinfo=ZoneInfo('Europe/Berlin')` or convert with `.astimezone()`. Never use `pytz`'s `.localize()` idiom with `zoneinfo`. Declare the `tzdata` package as a dependency for Windows and minimal containers.
 
 ```python
@@ -1376,7 +1376,7 @@ matrix[0][0] = 99
 print(matrix)                      # [[99, 0, 0], [0, 0, 0], [0, 0, 0]]
 ```
 
-**3.11 performance note:** `list.append()` is about 15% faster and simple list comprehensions up to 20–30% faster.[^1] Comprehensions are still not inlined in 3.11; that is PEP 709 in 3.12. Write the clearest version.
+**3.11 performance note:** `list.append()` is about 15% faster and simple list comprehensions up to 20–30% faster. Comprehensions are still not inlined in 3.11; that is PEP 709 in 3.12. Write the clearest version.
 
 ***
 
@@ -1423,7 +1423,7 @@ d = {k: v for k, v in d.items() if v != 2}
 print(d)                           # {'a': 1, 'c': 3}
 ```
 
-**3.11 memory note:** dicts whose keys are all `str` no longer store per-entry hashes. What's New gives `sys.getsizeof(dict.fromkeys('abcdefg'))` shrinking from 352 to 272 bytes on 64-bit; exact figures vary by build.[^1]
+**3.11 memory note:** dicts whose keys are all `str` no longer store per-entry hashes. What's New gives `sys.getsizeof(dict.fromkeys('abcdefg'))` shrinking from 352 to 272 bytes on 64-bit; exact figures vary by build.
 
 ##### `collections`
 
@@ -1638,7 +1638,7 @@ print(Event('deploy', priority=2))             # Event(name='deploy', priority=2
 
 ##### New in 3.11: Stricter Mutable-Default Check
 
-Before 3.11, only `list`, `dict` and `set` defaults were rejected. Since 3.11, **any unhashable default** is rejected, which includes instances of ordinary (non-frozen) dataclasses and of subclasses of `list`/`dict`/`set`.[^1]
+Before 3.11, only `list`, `dict` and `set` defaults were rejected. Since 3.11, **any unhashable default** is rejected, which includes instances of ordinary (non-frozen) dataclasses and of subclasses of `list`/`dict`/`set`.
 
 ```python
 from dataclasses import dataclass, field
@@ -1760,7 +1760,7 @@ except TypeError as e:
 
 ##### New in 3.11: `object.__getstate__()`
 
-`object` now provides a default `__getstate__()`. Copying and pickling instances of subclasses of built-in types (`set`, `frozenset`, `bytearray`, `OrderedDict`, `deque`, `WeakSet`, `tzinfo`) now includes attributes stored in `__slots__`.[^1]
+`object` now provides a default `__getstate__()`. Copying and pickling instances of subclasses of built-in types (`set`, `frozenset`, `bytearray`, `OrderedDict`, `deque`, `WeakSet`, `tzinfo`) now includes attributes stored in `__slots__`.
 
 ```python
 class Plain:
@@ -1782,7 +1782,7 @@ print(s.__getstate__())            # (None, {'x': 1})
 
 ##### Deprecated in 3.11: Chaining `classmethod` Descriptors
 
-Wrapping other descriptors in `classmethod`, e.g. `@classmethod` over `@property`, was added in 3.9 and deprecated in 3.11. 3.11 emits no runtime warning for it, and **3.13 removes it**.[^1] Replace "class properties" with a metaclass property or a plain class attribute.
+Wrapping other descriptors in `classmethod`, e.g. `@classmethod` over `@property`, was added in 3.9 and deprecated in 3.11. 3.11 emits no runtime warning for it, and **3.13 removes it**. Replace "class properties" with a metaclass property or a plain class attribute.
 
 ##### Enums
 
@@ -1831,7 +1831,7 @@ except KeyError:
 print(sys.exception())             # None outside a handler
 ```
 
-- `sys.exc_info()` now derives type and traceback from the exception instance. Modifying `e.__traceback__` inside a handler is reflected in later `exc_info()` calls and in a bare `raise`.[^1]
+- `sys.exc_info()` now derives type and traceback from the exception instance. Modifying `e.__traceback__` inside a handler is reflected in later `exc_info()` calls and in a bare `raise`.
 - **Bare `raise` re-raises with the current `__traceback__`** of the active exception. Keep using bare `raise` (never `raise e`) to preserve the original traceback.
 
 **Rules (unchanged):**
@@ -1894,7 +1894,7 @@ except TypeError as e:
     print(e)                       # 'object' object does not support the context manager protocol
 ```
 
-3.10 raised `AttributeError: __enter__` here, and the same change applies to `async with`, `ExitStack.enter_context()` and `AsyncExitStack.enter_async_context()`.[^1] Tests asserting `AttributeError` must be updated.
+3.10 raised `AttributeError: __enter__` here, and the same change applies to `async with`, `ExitStack.enter_context()` and `AsyncExitStack.enter_async_context()`. Tests asserting `AttributeError` must be updated.
 
 ***
 
@@ -2046,7 +2046,7 @@ async def new() -> None:               # ✅
     await asyncio.sleep(0)
 ```
 
-Also removed: `asyncio.coroutines.CoroWrapper`, and the `reuse_address` parameter of `loop.create_datagram_endpoint()` (a security fix). `loop.set_default_executor()` now rejects anything but a `ThreadPoolExecutor`.[^1]
+Also removed: `asyncio.coroutines.CoroWrapper`, and the `reuse_address` parameter of `loop.create_datagram_endpoint()` (a security fix). `loop.set_default_executor()` now rejects anything but a `ThreadPoolExecutor`.
 
 ***
 
@@ -2075,8 +2075,8 @@ print(dict(sorted(results.items())))   # {0: 0, 1: 1, 2: 4, 3: 9, 4: 16}
 
 ##### `threading` and `time`
 
-- **New in 3.11:** on Unix with glibc 2.30+, `threading.Lock.acquire(timeout=...)` uses the monotonic clock, so system clock changes no longer distort timeouts.[^1]
-- **New in 3.11:** `time.sleep()` uses `clock_nanosleep()`/`nanosleep()` on Unix (1 ns resolution) and high-resolution waitable timers on Windows 8.1+.[^1] Very short sleeps are more precise but not free. Don't busy-loop on `time.sleep(0)`.
+- **New in 3.11:** on Unix with glibc 2.30+, `threading.Lock.acquire(timeout=...)` uses the monotonic clock, so system clock changes no longer distort timeouts.
+- **New in 3.11:** `time.sleep()` uses `clock_nanosleep()`/`nanosleep()` on Unix (1 ns resolution) and high-resolution waitable timers on Windows 8.1+. Very short sleeps are more precise but not free. Don't busy-loop on `time.sleep(0)`.
 - Always protect shared mutable state with a `Lock`. The GIL makes individual bytecodes atomic, not compound operations like `counter += 1`.
 
 ```python
@@ -2172,7 +2172,7 @@ Structured or JSON log formatters that serialize only `str(exc)` lose both the s
 
 ##### New in 3.11: `-P` / `PYTHONSAFEPATH` — Don't Import From the Script Directory
 
-By default, Python prepends the script's directory to `sys.path` (or the current directory, for `-c` and `-m`). A file named `json.py` or `logging.py` that an attacker can write into that directory then shadows the stdlib module. **New in 3.11:** `python -P` or `PYTHONSAFEPATH=1` disables the prepending.[^1][^20]
+By default, Python prepends the script's directory to `sys.path` (or the current directory, for `-c` and `-m`). A file named `json.py` or `logging.py` that an attacker can write into that directory then shadows the stdlib module. **New in 3.11:** `python -P` or `PYTHONSAFEPATH=1` disables the prepending.
 
 ```text
 $ ls
@@ -2192,7 +2192,7 @@ print(sys.flags.safe_path)   # True under -P, PYTHONSAFEPATH=1 or -I (isolated m
 
 ##### Security-Relevant Changes Across 3.11 Point Releases
 
-Running "3.11" is not enough. These fixes exist only in later patch releases:[^21][^22]
+Running "3.11" is not enough. These fixes exist only in later patch releases:
 
 | Release | Fix |
 |---|---|
@@ -2230,7 +2230,7 @@ with tempfile.TemporaryDirectory() as dest, tarfile.open(fileobj=buf) as tar:
         print(type(e).__name__)                      # OutsideDestinationError
 ```
 
-Without `filter=`, 3.11 keeps the old, unsafe behavior and emits no warning. The `DeprecationWarning` for a missing filter starts in 3.12, and the default becomes `'data'` in 3.14.[^1] For untrusted archives on 3.11, **always pass `filter='data'`**. `shutil.unpack_archive(..., filter='data')` is also supported since 3.11.4. The filter API was also backported to security releases of older branches. Code that must run on unknown patch levels can feature-detect it with `hasattr(tarfile, 'data_filter')`, as PEP 706 recommends, and refuse to extract when it is missing.
+Without `filter=`, 3.11 keeps the old, unsafe behavior and emits no warning. The `DeprecationWarning` for a missing filter starts in 3.12, and the default becomes `'data'` in 3.14. For untrusted archives on 3.11, **always pass `filter='data'`**. `shutil.unpack_archive(..., filter='data')` is also supported since 3.11.4. The filter API was also backported to security releases of older branches. Code that must run on unknown patch levels can feature-detect it with `hasattr(tarfile, 'data_filter')`, as PEP 706 recommends, and refuse to extract when it is missing.
 
 ##### Input Validation and Injection
 
@@ -2351,7 +2351,7 @@ print(m['year'] if m else None)                # 2024
 
 ##### New in 3.11: Atomic Groups and Possessive Quantifiers
 
-`(?>...)` and the possessive quantifiers `*+`, `++`, `?+` and `{m,n}+` match without ever giving characters back. They are the standard tool against **catastrophic backtracking** (ReDoS).[^23]
+`(?>...)` and the possessive quantifiers `*+`, `++`, `?+` and `{m,n}+` match without ever giving characters back. They are the standard tool against **catastrophic backtracking** (ReDoS).
 
 ```python
 import re
@@ -2391,8 +2391,8 @@ print(rec[0].category.__name__)                # DeprecationWarning
 - Numeric group references must be ASCII digits, and group names in `bytes` patterns must be ASCII identifiers. Violations emit `DeprecationWarning` and become errors in 3.12.
 - `re.template()`/`re.TEMPLATE`/`re.T` are deprecated (removed in 3.13). The undocumented `sre_compile`, `sre_constants` and `sre_parse` modules are deprecated.
 - **New in 3.11:** `re.NOFLAG` (value 0) is a clean default for flag parameters. `re.RegexFlag` is now an exported `IntFlag`.
-- Some long-standing capture-group bugs were fixed. In rare patterns, captured groups differ from 3.10.[^1]
-- The engine uses computed gotos and is up to 10% faster.[^1]
+- Some long-standing capture-group bugs were fixed. In rare patterns, captured groups differ from 3.10.
+- The engine uses computed gotos and is up to 10% faster.
 
 ***
 
@@ -2425,7 +2425,7 @@ gc.collect()
 - Instance `__dict__`s are created lazily and share keys more aggressively, so plain classes use less memory than before. `__slots__` still wins for millions of small objects.
 - Dicts with all-`str` keys skip stored hashes (smaller).
 - Code objects carry PEP 657 position tables (slightly larger). Strip them with `-X no_debug_ranges` if needed.
-- Overall, What's New expects memory to be at most about 20% higher than 3.10 and often lower.[^1]
+- Overall, What's New expects memory to be at most about 20% higher than 3.10 and often lower.
 
 ***
 
@@ -2452,7 +2452,7 @@ print(timeit.timeit(work, number=10) > 0)      # True
 **3.11-specific guidance:**
 
 - **Measure on 3.11 before optimizing.** Many idioms that used to be "slow" (`try` blocks, method calls, global lookups, `%` formatting of literals) got much cheaper. Benchmarks taken on 3.10 or earlier are stale.
-- **Optimizations outside the Faster CPython project:** `sum()` of small ints is about 30% faster. `//` by small ints is about 20% faster. `math.comb()`/`math.perm()` are about 10× faster for large arguments. `statistics.mean()`/`variance()`/`stdev()` now consume iterators in one pass. `unicodedata.normalize()` is constant-time for pure ASCII.[^1]
+- **Optimizations outside the Faster CPython project:** `sum()` of small ints is about 30% faster. `//` by small ints is about 20% faster. `math.comb()`/`math.perm()` are about 10× faster for large arguments. `statistics.mean()`/`variance()`/`stdev()` now consume iterators in one pass. `unicodedata.normalize()` is constant-time for pure ASCII.
 - **Profilers and tracers cost more relative to the faster baseline.** `sys.settrace`-based tools (coverage, some profilers) add a larger *relative* overhead on top of the faster 3.11 interpreter, so never benchmark under coverage. `sys.monitoring` (PEP 669), the low-overhead alternative, is 3.12+.
 - **Prefer `set`/`frozenset` for membership tests and `''.join()` for building strings.** Complexity still beats interpreter speed.
 - **Startup:** frozen core modules make 3.11 start 10–15% faster. For CLI tools, also check `python -X importtime` for heavy imports.
@@ -2513,7 +2513,7 @@ With pytest: `with pytest.raises(ExceptionGroup) as excinfo:` then `assert excin
 ##### Other 3.11 Testing Changes
 
 - **Returning a non-`None` value from a test method is deprecated** and emits `DeprecationWarning`. It usually means a test that forgot to `assert`.
-- **`unittest` discovery no longer supports namespace packages** as the start directory. Add `__init__.py` or point discovery at a regular package.[^1]
+- **`unittest` discovery no longer supports namespace packages** as the start directory. Add `__init__.py` or point discovery at a regular package.
 - `unittest.makeSuite()`, `findTestCases()` and `getTestCaseNames()` are deprecated (removed in 3.13). Use `TestLoader` methods.
 - The deprecated assertion aliases (`assertEquals`, `assertRegexpMatches`, `failUnless`, …) still exist in 3.11 but are **removed in 3.12**. Fix them now.
 - Run the suite with `-W error::DeprecationWarning` (or pytest's `filterwarnings = error`) to surface every 3.12/3.13 removal before you upgrade.
@@ -2601,7 +2601,7 @@ For the *installed* version of a distribution, use `importlib.metadata.version('
 **Packaging-related 3.11 facts:**
 
 - **`distutils` still ships in 3.11 but is deprecated** (PEP 632) and is **removed in 3.12**. Replace `from distutils...` with `setuptools`, `packaging.version` or `sysconfig` now. The same goes for `imp` (use `importlib`), and `asynchat`/`asyncore`/`smtpd` (use `asyncio`, `aiosmtpd`); all of them are removed in 3.12.
-- New `venv` sysconfig install scheme (`posix_venv`/`nt_venv`). Tools that create virtual environments should use the `venv` scheme.[^1]
+- New `venv` sysconfig install scheme (`posix_venv`/`nt_venv`). Tools that create virtual environments should use the `venv` scheme.
 - The deprecated `importlib.resources` functions (`read_text()`, `open_binary()`, `path()`, …) emit `DeprecationWarning` in 3.11. Use `importlib.resources.files(pkg).joinpath(name).read_text(encoding='utf-8')`, which works on 3.9+. (3.12 stopped emitting the warning and 3.13 formally un-deprecated the old functions with a new signature. `files()` is still the portable choice.)
 
 ***

@@ -1,8 +1,8 @@
 ### Helm 3: Charts, Releases and CI — Complete Review Guide
 
-> **Version**: Helm **v3.0.0** was released on **2019-11-13**.[^1] The last Helm 3 minor release is **v3.22.0 (2026-09-09**; the GitHub release is timestamped 2026-09-10 UTC), which contains only dependency and Kubernetes client-library updates plus bug fixes.[^4] The latest release as of 2026-10-22 is **v3.22.1 (2026-10-15)**; v3.22.2 is scheduled for 2026-11-11.[^5][^7]
-> **Support status**: Helm 3 is in its final, **security-only** phase. The Helm 4 announcement originally planned bug fixes until 2026-07-08 and security fixes until 2026-11-11;[^3] the Helm v3 end-of-life post (2026-06-02) moved the last minor to 2026-09-09 and extended **security fixes until 2027-02-10**. Bug fixes ended with 3.22.0. After 2027-02-10 Helm 3 receives no updates at all — no security patches and no Kubernetes client-library updates — and the maintainers "strongly encourage all users to migrate to Helm 4 before that date".[^2] The current major is Helm 4 (latest v4.3.1, 2026-10-15). Plan the Helm 4 migration now (see "Migrating to Helm 4").
-> **Kubernetes skew**: Helm 3 supports the Kubernetes minor it was compiled against and three older ones (n-3): **3.22.x → 1.37–1.34**, 3.21.x → 1.36–1.33, 3.20.x → 1.35–1.32, 3.19.x → 1.34–1.31, 3.18.x → 1.33–1.30, 3.17.x → 1.32–1.29, 3.16.x → 1.31–1.28.[^6] Because there is no 3.23, clusters newer than 1.37 are outside Helm 3's support range.
+> **Version**: Helm **v3.0.0** was released on **2019-11-13**. The last Helm 3 minor release is **v3.22.0 (2026-09-09**; the GitHub release is timestamped 2026-09-10 UTC), which contains only dependency and Kubernetes client-library updates plus bug fixes. The latest release as of 2026-10-22 is **v3.22.1 (2026-10-15)**; v3.22.2 is scheduled for 2026-11-11.
+> **Support status**: Helm 3 is in its final, **security-only** phase. The Helm 4 announcement originally planned bug fixes until 2026-07-08 and security fixes until 2026-11-11; the Helm v3 end-of-life post (2026-06-02) moved the last minor to 2026-09-09 and extended **security fixes until 2027-02-10**. Bug fixes ended with 3.22.0. After 2027-02-10 Helm 3 receives no updates at all — no security patches and no Kubernetes client-library updates — and the maintainers "strongly encourage all users to migrate to Helm 4 before that date". The current major is Helm 4 (latest v4.3.1, 2026-10-15). Plan the Helm 4 migration now (see "Migrating to Helm 4").
+> **Kubernetes skew**: Helm 3 supports the Kubernetes minor it was compiled against and three older ones (n-3): **3.22.x → 1.37–1.34**, 3.21.x → 1.36–1.33, 3.20.x → 1.35–1.32, 3.19.x → 1.34–1.31, 3.18.x → 1.33–1.30, 3.17.x → 1.32–1.29, 3.16.x → 1.31–1.28. Because there is no 3.23, clusters newer than 1.37 are outside Helm 3's support range.
 > **Scope**: Helm charts (`Chart.yaml`, `Chart.lock`, `values.yaml`, `values.schema.json`, `templates/*.yaml`, `_helpers.tpl`, `templates/tests/`, `NOTES.txt`, `crds/`), library charts, chart CI (lint/template/package/push, OCI publishing, signing) and `helm` CLI usage in scripts and pipelines, for projects that pin **Helm 3.x** (`.tool-versions` `helm 3.x`, `azure/setup-helm` with `version: v3.x`, `alpine/helm:3.x` images, `HELM_VERSION=3.x`).
 > **Note**: This guide is self-contained. Sections marked **[3.x]** describe behaviour that arrived in a specific Helm 3 minor; **Helm 4 only** marks things the reviewer must not suggest. Every chart example was rendered with `helm lint --strict`/`helm template`/`helm package` on **v3.22.1**; install/upgrade/rollback/uninstall semantics were exercised against a real **kube-apiserver v1.36.2** (no kubelet, scheduler or controllers, so Pods never run and Deployments never become available: wait behaviour on Pods is taken from the Helm 3.22.1 source and confirmed only as "times out"; Job completion was simulated by writing the Job status subresource). Version boundaries were re-checked on the official binaries of the latest patch of every Helm 3 minor (v3.0.3 … v3.21.4) plus v3.1.0, v3.3.0, v3.4.0, v3.11.0, v3.19.0 and v3.20.0, and Helm-4-only items were confirmed with v4.3.1 (v4.0.5 and v4.1.0 where the Helm 4 minor matters). Behaviour against vendor-suffixed Kubernetes versions (`v1.36.2-eks-…`) was checked through a proxy that rewrites the apiserver's `/version` response.
 
@@ -12,7 +12,7 @@
 
 ##### Helm 3 fundamentals (3.0)
 
-Helm 3.0 removed Tiller and changed the release model:[^1]
+Helm 3.0 removed Tiller and changed the release model:
 
 - **Client only.** `helm` talks to the Kubernetes API with the user's kubeconfig credentials; RBAC of the deploying identity is the only access control.
 - **Releases are namespaced** and stored as Secrets of type `helm.sh/release.v1` named `sh.helm.release.v1.<release>.v<revision>` in the release namespace (`HELM_DRIVER=secret` is the default; `configmap`, `memory` and `sql` exist). Each revision Secret contains the chart, the user-supplied values and the rendered manifest (gzip + base64): anyone who can read Secrets in that namespace can read every value passed to Helm.
@@ -24,28 +24,28 @@ Helm 3.0 removed Tiller and changed the release model:[^1]
 
 | Minor | Released | Notable for reviewers |
 |---|---|---|
-| 3.1 | 2020-02-13 | `lookup` template function; `--post-renderer` (executable); `helm lint --with-subcharts`; `--disable-openapi-validation`[^8] |
-| 3.2 | 2020-04-22 | `helm install --create-namespace`; `fromYamlArray`, `fromJsonArray`; `upgrade --skip-crds`; `helm.sh/resource-policy: keep` honoured on upgrade; `Chart.lock` packaged; fixes a critical `lookup` vulnerability in 3.1.x[^9] |
+| 3.1 | 2020-02-13 | `lookup` template function; `--post-renderer` (executable); `helm lint --with-subcharts`; `--disable-openapi-validation` |
+| 3.2 | 2020-04-22 | `helm install --create-namespace`; `fromYamlArray`, `fromJsonArray`; `upgrade --skip-crds`; `helm.sh/resource-policy: keep` honoured on upgrade; `Chart.lock` packaged; fixes a critical `lookup` vulnerability in 3.1.x |
 | 3.3 | 2020-08-11 | Upgrading a release whose last revision failed is allowed; `.Capabilities.HelmVersion`; `Chart.yaml` lint type checks for `version`/`appVersion` |
 | 3.4 | 2020-10-26 | `helm list --selector`/`--time-format`; `helm status --show-desc`; impersonation flags (`--kube-as-user`, `--kube-as-group`); `helm repo add` no longer overwrites an existing repository unless `--force-update` is given (`--no-update` is ignored; breaking, first shipped in the 3.3.2 security release); warnings for the retired `stable`/`incubator` repositories |
-| 3.5 | 2021-01-13 | `--wait-for-jobs`; Sprig 3.2 functions; OCI dependencies (`oci://`, still experimental); `helm dependency build --skip-refresh`; `--kube-ca-file`[^10] |
+| 3.5 | 2021-01-13 | `--wait-for-jobs`; Sprig 3.2 functions; OCI dependencies (`oci://`, still experimental); `helm dependency build --skip-refresh`; `--kube-ca-file` |
 | 3.6 | 2021-05-27 | `--kube-version` for `helm template`; stricter `Chart.yaml` metadata validation (SemVer, printable characters); Apple silicon builds. **3.6.1**: repository credentials are no longer sent to other hosts unless `--pass-credentials` is given (CVE-2021-32690) |
-| 3.7 | 2021-09-15 | OCI rework (`helm push`, `helm pull oci://`, new manifest format; older experimental OCI charts must be re-pushed); `helm uninstall --wait`; `helm show crds`; `.Chart.IsRoot`; `helm repo add --password-stdin`[^11] |
-| 3.8 | 2022-01-24 | **OCI support GA** (no `HELM_EXPERIMENTAL_OCI`); version ranges for OCI dependencies; `+` in SemVer replaced by `_` in OCI tags; release names validated on install[^12] |
+| 3.7 | 2021-09-15 | OCI rework (`helm push`, `helm pull oci://`, new manifest format; older experimental OCI charts must be re-pushed); `helm uninstall --wait`; `helm show crds`; `.Chart.IsRoot`; `helm repo add --password-stdin` |
+| 3.8 | 2022-01-24 | **OCI support GA** (no `HELM_EXPERIMENTAL_OCI`); version ranges for OCI dependencies; `+` in SemVer replaced by `_` in OCI tags; release names validated on install |
 | 3.9 | 2022-05-18 | `--post-renderer-args`; `helm lint --quiet`; `upgrade --dependency-update` honoured |
-| 3.10 | 2022-09-21 | **`--set-json`**; `helm list --no-headers`; `--burst-limit`[^13] |
+| 3.10 | 2022-09-21 | **`--set-json`**; `helm list --no-headers`; `--burst-limit` |
 | 3.11 | 2023-01-18 | `helm status --show-resources`; comma-separated `template --api-versions`. **3.11.1**: `getHostByName` returns `""` unless `--enable-dns` is passed (CVE-2023-25165) |
-| 3.12 | 2023-05-10 | **`--set-literal`**; `helm uninstall --cascade`; `--insecure-skip-tls-verify`/custom CA for OCI; OCI annotations on pushed charts[^14] |
-| 3.13 | 2023-09-27 | **`--dry-run=client\|server\|none`** (server mode runs `lookup`); `helm get metadata`; `--labels` on install/upgrade; `--plain-http` for OCI; `helm repo index --json`; values precedence and `null` handling made consistent (regression fixed in 3.13.1)[^15] |
-| 3.14 | 2024-01-17 | **`--reset-then-reuse-values`**; `helm lint --kube-version`; `helm search --fail-on-no-result`; `--qps`/`HELM_QPS`; nested `tpl` sees outer `define`s; dependency names/aliases must be unique; readiness checks verify `observedGeneration`[^16] |
-| 3.15 | 2024-05-15 | **`--hide-secret`** (with `--dry-run`); more robust wait checks; OCI getter proxy support[^17] |
-| 3.16 | 2024-09-11 | **`--skip-schema-validation`** (install/upgrade/template/lint); `sha512sum`; `--hide-notes`; proxy environment respected on install/upgrade[^18] |
-| 3.17 | 2025-01-15 | **Install/pull by OCI digest**; **`--take-ownership`**; `toYamlPretty`; `fromToml`; `helm get metadata` shows annotations and dependencies; username/password for `helm push` and dependency commands[^19] |
-| 3.18 | 2025-05-19 | **JSON Schema draft 2020-12** (new validator `santhosh-tekuri/jsonschema/v6`); **`helm.sh/hook-output-log-policy`**; ORAS v2 with automatic HTTP fallback; CPU/memory profiling via `HELM_PPROF_CPU_PROFILE`/`HELM_PPROF_MEM_PROFILE`; several OCI regressions fixed in 3.18.1–3.19.0[^20] |
-| 3.19 | 2025-09-11 | `helm create` scaffolds a Gateway API `HTTPRoute`; `helm lint` accepts `http(s)` `$ref` in schemas again (3.18 regression); all hook deletions are processed on failure; `--kube-version` keeps the given form (`1.31` → `v1.31`) and drops vendor suffixes (`1.31.2-eks-…` → `v1.31.2`)[^21] |
-| 3.20 | 2026-01-21 | `helm uninstall --keep-history` supersedes earlier deployed revisions; unresolved URN `$ref`s in `values.schema.json` warn and are ignored; Kubernetes 1.35 libraries; Go 1.25. **3.20.1**: user `null` preserved under an empty-map chart default; pulling charts from OCI image indexes fixed. Its notes also list a tag+digest backport (#31601), but that commit is in no v3 tag: the bug was Helm 4-only, and 3.17.4 and 3.20.0 already resolve `chart:1.4.0@sha256:…` (verified against a local registry). **3.20.2**: CVE-2026-35206[^22][^23][^24] |
-| 3.21 | 2026-05-14 | Kubernetes 1.36 libraries; nil/empty-map fix and OCI index pull fix carried forward; 3.21.1 moves to Go 1.26 and fixes a `helm template` panic[^25] |
-| 3.22 | 2026-09-09 | Last Helm 3 minor: Kubernetes 1.37 libraries, `pull,push` token scope for registry pushes, registry credentials kept on the plain-HTTP fallback, rollback tolerates resources that no longer exist, `Files.Lines` panic on empty files and a nil-client panic during CRD installation fixed, provenance code moved to `ProtonMail/go-crypto`, dependency CVE bumps. 3.22.1 (2026-10-15): dependency/CVE updates only[^4][^5] |
+| 3.12 | 2023-05-10 | **`--set-literal`**; `helm uninstall --cascade`; `--insecure-skip-tls-verify`/custom CA for OCI; OCI annotations on pushed charts |
+| 3.13 | 2023-09-27 | **`--dry-run=client\|server\|none`** (server mode runs `lookup`); `helm get metadata`; `--labels` on install/upgrade; `--plain-http` for OCI; `helm repo index --json`; values precedence and `null` handling made consistent (regression fixed in 3.13.1) |
+| 3.14 | 2024-01-17 | **`--reset-then-reuse-values`**; `helm lint --kube-version`; `helm search --fail-on-no-result`; `--qps`/`HELM_QPS`; nested `tpl` sees outer `define`s; dependency names/aliases must be unique; readiness checks verify `observedGeneration` |
+| 3.15 | 2024-05-15 | **`--hide-secret`** (with `--dry-run`); more robust wait checks; OCI getter proxy support |
+| 3.16 | 2024-09-11 | **`--skip-schema-validation`** (install/upgrade/template/lint); `sha512sum`; `--hide-notes`; proxy environment respected on install/upgrade |
+| 3.17 | 2025-01-15 | **Install/pull by OCI digest**; **`--take-ownership`**; `toYamlPretty`; `fromToml`; `helm get metadata` shows annotations and dependencies; username/password for `helm push` and dependency commands |
+| 3.18 | 2025-05-19 | **JSON Schema draft 2020-12** (new validator `santhosh-tekuri/jsonschema/v6`); **`helm.sh/hook-output-log-policy`**; ORAS v2 with automatic HTTP fallback; CPU/memory profiling via `HELM_PPROF_CPU_PROFILE`/`HELM_PPROF_MEM_PROFILE`; several OCI regressions fixed in 3.18.1–3.19.0 |
+| 3.19 | 2025-09-11 | `helm create` scaffolds a Gateway API `HTTPRoute`; `helm lint` accepts `http(s)` `$ref` in schemas again (3.18 regression); all hook deletions are processed on failure; `--kube-version` keeps the given form (`1.31` → `v1.31`) and drops vendor suffixes (`1.31.2-eks-…` → `v1.31.2`) |
+| 3.20 | 2026-01-21 | `helm uninstall --keep-history` supersedes earlier deployed revisions; unresolved URN `$ref`s in `values.schema.json` warn and are ignored; Kubernetes 1.35 libraries; Go 1.25. **3.20.1**: user `null` preserved under an empty-map chart default; pulling charts from OCI image indexes fixed. Its notes also list a tag+digest backport (#31601), but that commit is in no v3 tag: the bug was Helm 4-only, and 3.17.4 and 3.20.0 already resolve `chart:1.4.0@sha256:…` (verified against a local registry). **3.20.2**: CVE-2026-35206 |
+| 3.21 | 2026-05-14 | Kubernetes 1.36 libraries; nil/empty-map fix and OCI index pull fix carried forward; 3.21.1 moves to Go 1.26 and fixes a `helm template` panic |
+| 3.22 | 2026-09-09 | Last Helm 3 minor: Kubernetes 1.37 libraries, `pull,push` token scope for registry pushes, registry credentials kept on the plain-HTTP fallback, rollback tolerates resources that no longer exist, `Files.Lines` panic on empty files and a nil-client panic during CRD installation fixed, provenance code moved to `ProtonMail/go-crypto`, dependency CVE bumps. 3.22.1 (2026-10-15): dependency/CVE updates only |
 
 Boundary checks executed for this guide (flags and functions fail with "unknown flag" or "function … not defined" on the older binary; the other rows show the old behaviour in parentheses):
 
@@ -69,7 +69,7 @@ Boundary checks executed for this guide (flags and functions fail with "unknown 
 
 #### Security Releases
 
-Pin at least the patch that fixes each advisory relevant to the project; on Helm 3 that now means **3.22.1** (only the latest minor is patched).[^26]
+Pin at least the patch that fixes each advisory relevant to the project; on Helm 3 that now means **3.22.1** (only the latest minor is patched).
 
 | Advisory | Fixed in | Issue |
 |---|---|---|
@@ -151,7 +151,7 @@ A project pinned to an older 3.x must not use what its minor lacks. The most com
 #### Version-Aware Review
 
 - **Find the pinned version first**: `.tool-versions` (`helm 3.22.1`), `mise.toml`, `azure/setup-helm` `with: version:`, container images (`alpine/helm:3.22.1`), `HELM_VERSION` in Makefiles or Dockerfiles, Renovate/Dependabot configuration. A claim like "not available" is only valid against the pinned minor.
-- **An unpinned installer now installs Helm 4.** `azure/setup-helm` defaults to `latest`; since Helm 4 is the current major, a job without `version:` silently switches to Helm 4 and its different apply, wait and flag semantics (and if the version lookup fails, the action falls back to a hard-coded, outdated 3.x release).[^27] Flag a missing or `latest` version in any pipeline that expects Helm 3.
+- **An unpinned installer now installs Helm 4.** `azure/setup-helm` defaults to `latest`; since Helm 4 is the current major, a job without `version:` silently switches to Helm 4 and its different apply, wait and flag semantics (and if the version lookup fails, the action falls back to a hard-coded, outdated 3.x release). Flag a missing or `latest` version in any pipeline that expects Helm 3.
 - **Say "not available in 3.x" only when the pinned version proves it** (unknown flag, `function "…" not defined`). Do not infer from the current helm.sh documentation: the default docs describe Helm 4. Helm 3 documentation lives under `https://helm.sh/docs/v3/`.
 - **Charts are often consumed by both majors.** A chart that must work on Helm 3 may not use Helm 4-only functions (parse error on Helm 3) or multi-document `values.yaml` (silently truncated on Helm 3). Conversely, a chart written for Helm 3 can fail on Helm 4 because server-side apply rejects unknown fields and duplicate list keys (section 5); fix those even while on Helm 3.
 - **`.Capabilities.HelmVersion.Version`** reports the running Helm (`v3.22.1`). A chart can require a minimum Helm 3 minor, but the guard cannot protect a template that references an unknown function: Go templates fail at parse time, before any `if` runs.
@@ -166,7 +166,7 @@ A project pinned to an older 3.x must not use what its minor lacks. The most com
 
 #### How Helm 3 Applies Changes: Client-Side Three-Way Merge
 
-On `helm upgrade` and `helm rollback`, Helm 3 compares, for every object, the manifest of the **previous release revision**, the **live object** and the **new manifest**, and sends a PATCH (field manager `helm`, operation `Update`).[^28] It never uses server-side apply. Install creates objects (POST); objects that already exist and are not owned by the release fail the install (section 18).
+On `helm upgrade` and `helm rollback`, Helm 3 compares, for every object, the manifest of the **previous release revision**, the **live object** and the **new manifest**, and sends a PATCH (field manager `helm`, operation `Update`). It never uses server-side apply. Install creates objects (POST); objects that already exist and are not owned by the release fail the install (section 18).
 
 ##### Built-in kinds: strategic merge patch
 
@@ -202,7 +202,7 @@ spec:
 
 ##### Custom resources: two-way JSON merge patch
 
-For objects without a built-in Go type (custom resources), Helm 3.22.1 builds a **JSON merge patch between the old and the new manifest only**; the live object is not consulted (`createPatch` in `pkg/kube/client.go`).[^28] Verified: after `kubectl patch gadget g1 -p '{"spec":{"size":5,"extra":"x"}}'`, a `helm upgrade` with an unchanged chart left `{"extra":"x","size":5}` — the chart's `size: 1` was **not** restored. Drift on custom resources is never repaired by Helm 3 unless the chart value itself changes. JSON merge patches also replace lists wholesale.
+For objects without a built-in Go type (custom resources), Helm 3.22.1 builds a **JSON merge patch between the old and the new manifest only**; the live object is not consulted (`createPatch` in `pkg/kube/client.go`). Verified: after `kubectl patch gadget g1 -p '{"spec":{"size":5,"extra":"x"}}'`, a `helm upgrade` with an unchanged chart left `{"extra":"x","size":5}` — the chart's `size: 1` was **not** restored. Drift on custom resources is never repaired by Helm 3 unless the chart value itself changes. JSON merge patches also replace lists wholesale.
 
 ##### Duplicate keys in keyed lists
 
@@ -255,7 +255,7 @@ The Service now selects no Pods (the running Pods lack the new label) while the 
 
 ##### What Helm 3 waits for
 
-Without `--wait`, `helm install`/`upgrade` returns as soon as the objects are accepted by the apiserver — but **hook Pods and Jobs are always waited for** (up to `--timeout`, default `5m0s`). With `--wait`, Helm 3.22.1 polls these readiness rules (`pkg/kube/ready.go`):[^29]
+Without `--wait`, `helm install`/`upgrade` returns as soon as the objects are accepted by the apiserver — but **hook Pods and Jobs are always waited for** (up to `--timeout`, default `5m0s`). With `--wait`, Helm 3.22.1 polls these readiness rules (`pkg/kube/ready.go`):
 
 | Kind | Ready when |
 |---|---|
@@ -541,7 +541,7 @@ CI should always pass the complete values (`-f values/prod.yaml`). Flag `--reuse
 
 ##### YAML typing traps
 
-Values are parsed as YAML 1.1 and converted through JSON.[^30] Verified on 3.22.1:
+Values are parsed as YAML 1.1 and converted through JSON. Verified on 3.22.1:
 
 | values.yaml | `.Values` sees | Fix |
 |---|---|---|
@@ -616,7 +616,7 @@ web/
         └── test-connection.yaml
 ```
 
-Rules from the chart best practices:[^31]
+Rules from the chart best practices:
 
 - **Chart names**: lowercase letters, digits and dashes (`my-app`); no uppercase, underscores or dots. The directory name equals `name`.
 - **Template files**: dashed lowercase (`pod-disruption-budget.yaml`), `.yaml` for YAML output, `.tpl` for helpers without output. One resource kind per file; the file name reflects the kind.
@@ -709,7 +709,7 @@ Secret holding the password: the user's existingSecret or the chart-managed one.
 Review points:
 
 - **Selector labels are immutable.** Adding `app.kubernetes.io/version`, `helm.sh/chart` or any value-driven label to `selectorLabels` breaks the next upgrade (`spec.selector: Invalid value: …: field is immutable`) — and, because Helm 3 upgrades are not transactional, Services and PDBs may already have switched to the new selector (section 5). Selectors contain only `app.kubernetes.io/name` and `app.kubernetes.io/instance` (plus `component` for multi-workload charts).
-- Use the Kubernetes recommended labels (`app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`, `managed-by`) on every object.[^32] `{{ .Release.Service }}` renders `Helm`.
+- Use the Kubernetes recommended labels (`app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`, `managed-by`) on every object. `{{ .Release.Service }}` renders `Helm`.
 - The `helm create` scaffold puts the full `labels` (including `helm.sh/chart` and `app.kubernetes.io/version`) on the pod template, so every chart or app version bump rolls all Pods. Accept it deliberately or use selector labels plus stable labels on the pod template.
 - Use `include`, not `template`: `include` returns a string that can be piped. `{{ template "x" . | nindent 4 }}` pipes the argument into `nindent` and fails: `executing ... at <4>: wrong type for value; expected string; got chartutil.Values` (verified).
 - Pass the right context: `include "web.fullname" .` at top level, `include "web.fullname" $` inside `range`/`with`. Helpers with extra parameters take a dict: `include "web.componentName" (dict "root" $ "component" "worker")`.
@@ -718,7 +718,7 @@ Review points:
 
 #### Template Language: Whitespace, Scope, Functions and Pitfalls
 
-Helm 3.22.1 templates are Go `text/template` plus Sprig v3.3.0 (without `env` and `expandenv`) plus Helm's functions: `include`, `tpl`, `required`, `lookup` [3.1], `toYaml`, `toYamlPretty` [3.17], `fromYaml`, `fromYamlArray` [3.2], `toJson`, `fromJson`, `fromJsonArray` [3.2], `toToml`, `fromToml` [3.17].[^33] The `.Files` object (`Get`, `GetBytes`, `Glob`, `Lines`, `AsConfig`, `AsSecrets`) reads non-template chart files.
+Helm 3.22.1 templates are Go `text/template` plus Sprig v3.3.0 (without `env` and `expandenv`) plus Helm's functions: `include`, `tpl`, `required`, `lookup` [3.1], `toYaml`, `toYamlPretty` [3.17], `fromYaml`, `fromYamlArray` [3.2], `toJson`, `fromJson`, `fromJsonArray` [3.2], `toToml`, `fromToml` [3.17]. The `.Files` object (`Get`, `GetBytes`, `Glob`, `Lines`, `AsConfig`, `AsSecrets`) reads non-template chart files.
 
 ##### Whitespace and indentation
 
@@ -1186,7 +1186,7 @@ spec:
 
 ##### Security context
 
-- Default to the Pod Security Standards **restricted** profile:[^34] `runAsNonRoot: true`, a numeric non-zero `runAsUser`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile.type: RuntimeDefault`; add `readOnlyRootFilesystem: true` and an `emptyDir` for `/tmp`.
+- Default to the Pod Security Standards **restricted** profile: `runAsNonRoot: true`, a numeric non-zero `runAsUser`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile.type: RuntimeDefault`; add `readOnlyRootFilesystem: true` and an `emptyDir` for `/tmp`.
 - The plain `helm create` scaffold does not meet `restricted`. Verified: its Deployment installs with a warning (`would violate PodSecurity "restricted:latest": allowPrivilegeEscalation != false …`), and its test Pod is rejected by `helm test` (`pods "sc-scaffold-test-connection" is forbidden: violates PodSecurity "restricted:latest"`). Helm 3 prints apiserver warnings through klog (`I1023 … warnings.go:107] "Warning: …"`) and still reports `STATUS: deployed`; CI must grep for them or install into a namespace with `enforce=restricted` in a test cluster.
 - Flag `privileged: true`, `hostNetwork`, `hostPID`, `hostIPC`, `hostPath` volumes, added capabilities and `runAsUser: 0` unless the chart's purpose requires them and they sit behind explicit values.
 - `automountServiceAccountToken: false` unless the app talks to the Kubernetes API; then ship a least-privilege `Role`/`RoleBinding` behind `rbac.create`.
@@ -1329,7 +1329,7 @@ spec:
 {{- end }}
 ```
 
-Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-rollback`, `post-rollback`, `pre-delete`, `post-delete`, `test`.[^35]
+Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-rollback`, `post-rollback`, `pre-delete`, `post-delete`, `test`.
 
 Review points:
 
@@ -1389,7 +1389,7 @@ spec:
 Verified on 3.22.1:
 
 - Files in `crds/` are plain YAML (not templated), installed **before** the templates on the first install, and Helm waits (up to 60 s) until they are established, so custom resources in `templates/` of the same chart can be created in that install.
-- They are **never upgraded** (a changed `crds/` file left the cluster CRD unchanged after `helm upgrade`) and **never deleted** (the CRD survived `helm uninstall`; the custom resources rendered from `templates/` were deleted).[^36]
+- They are **never upgraded** (a changed `crds/` file left the cluster CRD unchanged after `helm upgrade`) and **never deleted** (the CRD survived `helm uninstall`; the custom resources rendered from `templates/` were deleted).
 - `--skip-crds` skips them; `helm template --include-crds` renders them; `helm show crds` [3.7] prints them.
 - CRDs that must evolve belong in a separate chart (templated, upgraded deliberately) or are managed by the operator. Deleting a CRD deletes every custom resource of that kind cluster-wide.
 - Custom resources whose CRD is not installed yet fail the whole install before anything is created (verified): `unable to build kubernetes objects from release manifest: resource mapping not found for name: "nope" namespace: "" from "": no matches for kind "Nope" in version "example.com/v1"` / `ensure CRDs are installed first`. Gate them with `.Capabilities.APIVersions.Has` when the CRD comes from another release.
@@ -1528,7 +1528,7 @@ helm upgrade --install web oci://ghcr.io/acme/charts/web@sha256:<digest> \
 
 #### Migrating to Helm 4 — Notes
 
-Helm 3 receives security fixes only until 2027-02-10.[^2] Helm 4 manages existing Helm 3 releases in place (same release Secret format; no conversion step), and by default keeps each existing release on client-side apply until it is upgraded with `--server-side=true`.[^37][^38] Prepare charts and pipelines while still on Helm 3:
+Helm 3 receives security fixes only until 2027-02-10. Helm 4 manages existing Helm 3 releases in place (same release Secret format; no conversion step), and by default keeps each existing release on client-side apply until it is upgraded with `--server-side=true`. Prepare charts and pipelines while still on Helm 3:
 
 | Area | Helm 3 behaviour | Helm 4 behaviour | Do now on Helm 3 |
 |---|---|---|---|

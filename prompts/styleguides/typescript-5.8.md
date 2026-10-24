@@ -1,7 +1,7 @@
 ### TypeScript 5.8: The Complete Production Developer Guide
 
-> **Version**: TypeScript 5.8 — 5.8.2 (first stable 5.8 release; there is no "5.8.0"/"5.8.1" on npm) was published on **February 28, 2025**; the latest and final patch is **5.8.3 (April 5, 2025)**.[^1][^2]
-> **Status as of October 2026**: TypeScript has no LTS lines — only the newest release receives fixes, so 5.8 is unmaintained and 5.8.3 is the last 5.8 build. Newer releases: 5.9 (5.9.2, July 31, 2025; final patch 5.9.3), 6.0 (6.0.2, March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** — the native (Go) compiler — whose 7.0.2 (July 8, 2026) is `typescript@latest` on npm; 7.1 is in beta (October 20, 2026).[^2] DefinitelyTyped still publishes `@types/*` tagged `ts5.8` (it tests every TypeScript version younger than two years), so 5.8 projects still get type updates for now.[^3]
+> **Version**: TypeScript 5.8 — 5.8.2 (first stable 5.8 release; there is no "5.8.0"/"5.8.1" on npm) was published on **February 28, 2025**; the latest and final patch is **5.8.3 (April 5, 2025)**.
+> **Status as of October 2026**: TypeScript has no LTS lines — only the newest release receives fixes, so 5.8 is unmaintained and 5.8.3 is the last 5.8 build. Newer releases: 5.9 (5.9.2, July 31, 2025; final patch 5.9.3), 6.0 (6.0.2, March 23, 2026; latest 6.0.3, April 16, 2026) and **7.0** — the native (Go) compiler — whose 7.0.2 (July 8, 2026) is `typescript@latest` on npm; 7.1 is in beta (October 20, 2026). DefinitelyTyped still publishes `@types/*` tagged `ts5.8` (it tests every TypeScript version younger than two years), so 5.8 projects still get type updates for now.
 > **Scope**: The whole language as usable in 5.8, every 5.8 change relative to 5.7, compiler options, module resolution for Node.js and bundlers, reviewer-relevant bugs and pitfalls, security, performance, testing, tooling and observability.
 > **Note**: This document is self-contained. Sections marked **New in 5.8** cover behaviour that differs from 5.7. Every TypeScript example was compiled with `tsc` 5.8.3 (errors shown as `// error TSnnnn` comments are the exact diagnostics 5.8.3 reports on that line); boundary claims were re-checked on 5.7.3, 5.9.3, 6.0.3 and 7.0.2, and runtime claims on Node.js 18.20.8, 20.20.2, 22.23.4, 24.22.1 and 26.12.1.
 
@@ -9,7 +9,7 @@
 
 #### Overview
 
-TypeScript 5.8 is a small release focused on correctness of `return` statements and on Node.js interoperability. Its changes are:[^1]
+TypeScript 5.8 is a small release focused on correctness of `return` statements and on Node.js interoperability. Its changes are:
 
 - **Granular checks for branches in `return` expressions** — each branch of a conditional expression that is the direct operand of `return` is checked against the declared return type, so an `any` in one branch no longer hides a wrong type in the other.
 - **`require()` of ECMAScript modules under `--module nodenext`** — CommonJS files may `require()` ES modules (Node.js 22.12+/20.19+ behaviour); `--module node16` and the new `node18` still reject it.
@@ -22,9 +22,9 @@ TypeScript 5.8 is a small release focused on correctness of `return` statements 
 - **`lib.d.ts`**: DOM updates; new `esnext` declarations for `Float16Array`/`Math.f16round()`/`DataView#getFloat16()` and `Promise.try()` (not mentioned in the release notes — verified by diffing the 5.7.3 and 5.8.3 lib folders).
 - **Program-load and watch-mode performance** improvements (path normalization without array allocations; no re-validation of unchanged options).
 
-One feature advertised in the 5.8 **beta** did not ship: checking `return` statements against *conditional return types* ("checked returns for conditional and indexed access types") was pulled before the RC.[^4] A function declared to return `T extends string ? string : undefined` still needs a cast on each `return` in 5.8 — and, verified, in 5.9.3, 6.0.3 and 7.0.2 as well. Do not tell authors that 5.8 narrows generic conditional return types.
+One feature advertised in the 5.8 **beta** did not ship: checking `return` statements against *conditional return types* ("checked returns for conditional and indexed access types") was pulled before the RC. A function declared to return `T extends string ? string : undefined` still needs a cast on each `return` in 5.8 — and, verified, in 5.9.3, 6.0.3 and 7.0.2 as well. Do not tell authors that 5.8 narrows generic conditional return types.
 
-Everything from earlier 5.x releases is available and should be used where it fits: standard decorators, `const` type parameters, `--verbatimModuleSyntax`, `--moduleResolution bundler`, `export type *` (5.0); `using`/`await using` declarations and decorator metadata (5.2); `import type` with `resolution-mode` and `--module preserve`, `NoInfer<T>`, `Object.groupBy`/`Map.groupBy` types and closure narrowing after the last assignment (5.4); inferred type predicates, constant-index narrowing, regular-expression syntax checking, `--isolatedDeclarations`, ES Set-method types and `${configDir}` (5.5); disallowed always-truthy/nullish checks, iterator-helper types, `--strictBuiltinIteratorReturn`, `--noUncheckedSideEffectImports`, `--noCheck` (5.6); never-initialized-variable checks, `--rewriteRelativeImportExtensions`, `--target es2024`/`--lib es2024`, generic `TypedArray`s and validated JSON imports under `nodenext` (5.7).[^5][^6]
+Everything from earlier 5.x releases is available and should be used where it fits: standard decorators, `const` type parameters, `--verbatimModuleSyntax`, `--moduleResolution bundler`, `export type *` (5.0); `using`/`await using` declarations and decorator metadata (5.2); `import type` with `resolution-mode` and `--module preserve`, `NoInfer<T>`, `Object.groupBy`/`Map.groupBy` types and closure narrowing after the last assignment (5.4); inferred type predicates, constant-index narrowing, regular-expression syntax checking, `--isolatedDeclarations`, ES Set-method types and `${configDir}` (5.5); disallowed always-truthy/nullish checks, iterator-helper types, `--strictBuiltinIteratorReturn`, `--noUncheckedSideEffectImports`, `--noCheck` (5.6); never-initialized-variable checks, `--rewriteRelativeImportExtensions`, `--target es2024`/`--lib es2024`, generic `TypedArray`s and validated JSON imports under `nodenext` (5.7).
 
 **Do not use or recommend anything from TypeScript 5.9 or later** — the project's compiler does not have it: no `import defer` (5.9), no `--module node20` (5.9), no `--target es2025`/`--lib es2025` (6.0), no `Temporal` types, `Map#getOrInsert()`/`getOrInsertComputed()`, `RegExp.escape()`, `Error.isError()` or `Atomics.pause()` declarations, no `#/` subpath-import support, no `--stableTypeOrdering`, no `--moduleResolution bundler` with `--module commonjs`, and none of the 6.0 default changes (`strict`, `types: []`, `rootDir: "."`, `module: esnext`). The full list with versions is in [Do Not Use or Recommend](#do-not-use-or-recommend-59-and-later).
 
@@ -43,7 +43,7 @@ Global truths about TypeScript 5.8:
 
 ##### New in 5.8: Granular checks for branches in `return` expressions
 
-Before 5.8, the type of `cond ? a : b` was the union of both branch types, and that union was then compared with the declared return type. Because `any | string` collapses to `any`, an `any`-typed branch (an untyped cache, `JSON.parse`, a `Map<any, any>`) silently disabled the check of the other branch. TypeScript 5.8 checks **each branch** of a conditional expression that is the direct operand of `return` against the declared return type.[^1][^7]
+Before 5.8, the type of `cond ? a : b` was the union of both branch types, and that union was then compared with the declared return type. Because `any | string` collapses to `any`, an `any`-typed branch (an untyped cache, `JSON.parse`, a `Map<any, any>`) silently disabled the check of the other branch. TypeScript 5.8 checks **each branch** of a conditional expression that is the direct operand of `return` against the declared return type.
 
 ```ts
 declare const untypedCache: Map<any, any>;
@@ -94,7 +94,7 @@ Upgrading to 5.8 can therefore surface *real* bugs in existing code. Fix them; d
 
 ##### New in 5.8: `require()` of ES modules under `--module nodenext`
 
-Node.js can synchronously `require()` an ES module that contains no top-level `await` (unflagged in 22.12.0 and 20.19.0, warning-free since 22.13.0/20.19.0, non-experimental since 25.4.0).[^8] TypeScript 5.8 models this under `--module nodenext` only: a CommonJS file (`.cts`, or `.ts` in a package without `"type": "module"`) may `require()`/`import x = require()` an ES module.[^1][^9]
+Node.js can synchronously `require()` an ES module that contains no top-level `await` (unflagged in 22.12.0 and 20.19.0, warning-free since 22.13.0/20.19.0, non-experimental since 25.4.0). TypeScript 5.8 models this under `--module nodenext` only: a CommonJS file (`.cts`, or `.ts` in a package without `"type": "module"`) may `require()`/`import x = require()` an ES module.
 
 | `--module`  | `require()` of an ESM file in 5.8.3 | TS 5.7.3                      |
 | ----------- | ----------------------------------- | ----------------------------- |
@@ -134,11 +134,11 @@ console.log(t.v);
 Review rules:
 
 - `nodenext` means "the newest Node.js behaviour this TypeScript knows". A library whose CommonJS entry `require()`s ESM breaks consumers on Node.js < 20.19 / < 22.12. Libraries that support older Node.js should compile with `--module node16` or `node18`.
-- Node.js returns the module namespace object from `require(esm)`; the default export is `.default`, unless the ES module exports a value under the string name `"module.exports"`.[^8]
+- Node.js returns the module namespace object from `require(esm)`; the default export is `.default`, unless the ES module exports a value under the string name `"module.exports"`.
 
 ##### New in 5.8: `--module node18`
 
-`--module node18` is a stable mode that freezes Node.js 18 semantics: ESM/CJS decided per file like `node16`, **import attributes allowed** (`node16` rejects them with TS2823), **import assertions allowed**, `require(esm)` **rejected**. Verified with `--showConfig` on 5.8.3: `node18` implies `--target es2022` and `--moduleResolution node16`; `nodenext` implies `--target esnext` and `--moduleResolution nodenext`. On 5.7.3 `--module node18` is error TS6046. There is **no `node20` mode in 5.8** (added in 5.9).[^1][^10]
+`--module node18` is a stable mode that freezes Node.js 18 semantics: ESM/CJS decided per file like `node16`, **import attributes allowed** (`node16` rejects them with TS2823), **import assertions allowed**, `require(esm)` **rejected**. Verified with `--showConfig` on 5.8.3: `node18` implies `--target es2022` and `--moduleResolution node16`; `nodenext` implies `--target esnext` and `--moduleResolution nodenext`. On 5.7.3 `--module node18` is error TS6046. There is **no `node20` mode in 5.8** (added in 5.9).
 
 | Behaviour (TS 5.8.3)                     | `node16` | `node18` | `nodenext` |
 | ---------------------------------------- | -------- | -------- | ---------- |
@@ -158,11 +158,11 @@ import data from "./data.json" assert { type: "json" }; // error TS2880
 import data2 from "./data.json" with { type: "json" }; // ok
 ```
 
-TS2880 reads "Import assertions have been replaced by import attributes. Use 'with' instead of 'assert'." Under `--module esnext` and `--module preserve`, 5.8 still accepts `assert` silently — flag it in review anyway when the output runs on Node.js 22+ or a bundler/runtime that dropped assertions. (TypeScript 6.0 deprecates `assert` on imports everywhere.)[^11]
+TS2880 reads "Import assertions have been replaced by import attributes. Use 'with' instead of 'assert'." Under `--module esnext` and `--module preserve`, 5.8 still accepts `assert` silently — flag it in review anyway when the output runs on Node.js 22+ or a bundler/runtime that dropped assertions. (TypeScript 6.0 deprecates `assert` on imports everywhere.)
 
 ##### New in 5.8: `--erasableSyntaxOnly`
 
-Node.js type stripping (default-on since Node.js 23.6.0 and 22.18.0; stable since 25.2.0 and 24.12.0) only *removes* type syntax. TypeScript syntax that generates JavaScript throws `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` at load time.[^12] `--erasableSyntaxOnly` reports those constructs at compile time with **TS1294** ("This syntax is not allowed when 'erasableSyntaxOnly' is enabled."). The flag is unknown to 5.7.3 (TS5023).[^1][^13]
+Node.js type stripping (default-on since Node.js 23.6.0 and 22.18.0; stable since 25.2.0 and 24.12.0) only *removes* type syntax. TypeScript syntax that generates JavaScript throws `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` at load time. `--erasableSyntaxOnly` reports those constructs at compile time with **TS1294** ("This syntax is not allowed when 'erasableSyntaxOnly' is enabled."). The flag is unknown to 5.7.3 (TS5023).
 
 ```ts
 // tsc --erasableSyntaxOnly --module commonjs (5.8.3)
@@ -195,18 +195,18 @@ export = Point; // error TS1294
 
 Notes from testing:
 
-- The ban on `<T>expr` angle-bracket assertions was added in **5.8.3** (PR #61244, picked into release-5.8); 5.8.2 accepts them. Pin `typescript` to `~5.8.3`, not `5.8.2`, when relying on this flag.[^14]
+- The ban on `<T>expr` angle-bracket assertions was added in **5.8.3** (PR #61244, picked into release-5.8); 5.8.2 accepts them. Pin `typescript` to `~5.8.3`, not `5.8.2`, when relying on this flag.
 - `const enum` is rejected as well — it is not erasable for tools that compile one file at a time.
-- The flag does not check decorators. Node.js type stripping does not transform decorators either; under Node.js 22–26 a file with a decorator fails to parse.[^12]
-- Combine it with `--verbatimModuleSyntax` (type-only imports must say `type`, otherwise the stripped file still imports a name that does not exist at runtime) and, if the source imports `./x.ts`, with `--allowImportingTsExtensions` or `--rewriteRelativeImportExtensions`. The Node.js documentation recommends exactly these settings with "TypeScript 5.8 or newer" — see [Running TypeScript directly on Node.js](#running-typescript-directly-on-nodejs).[^12]
+- The flag does not check decorators. Node.js type stripping does not transform decorators either; under Node.js 22–26 a file with a decorator fails to parse.
+- Combine it with `--verbatimModuleSyntax` (type-only imports must say `type`, otherwise the stripped file still imports a name that does not exist at runtime) and, if the source imports `./x.ts`, with `--allowImportingTsExtensions` or `--rewriteRelativeImportExtensions`. The Node.js documentation recommends exactly these settings with "TypeScript 5.8 or newer" — see [Running TypeScript directly on Node.js](#running-typescript-directly-on-nodejs).
 
 ##### New in 5.8: `--libReplacement`
 
-Since 4.5, TypeScript looks for `@typescript/lib-*` packages (e.g. `"@typescript/lib-dom": "npm:@types/web@…"`) and uses them instead of its bundled `lib.*.d.ts`. That lookup and the associated `node_modules` watching cost time even when nobody uses it. `--libReplacement false` disables it.[^1] In 5.8 the default is still `true`; TypeScript 6.0 changes the default to `false`.[^11] Recommend `"libReplacement": false` for projects that do not use lib replacement packages, and an explicit `"libReplacement": true` for projects that do. The option is unknown to 5.7.3 (TS5023).
+Since 4.5, TypeScript looks for `@typescript/lib-*` packages (e.g. `"@typescript/lib-dom": "npm:@types/web@…"`) and uses them instead of its bundled `lib.*.d.ts`. That lookup and the associated `node_modules` watching cost time even when nobody uses it. `--libReplacement false` disables it. In 5.8 the default is still `true`; TypeScript 6.0 changes the default to `false`. Recommend `"libReplacement": false` for projects that do not use lib replacement packages, and an explicit `"libReplacement": true` for projects that do. The option is unknown to 5.7.3 (TS5023).
 
 ##### New in 5.8: Preserved computed property names in declaration files
 
-Class property names written as a computed *entity name* (`[propName]`, `[ns.key]`) are now preserved in `.d.ts` output. In 5.7, a non-literal key (`let propName: string`) was error **TS1166** ("A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.") and the declaration file degraded the class to an index signature.[^1]
+Class property names written as a computed *entity name* (`[propName]`, `[ns.key]`) are now preserved in `.d.ts` output. In 5.7, a non-literal key (`let propName: string`) was error **TS1166** ("A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.") and the declaration file degraded the class to an index signature.
 
 ```ts
 export let propName = "theAnswer";
@@ -228,7 +228,7 @@ The class still effectively has a `string` index signature; the property is not 
 
 ##### New in 5.8: `lib.d.ts` changes
 
-- DOM declarations were regenerated; occasional new errors in DOM-heavy code are expected on upgrade.[^1]
+- DOM declarations were regenerated; occasional new errors in DOM-heavy code are expected on upgrade.
 - `lib.esnext.float16.d.ts` (`Float16Array`, `Math.f16round()`, `DataView#getFloat16()`/`setFloat16()`) and `lib.esnext.promise.d.ts` (`Promise.try()`) are new in 5.8 (5.7.3 reports TS2552 for `Float16Array` — or TS2693 when `@types/node` is loaded, because it declares a `Float16Array` type — TS2551 for `f16round`, TS2339 for `Promise.try`). They are only available with `--lib esnext` (or `esnext.float16`/`esnext.promise`). Runtime support is a separate question: Node.js 22.23.4 has neither (`typeof Float16Array === "undefined"`, `typeof Promise.try === "undefined"`); Node.js 24.22.1 has both.
 
 ```ts
@@ -242,17 +242,17 @@ const p: Promise<number> = Promise.try(() => 1);
 
 ##### New in 5.8: Performance
 
-Path normalization no longer allocates intermediate arrays, and edits that do not change the project structure skip re-validation of compiler options — mainly visible in `--watch` and editors on large projects.[^1] There are no new performance-related flags beyond `--libReplacement`.
+Path normalization no longer allocates intermediate arrays, and edits that do not change the project structure skip re-validation of compiler options — mainly visible in `--watch` and editors on large projects. There are no new performance-related flags beyond `--libReplacement`.
 
 ##### Patch release 5.8.3
 
-5.8.3 contains five fixes over 5.8.2: the angle-bracket-assertion ban and an error-span fix for `--erasableSyntaxOnly`; declaration emit of accessors whose getter and setter types differ (unbound type parameters leaked into `.d.ts`); renaming shadowed type parameters in declaration emit (5.8.2 generated incorrect `.d.ts` for generic static methods); and a fix for comments from one file leaking into another file's declaration output.[^14] Projects that publish declaration files should not stay on 5.8.2.
+5.8.3 contains five fixes over 5.8.2: the angle-bracket-assertion ban and an error-span fix for `--erasableSyntaxOnly`; declaration emit of accessors whose getter and setter types differ (unbound type parameters leaked into `.d.ts`); renaming shadowed type parameters in declaration emit (5.8.2 generated incorrect `.d.ts` for generic static methods); and a fix for comments from one file leaking into another file's declaration output. Projects that publish declaration files should not stay on 5.8.2.
 
 ***
 
 #### Do Not Use or Recommend (5.9 and later)
 
-The project compiles with TypeScript 5.8. None of the following exist in 5.8.3; each was verified to fail on 5.8.3 and to work on the version named.[^15][^11]
+The project compiles with TypeScript 5.8. None of the following exist in 5.8.3; each was verified to fail on 5.8.3 and to work on the version named.
 
 | Feature | Introduced in | What 5.8.3 does |
 | --- | --- | --- |
@@ -284,7 +284,7 @@ Also not in 5.8 (and not in 5.9–7.0 either): narrowing of generic conditional 
 
 ##### Deprecated or removed before 5.8 (still relevant in review)
 
-- **Removed in 5.5** (deprecated in 5.0; error TS5102/TS5108 on 5.8.3 even with `"ignoreDeprecations": "5.0"`): `--target ES3`, `--out`, `--charset`, `--keyofStringsOnly`, `--noImplicitUseStrict`, `--noStrictGenericChecks`, `--suppressExcessPropertyErrors`, `--suppressImplicitAnyIndexErrors`, `--preserveValueImports`, `--importsNotUsedAsValues` (any value other than the old default `remove`), and `prepend` in project references (TS5102 in `references`).[^16] Replace `importsNotUsedAsValues`/`preserveValueImports` with `--verbatimModuleSyntax`.
+- **Removed in 5.5** (deprecated in 5.0; error TS5102/TS5108 on 5.8.3 even with `"ignoreDeprecations": "5.0"`): `--target ES3`, `--out`, `--charset`, `--keyofStringsOnly`, `--noImplicitUseStrict`, `--noStrictGenericChecks`, `--suppressExcessPropertyErrors`, `--suppressImplicitAnyIndexErrors`, `--preserveValueImports`, `--importsNotUsedAsValues` (any value other than the old default `remove`), and `prepend` in project references (TS5102 in `references`). Replace `importsNotUsedAsValues`/`preserveValueImports` with `--verbatimModuleSyntax`.
 - **Experimental decorators** (`--experimentalDecorators`) remain supported but are the legacy proposal. New code uses standard decorators (5.0+); frameworks that need parameter decorators or `emitDecoratorMetadata` (Angular before its standard-decorator migration, NestJS, TypeORM, InversifyJS) still require the legacy flag. Never mix the two models in one project.
 - **`--moduleResolution node` (`node10`)** works in 5.8 but ignores `package.json` `"exports"`/`"imports"`; it type-checks imports that fail at runtime and misses ones that succeed. Use `node16`/`node18`/`nodenext` for Node.js and `bundler` for bundled code.
 - **`--target ES5`** is still the 5.8 *default* — always set `target` explicitly.
@@ -304,7 +304,7 @@ Also not in 5.8 (and not in 5.9–7.0 either): narrowing of generic conditional 
 
 #### tsconfig Recommendations
 
-TypeScript 5.8's defaults are legacy (`target` ES5, `strict` off, every `@types` package loaded, `rootDir` inferred). Every project needs an explicit configuration; option semantics are in the TSConfig reference.[^22] The three configurations below were compiled with 5.8.3 and their output executed.
+TypeScript 5.8's defaults are legacy (`target` ES5, `strict` off, every `@types` package loaded, `rootDir` inferred). Every project needs an explicit configuration; option semantics are in the TSConfig reference. The three configurations below were compiled with 5.8.3 and their output executed.
 
 ##### Node.js service or library compiled by `tsc` (ESM)
 
@@ -385,7 +385,7 @@ With `"type": "module"` in `package.json`, this compiles a project that uses top
 
 ##### Running TypeScript directly on Node.js
 
-Node.js 22.18+/23.6+ execute `.ts` files by stripping types; `tsconfig.json` is ignored at runtime, so `tsc` only type-checks.[^12] The Node.js documentation recommends (for "TypeScript 5.8 or newer"):
+Node.js 22.18+/23.6+ execute `.ts` files by stripping types; `tsconfig.json` is ignored at runtime, so `tsc` only type-checks. The Node.js documentation recommends (for "TypeScript 5.8 or newer"):
 
 ```json
 {
@@ -457,7 +457,7 @@ console.log(helper, ok);
 ##### `package.json` `exports`, `imports`, and types
 
 - Under `node16`/`node18`/`nodenext`/`bundler`, a dependency's `"exports"` map is authoritative: deep imports not listed there (`pkg/dist/internal.js`) fail to resolve (TS2307) — and fail at runtime in Node.js. Do not "fix" that with `paths`.
-- Conditions are matched in object order; `"types"` must come **first** inside each condition block, and ESM/CJS entry points need separate declaration files (`index.d.mts`/`index.d.cts`, or `.d.ts` files under directories whose `package.json` sets `"type"`). A single `.d.ts` for both formats misrepresents one of them ("masquerading as ESM/CJS"); check with `@arethetypeswrong/cli` (`attw --pack`).[^17]
+- Conditions are matched in object order; `"types"` must come **first** inside each condition block, and ESM/CJS entry points need separate declaration files (`index.d.mts`/`index.d.cts`, or `.d.ts` files under directories whose `package.json` sets `"type"`). A single `.d.ts` for both formats misrepresents one of them ("masquerading as ESM/CJS"); check with `@arethetypeswrong/cli` (`attw --pack`).
 - `"imports"` subpath imports (`"#lib/*": "./src/lib/*"`) are the runtime-correct replacement for `paths` aliases in Node.js. In 5.8 the key must have a name after `#` — `#/*` resolves only from 6.0 (verified TS2307 on 5.8.3).
 - `customConditions` (5.0+) adds conditions such as `"development"` or `"source"` for monorepos; only valid with `node16`+/`bundler` resolution.
 
@@ -496,7 +496,7 @@ console.log(u, s);
 
 ##### JSON modules
 
-- Under `node18`/`nodenext`, ESM files must import JSON with `with { type: "json" }` (TS1543 otherwise), only the default import is available, and named imports are TS1544.[^6]
+- Under `node18`/`nodenext`, ESM files must import JSON with `with { type: "json" }` (TS1543 otherwise), only the default import is available, and named imports are TS1544.
 - `resolveJsonModule` types JSON imports by *inferring from the file*: strings become `string`, not literal types. Validate JSON that comes from configurable locations; importing it does not validate anything.
 
 ***
@@ -536,7 +536,7 @@ Review rules:
 
 ##### Narrowing
 
-TypeScript narrows through `typeof`, `instanceof`, `in`, equality, truthiness, discriminant properties, `Array.isArray`, type predicates and assertion functions, and (5.4+) keeps narrowings inside closures created after the last assignment. Since 5.5 it also infers type predicates for simple arrow functions and narrows `obj[key]` when both `obj` and `key` are effectively constant.[^5]
+TypeScript narrows through `typeof`, `instanceof`, `in`, equality, truthiness, discriminant properties, `Array.isArray`, type predicates and assertion functions, and (5.4+) keeps narrowings inside closures created after the last assignment. Since 5.5 it also infers type predicates for simple arrow functions and narrows `obj[key]` when both `obj` and `key` are effectively constant.
 
 ```ts
 function len(x: string | string[] | null): number {
@@ -1075,7 +1075,7 @@ console.log(UserService);
 
 ##### Decorators
 
-TypeScript 5.x implements **standard (TC39 stage 3) decorators** by default; `--experimentalDecorators` switches to the legacy implementation.[^18]
+TypeScript 5.x implements **standard (TC39 stage 3) decorators** by default; `--experimentalDecorators` switches to the legacy implementation.
 
 ```ts
 // standard decorators — no compiler flag needed (target es2022)
@@ -1425,7 +1425,7 @@ async function createUser(req: Request): Promise<CreateUser> {
 console.log(createUserBad, createUser);
 ```
 
-- In real projects use a schema library (Zod, Valibot, ArkType, TypeBox + Ajv, io-ts) and derive the static type from the schema (`z.infer<typeof Schema>`) so the two cannot drift. Check the library's stated TypeScript support before recommending a version (for example, Zod is tested against TypeScript 5.5 and later and requires `strict`).[^19]
+- In real projects use a schema library (Zod, Valibot, ArkType, TypeBox + Ajv, io-ts) and derive the static type from the schema (`z.infer<typeof Schema>`) so the two cannot drift. Check the library's stated TypeScript support before recommending a version (for example, Zod is tested against TypeScript 5.5 and later and requires `strict`).
 - Return a **new object with known fields** after validation; passing the original through keeps unexpected properties (mass assignment, `__proto__` keys).
 - Validate *outputs* of third-party APIs too, at least for fields you branch on.
 - Generated clients (OpenAPI, GraphQL codegen, Prisma, tRPC) give accurate types only for data that came through them; hand-written `as` around them reintroduces the problem.
@@ -1566,7 +1566,7 @@ Slow type-checking is a real cost in large monorepos (editor latency, CI time). 
 - `--isolatedDeclarations` (5.5+) requires explicit types on exports so other tools can generate `.d.ts` in parallel without the checker.
 - `--noCheck` (5.6+) emits without type-checking — only for a separate fast emit step when type-checking runs elsewhere in CI.
 - Type-level hot spots: huge unions (> a few thousand members) in conditional types, deeply recursive mapped types, intersections of many object types (prefer `interface extends`), and generic functions with many overloads. Annotating return types of exported functions reduces work for consumers and declaration emit.
-- The 5.8 program-load improvements need no configuration. Microsoft's native (Go) port, shipped as TypeScript 7.0, was announced as roughly 10× faster,[^23] but it is a different major with every 6.0-deprecated option removed; it is not a drop-in for a 5.8 project.
+- The 5.8 program-load improvements need no configuration. Microsoft's native (Go) port, shipped as TypeScript 7.0, was announced as roughly 10× faster, but it is a different major with every 6.0-deprecated option removed; it is not a drop-in for a 5.8 project.
 
 ***
 
@@ -1644,7 +1644,7 @@ Libraries: Vitest's `expectTypeOf` (run with `vitest --typecheck`), `expect-type
 
 ##### typescript-eslint
 
-typescript-eslint 8.x supports TypeScript `>=4.8.4 <6.1.0`, so it covers 5.8 (and not 7.0).[^20] Use the type-checked configs (`recommendedTypeChecked`, `strictTypeChecked`) with `parserOptions.projectService: true`. Rules that catch bugs the compiler does not:
+typescript-eslint 8.x supports TypeScript `>=4.8.4 <6.1.0`, so it covers 5.8 (and not 7.0). Use the type-checked configs (`recommendedTypeChecked`, `strictTypeChecked`) with `parserOptions.projectService: true`. Rules that catch bugs the compiler does not:
 
 | Rule | Catches |
 | --- | --- |
@@ -1670,7 +1670,7 @@ Plain ESLint's `no-undef`, `no-unused-vars`, `no-redeclare`, `no-shadow` and `no
 - Single-file transpilers — esbuild, swc, Babel, Oxc, Sucrase, Node.js type stripping, Bun, Deno — do not type-check and have restrictions: `isolatedModules`-style compilation (no cross-file `const enum`, type re-exports need `export type`), no `emitDecoratorMetadata` in some, no `paths` in Node.js. Enable `isolatedModules`/`verbatimModuleSyntax` so tsc reports what they cannot compile.
 - `tsx` runs TypeScript with esbuild (supports enums, decorators, `paths`); it is a development/runtime convenience, not a type-checker.
 - Bun and Deno bundle their own TypeScript-aware transpilers; Deno's `deno check` uses its own pinned TypeScript version, which may not be 5.8 — check what the project actually runs.
-- Declaration-file quality for libraries: `@arethetypeswrong/cli` (`attw --pack .`) and `publint` catch broken `exports`/types mappings before publishing.[^17]
+- Declaration-file quality for libraries: `@arethetypeswrong/cli` (`attw --pack .`) and `publint` catch broken `exports`/types mappings before publishing.
 
 ***
 
@@ -1805,7 +1805,7 @@ Upgrading from 5.7 to 5.8 is low-risk; expect a handful of new, mostly legitimat
    - `import … assert { … }` is now TS2880 — switch to `with { … }` (Node.js 22+ rejects `assert` at runtime anyway).
    - `require()`/`import x = require()` of ESM from CommonJS no longer errors. If the package must support Node.js < 20.19/22.12, change to `--module node18` or `node16` so the compiler keeps rejecting it.
    - Required ES modules must not use top-level `await` anywhere in their graph; the compiler does not check this.
-3. **`--module node18`** is available for projects pinned to Node.js 18 semantics. Node.js 18 reached end-of-life on April 30, 2025 and Node.js 20 on April 30, 2026; Node.js 22 (maintenance LTS until April 30, 2027), 24 (maintenance LTS since October 20, 2026, until April 30, 2028) and 26 (Current, Active LTS from October 28, 2026) are the supported lines as of October 2026.[^21]
+3. **`--module node18`** is available for projects pinned to Node.js 18 semantics. Node.js 18 reached end-of-life on April 30, 2025 and Node.js 20 on April 30, 2026; Node.js 22 (maintenance LTS until April 30, 2027), 24 (maintenance LTS since October 20, 2026, until April 30, 2028) and 26 (Current, Active LTS from October 28, 2026) are the supported lines as of October 2026.
 4. **Declaration emit**: non-literal computed class property names (`[propName]`) are preserved; they were TS1166 errors in 5.7. Check generated `.d.ts` against older consumer TypeScript versions if you support them.
 5. **DOM lib** regenerated — fix new DOM typing errors rather than pinning old libs. If `@types/node` 26.x is installed alongside the DOM lib and an `es2024`+/`esnext` lib, expect TS2430 in `lib.dom.d.ts` without `skipLibCheck` (use the `@types/node` major matching your Node.js runtime).
 6. **New opt-in flags** to consider: `--erasableSyntaxOnly` (if the code runs or may run under Node.js type stripping, or simply to keep TypeScript's emit trivial), `--libReplacement false` (performance; becomes the default in 6.0).

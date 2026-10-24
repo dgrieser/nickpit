@@ -1,6 +1,6 @@
 ### Helm Style Guide
 
-> **Version**: This is the **version-independent** Helm guide. It applies when the project's Helm version cannot be determined, and covers charts with `apiVersion: v2` as used by Helm 3 (3.0–3.22) and Helm 4 (4.0–4.3). The current major is **Helm 4**: v4.0.0 was released on **2025-11-12**; the latest release as of October 2026 is **v4.3.1 (2026-10-15)**.[^1][^2] **Helm 3 is in a security-only phase**: v3.22.0 (2026-09-09) is its last minor release, the latest patch is v3.22.1 (2026-10-15), and security fixes end on **2027-02-10**.[^3][^4]
+> **Version**: This is the **version-independent** Helm guide. It applies when the project's Helm version cannot be determined, and covers charts with `apiVersion: v2` as used by Helm 3 (3.0–3.22) and Helm 4 (4.0–4.3). The current major is **Helm 4**: v4.0.0 was released on **2025-11-12**; the latest release as of October 2026 is **v4.3.1 (2026-10-15)**. **Helm 3 is in a security-only phase**: v3.22.0 (2026-09-09) is its last minor release, the latest patch is v3.22.1 (2026-10-15), and security fixes end on **2027-02-10**.
 > **Scope**: Version-independent review rules for Helm charts (`Chart.yaml`, `Chart.lock`, `values.yaml`, `values.schema.json`, `templates/`, `_helpers.tpl`, `NOTES.txt`, `crds/`, chart tests, library charts) and for `helm` usage in scripts and CI: upgrade/rollback semantics, hooks, secrets, OCI publishing, provenance, testing and security.
 > **Version rule**: Every feature tied to a Helm version is labelled with the version that introduced it, for example "`--set-json` (3.10)", "`--dry-run=server` (3.13)", "install by OCI digest (3.17)", "`--rollback-on-failure` (4.0)", "`mustToToml` (4.2)". Before suggesting such a feature, determine the project's Helm version (see "Determine the Helm Version First"). Never recommend a feature the pinned version lacks, and never "fix" a Helm 3 flag into its Helm 4 spelling (or the reverse) without knowing which major runs the command.
 > **Note**: This document is self-contained. Every chart example was linted (`helm lint --strict`) and rendered (`helm template`) on **Helm v3.22.1, v4.0.5 and v4.3.1**; install, upgrade, drift, wait, hook and dry-run behaviour was exercised against a real **kube-apiserver v1.36.2** (no kubelet or controllers, so Pods never run; readiness of Pods and Deployments is described from the Helm sources and documentation). Behaviour against vendor-suffixed Kubernetes versions (`v1.36.2-eks-…`) was checked through a proxy that rewrites the apiserver's `/version` response. Tooling outside Helm itself (`helm-unittest` 1.2.1 was run; `ct`/chart-testing and kubeconform were not) is marked where it is only sourced.
@@ -18,7 +18,7 @@ Helm behaviour differs substantially between the two majors (apply method, wait 
 
 Review rules:
 
-- **An unpinned installer installs Helm 4.** `azure/setup-helm` defaults to `latest`, so a job without `version:` switched majors when Helm 4 was released, with different apply, wait and flag semantics.[^5] Flag a missing or `latest` version.
+- **An unpinned installer installs Helm 4.** `azure/setup-helm` defaults to `latest`, so a job without `version:` switched majors when Helm 4 was released, with different apply, wait and flag semantics. Flag a missing or `latest` version.
 - **Say "not available" only when the pinned version proves it** (unknown flag, `function "…" not defined`). The default documentation at helm.sh describes Helm 4; Helm 3 documentation lives under `https://helm.sh/docs/v3/`.
 - **A chart is often consumed by both majors.** A chart published for others must render on Helm 3 and Helm 4 unless it declares otherwise; a chart that only one pipeline consumes may use that pipeline's version.
 - `.Capabilities.HelmVersion.Version` (3.3) reports the running Helm (`v3.22.1`, `v4.3.1`). A chart can enforce a minimum version:
@@ -44,7 +44,7 @@ Review rules:
 | Helm 3.22 | 3.22.0, 2026-09-09 | **3.22.1, 2026-10-15** | **Last Helm 3 minor; security fixes only, until 2027-02-10**; 3.22.2 scheduled 2026-11-11 | 1.34–1.37 |
 | Helm 3.0–3.21 | 3.0.0, 2019-11-13 | — | Unsupported | — |
 
-Sources: release pages, the Helm v3 end-of-life announcement and the version skew policy.[^1][^2][^3][^4][^6] The Helm 4 announcement originally planned Helm 3 bug fixes until 2026-07-08 and security fixes until 2026-11-11; the end-of-life post of 2026-06-02 moved the last minor to 2026-09-09 and extended security fixes to 2027-02-10.[^3][^7] After that date Helm 3 receives no updates, including no Kubernetes client-library updates, so clusters newer than 1.37 are outside Helm 3's support range.
+Sources: release pages, the Helm v3 end-of-life announcement and the version skew policy. The Helm 4 announcement originally planned Helm 3 bug fixes until 2026-07-08 and security fixes until 2026-11-11; the end-of-life post of 2026-06-02 moved the last minor to 2026-09-09 and extended security fixes to 2027-02-10. After that date Helm 3 receives no updates, including no Kubernetes client-library updates, so clusters newer than 1.37 are outside Helm 3's support range.
 
 Review consequences:
 
@@ -56,7 +56,7 @@ Review consequences:
 
 #### Helm 3 vs Helm 4: Differences a Reviewer Must Know
 
-Helm 4 keeps the chart format: `apiVersion: v2` charts render unchanged. It changes how releases are applied, how readiness is judged, how post-renderers and plugins work, and several CLI flags.[^8][^9] The apply, drift, unknown-field, roll-back, replace, wait, post-renderer, values-file, `--set-json`, template-function, template-error, `helm lint` and `helm list` rows were re-verified on v3.22.1 and v4.0.5/v4.3.1; the remaining rows come from the release notes, changelog and the version-specific verification.
+Helm 4 keeps the chart format: `apiVersion: v2` charts render unchanged. It changes how releases are applied, how readiness is judged, how post-renderers and plugins work, and several CLI flags. The apply, drift, unknown-field, roll-back, replace, wait, post-renderer, values-file, `--set-json`, template-function, template-error, `helm lint` and `helm list` rows were re-verified on v3.22.1 and v4.0.5/v4.3.1; the remaining rows come from the release notes, changelog and the version-specific verification.
 
 | Area | Helm 3 | Helm 4 |
 |---|---|---|
@@ -80,7 +80,7 @@ Helm 4 keeps the chart format: `apiVersion: v2` charts render unchanged. It chan
 | **Chart archives** | Every `helm package` embeds the current time (new digest each run) | Deterministic (file modification times); `SOURCE_DATE_EPOCH` honoured since 4.3 |
 | **Uninstall** | Deletes every object in the release manifest | 4.3 skips objects whose `meta.helm.sh/release-name`/`-namespace` point to another release |
 | **Logging** | klog-style `[debug]` lines and `warnings.go` | `log/slog` (`level=WARN msg=…`); `--color`, `HELM_COLOR`, `NO_COLOR` |
-| **Chart API v3** | `helm lint`: `apiVersion 'v3' is not valid` | Experimental only (HIP-0020, behind `HELM_EXPERIMENTAL_CHART_V3`); in 4.3.1 `helm template`/`install` of an `apiVersion: v3` chart fails with `invalid chart apiVersion`. **Charts must use `apiVersion: v2`.**[^10] |
+| **Chart API v3** | `helm lint`: `apiVersion 'v3' is not valid` | Experimental only (HIP-0020, behind `HELM_EXPERIMENTAL_CHART_V3`); in 4.3.1 `helm template`/`install` of an `apiVersion: v3` chart fails with `invalid chart apiVersion`. **Charts must use `apiVersion: v2`.** |
 
 Verified examples:
 
@@ -108,7 +108,7 @@ Review consequences that hold for every chart, whichever major runs it:
 - Treat `unknown field` warnings and duplicate list keys as errors on Helm 3; they become hard failures on Helm 4.
 - Do not use multi-document `values.yaml` in a chart that Helm 3 users may install: Helm 3 silently truncates it to the first document.
 - Helm 4-only template functions make the chart unusable on Helm 3 (parse error).
-- Do not mix majors on one release. A Helm 3 upgrade of a release that Helm 4 manages with server-side apply switches it back to client-side apply; Helm 4 then keeps `csa` until `--server-side=true` is passed.[^9]
+- Do not mix majors on one release. A Helm 3 upgrade of a release that Helm 4 manages with server-side apply switches it back to client-side apply; Helm 4 then keeps `csa` until `--server-side=true` is passed.
 - Run Helm 3 and Helm 4 side by side only with separate `HELM_CONFIG_HOME`, `HELM_DATA_HOME` and `HELM_CACHE_HOME`: a single v1-format plugin makes Helm 3.22.1 fail to load plugins (`json: unknown field "apiVersion"`).
 
 ***
@@ -141,7 +141,7 @@ Only suggest a feature from these tables after confirming the pinned version has
 | Gateway API `HTTPRoute` in the `helm create` scaffold | 3.19 |
 | Unresolvable URN `$ref` in a schema tolerated (warning) | 3.20 |
 
-Sources: Helm 3 release notes, boundaries re-checked in the Helm 3 guide's verification on the latest patch of each minor.[^11]
+Sources: Helm 3 release notes, boundaries re-checked in the Helm 3 guide's verification on the latest patch of each minor.
 
 ##### Helm 4 (never available in Helm 3)
 
@@ -165,7 +165,7 @@ Sources: Helm 3 release notes, boundaries re-checked in the Helm 3 guide's verif
 | `pubring.kbx` keyrings for `--verify`/`helm verify` | 4.3 |
 | Uninstall ownership check | 4.3 |
 
-Sources: Helm 4 release notes and changelog.[^2][^8][^12]
+Sources: Helm 4 release notes and changelog.
 
 Also never recommend:
 
@@ -271,7 +271,7 @@ web/
         └── test-connection.yaml
 ```
 
-Naming rules (from the chart best practices, still valid for both majors):[^13]
+Naming rules (from the chart best practices, still valid for both majors):
 
 - **Chart names**: lowercase letters, digits and dashes (`my-app`); no uppercase, underscores or dots. The directory name equals `name`.
 - **Template files**: dashed lowercase (`pod-disruption-budget.yaml`); `.yaml` for manifests, `.tpl` for helpers without output. One resource kind per file; the file name reflects the kind. Files starting with `_` produce no output.
@@ -470,7 +470,7 @@ Chart `values.yaml` < parent chart values for a subchart < `-f/--values` files (
 
 ##### YAML typing traps
 
-Values are parsed as YAML 1.1 and converted through JSON.[^14] Verified identically on 3.22.1, 4.0.5 and 4.3.1:
+Values are parsed as YAML 1.1 and converted through JSON. Verified identically on 3.22.1, 4.0.5 and 4.3.1:
 
 | values.yaml | `.Values` sees | Fix |
 |---|---|---|
@@ -546,7 +546,7 @@ web:
 
 ##### Draft support depends on the version
 
-- Helm **3.18+ and Helm 4** use `santhosh-tekuri/jsonschema/v6`, which supports drafts 4, 6, 7, 2019-09 and 2020-12. **Helm ≤ 3.17 understands draft-07 and older only** and silently misinterprets 2020-12 keywords (`prefixItems` ignored, so `items: false` rejects every element; `unevaluatedProperties` not enforced).[^11]
+- Helm **3.18+ and Helm 4** use `santhosh-tekuri/jsonschema/v6`, which supports drafts 4, 6, 7, 2019-09 and 2020-12. **Helm ≤ 3.17 understands draft-07 and older only** and silently misinterprets 2020-12 keywords (`prefixItems` ignored, so `items: false` rejects every element; `unevaluatedProperties` not enforced).
 - A chart consumed by unknown Helm versions should use **draft-07**. A `"$schema": "https://json-schema.org/draft/2020-12/schema"` chart requires Helm ≥ 3.18; say so in the README.
 - Error message format changed in 3.18 (`at '/path': …` instead of `path: …`); tests that match messages must be updated.
 - `$ref` to `http(s)://` URLs is fetched over the network during validation; vendor referenced schemas into the chart. Unresolvable URN `$ref`s are tolerated with a warning since 3.20 and 4.0.2.
@@ -563,7 +563,7 @@ Review points:
 
 #### Template Language: Idioms and Pitfalls
 
-Templates are Go `text/template` plus the Sprig function library (without `env` and `expandenv`) plus Helm's own functions (`include`, `tpl`, `required`, `lookup`, `toYaml`, `fromYaml`, `toJson`, `fromJson`, `toToml`, …).[^15] Examples in this section were rendered on 3.22.1, 4.0.5 and 4.3.1.
+Templates are Go `text/template` plus the Sprig function library (without `env` and `expandenv`) plus Helm's own functions (`include`, `tpl`, `required`, `lookup`, `toYaml`, `fromYaml`, `toJson`, `fromJson`, `toToml`, …). Examples in this section were rendered on 3.22.1, 4.0.5 and 4.3.1.
 
 ##### `include`, not `template`
 
@@ -813,7 +813,7 @@ Secret holding the password: the user's existingSecret or the chart-managed one.
 
 Review points:
 
-- **Apply the recommended labels on every object via helpers**: `app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`, `managed-by`.[^16] Never hard-code label values in individual templates. `{{ .Release.Service }}` renders `Helm`.
+- **Apply the recommended labels on every object via helpers**: `app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`, `managed-by`. Never hard-code label values in individual templates. `{{ .Release.Service }}` renders `Helm`.
 - **Selector labels contain only `name` and `instance`** (plus `component` for charts with several workloads). They are immutable (next section).
 - The `helm create` scaffold puts the full label set (including `helm.sh/chart` and `app.kubernetes.io/version`) on the **pod template**, so every chart or app version bump restarts all Pods even without an image change. The example Deployment in this guide uses `selectorLabels` plus `podLabels` on the pod template instead; either is acceptable if chosen deliberately.
 - The 63-character limit applies to names **and** label values; `trunc 63 | trimSuffix "-"` handles both. `helm.sh/chart` replaces `+` (invalid in label values) with `_`.
@@ -1034,7 +1034,7 @@ spec:
 
 ##### Security context
 
-- Default to the Pod Security Standards **restricted** profile:[^17] `runAsNonRoot: true`, a numeric non-zero `runAsUser`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile.type: RuntimeDefault`; add `readOnlyRootFilesystem: true` with an `emptyDir` for `/tmp`.
+- Default to the Pod Security Standards **restricted** profile: `runAsNonRoot: true`, a numeric non-zero `runAsUser`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile.type: RuntimeDefault`; add `readOnlyRootFilesystem: true` with an `emptyDir` for `/tmp`.
 - Apply the same settings to hook Jobs and test Pods: the `helm create` scaffold's test Pod has no security context and is rejected in `restricted` namespaces.
 - Flag `privileged: true`, `hostNetwork`, `hostPID`, `hostIPC`, `hostPath` volumes, added capabilities (`NET_ADMIN`, `SYS_ADMIN`) and `runAsUser: 0` unless the chart's purpose requires them (CNI, node agents) and they sit behind explicit values.
 - `automountServiceAccountToken: false` unless the app calls the Kubernetes API; then ship a least-privilege `Role`/`RoleBinding` behind `rbac.create`, never a `ClusterRole` with `*` verbs.
@@ -1171,7 +1171,7 @@ spec:
 {{- end }}
 ```
 
-Hook events: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-rollback`, `post-rollback`, `pre-delete`, `post-delete`, `test`.[^18]
+Hook events: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-rollback`, `post-rollback`, `pre-delete`, `post-delete`, `test`.
 
 ##### Deletion policies
 
@@ -1243,7 +1243,7 @@ spec:
 
 #### CRDs
 
-- Files in `crds/` are plain YAML (**not templated**), installed before the templates on the **first install only**, **never upgraded** and **never deleted** by Helm (both majors).[^19] `--skip-crds` skips them; `helm template --include-crds` renders them; `helm show crds` (3.7) prints them.
+- Files in `crds/` are plain YAML (**not templated**), installed before the templates on the **first install only**, **never upgraded** and **never deleted** by Helm (both majors). `--skip-crds` skips them; `helm template --include-crds` renders them; `helm show crds` (3.7) prints them.
 - CRDs that must evolve with the chart belong in a separate chart (templated, upgraded deliberately) or are managed by the operator itself. Deleting a CRD deletes every custom resource of that kind cluster-wide: never template CRDs in a chart that users uninstall casually, and set `helm.sh/resource-policy: keep` on templated CRDs.
 - Custom resources whose CRD is not yet known to the cluster fail the install before anything is created (`no matches for kind "…" in version "…"` / `ensure CRDs are installed first`). Gate them with `.Capabilities.APIVersions.Has` when the CRD comes from another release.
 - Under Helm 4 `--wait` (watcher) also waits for custom resources' `Ready` conditions; make sure the operator that sets them is installed first, or choose the wait strategy deliberately.
@@ -1288,7 +1288,7 @@ metadata:
 | Field removed from the chart | Deleted from the live object | Deleted (Helm no longer applies it) |
 | Custom resources | Two-way JSON merge patch (old vs new manifest; live drift **not** repaired, lists replaced) | Server-side apply |
 
-Helm 4 records the method per release (`helm get metadata` → `APPLY_METHOD`); `helm upgrade` defaults to `--server-side=auto` (keep the previous method). Releases created by Helm 3 stay on client-side apply after a Helm 4 upgrade until `--server-side=true` is passed.[^20]
+Helm 4 records the method per release (`helm get metadata` → `APPLY_METHOD`); `helm upgrade` defaults to `--server-side=auto` (keep the previous method). Releases created by Helm 3 stay on client-side apply after a Helm 4 upgrade until `--server-side=true` is passed.
 
 ##### Replacing and forcing
 
@@ -1514,7 +1514,7 @@ helm install web oci://registry.example.com/charts/web --version 1.4.0 --verify 
 
 ##### `helm-unittest`
 
-Unit tests in YAML under `tests/` (verified with helm-unittest 1.2.1 on Helm 3.22.1 and 4.3.1):[^21]
+Unit tests in YAML under `tests/` (verified with helm-unittest 1.2.1 on Helm 3.22.1 and 4.3.1):
 
 ```yaml
 # tests/deployment_test.yaml
@@ -1568,7 +1568,7 @@ Tests:       4 passed, 4 total
 
 ##### `ct` (chart-testing)
 
-Sourced from the chart-testing documentation, not executed here:[^22]
+Sourced from the chart-testing documentation, not executed here:
 
 - `ct lint` detects charts changed against `--target-branch` (default `main`) and by default checks the version increment (`--check-version-increment`), validates maintainers (`--validate-maintainers`: `name` must be a GitHub/GitLab/Bitbucket account, so team names fail unless the check is disabled), validates `Chart.yaml` with Yamale and lints `Chart.yaml` and values files with yamllint, then runs `helm lint`.
 - `ct install` installs each changed chart into a real cluster (commonly kind) and runs `helm test`; values files in the chart's `ci/` directory (`ci/*-values.yaml`) define the tested configurations.
@@ -1616,7 +1616,7 @@ Flag in pipelines and deploy scripts:
 - **Helm has no access control of its own.** It acts with the kubeconfig identity of whoever runs it; that identity's RBAC is the only boundary. CI deploy identities should be namespace-scoped, not `cluster-admin`.
 - **Release Secrets and `helm get values` expose every value** ever passed to a release (see "Configuration and Secrets").
 - **Untrusted charts are code.** `tpl`, `lookup` and `.Files` run with the deployer's credentials during install; `lookup` with an empty name reads every object of a kind. Review third-party charts before installing them with privileged identities.
-- **Keep Helm patched where untrusted input is processed.** Historical advisories include path traversal on `helm pull --untar` with a chart named `.`/`..` (CVE-2026-35206, fixed in 3.20.2 and 4.1.4), symlinked `Chart.lock` writes during `helm dependency update` (CVE-2025-53547, fixed in 3.17.4/3.18.4), schema `$ref` and decompression-bomb DoS (fixed in 3.17.3/3.18.5), and the Helm 4 plugin-verification bypass (CVE-2026-35205, fixed in 4.1.4).[^23] CI that lints or renders charts from forks needs the latest patch of a supported line.
+- **Keep Helm patched where untrusted input is processed.** Historical advisories include path traversal on `helm pull --untar` with a chart named `.`/`..` (CVE-2026-35206, fixed in 3.20.2 and 4.1.4), symlinked `Chart.lock` writes during `helm dependency update` (CVE-2025-53547, fixed in 3.17.4/3.18.4), schema `$ref` and decompression-bomb DoS (fixed in 3.17.3/3.18.5), and the Helm 4 plugin-verification bypass (CVE-2026-35205, fixed in 4.1.4). CI that lints or renders charts from forks needs the latest patch of a supported line.
 - **Supply chain**: deploy charts by digest, verify signatures in the deploy path, pin images by digest where possible, pin plugin versions.
 - **Workloads**: restricted Pod Security defaults, no service-account token unless needed, least-privilege RBAC behind values, no `hostPath`/privileged mode by default.
 - **Render-time network access** (`--enable-dns`, schema `$ref` URLs) makes rendering non-reproducible and leaks information; avoid both.

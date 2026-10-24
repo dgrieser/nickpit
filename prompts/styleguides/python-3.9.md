@@ -2,7 +2,7 @@
 
 #### Overview
 
-Python 3.9 was released on October 5, 2020 — the first release on the annual release cadence (PEP 602) — and reached end-of-life on October 31, 2025 with the final release 3.9.25; plan upgrades accordingly.[^1] It introduced a focused set of high-impact language changes: dict merge/update operators, built-in generic type hints, `str.removeprefix`/`removesuffix`, the `zoneinfo` standard library module for IANA time zones, `graphlib` for dependency resolution, relaxed decorator grammar, `typing.Annotated`, and a new PEG-based parser that sets the stage for future language features. On top of that, Python 3.9 finalizes the removal of a large set of long-deprecated Python-2-era APIs (see the migration notes near the end).[^1]
+Python 3.9 was released on October 5, 2020 — the first release on the annual release cadence (PEP 602) — and reached end-of-life on October 31, 2025 with the final release 3.9.25; plan upgrades accordingly. It introduced a focused set of high-impact language changes: dict merge/update operators, built-in generic type hints, `str.removeprefix`/`removesuffix`, the `zoneinfo` standard library module for IANA time zones, `graphlib` for dependency resolution, relaxed decorator grammar, `typing.Annotated`, and a new PEG-based parser that sets the stage for future language features. On top of that, Python 3.9 finalizes the removal of a large set of long-deprecated Python-2-era APIs (see the migration notes near the end).
 
 This guide targets Python 3.9 specifically. Features introduced in earlier versions (3.6 f-strings, 3.7 dataclasses, 3.8 walrus operator, 3.8 positional-only parameters) are documented here for completeness — they remain fully available in 3.9. Every section that covers a 3.9-specific change is marked **New in 3.9**. The guide does not cover features from 3.10 or later: no `match`/`case` pattern matching, no `X | Y` union syntax, no officially supported parenthesized multi-item `with`, no `zip(strict=True)`, no `dataclass(slots=True)`/`KW_ONLY`, no `typing.ParamSpec`/`typing.TypeAlias` (all 3.10), no `typing.Self` or `ExceptionGroup` (3.11).
 
@@ -13,8 +13,8 @@ Global truths about Python 3.9:
 - **Dynamic typing.** Variables carry no declared type; the type lives in the value.
 - **Reference counting + cyclic GC.** CPython manages memory with reference counts plus a cyclic garbage collector.
 - **`str` is Unicode everywhere.** All string literals are Unicode text; `bytes` is the separate binary type.
-- **Dicts are ordered by insertion.** Guaranteed by the language spec since Python 3.7.[^2]
-- **`collections.Mapping` et al. are on their way out.** Importing ABCs directly from `collections` (rather than `collections.abc`) emits `DeprecationWarning` in 3.9 and stops working entirely in 3.10. Fix now or your 3.9 codebase will not run on 3.10.[^3]
+- **Dicts are ordered by insertion.** Guaranteed by the language spec since Python 3.7.
+- **`collections.Mapping` et al. are on their way out.** Importing ABCs directly from `collections` (rather than `collections.abc`) emits `DeprecationWarning` in 3.9 and stops working entirely in 3.10. Fix now or your 3.9 codebase will not run on 3.10.
 
 ***
 
@@ -50,7 +50,7 @@ class Base:
 _module_cache: dict = {}
 ```
 
-In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical. Never write the latter.[^4]
+In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical. Never write the latter.
 
 ##### Import Ordering
 
@@ -126,7 +126,7 @@ class UserService:
 
 #### New in 3.9: Built-in Generic Type Hints (PEP 585)
 
-This is one of the most practically important changes in Python 3.9. You can now use built-in collection types **directly as generics in type annotations**, without importing capitalized equivalents from `typing`.[^5]
+This is one of the most practically important changes in Python 3.9. You can now use built-in collection types **directly as generics in type annotations**, without importing capitalized equivalents from `typing`.
 
 ```python
 # Python 3.8 and earlier — required typing imports
@@ -225,7 +225,7 @@ isinstance([1, 2], list)       # CORRECT — use the bare type
 
 #### New in 3.9: Dict Merge and Update Operators (PEP 584)
 
-Python 3.9 adds `|` (merge, returns new dict) and `|=` (update in-place) to `dict`.[^6]
+Python 3.9 adds `|` (merge, returns new dict) and `|=` (update in-place) to `dict`.
 
 ```python
 defaults = {'host': 'localhost', 'port': 5432, 'timeout': 30}
@@ -304,7 +304,7 @@ Never use `|` on `Counter` objects expecting PEP 584 merge semantics — use `{*
 
 #### New in 3.9: `str.removeprefix()` and `str.removesuffix()` (PEP 616)
 
-Two long-requested string methods that do exactly one thing, clearly.[^7]
+Two long-requested string methods that do exactly one thing, clearly.
 
 ```python
 s = 'Hello, World!'
@@ -376,7 +376,7 @@ path = path.removeprefix('/api').removesuffix('/')
 
 ##### Integers
 
-Python 3.9 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`. Arithmetic never overflows; Python allocates more memory silently.[^4]
+Python 3.9 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`. Arithmetic never overflows; Python allocates more memory silently.
 
 ```python
 import sys
@@ -412,7 +412,7 @@ pow(38, -1, 137)   # 119
 
 ##### Floats
 
-Floats are C `double` (64-bit IEEE 754). New `math` additions in 3.9:[^4]
+Floats are C `double` (64-bit IEEE 754). New `math` additions in 3.9:
 
 ```python
 import math
@@ -436,7 +436,7 @@ assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
 
 ##### Booleans
 
-`bool` is a subtype of `int`. `True == 1` and `False == 0`.[^4]
+`bool` is a subtype of `int`. `True == 1` and `False == 0`.
 
 ```python
 print(isinstance(True, int))  # True
@@ -613,7 +613,7 @@ class Pipeline:
 
 ##### New in 3.9: `typing.Annotated` (PEP 593)
 
-`Annotated` attaches arbitrary metadata to a type annotation. The first argument is the actual type; subsequent arguments are metadata.[^8]
+`Annotated` attaches arbitrary metadata to a type annotation. The first argument is the actual type; subsequent arguments are metadata.
 
 ```python
 from typing import Annotated, get_type_hints
@@ -714,7 +714,7 @@ class Drawable(Protocol):
 
 #### New in 3.9: `zoneinfo` — IANA Time Zone Support (PEP 615)
 
-Python 3.9 adds the `zoneinfo` module, which provides a concrete, DST-aware time zone implementation backed by the IANA time zone database. This replaces the long-standing dependence on the third-party `pytz` library.[^9]
+Python 3.9 adds the `zoneinfo` module, which provides a concrete, DST-aware time zone implementation backed by the IANA time zone database. This replaces the long-standing dependence on the third-party `pytz` library.
 
 ```python
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
@@ -783,7 +783,7 @@ tzdata>=2024.1    # required on Windows and minimal Docker images
 `zoneinfo` looks for data in the following order:
 1. System timezone database (`/usr/share/zoneinfo` on Linux/macOS).
 2. The `tzdata` PyPI package if installed.
-If neither is present, `ZoneInfoNotFoundError` is raised. On Windows the system database is always absent — `tzdata` must be an explicit dependency there (declare it as `tzdata; sys_platform == "win32"`, or unconditionally). Some minimal container images also lack it.[^10]
+If neither is present, `ZoneInfoNotFoundError` is raised. On Windows the system database is always absent — `tzdata` must be an explicit dependency there (declare it as `tzdata; sys_platform == "win32"`, or unconditionally). Some minimal container images also lack it.
 
 **Instances are cached:** `ZoneInfo('UTC') is ZoneInfo('UTC')` is `True` — the constructor caches by key (this also makes aware-datetime comparisons behave sanely). Consequence: updated tz data on disk is not picked up for already-cached keys without `ZoneInfo.clear_cache()`; use `ZoneInfo.no_cache(key)` only in tests.
 
@@ -837,7 +837,7 @@ dt = datetime(2024, 6, 15, 12, 0, tzinfo=ZoneInfo('America/New_York'))  # correc
 
 #### New in 3.9: `graphlib` — Topological Sorting
 
-The `graphlib` module provides `TopologicalSorter` for ordering nodes in a dependency graph. It is particularly powerful because it supports **parallel execution** via an incremental API.[^11]
+The `graphlib` module provides `TopologicalSorter` for ordering nodes in a dependency graph. It is particularly powerful because it supports **parallel execution** via an incremental API.
 
 ```python
 from graphlib import TopologicalSorter, CycleError
@@ -917,7 +917,7 @@ graph = {
 
 #### New in 3.9: Relaxed Decorator Grammar (PEP 614)
 
-Decorators can now be **any valid expression**, not just a dotted name optionally followed by a call.[^1]
+Decorators can now be **any valid expression**, not just a dotted name optionally followed by a call.
 
 ```python
 # Python 3.8 and earlier — decorator must be a (dotted) name, optionally called once:
@@ -1598,7 +1598,7 @@ target = Path('current').readlink()    # symlink target as a Path, not a str
 
 ##### New in 3.9: `Path.is_relative_to()`
 
-`Path.is_relative_to()` tests whether a path is relative to another path — the recommended way to do path-traversal checks in 3.9+:[^1]
+`Path.is_relative_to()` tests whether a path is relative to another path — the recommended way to do path-traversal checks in 3.9+:
 
 ```python
 from pathlib import Path
@@ -1654,7 +1654,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ##### New in 3.9: `asyncio.to_thread()`
 
-`asyncio.to_thread()` is a high-level convenience wrapper around `loop.run_in_executor()` for running blocking code in a thread:[^1]
+`asyncio.to_thread()` is a high-level convenience wrapper around `loop.run_in_executor()` for running blocking code in a thread:
 
 ```python
 import asyncio
@@ -1726,8 +1726,8 @@ async def worker():
 
 ##### Removed/Deprecated asyncio APIs in 3.9
 
-- `asyncio.Task.current_task()` and `asyncio.Task.all_tasks()` class methods are **removed in 3.9** — use the module-level `asyncio.current_task()` and `asyncio.all_tasks()` (both 3.7+).[^1]
-- Acquiring locks via `with await lock:` / `with (yield from lock):` no longer works in 3.9 — use `async with lock:`.[^1]
+- `asyncio.Task.current_task()` and `asyncio.Task.all_tasks()` class methods are **removed in 3.9** — use the module-level `asyncio.current_task()` and `asyncio.all_tasks()` (both 3.7+).
+- Acquiring locks via `with await lock:` / `with (yield from lock):` no longer works in 3.9 — use `async with lock:`.
 - The `loop` parameter of high-level APIs (`asyncio.gather()`, `asyncio.sleep()`, `asyncio.wait_for()`, `asyncio.Lock()`, ...) is deprecated since 3.8 and **removed in 3.10** — it emits `DeprecationWarning` in 3.9. Never pass `loop=`; rely on the running loop.
 - Inside async code, use `asyncio.get_running_loop()` (3.7+), not `get_event_loop()` — it raises `RuntimeError` when no loop is running instead of silently creating one.
 
@@ -1741,7 +1741,7 @@ CPython's Global Interpreter Lock means only one thread executes Python bytecode
 
 ##### `concurrent.futures` — New in 3.9: `cancel_futures`
 
-`Executor.shutdown()` gains a `cancel_futures=True` parameter that discards all pending (not-yet-started) futures immediately instead of waiting for them:[^12]
+`Executor.shutdown()` gains a `cancel_futures=True` parameter that discards all pending (not-yet-started) futures immediately instead of waiting for them:
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
@@ -1766,7 +1766,7 @@ with ThreadPoolExecutor(max_workers=10) as executor:
             logger.error('Failed %s: %s', url, e)
 ```
 
-**Pitfall: `shutdown(cancel_futures=True)` + `as_completed()`/`wait()` on the same futures can hang — on every Python version.** Futures cancelled by the shutdown drain stay in `CANCELLED` (never `CANCELLED_AND_NOTIFIED`), so `as_completed()`/`wait()` waiting on them never wakes up (bpo-43727 — still unfixed as of 2026).[^13] Work around it: never wait on futures that the shutdown may have drained, or filter them first:
+**Pitfall: `shutdown(cancel_futures=True)` + `as_completed()`/`wait()` on the same futures can hang — on every Python version.** Futures cancelled by the shutdown drain stay in `CANCELLED` (never `CANCELLED_AND_NOTIFIED`), so `as_completed()`/`wait()` waiting on them never wakes up (bpo-43727 — still unfixed as of 2026). Work around it: never wait on futures that the shutdown may have drained, or filter them first:
 
 ```python
 executor.shutdown(wait=False, cancel_futures=True)
@@ -1775,7 +1775,7 @@ for future in as_completed(remaining):
     ...
 ```
 
-**Other 3.9 executor changes:** `ProcessPoolExecutor` spawns worker processes **on demand** (only when no idle worker is available) instead of eagerly starting `max_workers` processes, and both executors no longer use daemon threads — fixing hangs/races at interpreter shutdown.[^1]
+**Other 3.9 executor changes:** `ProcessPoolExecutor` spawns worker processes **on demand** (only when no idle worker is available) instead of eagerly starting `max_workers` processes, and both executors no longer use daemon threads — fixing hangs/races at interpreter shutdown.
 
 ##### `threading`
 
@@ -1818,7 +1818,7 @@ if __name__ == '__main__':  # REQUIRED on Windows and macOS (spawn default since
 
 #### `collections.abc` Migration (Critical for 3.9 Compatibility)
 
-Python 3.9 is the last version where importing ABCs from `collections` directly (e.g., `from collections import Mapping`) works at all — it emits a `DeprecationWarning`. **In Python 3.10 the aliases are removed: `from collections import Mapping` raises `ImportError`, and `collections.Mapping` attribute access raises `AttributeError`.** Fix all occurrences now.[^3]
+Python 3.9 is the last version where importing ABCs from `collections` directly (e.g., `from collections import Mapping`) works at all — it emits a `DeprecationWarning`. **In Python 3.10 the aliases are removed: `from collections import Mapping` raises `ImportError`, and `collections.Mapping` attribute access raises `AttributeError`.** Fix all occurrences now.
 
 ```python
 # WRONG — DeprecationWarning in 3.9, ImportError in 3.10+
@@ -1855,7 +1855,7 @@ with warnings.catch_warnings():
 
 #### The New PEG Parser (CPython Internals)
 
-Python 3.9 replaces the LL(1) recursive-descent parser with a PEG (Parsing Expression Grammar) parser. From an application developer's perspective:[^1]
+Python 3.9 replaces the LL(1) recursive-descent parser with a PEG (Parsing Expression Grammar) parser. From an application developer's perspective:
 
 - **No behavior change** — the AST produced is identical.
 - **Performance** is roughly comparable.
@@ -1911,7 +1911,7 @@ except Exception:
 
 ##### New in 3.9: `logging.getLogger('root')` change
 
-In Python 3.9, `logging.getLogger('root')` now returns the **root logger**, whereas in earlier versions it returned a non-root logger named `'root'`. This is a subtle breaking change for any code that explicitly names a logger `'root'`.[^1]
+In Python 3.9, `logging.getLogger('root')` now returns the **root logger**, whereas in earlier versions it returned a non-root logger named `'root'`. This is a subtle breaking change for any code that explicitly names a logger `'root'`.
 
 ```python
 # If you have any module named 'root.py' or logger named 'root':
@@ -2128,7 +2128,7 @@ rng.shuffle(data)
 value = rng.uniform(0, 1)
 ```
 
-`random.randbytes()` is a convenience addition in 3.9 — it is **not** a secure RNG. It uses the deterministic Mersenne Twister: its output is fully predictable once the internal state is known or the seed is set. The docs say it explicitly: do not use it for security tokens — use `secrets.token_bytes()`.[^1]
+`random.randbytes()` is a convenience addition in 3.9 — it is **not** a secure RNG. It uses the deterministic Mersenne Twister: its output is fully predictable once the internal state is known or the seed is set. The docs say it explicitly: do not use it for security tokens — use `secrets.token_bytes()`.
 
 ***
 
@@ -2168,7 +2168,7 @@ class Cache:
         return self._data.get(key)
 ```
 
-**`tracemalloc.reset_peak()` is new in 3.9.** It allows you to reset the peak memory measurement to the current usage, making it possible to measure peak memory for specific code sections rather than the entire program run.[^1]
+**`tracemalloc.reset_peak()` is new in 3.9.** It allows you to reset the peak memory measurement to the current usage, making it possible to measure peak memory for specific code sections rather than the entire program run.
 
 ***
 
@@ -2354,7 +2354,7 @@ black --check src/ && isort --check-only src/ && flake8 src/ && mypy src/ && ban
 
 #### Removed and Changed in 3.9 — Migration Notes
 
-Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks here, not at 3.10:[^1]
+Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks here, not at 3.10:
 
 | Removed in 3.9 | Replacement |
 |---|---|

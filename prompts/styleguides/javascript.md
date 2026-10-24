@@ -1,7 +1,7 @@
 ### JavaScript Style Guide
 
-> **Version / scope**: Version-agnostic JavaScript — ECMAScript 2015 through **ECMAScript 2026** (ECMA-262 17th edition, approved by the Ecma General Assembly on **2026-06-30**) plus the Stage 4 proposals already scheduled for ES2027. This guide applies when the runtime is unknown or not pinned: browser code, code that runs in several runtimes (isomorphic libraries, edge/worker code, Deno, Bun), and Node.js projects whose pinned version is newer than 26 (the Node.js 27 alpha channel).[^1][^2]
-> **Status (as of October 2026)**: Newest Node.js release is **26.12.1** (2026-10-21, "Current", scheduled for promotion to Active LTS on 2026-10-28). Node.js 24 "Krypton" (24.22.1) and 22 "Jod" (22.23.4) are in Maintenance LTS; Node.js 25, 20 and 18 are end-of-life. Node.js 27 has **no release yet** (only untested nightly builds `v27.0.0-nightly…`): its alpha channel is scheduled to start on 2026-10-28 and 27.0.0 is planned for 2027-04-22.[^3][^4] Browser availability is quoted as **Baseline** status from the `web-features` npm package **3.44.0** (published 2026-10-22).[^5]
+> **Version / scope**: Version-agnostic JavaScript — ECMAScript 2015 through **ECMAScript 2026** (ECMA-262 17th edition, approved by the Ecma General Assembly on **2026-06-30**) plus the Stage 4 proposals already scheduled for ES2027. This guide applies when the runtime is unknown or not pinned: browser code, code that runs in several runtimes (isomorphic libraries, edge/worker code, Deno, Bun), and Node.js projects whose pinned version is newer than 26 (the Node.js 27 alpha channel).
+> **Status (as of October 2026)**: Newest Node.js release is **26.12.1** (2026-10-21, "Current", scheduled for promotion to Active LTS on 2026-10-28). Node.js 24 "Krypton" (24.22.1) and 22 "Jod" (22.23.4) are in Maintenance LTS; Node.js 25, 20 and 18 are end-of-life. Node.js 27 has **no release yet** (only untested nightly builds `v27.0.0-nightly…`): its alpha channel is scheduled to start on 2026-10-28 and 27.0.0 is planned for 2027-04-22. Browser availability is quoted as **Baseline** status from the `web-features` npm package **3.44.0** (published 2026-10-22).
 > **Note**: This document is self-contained. Every version boundary it states ("ES2024, Node 22") was executed on Node.js 14.21.3, 16.20.2, 18.20.8, 20.20.2, 22.23.4, 24.22.1, 25.9.0 and 26.12.1; browser-only behaviour was executed in Chromium 141. Examples run unchanged as ES modules (`.mjs`) on Node.js 24 unless they say otherwise.
 
 ***
@@ -25,7 +25,7 @@ How to use this guide:
 Check, in this order:
 
 - **Node.js**: `engines.node` in `package.json`, `.nvmrc` / `.node-version` / `.tool-versions`, `volta.node`, `devEngines.runtime`, `FROM node:<version>` in Dockerfiles, `node-version` in CI (`actions/setup-node`), and the major of `@types/node` (it should match the runtime major; a newer `@types/node` type-checks APIs that do not exist at runtime).
-- **Browsers**: `browserslist` (in `package.json` or `.browserslistrc`), a Baseline target (`baseline widely available`, or a year such as `baseline 2024`, supported by `browserslist` ≥ 4.26), the bundler/transpiler target (`build.target` in Vite/esbuild, `target` in SWC, `@babel/preset-env` `targets`), and `compilerOptions.target`/`lib` in `tsconfig.json`/`jsconfig.json`.[^6]
+- **Browsers**: `browserslist` (in `package.json` or `.browserslistrc`), a Baseline target (`baseline widely available`, or a year such as `baseline 2024`, supported by `browserslist` ≥ 4.26), the bundler/transpiler target (`build.target` in Vite/esbuild, `target` in SWC, `@babel/preset-env` `targets`), and `compilerOptions.target`/`lib` in `tsconfig.json`/`jsconfig.json`.
 - **Other runtimes**: `deno.json`, Bun version pins, Cloudflare Workers `compatibility_date`, Electron version (Chromium + Node pair).
 
 If nothing is pinned, assume the **intersection of maintained runtimes**: Node.js 22 (the oldest maintained LTS until 2027-04-30) and **Baseline Widely available** browsers. Under that assumption, ES2023 and most of ES2024 are safe (resizable `ArrayBuffer` and `Atomics.waitAsync` are only Newly available); ES2025 features need a check (`Promise.try`, `RegExp.escape` and RegExp modifiers are missing on Node 22, `Iterator` helpers need Safari 18.4); ES2026 features and `Temporal` need a fallback.
@@ -60,7 +60,7 @@ console.log(Object.keys(byKind), Object.getPrototypeOf(byKind)); // [ 'a', 'b' ]
 
 #### ECMAScript Editions and Runtime Support
 
-"Node" is the first Node.js **major** that ships the feature unflagged; where the boundary falls on an odd line that is no longer installable (17, 19, 21, 23), the verified pair is "absent on N−1, present on N+1". Browser versions and Baseline status come from `web-features` 3.44.0. **Baseline Widely available** = supported in all core browsers (Chrome, Edge, Firefox, Safari, desktop and mobile) for 30 months; **Newly available** = supported in all of them since the given date; **Limited** = at least one core browser lacks it.[^5]
+"Node" is the first Node.js **major** that ships the feature unflagged; where the boundary falls on an odd line that is no longer installable (17, 19, 21, 23), the verified pair is "absent on N−1, present on N+1". Browser versions and Baseline status come from `web-features` 3.44.0. **Baseline Widely available** = supported in all core browsers (Chrome, Edge, Firefox, Safari, desktop and mobile) for 30 months; **Newly available** = supported in all of them since the given date; **Limited** = at least one core browser lacks it.
 
 ##### Editions at a glance
 
@@ -121,10 +121,10 @@ console.log(Object.keys(byKind), Object.getPrototypeOf(byKind)); // [ 'a', 'b' ]
 
 Notes on the table:
 
-- "16.6" for `.at()`, "16.9" for `Object.hasOwn`/`cause` and "16.11" for ES2022 completeness come from the Node 16 changelog (V8 9.2/9.3/9.4 upgrades); only 16.20.2 is installed, so the verified pair is 14 ✗ / 16.20 ✓.[^7]
+- "16.6" for `.at()`, "16.9" for `Object.hasOwn`/`cause` and "16.11" for ES2022 completeness come from the Node 16 changelog (V8 9.2/9.3/9.4 upgrades); only 16.20.2 is installed, so the verified pair is 14 ✗ / 16.20 ✓.
 - `Math.sumPrecise` is the rare case where every core browser is ahead of Node.js: Node 26 (V8 14.6) only has it behind `--js-sum-precise`.
 - `Error.isError`, `using` and `Temporal` exist on Node ≥ 24/26 and in Chromium and Firefox, but **not in Safari**: browser code must polyfill or avoid them.
-- The ES2027 iterator additions (`Iterator.zip`, `join`, `includes`, `chunks`, `windows`) already ship in current Chrome and/or Firefox but in no Node.js release and no Safari release: they are not usable in Node code or cross-browser code without a polyfill.[^10]
+- The ES2027 iterator additions (`Iterator.zip`, `join`, `includes`, `chunks`, `windows`) already ship in current Chrome and/or Firefox but in no Node.js release and no Safari release: they are not usable in Node code or cross-browser code without a polyfill.
 - Dates in the Baseline column are the "Newly available" (low) date; "Widely available" status follows 30 months later (for example `Object.groupBy`: Newly 2024-03-05, Widely 2026-09-05).
 
 ***
@@ -143,7 +143,7 @@ Notes on the table:
 
 - The 2026-10-20/21 patches (22.23.4, 24.22.1, 26.12.1) are **security releases**. A project on an older patch of a maintained line runs with known vulnerabilities; flag pins such as `node:24.10` in Dockerfiles.
 - Node 18 and 20 receive no security fixes. Flag `engines`, CI matrices and base images that still target them for production.
-- Starting with 27, Node.js ships **one major per year**: a six-month alpha channel (prereleases such as `27.0.0-alpha.1`, semver-major changes still possible), a Current phase from April, then LTS for every line — the odd/even distinction disappears.[^4] Do not recommend alpha builds for production.
+- Starting with 27, Node.js ships **one major per year**: a six-month alpha channel (prereleases such as `27.0.0-alpha.1`, semver-major changes still possible), a Current phase from April, then LTS for every line — the odd/even distinction disappears. Do not recommend alpha builds for production.
 
 ***
 
@@ -153,7 +153,7 @@ Notes on the table:
 
 - **Decorators** (`@decorator class …`, TC39 Stage 2.7 since May 2026): a `SyntaxError` in every Node release and every core browser. TypeScript `experimentalDecorators` or Babel decorators are compile-time features; the reviewed code must go through that compiler.
 - `Iterator.zip()`/`zipKeyed()`, `Iterator.prototype.chunks()`/`windows()`/`includes()`/`join()` (Stage 4 for ES2027): in **no Node.js release** (absent on 26.12.1) and no Safari release; only recent Chrome (153/154: `zip`, `zipKeyed`, `join`, `includes`) and Firefox (148/154) ship them. Server code and cross-browser code must not use them without a polyfill.
-- `Promise.allKeyed` (Stage 3 since July 2026): Firefox 155 only; not in Node.js, Chrome or Safari.[^10][^11]
+- `Promise.allKeyed` (Stage 3 since July 2026): Firefox 155 only; not in Node.js, Chrome or Safari.
 - `import defer`, source-phase imports for JavaScript modules, `ShadowRealm`, `String.dedent`, `Math.clamp`, immutable `ArrayBuffer`, the pipeline operator `|>`, records and tuples (`#{}`/`#[]`, withdrawn), `Array.prototype.group` (the shipped name is `Object.groupBy`).
 - Import **assertions** (`import x from './a.json' assert { type: 'json' }`): replaced by import attributes (`with`). `assert` is a `SyntaxError` on Node ≥ 22 and current Chromium.
 - `Math.sumPrecise` on **Node.js** (ships in browsers, not in Node 26).
@@ -1138,7 +1138,7 @@ try { new Date('nope').toISOString(); } catch (e) { console.log(e.name); } // Ra
 
 ##### Temporal — status and use
 
-`Temporal` (Stage 4, expected in **ES2027**) replaces `Date` with immutable types for instants, zoned date-times, plain dates/times and durations.[^8]
+`Temporal` (Stage 4, expected in **ES2027**) replaces `Date` with immutable types for instants, zoned date-times, plain dates/times and durations.
 
 | Runtime | Temporal |
 |---|---|
@@ -1496,7 +1496,7 @@ for (const bad of ['', '0', '65536', '1.5', 'abc']) {
 
 ##### ESLint (flat config)
 
-ESLint 10 (2026) supports only the flat config format (`eslint.config.js`); `.eslintrc.*` files are ignored.[^9] A baseline configuration:
+ESLint 10 (2026) supports only the flat config format (`eslint.config.js`); `.eslintrc.*` files are ignored. A baseline configuration:
 
 ```javascript
 // eslint.config.js

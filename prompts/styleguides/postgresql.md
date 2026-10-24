@@ -21,7 +21,7 @@ Global truths about PostgreSQL (all versions in scope):
 
 #### Release Lines and Support (as of October 2026)
 
-PostgreSQL ships one major version per year (normally in September or October) and supports each major for **five years**. Minor releases contain only fixes, appear at least once a quarter (the next one is scheduled for **November 12, 2026**), and need no dump/restore; some ask for follow-up actions such as a `REINDEX`.[^1][^2]
+PostgreSQL ships one major version per year (normally in September or October) and supports each major for **five years**. Minor releases contain only fixes, appear at least once a quarter (the next one is scheduled for **November 12, 2026**), and need no dump/restore; some ask for follow-up actions such as a `REINDEX`.
 
 | Major | First release | Latest minor (date) | Status in October 2026 |
 |---|---|---|---|
@@ -32,12 +32,12 @@ PostgreSQL ships one major version per year (normally in September or October) a
 | 16 | September 14, 2023 | 16.15 (August 13, 2026) | Supported until November 9, 2028 |
 | 17 | September 26, 2024 | 17.11 (August 13, 2026) | Supported until November 8, 2029 |
 | **18** | **September 25, 2025** | **18.6 (August 13, 2026)** | **Current stable release**; supported until November 14, 2030. (18.5 was skipped: 18.4 is followed directly by 18.6.) |
-| 19 | not released | 19 RC 1 (October 15, 2026) | **Release candidate, not a deployment target.** RC 2 is planned for November 12, 2026 and general availability for November 19, 2026[^3] |
+| 19 | not released | 19 RC 1 (October 15, 2026) | **Release candidate, not a deployment target.** RC 2 is planned for November 12, 2026 and general availability for November 19, 2026 |
 
 Review consequences:
 
 - Flag a project on 13 or older as running an unsupported server, and a project on 14 as due for an upgrade within weeks. Still judge the code against the version it actually runs.
-- Flag pinned minors that are far behind the branch's latest (for example `postgres:16.2`): minor releases fix security vulnerabilities (the August 13, 2026 update releases alone fixed 28) and wrong-result bugs.[^4]
+- Flag pinned minors that are far behind the branch's latest (for example `postgres:16.2`): minor releases fix security vulnerabilities (the August 13, 2026 update releases alone fixed 28) and wrong-result bugs.
 - Do not recommend 19 features (see "Not available in any released version").
 
 ***
@@ -66,7 +66,7 @@ SELECT current_setting('server_version_num')::int >= 150000 AS has_merge;   -- t
 
 ##### Feature availability by version
 
-Use this table to decide whether a suggestion is allowed. Each row lists what a release **added**; everything is available in all later releases unless the removal table says otherwise.[^5]
+Use this table to decide whether a suggestion is allowed. Each row lists what a release **added**; everything is available in all later releases unless the removal table says otherwise.
 
 | Since | Features a reviewer commonly meets |
 |---|---|
@@ -84,7 +84,7 @@ Use this table to decide whether a suggestion is allowed. Each row lists what a 
 
 ##### Not available in any released version
 
-PostgreSQL 19 is at RC 1. The following work on 19rc1 and fail on 18.6 (verified); never suggest them for production code until the project runs 19:[^3]
+PostgreSQL 19 is at RC 1. The following work on 19rc1 and fail on 18.6 (verified); never suggest them for production code until the project runs 19:
 
 | Feature | Error on 18.6 |
 |---|---|
@@ -100,7 +100,7 @@ These are not in any version, including 19rc1 (verified): `ALTER TABLE ... MERGE
 
 ##### Removed and changed behaviour across versions
 
-Old code meets these when the server is upgraded. Each item names the release that changed it.[^5]
+Old code meets these when the server is upgraded. Each item names the release that changed it.
 
 | Release | Change | Review consequence |
 |---|---|---|
@@ -116,7 +116,7 @@ Old code meets these when the server is upgraded. Each item names the release th
 
 #### Schema Migrations and Locking
 
-Most production incidents caused by migrations are lock problems, not data problems. Review every migration against three questions: **which lock does each statement take, how long is it held, and does the statement rewrite or scan the table?**[^6][^7]
+Most production incidents caused by migrations are lock problems, not data problems. Review every migration against three questions: **which lock does each statement take, how long is it held, and does the statement rewrite or scan the table?**
 
 ##### Lock levels of common DDL
 
@@ -263,7 +263,7 @@ CREATE INDEX orders_status_idx ON orders (status);
 CREATE INDEX CONCURRENTLY orders_status_idx ON orders (status);
 ```
 
-Rules for `CREATE INDEX CONCURRENTLY` (all verified on 18.6):[^8]
+Rules for `CREATE INDEX CONCURRENTLY` (all verified on 18.6):
 
 - It **cannot run inside a transaction block** (`ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`). Migration tools that wrap each migration in a transaction need their opt-out: `disable_ddl_transaction!` (Rails), `atomic = False` (Django migrations), `-- +goose NO TRANSACTION`, Flyway `executeInTransaction=false` or a non-transactional script, Liquibase `runInTransaction="false"`, Alembic `with op.get_context().autocommit_block():`.
 - A failure (deadlock, unique violation, cancel, `lock_timeout`) leaves an **INVALID index** behind. It is never used for reads but is still maintained on every write. **`CREATE INDEX CONCURRENTLY IF NOT EXISTS` then skips silently** (`NOTICE: relation "..." already exists, skipping`) and leaves the broken index in place. Idempotent migrations must check `pg_index.indisvalid` and `DROP INDEX CONCURRENTLY` before retrying (or `REINDEX INDEX CONCURRENTLY`, 12+).
@@ -341,7 +341,7 @@ SELECT date '2026-01-31' + interval '1 month';                -- 2026-02-28 00:0
 SELECT timestamptz '2026-01-31 23:59:59.5' BETWEEN '2026-01-01' AND '2026-01-31';   -- f
 ```
 
-- **Store instants as `timestamptz`.** It stores UTC and converts on input and output using the session `TimeZone`. `timestamp` (without time zone) keeps whatever wall-clock value the client sent and drops any offset; it is right only for values that are not instants (a shop's opening time, a birthday at midnight).[^9][^10]
+- **Store instants as `timestamptz`.** It stores UTC and converts on input and output using the session `TimeZone`. `timestamp` (without time zone) keeps whatever wall-clock value the client sent and drops any offset; it is right only for values that are not instants (a shop's opening time, a birthday at midnight).
 - **Use half-open ranges**: `created_at >= $1 AND created_at < $2`. `BETWEEN '2026-01-01' AND '2026-01-31'` misses everything after midnight on the 31st.
 - `now()` / `current_timestamp` return the **transaction start time**, identical for every statement of the transaction. Use `clock_timestamp()` for wall time inside long transactions or loops.
 - **Day boundaries depend on the session time zone.** `created_at::date` gives different days to clients with different `TimeZone` settings; write `(created_at AT TIME ZONE 'Europe/Berlin')::date` explicitly. `timestamptz::date` is only `STABLE` and cannot be used in an index expression (`functions in index expression must be marked IMMUTABLE`); `(created_at AT TIME ZONE 'UTC')::date` can.
@@ -725,7 +725,7 @@ EXPLAIN (ANALYZE, SERIALIZE, MEMORY) ...;          -- 17+: output conversion cos
 - Ask for **`BUFFERS`** explicitly: before 18 it is only shown when requested; on 18+ `EXPLAIN ANALYZE` includes it by default (`BUFFERS OFF` suppresses it).
 - 18 prints actual row counts with two decimals (`rows=1.00`) and adds `Index Searches: N` to index scans; tools or regression tests that parse `rows=(\d+)` need updating.
 
-What to look for:[^11]
+What to look for:
 
 - **Estimated vs actual rows** off by an order of magnitude or more: stale or insufficient statistics, correlated columns (extended statistics), or a non-sargable predicate.
 - **`Rows Removed by Filter`** large on a scan: missing or unusable index.
@@ -763,7 +763,7 @@ SELECT count(*) FROM ex WHERE id = 1;                              -- 1
 | REPEATABLE READ | one snapshot per transaction | `ERROR: could not serialize access due to concurrent update` (SQLSTATE `40001`) when updating a row changed after the snapshot; write skew is still possible |
 | SERIALIZABLE | per transaction plus SSI dependency tracking | `40001` "read/write dependencies among transactions"; retry the **whole** transaction |
 
-`READ UNCOMMITTED` is accepted but behaves like READ COMMITTED: PostgreSQL never shows dirty reads.[^12]
+`READ UNCOMMITTED` is accepted but behaves like READ COMMITTED: PostgreSQL never shows dirty reads.
 
 ##### READ COMMITTED anomalies (verified with two sessions on 18.6)
 
@@ -805,7 +805,7 @@ INSERT INTO website VALUES (9), (10);
 --    B: DELETE 0   -- the old 10 row is now 11; the new 10 row was not in B's snapshot
 ```
 
-The documentation's own example: under READ COMMITTED a statement that waits for a concurrent update re-evaluates its `WHERE` clause on the new row version only, so it can see an inconsistent mix. Complex multi-row conditions need `REPEATABLE READ`/`SERIALIZABLE` (with retries) or explicit locks.[^12]
+The documentation's own example: under READ COMMITTED a statement that waits for a concurrent update re-evaluates its `WHERE` clause on the new row version only, so it can see an inconsistent mix. Complex multi-row conditions need `REPEATABLE READ`/`SERIALIZABLE` (with retries) or explicit locks.
 
 ##### REPEATABLE READ and SERIALIZABLE need retry loops
 
@@ -859,7 +859,7 @@ ON CONFLICT (k) DO UPDATE
 RETURNING k, v;
 ```
 
-- `ON CONFLICT` (9.5+) is atomic against concurrent inserts of the same key. **`MERGE` (15+) is not**: verified, two concurrent `MERGE ... WHEN NOT MATCHED THEN INSERT` for the same key make one fail with `duplicate key value violates unique constraint`, while the same race with `ON CONFLICT DO UPDATE` succeeds. Use `ON CONFLICT` for single-row "insert or update" under concurrency; use `MERGE` for set-based synchronization where conflicts are impossible or handled.[^13][^14]
+- `ON CONFLICT` (9.5+) is atomic against concurrent inserts of the same key. **`MERGE` (15+) is not**: verified, two concurrent `MERGE ... WHEN NOT MATCHED THEN INSERT` for the same key make one fail with `duplicate key value violates unique constraint`, while the same race with `ON CONFLICT DO UPDATE` succeeds. Use `ON CONFLICT` for single-row "insert or update" under concurrency; use `MERGE` for set-based synchronization where conflicts are impossible or handled.
 - The conflict target must match a unique index or constraint exactly (columns, expression, and the predicate of a partial index); otherwise `there is no unique or exclusion constraint matching the ON CONFLICT specification`.
 - A multi-row upsert that hits the same key twice fails with `ON CONFLICT DO UPDATE command cannot affect row a second time`; deduplicate the input (`DISTINCT ON`) first.
 - `ON CONFLICT DO NOTHING RETURNING` returns **nothing** for skipped rows. To get the existing id, select it afterwards, or use `DO UPDATE SET k = excluded.k` (which locks the row and writes a new row version: bloat and triggers). `ON CONFLICT ... DO SELECT` is 19 only.
@@ -945,7 +945,7 @@ SELECT * FROM JSON_TABLE(jsonb '[{"id":1,"n":"a"},{"id":2,"n":"b"}]', '$[*]'
 
 #### Partitioning
 
-Declarative partitioning (10+; hash partitioning, default partitions and partitioned indexes 11+) pays off for very large tables where pruning or dropping whole partitions (retention) matters. It adds planning overhead and constraints; do not partition small tables, and avoid thousands of partitions.[^15]
+Declarative partitioning (10+; hash partitioning, default partitions and partitioned indexes 11+) pays off for very large tables where pruning or dropping whole partitions (retention) matters. It adds planning overhead and constraints; do not partition small tables, and avoid thousands of partitions.
 
 ```sql
 CREATE TABLE m (
@@ -1012,7 +1012,7 @@ RESET ROLE;
 
 ##### `CREATEROLE` is powerful
 
-Before 16, a role with `CREATEROLE` could alter or drop **any** non-superuser role and grant itself membership in any role, including `pg_execute_server_program`, `pg_read_server_files` or `pg_write_server_files`, which gives operating-system access: effectively superuser. Since 16 it can only manage roles on which it holds `ADMIN OPTION` (automatic for roles it creates), and only grant `CREATEDB`, `REPLICATION` or `BYPASSRLS` if it has them itself.[^16]
+Before 16, a role with `CREATEROLE` could alter or drop **any** non-superuser role and grant itself membership in any role, including `pg_execute_server_program`, `pg_read_server_files` or `pg_write_server_files`, which gives operating-system access: effectively superuser. Since 16 it can only manage roles on which it holds `ADMIN OPTION` (automatic for roles it creates), and only grant `CREATEDB`, `REPLICATION` or `BYPASSRLS` if it has them itself.
 
 ```sql
 CREATE ROLE cr CREATEROLE LOGIN;
@@ -1041,7 +1041,7 @@ CREATE POLICY tenant_isolation ON docs
     WITH CHECK (tenant = current_setting('app.tenant', true));
 ```
 
-Verified on 18.6:[^17]
+Verified on 18.6:
 
 - **Superusers and `BYPASSRLS` roles always bypass** policies, even with `FORCE`. Without `FORCE ROW LEVEL SECURITY` the **table owner** bypasses them too.
 - Enabling RLS without any policy denies everything to non-owners (default deny); policies combine with `OR` (permissive, the default) unless declared `AS RESTRICTIVE`.
@@ -1054,7 +1054,7 @@ Verified on 18.6:[^17]
 
 ##### `SECURITY DEFINER` functions and `search_path`
 
-A `SECURITY DEFINER` function runs with its owner's privileges, but any unqualified name it uses is resolved through the **caller's** `search_path` unless the function pins it.[^18]
+A `SECURITY DEFINER` function runs with its owner's privileges, but any unqualified name it uses is resolved through the **caller's** `search_path` unless the function pins it.
 
 ```sql
 CREATE SCHEMA sec;
@@ -1205,7 +1205,7 @@ END $$;
 
 ##### How dead rows accumulate
 
-Every `UPDATE` and `DELETE` leaves a dead row version. Autovacuum removes dead versions that no running transaction can see any more, updates the visibility map (needed for index-only scans) and freezes old transaction IDs. Three things stop it from removing anything, cluster-wide:[^19]
+Every `UPDATE` and `DELETE` leaves a dead row version. Autovacuum removes dead versions that no running transaction can see any more, updates the visibility map (needed for index-only scans) and freezes old transaction IDs. Three things stop it from removing anything, cluster-wide:
 
 ```sql
 -- 1. Long-running or idle-in-transaction sessions (oldest snapshot)
@@ -1255,7 +1255,7 @@ SELECT datname, age(datfrozenxid) AS xid_age FROM pg_database ORDER BY 2 DESC;
 
 Each connection is a server process with its own memory and snapshot cost. Use a pooler (PgBouncer, pgcat, Odyssey, RDS Proxy, or the driver's pool) and size the server-side pool to roughly the number of queries the hardware can run concurrently, not to the number of application threads. `max_connections` in the thousands is a design smell.
 
-PgBouncer in **transaction pooling** mode gives each transaction any free server connection, so session state does not survive between transactions:[^20][^21]
+PgBouncer in **transaction pooling** mode gives each transaction any free server connection, so session state does not survive between transactions:
 
 | Feature | Session pooling | Transaction pooling |
 |---|---|---|
@@ -1336,7 +1336,7 @@ FROM pg_statio_user_tables ORDER BY heap_blks_read DESC LIMIT 10;
 - Logical replication slots survive `pg_upgrade` only when the *old* cluster is 17+.
 - `initdb` on 18 enables data checksums by default; `pg_upgrade` from a cluster without checksums needs the new cluster initialized with `--no-data-checksums`.
 - **Collations**: an OS upgrade that changes glibc (for example to 2.28) can silently change text sort order and corrupt indexes on text columns. Check with `amcheck`/`pg_amcheck` or reindex after such an upgrade; `ALTER DATABASE ... REFRESH COLLATION VERSION` (15+) only updates the recorded version.
-- **Minor releases** are drop-in binary updates, but some ask for actions (a `REINDEX` of certain index types, re-creating constraints). Read the release notes of every skipped minor. The August 13, 2026 releases (18.6, 17.11, 16.15, 15.19, 14.24) require logical decoding output plugins other than `pgoutput`/`test_decoding` to be listed in the new `output_plugin_libraries` setting (third-party plugins such as `wal2json` stop working otherwise) and recommend reindexing `btree_gist` indexes on `float4`/`float8` columns that may contain `NaN` (and on `bit`/`bit varying` columns) and B-tree indexes over `ltree` values with very many labels. 18.6 also asks to check `pg_class.reltuples` of tables with GIN indexes: a bogus `NaN`/`Infinity` value (left by a parallel GIN index build) stops autovacuum and autoanalyze on that table until an `ANALYZE` resets it.[^4]
+- **Minor releases** are drop-in binary updates, but some ask for actions (a `REINDEX` of certain index types, re-creating constraints). Read the release notes of every skipped minor. The August 13, 2026 releases (18.6, 17.11, 16.15, 15.19, 14.24) require logical decoding output plugins other than `pgoutput`/`test_decoding` to be listed in the new `output_plugin_libraries` setting (third-party plugins such as `wal2json` stop working otherwise) and recommend reindexing `btree_gist` indexes on `float4`/`float8` columns that may contain `NaN` (and on `bit`/`bit varying` columns) and B-tree indexes over `ltree` values with very many labels. 18.6 also asks to check `pg_class.reltuples` of tables with GIN indexes: a bogus `NaN`/`Infinity` value (left by a parallel GIN index build) stops autovacuum and autoanalyze on that table until an `ANALYZE` resets it.
 
 ***
 

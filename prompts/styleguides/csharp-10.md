@@ -1,7 +1,7 @@
 ### C# 10 on .NET 6: The Complete Production Developer Guide
 
-> **Version**: C# 10 shipped with the .NET 6 SDK and Visual Studio 2022 on **November 8, 2021**. The final .NET 6 patch is **.NET 6.0.36 / SDK 6.0.428 (November 12, 2024)**; ASP.NET Core and EF Core 6 ended on the same 6.0.36 version.[^1][^2]
-> **Support status (October 2026)**: ⚠️ **.NET 6 is out of support.** It was a Long Term Support (LTS) release, and its support ended on **November 12, 2024**. Microsoft ships no fixes for it. Security fixes released since then (for example the October 2025 Kestrel request-smuggling fix, CVE-2025-55315) went only to supported versions.[^2][^3] The current LTS release is **.NET 10 (C# 14)**, released November 11, 2025. Its latest patch is 10.0.13 (October 13, 2026), and it is supported until November 14, 2028. **.NET 8 (LTS) and .NET 9 (STS) both reach end of support on November 10, 2026.** **.NET 11 / C# 15 is at Release Candidate 2** (October 13, 2026) and is not a stable release.[^2] **Recommend migrating C# 10/.NET 6 code to .NET 10 LTS.** Do not recommend .NET 8 or 9 as the upgrade target, because both are about to go out of support, and do not recommend .NET 11 for production yet.
+> **Version**: C# 10 shipped with the .NET 6 SDK and Visual Studio 2022 on **November 8, 2021**. The final .NET 6 patch is **.NET 6.0.36 / SDK 6.0.428 (November 12, 2024)**; ASP.NET Core and EF Core 6 ended on the same 6.0.36 version.
+> **Support status (October 2026)**: ⚠️ **.NET 6 is out of support.** It was a Long Term Support (LTS) release, and its support ended on **November 12, 2024**. Microsoft ships no fixes for it. Security fixes released since then (for example the October 2025 Kestrel request-smuggling fix, CVE-2025-55315) went only to supported versions. The current LTS release is **.NET 10 (C# 14)**, released November 11, 2025. Its latest patch is 10.0.13 (October 13, 2026), and it is supported until November 14, 2028. **.NET 8 (LTS) and .NET 9 (STS) both reach end of support on November 10, 2026.** **.NET 11 / C# 15 is at Release Candidate 2** (October 13, 2026) and is not a stable release. **Recommend migrating C# 10/.NET 6 code to .NET 10 LTS.** Do not recommend .NET 8 or 9 as the upgrade target, because both are about to go out of support, and do not recommend .NET 11 for production yet.
 > **Scope**: This guide covers the C# 10 language, the .NET 6 base class library and runtime, ASP.NET Core 6, EF Core 6, and the surrounding SDK tooling. It covers idioms, pitfalls, security, performance, testing and review rules. Sections marked **New in C# 10** or **New in .NET 6** cover version-specific behaviour.
 > **Note**: This document is self-contained. Everything from C# 7–9 and .NET Core 3.1/.NET 5 that is still correct is carried forward. Anything from C# 11 / .NET 7 or later is listed under "Do not use or recommend". Every code example was compiled with the C# compiler of SDK 6.0.428 and run on the .NET 6.0.36 runtime.
 
@@ -9,7 +9,7 @@
 
 #### Overview
 
-C# 10 is the language version that the .NET 6 SDK uses by default for projects that target `net6.0`. Its features:[^4]
+C# 10 is the language version that the .NET 6 SDK uses by default for projects that target `net6.0`. Its features:
 
 - **record structs** (`record struct`, `readonly record struct`)
 - **struct improvements**: parameterless constructors, field initializers, and `with` expressions on any struct and on anonymous types
@@ -29,7 +29,7 @@ C# 10 is the language version that the .NET 6 SDK uses by default for projects t
 
 Two more features shipped only as *previews* that need `LangVersion=preview` and `EnablePreviewFeatures`: generic attributes and static abstract interface members. Both became stable in C# 11, so treat them as unavailable.
 
-.NET 6 itself adds, among others:[^5]
+.NET 6 itself adds, among others:
 
 - `DateOnly`/`TimeOnly`, `PriorityQueue<TElement,TPriority>`, and the LINQ operators `MaxBy`/`MinBy`/`DistinctBy`/`UnionBy`/`IntersectBy`/`ExceptBy`, `Chunk`, `TryGetNonEnumeratedCount`, three-way `Zip`, and `Index`/`Range` overloads of `ElementAt`/`Take`
 - `FirstOrDefault(defaultValue)`
@@ -41,7 +41,7 @@ Two more features shipped only as *previews* that need `LangVersion=preview` and
 - `System.Diagnostics.Metrics` (`Meter`), IANA↔Windows time-zone conversion, `Environment.ProcessPath`, and `string.ReplaceLineEndings`
 - the `[LoggerMessage]` source generator and `Rfc2898DeriveBytes.Pbkdf2`
 
-ASP.NET Core 6 introduces **minimal hosting** (`WebApplication.CreateBuilder`) and **minimal APIs** (`app.MapGet`), plus HTTP logging and `IResult`/`Results`. EF Core 6 adds temporal tables (SQL Server), compiled models, pre-convention configuration (`ConfigureConventions`), `[Precision]`/`[Unicode]`/`[EntityTypeConfiguration]` attributes, and migration bundles.[^6][^7]
+ASP.NET Core 6 introduces **minimal hosting** (`WebApplication.CreateBuilder`) and **minimal APIs** (`app.MapGet`), plus HTTP logging and `IResult`/`Results`. EF Core 6 adds temporal tables (SQL Server), compiled models, pre-convention configuration (`ConfigureConventions`), `[Precision]`/`[Unicode]`/`[EntityTypeConfiguration]` attributes, and migration bundles.
 
 Global truths for a C# 10 / .NET 6 code base:
 
@@ -67,7 +67,7 @@ Global truths for a C# 10 / .NET 6 code base:
   - Every .NET 6 API in this guide is missing.
 
   Compiling a `readonly record struct` against `netstandard2.1` fails with `CS0518: Predefined type 'System.Runtime.CompilerServices.IsExternalInit' is not defined or imported`. A plain `record struct` compiles, because its positional properties are `get; set;`.
-- `global.json` pins the SDK. The final .NET 6 SDKs are 6.0.428 (6.0.4xx band) and 6.0.136 (6.0.1xx band).[^1]
+- `global.json` pins the SDK. The final .NET 6 SDKs are 6.0.428 (6.0.4xx band) and 6.0.136 (6.0.1xx band).
 - Multi-targeting (`<TargetFrameworks>net6.0;net48</TargetFrameworks>`) compiles the same source for each target. Code that uses .NET 6 APIs needs `#if NET6_0_OR_GREATER`.
 
 ##### Rules for the reviewer
@@ -237,7 +237,7 @@ Review points:
 
 - **`TreatWarningsAsErrors` plus nullable warnings** is the only way nullable annotations stay meaningful. Use `<WarningsAsErrors>nullable</WarningsAsErrors>` if full warnings-as-errors is too strict.
 - **`<Nullable>disable</Nullable>` in new code** is a finding. Prefer enabling it per file (`#nullable enable`) during a migration.
-- **Package versions:** prefer a lock file (`<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>`, then `dotnet restore --locked-mode` in CI). Central package management (`Directory.Packages.props`, `ManagePackageVersionsCentrally`) restores correctly with SDK 6.0.428, but that SDK still prints "…is using CentralPackageVersionManagement, a NuGet preview feature". `GlobalPackageReference` needs NuGet 6.4 (SDK 7.0.100 or later).[^8]
+- **Package versions:** prefer a lock file (`<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>`, then `dotnet restore --locked-mode` in CI). Central package management (`Directory.Packages.props`, `ManagePackageVersionsCentrally`) restores correctly with SDK 6.0.428, but that SDK still prints "…is using CentralPackageVersionManagement, a NuGet preview feature". `GlobalPackageReference` needs NuGet 6.4 (SDK 7.0.100 or later).
 - **`<SuppressTfmSupportBuildWarnings>`** hides "package X doesn't support net6.0" warnings. Flag it.
 - **The SDK's `dotnet format`** is built into the .NET 6 SDK. Run `dotnet format --verify-no-changes` in CI.
 
@@ -480,7 +480,7 @@ Console.WriteLine(d.DynamicInvoke());             // 42
 
 ##### Breaking change: overload resolution with natural types
 
-Because lambdas and method groups now have a natural type, they convert to `Delegate`, `object` and `Expression`. That can change which overload is chosen when code moves from C# 9 to C# 10:[^9]
+Because lambdas and method groups now have a natural type, they convert to `Delegate`, `object` and `Expression`. That can change which overload is chosen when code moves from C# 9 to C# 10:
 
 ```csharp
 // LangVersion 10 prints "C.M(Delegate)"; the same code at LangVersion 9 prints "E.M(Action)"
@@ -885,7 +885,7 @@ catch (ArgumentOutOfRangeException) { Console.WriteLine("TimeOnly is a time of d
 
 - **System.Text.Json in .NET 6 cannot serialize `DateOnly`/`TimeOnly`.** It throws `NotSupportedException: Serialization and deserialization of 'System.DateOnly' instances are not supported`. Support arrived in .NET 7. Use a custom `JsonConverter<DateOnly>` (see System.Text.Json) or `DateTime`.
 - **ASP.NET Core 6 minimal APIs bind `DateOnly`/`TimeOnly` from route and query values** because the types have `TryParse` (verified: `/d/2024-03-01?at=13:30` binds). A JSON body with a `DateOnly` member hits the serializer limitation above, and the request fails with **500** unless you register a converter.
-- **EF Core 6 SQL Server does not map `DateOnly`/`TimeOnly`.** The SQL Server provider added them in EF Core 8.[^23] The SQLite provider in EF Core 6 handles them. Check the provider before accepting `DateOnly` entity properties.
+- **EF Core 6 SQL Server does not map `DateOnly`/`TimeOnly`.** The SQL Server provider added them in EF Core 8. The SQLite provider in EF Core 6 handles them. Check the provider before accepting `DateOnly` entity properties.
 
 ##### `DateTime` vs `DateTimeOffset`
 
@@ -1309,7 +1309,7 @@ public sealed class ExpensiveClient
 - `GetOrAdd(key, factory)` runs the factory outside the lock. In one run with 8 contending threads, the plain factory ran **5 times** for one key. Wrap expensive or side-effecting creations in `Lazy<T>`.
 - `ConcurrentDictionary` enumeration is not a snapshot, and `Count`/`IsEmpty` take all locks. Avoid them on hot paths.
 - `Dictionary<,>`, `List<>` and `HashSet<>` are not thread-safe even for "mostly reads" with occasional writes. Concurrent writes can corrupt them, including infinite loops in `Dictionary`.
-- **`new Random()` shared across threads** can return 0 forever after concurrent use corrupts it.[^20] Use `Random.Shared` (.NET 6) for non-security randomness and `RandomNumberGenerator` for security.
+- **`new Random()` shared across threads** can return 0 forever after concurrent use corrupts it. Use `Random.Shared` (.NET 6) for non-security randomness and `RandomNumberGenerator` for security.
 - `volatile` does not make compound operations atomic. Use `Interlocked` or a lock.
 - **Immutable snapshots** (`ImmutableArray`, `ImmutableDictionary`, swapping a reference with `Interlocked.Exchange`) are often simpler than locking.
 
@@ -1621,7 +1621,7 @@ while (total < buffer.Length)
 Console.WriteLine(total);                                       // 200000
 ```
 
-.NET 6 changed `DeflateStream`, `GZipStream` and `CryptoStream` to return as soon as *some* data is available, instead of filling the buffer. Code that ignores the return value of `Read`/`ReadAsync` silently truncates data.[^10] `Stream.ReadExactly`/`ReadAtLeast` (.NET 7) do not exist, so write the loop.
+.NET 6 changed `DeflateStream`, `GZipStream` and `CryptoStream` to return as soon as *some* data is available, instead of filling the buffer. Code that ignores the return value of `Read`/`ReadAsync` silently truncates data. `Stream.ReadExactly`/`ReadAtLeast` (.NET 7) do not exist, so write the loop.
 
 ***
 
@@ -1861,7 +1861,7 @@ public sealed record Repo(string Name, int StargazersCount);
 
 Rules:
 
-- **Never `new HttpClient()` per request** (`using var client = new HttpClient()` in a method). Each instance owns a connection pool, so this leads to socket exhaustion (`TIME_WAIT`) under load.[^21]
+- **Never `new HttpClient()` per request** (`using var client = new HttpClient()` in a method). Each instance owns a connection pool, so this leads to socket exhaustion (`TIME_WAIT`) under load.
 - **A single static `HttpClient`** avoids exhaustion but never re-resolves DNS. Either use `IHttpClientFactory`, which rotates handlers every 2 minutes by default, or create the static client with `new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) }`.
 - **Typed clients are transient.** Injecting a typed client into a singleton captures one `HttpClient` and its handler forever, which loses DNS rotation. Inject typed clients only into transient or scoped services. In a singleton, inject `IHttpClientFactory` and call `CreateClient` per operation.
 - **Dispose `HttpResponseMessage`** (`using var response = …`), especially with `HttpCompletionOption.ResponseHeadersRead`. Otherwise the connection is not returned to the pool.
@@ -2002,7 +2002,7 @@ public sealed class InitOnly { public string? Name { get; init; } }  // warning 
 internal partial class AppJsonContext : JsonSerializerContext { }
 ```
 
-- In .NET 6 the source generator **cannot deserialize `init`-only properties**. It emits warning **SYSLIB1037** at compile time and throws `InvalidOperationException` at runtime (verified on 6.0.36).[^18] Records' positional parameters deserialize through the constructor and worked in the test, but the warning is still reported for them. Do not ignore SYSLIB1037.
+- In .NET 6 the source generator **cannot deserialize `init`-only properties**. It emits warning **SYSLIB1037** at compile time and throws `InvalidOperationException` at runtime (verified on 6.0.36). Records' positional parameters deserialize through the constructor and worked in the test, but the warning is still reported for them. Do not ignore SYSLIB1037.
 - A context's naming policy applies only when that context is used. Mixing the generated context and reflection-based calls with different options yields inconsistent JSON.
 - The generator in .NET 6 does not support every feature of the reflection serializer. Run round-trip tests for each type you register.
 
@@ -2087,7 +2087,7 @@ public sealed class InMemoryUserStore : IUserStore
 }
 ```
 
-What .NET 6 minimal APIs do and do not do (verified on ASP.NET Core 6.0.36):[^19]
+What .NET 6 minimal APIs do and do not do (verified on ASP.NET Core 6.0.36):
 
 - **No automatic model validation.** Posting `{}` to `app.MapPost("/users", (CreateUser u) => Results.Ok(u))` returns **200** with `{"name":null,"age":0}`, even with `[Required]`/`[Range]` on the record. Validate explicitly, as above. Endpoint filters (`AddEndpointFilter`) arrived in .NET 7. Controllers with `[ApiController]` do validate automatically.
 - **Binding failures**: a non-parsable *query* value for an `int?` parameter returns **400**. A route value that violates a `{id:int}` constraint returns **404**.
@@ -2242,7 +2242,7 @@ public partial class Program { }               // makes Program visible to WebAp
 
 #### EF Core 6
 
-EF Core 6.0 shipped with .NET 6 and reached end of support on the same day (November 12, 2024, last version 6.0.36). EF Core 10 requires .NET 10.[^7]
+EF Core 6.0 shipped with .NET 6 and reached end of support on the same day (November 12, 2024, last version 6.0.36). EF Core 10 requires .NET 10.
 
 ##### `DbContext` lifetime and thread safety
 
@@ -2289,7 +2289,7 @@ public sealed class SlowNetwork : DbCommandInterceptor
 }
 ```
 
-- **A `DbContext` is not thread-safe.**[^22] One context serves one unit of work. Register it with `AddDbContext` (scoped). For parallel work, use `IDbContextFactory<T>` (`AddDbContextFactory`, EF Core 5+) and create one context per task.
+- **A `DbContext` is not thread-safe.** One context serves one unit of work. Register it with `AddDbContext` (scoped). For parallel work, use `IDbContextFactory<T>` (`AddDbContextFactory`, EF Core 5+) and create one context per task.
 - **Always `await` EF async calls** before starting the next one on the same context. A forgotten `await` creates exactly this concurrent use.
 - `AddDbContextPool` reuses instances. Do not keep per-request state in fields of a pooled context.
 - Keep contexts short-lived. A long-lived context accumulates tracked entities, and `SaveChanges` and `DetectChanges` slow down linearly.
@@ -2526,7 +2526,7 @@ Console.WriteLine(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("ab
 - **Collections**: presize (`new List<T>(capacity)`, `new Dictionary<,>(capacity)`), use `TryGetValue` instead of `ContainsKey` plus the indexer, use `HashSet<T>` for membership instead of `List<T>.Contains` in loops.
 - **Sealed classes**: seal classes that are not designed for inheritance. The JIT can devirtualize calls on them. CA1852 is .NET 7, so check by hand.
 - **Regex**: cache `Regex` instances in `static readonly` fields, and use `RegexOptions.Compiled` for hot patterns. The source generator is .NET 7.
-- **Dynamic PGO** is available in .NET 6 but **off by default**. Enable it with the environment variable `DOTNET_TieredPGO=1` (or `"System.Runtime.TieredPGO": true` in `runtimeconfig.json`), and measure. It is on by default from .NET 8.[^11]
+- **Dynamic PGO** is available in .NET 6 but **off by default**. Enable it with the environment variable `DOTNET_TieredPGO=1` (or `"System.Runtime.TieredPGO": true` in `runtimeconfig.json`), and measure. It is on by default from .NET 8.
 - **ReadyToRun** (`<PublishReadyToRun>`) improves startup. Native AOT is .NET 7+ (console) and .NET 8+ (ASP.NET Core). Do not suggest `<PublishAot>` for a `net6.0` project.
 - **Server GC** is the default for ASP.NET Core. In containers with small memory limits, consider `<ConcurrentGarbageCollection>` and `GCHeapHardLimit` tuning only after measuring.
 - **EF Core**: projections, `AsNoTracking`, compiled queries (`EF.CompileAsyncQuery`) for hot queries, batching, and avoiding N+1.
@@ -2628,7 +2628,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 - The .NET 6 SDK includes the .NET analyzers (`Microsoft.CodeAnalysis.NetAnalyzers`). Configure them with `<AnalysisLevel>` (`6.0`, `latest`, or `6.0-recommended`/`6.0-all` modes) or `<AnalysisMode>`, plus `.editorconfig` severities. `EnforceCodeStyleInBuild` turns IDE code-style rules into build diagnostics.
 - Rules worth enabling as warnings (all present in the SDK 6.0.428 analyzers): CA2016 (forward `CancellationToken`), CA2254 (constant log templates), CA1848 (LoggerMessage), CA2007 (ConfigureAwait, libraries only), CA2012 (`ValueTask` misuse), CA2000 (dispose objects), CA1305/CA1307/CA1309/CA1310 (culture and comparison), CA1827/CA1829 (`Any`/`Count` property), CA1845/CA1846 (span-based string APIs), CA1847 (`string.Contains(char)`), CA5394 (insecure `Random`), CA2100 (SQL injection review), CA3075 (insecure XML), CA5350/CA5351 (weak crypto), CA2326/CA2327 (Newtonsoft `TypeNameHandling`), CA1416 (platform compatibility).
 - **Not available in the .NET 6 SDK** (newer analyzers): CA1850 (static `HashData`), CA1851 (multiple enumeration), CA1852 (seal internal types), CA1854 (`TryGetValue`), CA1860, CA1869 (cache `JsonSerializerOptions`), CA2021. Reviewers must catch these patterns manually.
-- **Warning wave 6** (C# 10) adds CS8826 (partial method declarations with signature differences, for example different parameter names).[^17] A default `net6.0` project build reported it. A bare `csc` call needs `-warn:6`. Warning wave 7 (CS8981, lowercase type names) is C# 11.
+- **Warning wave 6** (C# 10) adds CS8826 (partial method declarations with signature differences, for example different parameter names). A default `net6.0` project build reported it. A bare `csc` call needs `-warn:6`. Warning wave 7 (CS8981, lowercase type names) is C# 11.
 - **Nullable warnings** (CS8600–CS8634, CS8714 and others) are the most valuable warnings in the code base. Use `<WarningsAsErrors>nullable</WarningsAsErrors>`.
 - Do not blanket-suppress with `#pragma warning disable` at file level. Suppress at the narrowest scope with a justification, or use `[SuppressMessage(..., Justification = "...")]`.
 
@@ -2682,7 +2682,7 @@ Console.WriteLine("traced");
 
 #### Removed / Changed in .NET 6 — Migration Notes (from .NET 5 / .NET Core 3.1)
 
-The following behaviour changes matter when you review code that moved to `net6.0`, or that was written with older assumptions.[^12]
+The following behaviour changes matter when you review code that moved to `net6.0`, or that was written with older assumptions.
 
 ##### Runtime and libraries
 
@@ -2691,12 +2691,12 @@ The following behaviour changes matter when you review code that moved to `net6.
 - **`StringBuilder.Append($"…")`** now binds to a handler overload, which changes evaluation order relative to the older `Append(string)` call. Side effects in holes are a review smell.
 - **`Task.FromResult` may return a cached singleton.** Never lock on, or compare by reference, tasks you did not create.
 - **`FileStream` rewrite**: `Position` updates after `ReadAsync`/`WriteAsync` *complete*, the file offset is no longer synchronized with the OS, and files are locked with a shared lock on Unix. Code that mixes `FileStream` with raw handles or concurrent position-based access needs review. Use `RandomAccess` (.NET 6) for offset-based I/O.
-- **`System.Drawing.Common` is Windows-only.** On Linux, `new Bitmap(1, 1)` threw `TypeInitializationException` → `PlatformNotSupportedException: System.Drawing.Common is not supported on non-Windows platforms` (verified with package 6.0.0). Use ImageSharp, SkiaSharp or similar for cross-platform imaging.[^13]
-- **Unhandled exceptions in a `BackgroundService` stop the host** (`BackgroundServiceExceptionBehavior.StopHost`). In .NET 5 they were swallowed.[^14]
+- **`System.Drawing.Common` is Windows-only.** On Linux, `new Bitmap(1, 1)` threw `TypeInitializationException` → `PlatformNotSupportedException: System.Drawing.Common is not supported on non-Windows platforms` (verified with package 6.0.0). Use ImageSharp, SkiaSharp or similar for cross-platform imaging.
+- **Unhandled exceptions in a `BackgroundService` stop the host** (`BackgroundServiceExceptionBehavior.StopHost`). In .NET 5 they were swallowed.
 - **Resolving from a disposed `ServiceProvider`** throws `ObjectDisposedException` (verified).
 - **`TimeSpan` JSON**: System.Text.Json 6 serializes `TimeSpan` as `"01:30:00"` (constant "c" format, verified). Earlier versions wrote it as an object of all its public properties (`{"Ticks":…,"Days":…}`), which does not round-trip. The source generator matched the reflection format only from 6.0.2, so services pinned to an early 6.0.x runtime can still emit the object form.
 - **Nullable annotations** across the BCL were refined, so new CS86xx warnings after retargeting point to real assumptions. Fix them; do not suppress them.
-- **Obsoletions with new SYSLIB diagnostic IDs**: the `net6.0` reference assemblies add SYSLIB0013–SYSLIB0033 (the `net5.0` ones stop at SYSLIB0012). Among them: SYSLIB0013 (`Uri.EscapeUriString`), SYSLIB0014 (`WebRequest`/`WebClient`/`ServicePoint`), SYSLIB0020 (`JsonSerializerOptions.IgnoreNullValues`, use `DefaultIgnoreCondition`), SYSLIB0021 (derived crypto types such as `SHA256Managed`), SYSLIB0022 (`Rijndael*`), SYSLIB0023 (`RNGCryptoServiceProvider`), SYSLIB0024 (`AppDomain.CreateDomain`/`Unload`), SYSLIB0026–SYSLIB0028 (mutable X509 APIs, `PublicKey.Key`, `X509Certificate2.PrivateKey`), and SYSLIB0032 (`HandleProcessCorruptedStateExceptions`). Older ones from .NET 5 include SYSLIB0011 (`BinaryFormatter`), SYSLIB0006 (`Thread.Abort`) and SYSLIB0012 (`Assembly.CodeBase`).[^15]
+- **Obsoletions with new SYSLIB diagnostic IDs**: the `net6.0` reference assemblies add SYSLIB0013–SYSLIB0033 (the `net5.0` ones stop at SYSLIB0012). Among them: SYSLIB0013 (`Uri.EscapeUriString`), SYSLIB0014 (`WebRequest`/`WebClient`/`ServicePoint`), SYSLIB0020 (`JsonSerializerOptions.IgnoreNullValues`, use `DefaultIgnoreCondition`), SYSLIB0021 (derived crypto types such as `SHA256Managed`), SYSLIB0022 (`Rijndael*`), SYSLIB0023 (`RNGCryptoServiceProvider`), SYSLIB0024 (`AppDomain.CreateDomain`/`Unload`), SYSLIB0026–SYSLIB0028 (mutable X509 APIs, `PublicKey.Key`, `X509Certificate2.PrivateKey`), and SYSLIB0032 (`HandleProcessCorruptedStateExceptions`). Older ones from .NET 5 include SYSLIB0011 (`BinaryFormatter`), SYSLIB0006 (`Thread.Abort`) and SYSLIB0012 (`Assembly.CodeBase`).
 
 ##### SDK and templates
 
@@ -2705,7 +2705,7 @@ The following behaviour changes matter when you review code that moved to `net6.
 - `dotnet run -p` is deprecated. Use `--project`.
 - `-r <rid>` without `--self-contained`/`--no-self-contained` warns NETSDK1179 (verified on SDK 6.0.428), because the .NET 6 SDK still makes a RID-specific build self-contained by default. CI scripts should state the choice explicitly; .NET 8 changed the default to framework-dependent.
 
-##### EF Core 6 breaking changes worth checking[^24]
+##### EF Core 6 breaking changes worth checking
 
 - **SQLite connections are pooled** (Microsoft.Data.Sqlite 6.0). The database file stays open after `Close()`/`Dispose()` (verified: one handle remains until `SqliteConnection.ClearAllPools()`). Tests that delete or replace the file must clear the pool or use `Pooling=False`.
 - **Unknown enum strings throw.** With `HasConversion<string>()`, a column value that matches no enum member throws `InvalidOperationException: Cannot convert string value 'Bogus' from the database to any value in the mapped 'St' enum` (verified). EF Core 5 silently returned the default member.
@@ -2713,7 +2713,7 @@ The following behaviour changes matter when you review code that moved to `net6.
 - **Pre-initialized reference navigations** (`public Bar Bar { get; set; } = new();`) are overwritten by query results in tracking queries too. Do not initialize reference navigations.
 - **`DbSet<T>` no longer implements `IAsyncEnumerable<T>`.** Use `AsAsyncEnumerable()`.
 
-##### C# 10 compiler breaking changes[^9]
+##### C# 10 compiler breaking changes
 
 - Lambdas and method groups with a natural type can change overload resolution (`Delegate`/`object`/`Expression` overloads, instance versus extension methods). See Lambdas.
 - `!` is no longer allowed in patterns (`o is null!` is an error).
@@ -2723,7 +2723,7 @@ The following behaviour changes matter when you review code that moved to `net6.
 
 #### Upgrading to .NET 10 (the recommended target)
 
-Reviewers should support the migration and not block it. Key steps and the most common review points:[^16]
+Reviewers should support the migration and not block it. Key steps and the most common review points:
 
 1. Change `<TargetFramework>net6.0</TargetFramework>` to `net10.0` and the `global.json` SDK to 10.0.x. C# 14 becomes the default. Remove explicit `<LangVersion>10</LangVersion>` unless there is a reason.
 2. Upgrade `Microsoft.AspNetCore.*`, `Microsoft.Extensions.*`, `Microsoft.EntityFrameworkCore.*` and `System.Text.Json` packages to 10.0.x together. Remove `SuppressTfmSupportBuildWarnings`.

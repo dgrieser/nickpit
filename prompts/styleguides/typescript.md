@@ -1,7 +1,7 @@
 ### TypeScript Style Guide
 
-> **Version**: Version-independent guide — applies to any TypeScript version. Use it when the project's TypeScript version cannot be determined; when it can, the version-specific guide for that release is more precise. The release table below covers 4.9 → 7.0. As of October 2026 the newest stable release is **TypeScript 7.0** (7.0.2, 2026-07-08), the native compiler written in Go; the last JavaScript-based compiler is **6.0** (6.0.3, 2026-04-16); **7.1** is in beta (7.1.0-beta, 2026-10-20).[^1][^2]
-> **Status**: TypeScript publishes no LTS or end-of-life schedule. Fixes ship only in new releases of the current line and are not backported, so every older minor line is frozen at its last patch.[^1]
+> **Version**: Version-independent guide — applies to any TypeScript version. Use it when the project's TypeScript version cannot be determined; when it can, the version-specific guide for that release is more precise. The release table below covers 4.9 → 7.0. As of October 2026 the newest stable release is **TypeScript 7.0** (7.0.2, 2026-07-08), the native compiler written in Go; the last JavaScript-based compiler is **6.0** (6.0.3, 2026-04-16); **7.1** is in beta (7.1.0-beta, 2026-10-20).
+> **Status**: TypeScript publishes no LTS or end-of-life schedule. Fixes ship only in new releases of the current line and are not backported, so every older minor line is frozen at its last patch.
 > **Scope**: Version-independent review rules for production TypeScript: compiler strictness, `any`/`unknown`, narrowing, discriminated unions, assertions, generics, enums vs unions, modules and ESM/CommonJS interop, declaration files, async code, error handling, runtime validation, immutability, utility types, `tsconfig.json` hygiene and linting. Every feature that depends on the compiler version is labelled with the release that introduced it, for example `satisfies` (4.9), `const` type parameters (5.0), `using` (5.2), `NoInfer` (5.4), `erasableSyntaxOnly` (5.8).
 > **Code conventions**: Every example was compiled with `tsc` 5.9.3, 6.0.3 and 7.0.2, and with the release named in its heading or comment, and every version boundary was checked on the adjacent older release. Unless the first line of a block lists other options (`// tsconfig: {…}`), examples assume `strict: true`, `module: nodenext`, `target: es2022`, `types: ["node"]`. A line ending in `// error TSxxxx: …` fails with that diagnostic, and no other line in the block fails. Diagnostic codes are quoted from 5.9/6.0; older or newer compilers sometimes report a different code for the same problem.
 > **Note**: This document is self-contained.
@@ -37,7 +37,7 @@
 | 7.0 | 7.0.2 (2026-07-08) | 7.0.2 | **current stable** (`npm i typescript` installs it) | native Go compiler (Microsoft reports roughly 8–12× faster full builds), parallel checking; 6.0 deprecations are hard errors; no stable compiler API (tools that need one stay on 6.0) |
 | 7.1 | — | 7.1.0-beta (2026-10-20) | beta only | do not recommend anything from it |
 
-Dates are npm publish dates.[^2] Lower patch numbers in each line are beta and RC builds (for example 5.9.0-beta and 5.9.1-rc); 5.1.4 was never published, and 7.0 has no 7.0.0 package — its beta shipped only as `@typescript/native-preview`. DefinitelyTyped only supports TypeScript versions that are less than two years old; on older compilers the newest `@types/*` packages may not parse, and the project must pin them to the matching `tsX.Y` dist-tag (for example `npm i -D @types/node@ts4.9`).[^3]
+Dates are npm publish dates. Lower patch numbers in each line are beta and RC builds (for example 5.9.0-beta and 5.9.1-rc); 5.1.4 was never published, and 7.0 has no 7.0.0 package — its beta shipped only as `@typescript/native-preview`. DefinitelyTyped only supports TypeScript versions that are less than two years old; on older compilers the newest `@types/*` packages may not parse, and the project must pin them to the matching `tsX.Y` dist-tag (for example `npm i -D @types/node@ts4.9`).
 
 ##### Feature → minimum compiler version
 
@@ -193,7 +193,7 @@ Rules:
 
 ##### Set the options whose defaults changed
 
-Explicit values make a config mean the same thing on every compiler. The defaults below changed in 6.0 and stay changed in 7.0:[^4][^5]
+Explicit values make a config mean the same thing on every compiler. The defaults below changed in 6.0 and stay changed in 7.0:
 
 | Option | Default before 6.0 | Default in 6.0 / 7.0 | Rule |
 |---|---|---|---|
@@ -1098,7 +1098,7 @@ console.log(legacy());
 ```
 
 - Without `esModuleInterop` (the default before 6.0), `import legacy from "legacy"` is error TS1259. A namespace import of a callable `export =` module (`import * as legacy from "legacy"`) is TS2497 on 5.9 and 6.0 with or without the flag (7.0.2 accepts the import and reports TS2349 when `legacy()` is called): an ES namespace object is never callable, and bundlers and Node.js ESM fail at run time on code that calls one. Enable `esModuleInterop` on every version; from 6.0 it is the default and `false` is deprecated.
-- **6.0 trap**: with `"esModuleInterop": false` plus `"ignoreDeprecations": "6.0"`, 6.0 type-checks as if interop were on but emits as if it were off: `import legacy from "legacy"` compiles and throws `TypeError: (0 , legacy_1.default) is not a function` at run time. Treat `esModuleInterop: false` on 6.0 as a bug (verified with 6.0.3 and Node.js 24).[^6]
+- **6.0 trap**: with `"esModuleInterop": false` plus `"ignoreDeprecations": "6.0"`, 6.0 type-checks as if interop were on but emits as if it were off: `import legacy from "legacy"` compiles and throws `TypeError: (0 , legacy_1.default) is not a function` at run time. Treat `esModuleInterop: false` on 6.0 as a bug (verified with 6.0.3 and Node.js 24).
 - `import x = require("x")` and `export =` are the CommonJS forms; they are rejected in ES module output and by `erasableSyntaxOnly`.
 - Under `verbatimModuleSyntax` (5.0+), a file emitted as CommonJS may not use `import`/`export` syntax at all (TS1295 for imports, TS1287 for `export const`): either switch the file to ESM (`"type": "module"` or `.mts`) or write `import x = require()`.
 
@@ -1567,14 +1567,14 @@ Recommended configuration: `tseslint.configs.strictTypeChecked` (or `recommended
 | `no-deprecated` | use of `@deprecated` APIs |
 | `ban-ts-comment` | `@ts-ignore`, `@ts-nocheck`, `@ts-expect-error` without description |
 
-- Type-aware rules need the TypeScript compiler API. typescript-eslint supports TypeScript `>=4.8.4 <6.1.0`, so it runs on 6.0 at most; projects that build with 7.0 install 6.0 next to it (`"typescript": "npm:@typescript/typescript6@^6.0.2"` plus `"@typescript/native": "npm:typescript@^7.0.2"`).[^7][^5] Projects on TypeScript older than 4.8.4 need an older typescript-eslint major.
+- Type-aware rules need the TypeScript compiler API. typescript-eslint supports TypeScript `>=4.8.4 <6.1.0`, so it runs on 6.0 at most; projects that build with 7.0 install 6.0 next to it (`"typescript": "npm:@typescript/typescript6@^6.0.2"` plus `"@typescript/native": "npm:typescript@^7.0.2"`). Projects on TypeScript older than 4.8.4 need an older typescript-eslint major.
 - Lint rules are not a substitute for compiler flags: `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `strict` catch more, at lower cost.
 - Disabling a rule inline needs a reason (`// eslint-disable-next-line @typescript-eslint/no-explicit-any -- third-party callback`).
 
 ##### Transpilers and type stripping
 
 - esbuild, SWC, Babel, tsx, Bun, Deno, Vite and Node.js type stripping transpile file by file **without type checking** and ignore most of `tsconfig.json` (`paths` support varies). Code must be `isolatedModules`-compatible; `verbatimModuleSyntax` (5.0+) makes that explicit.
-- Node.js runs `.ts` files by stripping types (unflagged since 22.18.0 and 23.6.0; Node.js 20 cannot). It rejects enums, value namespaces, parameter properties, `import =` and decorators, requires real file extensions in imports (`./b.ts`), ignores `tsconfig.json` (no `paths`), and refuses `.ts` files under `node_modules`. Use `erasableSyntaxOnly` (5.8+), `verbatimModuleSyntax`, and `allowImportingTsExtensions` with `rewriteRelativeImportExtensions` (5.7+) or `noEmit`.[^8]
+- Node.js runs `.ts` files by stripping types (unflagged since 22.18.0 and 23.6.0; Node.js 20 cannot). It rejects enums, value namespaces, parameter properties, `import =` and decorators, requires real file extensions in imports (`./b.ts`), ignores `tsconfig.json` (no `paths`), and refuses `.ts` files under `node_modules`. Use `erasableSyntaxOnly` (5.8+), `verbatimModuleSyntax`, and `allowImportingTsExtensions` with `rewriteRelativeImportExtensions` (5.7+) or `noEmit`.
 - `ts-node` (last release 10.9.2, 2023) needs the compiler API and lags behind new module options; prefer `tsx`, Node.js type stripping, or compiling first.
 - Editors bundle their own TypeScript; configure the workspace version so editor diagnostics match CI.
 
@@ -1588,7 +1588,7 @@ Recommended configuration: `tseslint.configs.strictTypeChecked` (or `recommended
 - `skipLibCheck`, `incremental`, project references with `tsc -b`, and `isolatedModules` + a fast transpiler for emit with `tsc --noEmit` for checking. `--noCheck` (5.6+) emits without checking when a separate check job exists.
 - Avoid huge unions (thousands of members), deeply recursive conditional types and wide template-literal mapped types. `tsc --extendedDiagnostics` and `--generateTrace <dir>` locate slow types.
 - Prefer `interface extends` over large intersections; interfaces are cached by the checker.
-- TypeScript 7.0's native compiler is the largest available speed-up, but only for projects free of 6.0 deprecations that do not need the compiler API in the same process.[^5]
+- TypeScript 7.0's native compiler is the largest available speed-up, but only for projects free of 6.0 deprecations that do not need the compiler API in the same process.
 
 ##### Emitted code
 
@@ -1637,12 +1637,12 @@ TypeScript minor releases routinely add errors. Pin the compiler, upgrade one li
 - New defaults (`strict`, ES-module output, `bundler` resolution, `target: es2025`, `types: []`, `rootDir`, `noUncheckedSideEffectImports`) change errors **and emitted output** for configs that relied on them. Make every such option explicit before upgrading.
 - Deprecations are errors (TS5101/TS5107/TS2880) unless `"ignoreDeprecations": "6.0"` is set; fix them, because 7.0 removes them. The `module Foo { }` namespace keyword (TS1540) and `tsc file.ts` next to a `tsconfig.json` (TS5112) are errors that `ignoreDeprecations` does not silence.
 - `baseUrl` → `paths` relative to the tsconfig (`"*": ["./src/*"]` for bare lookups) or `package.json` `imports`.
-- `tsc file.ts` next to a `tsconfig.json` is TS5112; use `tsc -p .`.[^4]
+- `tsc file.ts` next to a `tsconfig.json` is TS5112; use `tsc -p .`.
 
 ##### 6.0 → 7.0
 
 - Everything deprecated in 6.0 is removed; `ignoreDeprecations` no longer helps.
-- 7.0 ships no stable compiler API: typescript-eslint, ts-jest (type-check mode), ts-morph, ts-loader, fork-ts-checker, Angular's compiler, Vue/Svelte/Astro/MDX tooling keep using 6.0 via `@typescript/typescript6` (`tsc6`).[^5]
+- 7.0 ships no stable compiler API: typescript-eslint, ts-jest (type-check mode), ts-morph, ts-loader, fork-ts-checker, Angular's compiler, Vue/Svelte/Astro/MDX tooling keep using 6.0 via `@typescript/typescript6` (`tsc6`).
 - Union member order in `.d.ts` output and error messages changes (stable type ordering; preview it on 6.0 with `--stableTypeOrdering`); template-literal inference handles whole Unicode code points; JavaScript checking drops Closure-style JSDoc and constructor functions.
 - The `typescript` package installs a platform-specific native binary through optional dependencies; installs with `--omit=optional` break `tsc`.
 

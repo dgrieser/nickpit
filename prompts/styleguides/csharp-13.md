@@ -1,7 +1,7 @@
 ### C# 13 on .NET 9: The Complete Production Developer Guide
 
-> **Version**: C# 13 ships with the .NET 9 SDK. .NET 9.0.0 was released on **November 12, 2024**; the latest patch is **.NET 9.0.21 / SDK 9.0.319 (October 13, 2026)** — 9.0.122 is the matching SDK in the older 9.0.1xx feature band.[^1][^2]
-> **Support status (October 2026)**: .NET 9 is a **Standard Term Support (STS)** release in its final weeks. STS support was extended from 18 to 24 months, so .NET 9 reaches **end of support on November 10, 2026** — the same day as .NET 8. A final update on that date ships only if a critical issue is known; after that there are no more security fixes.[^3][^4] The newest stable release is **.NET 10 (LTS, C# 14)**, released November 11, 2025, latest patch 10.0.13 (October 13, 2026), supported until November 2028. **.NET 11 / C# 15 is at Release Candidate 2** (11.0.0-rc.2, October 13, 2026) and is not a stable release.[^2] Recommend migrating C# 13/.NET 9 code to .NET 10 LTS; do not recommend .NET 11 for production yet.
+> **Version**: C# 13 ships with the .NET 9 SDK. .NET 9.0.0 was released on **November 12, 2024**; the latest patch is **.NET 9.0.21 / SDK 9.0.319 (October 13, 2026)** — 9.0.122 is the matching SDK in the older 9.0.1xx feature band.
+> **Support status (October 2026)**: .NET 9 is a **Standard Term Support (STS)** release in its final weeks. STS support was extended from 18 to 24 months, so .NET 9 reaches **end of support on November 10, 2026** — the same day as .NET 8. A final update on that date ships only if a critical issue is known; after that there are no more security fixes. The newest stable release is **.NET 10 (LTS, C# 14)**, released November 11, 2025, latest patch 10.0.13 (October 13, 2026), supported until November 2028. **.NET 11 / C# 15 is at Release Candidate 2** (11.0.0-rc.2, October 13, 2026) and is not a stable release. Recommend migrating C# 13/.NET 9 code to .NET 10 LTS; do not recommend .NET 11 for production yet.
 > **Scope**: The C# 13 language, the .NET 9 base class library and runtime, ASP.NET Core 9, EF Core 9, and the surrounding tooling — idioms, pitfalls, security, performance, testing and review rules. Sections that cover C# 13 or .NET 9 specifics are marked **New in C# 13** / **New in .NET 9**.
 > **Note**: This document is self-contained. Everything from C# 8–12 and .NET 5–8 that is still correct is carried forward; anything from C# 14 / .NET 10 or later is listed under "Do not use or recommend".
 
@@ -9,16 +9,16 @@
 
 #### Overview
 
-C# 13 is the language version that the .NET 9 SDK uses by default for projects that target `net9.0`. Its headline changes are **`params` collections** (`params ReadOnlySpan<T>`, `params IEnumerable<T>`, `params List<T>` …), the **`System.Threading.Lock` type and its `lock` statement integration**, the **`\e` escape sequence**, the **implicit "from the end" index (`^1`) in object initializers**, **`ref` locals and `unsafe` blocks in `async` methods and iterators**, **`ref struct` types implementing interfaces**, the **`allows ref struct` anti-constraint** on generic type parameters, **partial properties and indexers**, **`[OverloadResolutionPriority]`**, and **method-group natural type improvements**. The `field` contextual keyword shipped only as a *preview* in C# 13; it became a stable feature in C# 14.[^5]
+C# 13 is the language version that the .NET 9 SDK uses by default for projects that target `net9.0`. Its headline changes are **`params` collections** (`params ReadOnlySpan<T>`, `params IEnumerable<T>`, `params List<T>` …), the **`System.Threading.Lock` type and its `lock` statement integration**, the **`\e` escape sequence**, the **implicit "from the end" index (`^1`) in object initializers**, **`ref` locals and `unsafe` blocks in `async` methods and iterators**, **`ref struct` types implementing interfaces**, the **`allows ref struct` anti-constraint** on generic type parameters, **partial properties and indexers**, **`[OverloadResolutionPriority]`**, and **method-group natural type improvements**. The `field` contextual keyword shipped only as a *preview* in C# 13; it became a stable feature in C# 14.
 
-.NET 9 itself adds, among others: `CountBy`/`AggregateBy`/`Index` in LINQ, `Task.WhenEach`, `Guid.CreateVersion7`, `Base64Url`, `OrderedDictionary<TKey,TValue>`, `ReadOnlySet<T>`, span-based alternate lookups for `Dictionary`/`HashSet`, `params ReadOnlySpan<T>` overloads across the BCL, `X509CertificateLoader`, `CryptographicOperations.HashData(HashAlgorithmName, …)`, KMAC, `JsonSerializerOptions.Web`, `RespectNullableAnnotations`, `JsonSchemaExporter`, the prioritized unbounded channel, `Gauge<T>`, `Activity.AddLink`, and the removal of `BinaryFormatter` (it now always throws). ASP.NET Core 9 adds built-in OpenAPI document generation, `MapStaticAssets`, `HybridCache` (GA in `Microsoft.Extensions.Caching.Hybrid` 9.3.0, March 2025), `TypedResults.InternalServerError`, and the exception-handler `StatusCodeSelector`. EF Core 9 adds `UseSeeding`/`UseAsyncSeeding`, a migration lock, `ToHashSetAsync`, and turns forgotten migrations into a hard error.[^6][^7][^8][^9]
+.NET 9 itself adds, among others: `CountBy`/`AggregateBy`/`Index` in LINQ, `Task.WhenEach`, `Guid.CreateVersion7`, `Base64Url`, `OrderedDictionary<TKey,TValue>`, `ReadOnlySet<T>`, span-based alternate lookups for `Dictionary`/`HashSet`, `params ReadOnlySpan<T>` overloads across the BCL, `X509CertificateLoader`, `CryptographicOperations.HashData(HashAlgorithmName, …)`, KMAC, `JsonSerializerOptions.Web`, `RespectNullableAnnotations`, `JsonSchemaExporter`, the prioritized unbounded channel, `Gauge<T>`, `Activity.AddLink`, and the removal of `BinaryFormatter` (it now always throws). ASP.NET Core 9 adds built-in OpenAPI document generation, `MapStaticAssets`, `HybridCache` (GA in `Microsoft.Extensions.Caching.Hybrid` 9.3.0, March 2025), `TypedResults.InternalServerError`, and the exception-handler `StatusCodeSelector`. EF Core 9 adds `UseSeeding`/`UseAsyncSeeding`, a migration lock, `ToHashSetAsync`, and turns forgotten migrations into a hard error.
 
 Global truths for a C# 13 / .NET 9 code base:
 
-- **The language version follows the target framework.** `net9.0` ⇒ C# 13 by default. `LangVersion` can lower it; raising it above 13 on `net9.0` is unsupported (and requires the .NET 10 SDK).[^10]
+- **The language version follows the target framework.** `net9.0` ⇒ C# 13 by default. `LangVersion` can lower it; raising it above 13 on `net9.0` is unsupported (and requires the .NET 10 SDK).
 - **Nullable reference types are a static analysis, not a runtime guarantee.** Annotations do not stop `null` from arriving through deserialization, reflection, or `!`.
 - **`async`/`await` is the concurrency model.** Blocking on tasks (`.Result`, `.Wait()`) and `async void` are bugs outside of narrow cases.
-- **The GC is generational and, for Server GC, adaptive.** .NET 9 enables DATAS (dynamic adaptation to application sizes) by default with Server GC, so heap sizes now track the live data size more closely.[^11]
+- **The GC is generational and, for Server GC, adaptive.** .NET 9 enables DATAS (dynamic adaptation to application sizes) by default with Server GC, so heap sizes now track the live data size more closely.
 - **`string` is immutable UTF-16; spans are the zero-copy view.** `Span<T>`/`ReadOnlySpan<T>` are `ref struct`s; `Memory<T>` is their heap-storable counterpart.
 - **Integer arithmetic is unchecked by default.** Overflow wraps silently unless the code uses `checked` or `<CheckForOverflowUnderflow>`.
 - **Equality of `record`s is shallow.** Members that are arrays or collections compare by reference.
@@ -83,16 +83,16 @@ Rules for the reviewer:
 - **Diagnostics**: `Debug.Assert` messages include the condition text, `Gauge<T>`, `Activity.AddLink`, wildcard meter listening.
 - **Networking**: `SocketsHttpHandler` is the default primary handler for `IHttpClientFactory`; header values are no longer logged by default; `System.Net.ServerSentEvents` (NuGet); WebSocket `KeepAliveTimeout`.
 - **Serialization**: `BinaryFormatter` always throws `PlatformNotSupportedException`.
-- **Runtime**: Server GC uses DATAS by default; faster managed exception handling (2–4× in micro-benchmarks); stack allocation of non-escaping boxes; loop optimizations; floating-point → integer conversions saturate on x86/x64; CET shadow stacks on Windows.[^6][^11]
+- **Runtime**: Server GC uses DATAS by default; faster managed exception handling (2–4× in micro-benchmarks); stack allocation of non-escaping boxes; loop optimizations; floating-point → integer conversions saturate on x86/x64; CET shadow stacks on Windows.
 - **Trimming/AOT**: `[FeatureSwitchDefinition]` and `[FeatureGuard]`; `UnsafeAccessor` supports generics.
 - **Reflection/IO/numerics**: `PersistedAssemblyBuilder` (save `Reflection.Emit` assemblies to disk), `System.Reflection.Metadata.TypeName` parsing, `ZLibCompressionOptions`/`BrotliCompressionOptions` (zlib-ng replaces zlib), `TarEntry.DataOffset`, `BigInteger` length limit, `Tensor<T>` in the `System.Numerics.Tensors` 9.x package (marked `[Experimental]`, `SYSLIB5001`).
-- **Behaviour changes worth knowing**: `BinaryReader.ReadString()` returns `"�"` for malformed UTF-8 instead of throwing; passing a `StringValues` (e.g. a header value) to `string.Join`/`string.Concat`/`Path.Combine`/`Path.Join`/`StringBuilder.AppendJoin` is now `CS0121` (ambiguous between the `params string[]` and `params ReadOnlySpan<string>` overloads; cast to `string[]`); `TimeSpan.FromMilliseconds(int/long)` in expression trees is `CS0854` (see Numbers).[^17]
+- **Behaviour changes worth knowing**: `BinaryReader.ReadString()` returns `"�"` for malformed UTF-8 instead of throwing; passing a `StringValues` (e.g. a header value) to `string.Join`/`string.Concat`/`Path.Combine`/`Path.Join`/`StringBuilder.AppendJoin` is now `CS0121` (ambiguous between the `params string[]` and `params ReadOnlySpan<string>` overloads; cast to `string[]`); `TimeSpan.FromMilliseconds(int/long)` in expression trees is `CS0854` (see Numbers).
 
 ##### ASP.NET Core 9, EF Core 9, SDK
 
-- ASP.NET Core 9: `Microsoft.AspNetCore.OpenApi` `AddOpenApi()`/`MapOpenApi()` (OpenAPI 3.0 documents), `MapStaticAssets()`, `HybridCache`, `TypedResults.InternalServerError`, `ProducesProblem` on route groups, `ExceptionHandlerOptions.StatusCodeSelector`, keyed services in middleware, `[DisableHttpMetrics]`, analyzer `ASP0026`, OIDC Pushed Authorization Requests, deletable Data Protection keys (`IDeletableKeyManager`; deleting a key makes its payloads unreadable), SignalR polymorphic hub parameters and Native AOT support. Swashbuckle is no longer in the Web API template.[^7]
-- EF Core 9: pending model changes and user transactions around `Migrate()` now throw; `UseSeeding`/`UseAsyncSeeding`; migration locking; `ToHashSetAsync`; Native AOT/precompiled queries (experimental).[^8][^9]
-- SDK 9: Terminal Logger on by default, `dotnet test` runs target frameworks in parallel, `dotnet tool install --allow-roll-forward`, BuildChecks (`/check`), workload sets, new CA rules (CA1514, CA1515, CA1871, CA1872, CA2022, CA2262–CA2265), NuGet audit sources.[^12]
+- ASP.NET Core 9: `Microsoft.AspNetCore.OpenApi` `AddOpenApi()`/`MapOpenApi()` (OpenAPI 3.0 documents), `MapStaticAssets()`, `HybridCache`, `TypedResults.InternalServerError`, `ProducesProblem` on route groups, `ExceptionHandlerOptions.StatusCodeSelector`, keyed services in middleware, `[DisableHttpMetrics]`, analyzer `ASP0026`, OIDC Pushed Authorization Requests, deletable Data Protection keys (`IDeletableKeyManager`; deleting a key makes its payloads unreadable), SignalR polymorphic hub parameters and Native AOT support. Swashbuckle is no longer in the Web API template.
+- EF Core 9: pending model changes and user transactions around `Migrate()` now throw; `UseSeeding`/`UseAsyncSeeding`; migration locking; `ToHashSetAsync`; Native AOT/precompiled queries (experimental).
+- SDK 9: Terminal Logger on by default, `dotnet test` runs target frameworks in parallel, `dotnet tool install --allow-roll-forward`, BuildChecks (`/check`), workload sets, new CA rules (CA1514, CA1515, CA1871, CA1872, CA2022, CA2262–CA2265), NuGet audit sources.
 
 ***
 
@@ -100,7 +100,7 @@ Rules for the reviewer:
 
 The project compiles with C# 13 against the .NET 9 BCL. None of the following exists there; never suggest them. The language features, the BCL and ASP.NET Core APIs, and the EF Core APIs named below were compiled on SDK 9.0.319 / `net9.0` (EF Core 9.0.21) and fail there; the C# 14 features and BCL APIs were also compiled successfully on SDK 10.0.402 / `net10.0`.
 
-**C# 14 (.NET 10) language features**[^13]
+**C# 14 (.NET 10) language features**
 
 - **Extension members / extension blocks**: `extension<T>(IEnumerable<T> source) { public bool IsEmpty => …; }`, extension properties, static extension members, extension operators. Use classic `static` extension *methods*.
 - **`field` keyword as a stable feature** (`public string Name { get; set => field = value.Trim(); }`). In C# 13 it is preview-only (`CS8652`).
@@ -112,7 +112,7 @@ The project compiles with C# 13 against the .NET 9 BCL. None of the following ex
 - **User-defined compound assignment operators** (`public void operator +=(int x)`), and user-defined instance `++`/`--`.
 - File-based app directives (`#:package`, `#:sdk`, `#:property`) and `dotnet run app.cs`.
 
-**.NET 10 APIs (not in the .NET 9 BCL)**[^14]
+**.NET 10 APIs (not in the .NET 9 BCL)**
 
 - LINQ: `Enumerable.LeftJoin`, `Enumerable.RightJoin`, `Enumerable.Shuffle` (and the `Queryable` counterparts). `Random.Shuffle` (since .NET 8) exists.
 - `System.Linq.AsyncEnumerable` in the BCL (LINQ over `IAsyncEnumerable<T>`). On .NET 9 use the `System.Linq.Async` NuGet package or hand-written `await foreach`.
@@ -129,18 +129,18 @@ The project compiles with C# 13 against the .NET 9 BCL. None of the following ex
 
 ##### Deprecated or removed as of .NET 9 — flag when seen
 
-- `BinaryFormatter` — throws `PlatformNotSupportedException` in every project type; the APIs only remain so that code compiles (with `SYSLIB0011` as an error).[^15] In code ported from .NET Framework, the related `SoapFormatter`/`NetDataContractSerializer`/`LosFormatter` patterns have no .NET 9 equivalent and must not be re-created with custom type-name resolution.
-- `new X509Certificate2(byte[]/string …)` and `X509Certificate2Collection.Import(…)` loading overloads — `SYSLIB0057`; use `X509CertificateLoader.LoadCertificate*`/`LoadPkcs12*`.[^16]
-- `Thread.VolatileRead/VolatileWrite` (`SYSLIB0054`; use `Volatile.Read/Write`), `ServicePointManager` (`SYSLIB0014`, has no effect on `HttpClient`), `AuthenticationManager` (`SYSLIB0009`), `Assembly.LoadFrom(…, AssemblyHashAlgorithm)` (`SYSLIB0056`).[^16]
+- `BinaryFormatter` — throws `PlatformNotSupportedException` in every project type; the APIs only remain so that code compiles (with `SYSLIB0011` as an error). In code ported from .NET Framework, the related `SoapFormatter`/`NetDataContractSerializer`/`LosFormatter` patterns have no .NET 9 equivalent and must not be re-created with custom type-name resolution.
+- `new X509Certificate2(byte[]/string …)` and `X509Certificate2Collection.Import(…)` loading overloads — `SYSLIB0057`; use `X509CertificateLoader.LoadCertificate*`/`LoadPkcs12*`.
+- `Thread.VolatileRead/VolatileWrite` (`SYSLIB0054`; use `Volatile.Read/Write`), `ServicePointManager` (`SYSLIB0014`, has no effect on `HttpClient`), `AuthenticationManager` (`SYSLIB0009`), `Assembly.LoadFrom(…, AssemblyHashAlgorithm)` (`SYSLIB0056`).
 - Older still-flagged obsoletions: `WebRequest`/`HttpWebRequest`/`WebClient` (`SYSLIB0014`), `Rfc2898DeriveBytes` constructors without a hash algorithm (`SYSLIB0041`), `RNGCryptoServiceProvider` and `*CryptoServiceProvider`/`*Managed` crypto types (`SYSLIB0021`/`SYSLIB0023`), `Thread.Abort`, Code Access Security.
-- Targeting `net7.0` (or any older `netX.0`/`netcoreappX.Y`) produces the out-of-support warning `NETSDK1138` — but only in executable projects: the SDK sets `CheckEolTargetFramework=true` only when `OutputType` is not `Library`, so an EOL library target builds silently (verified on SDK 9.0.319). `netstandard1.x` targets produce `NETSDK1215` in every project type.[^17]
+- Targeting `net7.0` (or any older `netX.0`/`netcoreappX.Y`) produces the out-of-support warning `NETSDK1138` — but only in executable projects: the SDK sets `CheckEolTargetFramework=true` only when `OutputType` is not `Library`, so an EOL library target builds silently (verified on SDK 9.0.319). `netstandard1.x` targets produce `NETSDK1215` in every project type.
 - `String.Trim/TrimStart/TrimEnd(ReadOnlySpan<char>)` overloads from the .NET 9 previews were removed from the reference assemblies at GA (they remain in `System.Private.CoreLib` for binary compatibility, but source cannot call them: `CS1503`). Do not "fix" code to call them; use `MemoryExtensions.Trim(span, trimChars)` on spans.
 
 ***
 
 #### New in C# 13: `params` Collections
 
-`params` now works on any type that a collection expression can create: `Span<T>`, `ReadOnlySpan<T>`, `IEnumerable<T>`, `IReadOnlyCollection<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IList<T>`, and concrete collection types with an accessible `Add` (for example `List<T>`).[^5]
+`params` now works on any type that a collection expression can create: `Span<T>`, `ReadOnlySpan<T>`, `IEnumerable<T>`, `IReadOnlyCollection<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IList<T>`, and concrete collection types with an accessible `Add` (for example `List<T>`).
 
 ```csharp
 static int Sum(params ReadOnlySpan<int> values)   // no array allocation for Sum(1, 2, 3)
@@ -163,7 +163,7 @@ With `LangVersion=12` every such declaration fails with `CS9202: Feature 'params
 
 ##### Overload resolution prefers the span overload
 
-When both a `params T[]` and a `params ReadOnlySpan<T>` overload are applicable to an expanded-form call, C# 13 picks the span overload. .NET 9 adds `params ReadOnlySpan<T>` overloads to `string.Join`, `string.Concat`, `string.Format`, `Path.Combine`, `Path.Join`, `Task.WhenAll`, `Task.WhenAny`, `CancellationTokenSource.CreateLinkedTokenSource`, `Console.WriteLine(string, …)`, `StringBuilder.AppendJoin`, `ImmutableArray.Create`, `Counter<T>.Add` and others, so recompiling existing calls removes the hidden array allocation.[^18]
+When both a `params T[]` and a `params ReadOnlySpan<T>` overload are applicable to an expanded-form call, C# 13 picks the span overload. .NET 9 adds `params ReadOnlySpan<T>` overloads to `string.Join`, `string.Concat`, `string.Format`, `Path.Combine`, `Path.Join`, `Task.WhenAll`, `Task.WhenAny`, `CancellationTokenSource.CreateLinkedTokenSource`, `Console.WriteLine(string, …)`, `StringBuilder.AppendJoin`, `ImmutableArray.Create`, `Counter<T>.Add` and others, so recompiling existing calls removes the hidden array allocation.
 
 ```csharp
 Console.WriteLine(Overloads.Pick(1, 2));             // span
@@ -204,13 +204,13 @@ Console.WriteLine(join.Compile()("a", "b")); // ab
 - A `params ReadOnlySpan<T>` parameter cannot be captured by a lambda or stored in a field, and `async` methods cannot declare span parameters at all (`CS4012: Parameters of type 'ReadOnlySpan<int>' cannot be declared in async methods or async lambda expressions.`). For `async` APIs take `params IEnumerable<T>`/`IReadOnlyList<T>`.
 - With `params IEnumerable<T>`/`IReadOnlyList<T>` the compiler synthesizes the storage; do not cast it back to an array or `List<T>` and mutate it.
 - A library that *adds* a span overload changes which overload existing callers bind to on recompilation — check expression-tree callers (EF Core, Moq `Setup(...)`, AutoMapper projections).
-- Types with implicit conversions to both `T` and `T[]` become ambiguous: `string.Join(",", stringValues)` with an ASP.NET Core `StringValues` is `CS0121` on .NET 9 (verified); write `string.Join(",", (string?[])stringValues)` or `stringValues.ToString()`.[^17]
+- Types with implicit conversions to both `T` and `T[]` become ambiguous: `string.Join(",", stringValues)` with an ASP.NET Core `StringValues` is `CS0121` on .NET 9 (verified); write `string.Join(",", (string?[])stringValues)` or `stringValues.ToString()`.
 
 ***
 
 #### New in C# 13 / .NET 9: the `Lock` Type
 
-.NET 9 adds `System.Threading.Lock`. When the operand of a `lock` statement has the static type `Lock`, C# 13 emits `using (x.EnterScope()) { … }` instead of `Monitor.Enter/Exit`.[^5][^19]
+.NET 9 adds `System.Threading.Lock`. When the operand of a `lock` statement has the static type `Lock`, C# 13 emits `using (x.EnterScope()) { … }` instead of `Monitor.Enter/Exit`.
 
 ```csharp
 var counter = new Counter();
@@ -261,7 +261,7 @@ Console.WriteLine("released");
 
 ##### `\e` escape
 
-`'\e'` is U+001B (ESC). Prefer it over `\x1b`: the `\x` escape takes up to **four** hex digits, so `"\x1bBold"` is `U+01BB` followed by `"old"`.[^5]
+`'\e'` is U+001B (ESC). Prefer it over `\x1b`: the `\x` escape takes up to **four** hex digits, so `"\x1bBold"` is `U+01BB` followed by `"old"`.
 
 ```csharp
 string red = "\e[31mred\e[0m";
@@ -292,7 +292,7 @@ The initializer *assigns* into an existing collection; it does not add elements.
 
 #### New in C# 13: `ref` Locals, `ref struct` Locals and `unsafe` in Async Methods and Iterators
 
-`async` methods and iterators may now declare `ref` locals and locals of `ref struct` types (`Span<T>`, `ReadOnlySpan<T>`, `Utf8JsonReader`, …), and iterators may contain `unsafe` blocks. The compiler still forbids keeping such a value alive across an `await` or `yield return`.[^5]
+`async` methods and iterators may now declare `ref` locals and locals of `ref struct` types (`Span<T>`, `ReadOnlySpan<T>`, `Utf8JsonReader`, …), and iterators may contain `unsafe` blocks. The compiler still forbids keeping such a value alive across an `await` or `yield return`.
 
 ```csharp
 Console.WriteLine(await CountFieldsAsync("a,b,,c"));       // 4
@@ -332,13 +332,13 @@ Notes:
 
 - The same rule now lets top-level programs that contain `await` use span locals (the generated `Main` is async); with C# 12 that is `CS9202`.
 - In iterators, `yield return`/`yield break` must stay in a safe context: an `unsafe { … }` block may compute a value, the `yield` goes outside it.
-- **Compiler breaking change (Roslyn 17.11+, C# 13):** iterators now introduce a safe context, so a local function inside an iterator of an `unsafe class` no longer inherits `unsafe`. Code that declared pointers there compiles with C# 12 but fails with `CS0214` in C# 13 — add `unsafe` to the local function.[^20]
+- **Compiler breaking change (Roslyn 17.11+, C# 13):** iterators now introduce a safe context, so a local function inside an iterator of an `unsafe class` no longer inherits `unsafe`. Code that declared pointers there compiles with C# 12 but fails with `CS0214` in C# 13 — add `unsafe` to the local function.
 
 ***
 
 #### New in C# 13: `ref struct` Interfaces and `allows ref struct`
 
-A `ref struct` may implement interfaces, and a generic type parameter can opt in to `ref struct` type arguments with the `allows ref struct` anti-constraint. The compiler then enforces ref-safety rules on all values of that type parameter.[^5][^21]
+A `ref struct` may implement interfaces, and a generic type parameter can opt in to `ref struct` type arguments with the `allows ref struct` anti-constraint. The compiler then enforces ref-safety rules on all values of that type parameter.
 
 ```csharp
 var reader = new SpanReader("hello".AsSpan());
@@ -368,13 +368,13 @@ Restrictions to check in review:
 - Passing a `ref struct` to a generic method *without* `allows ref struct` is `CS9244`.
 - A `ref struct` must implement every interface member, including members with default implementations.
 - Inside a method whose `T` `allows ref struct`, `T` cannot be boxed, stored in a non-ref-struct field, captured by a lambda, or used across `await`.
-- .NET 9 annotates many BCL APIs with `allows ref struct` — for example `string.Create<TState>`'s `TState` and the type parameters of `Func<…>`/`Action<…>` — so spans can flow through them. `Func<ReadOnlySpan<char>, int> f = s => s.Length;` compiles on .NET 9 with C# 13; on .NET 8 it is `CS9244`, and on .NET 9 with `LangVersion=12` it is `CS9202: Feature 'allows ref struct constraint' …`.[^6]
+- .NET 9 annotates many BCL APIs with `allows ref struct` — for example `string.Create<TState>`'s `TState` and the type parameters of `Func<…>`/`Action<…>` — so spans can flow through them. `Func<ReadOnlySpan<char>, int> f = s => s.Length;` compiles on .NET 9 with C# 13; on .NET 8 it is `CS9244`, and on .NET 9 with `LangVersion=12` it is `CS9202: Feature 'allows ref struct constraint' …`.
 
 ***
 
 #### New in C# 13: Partial Properties and Indexers
 
-Properties and indexers can be split into one *declaring* declaration (no bodies, looks like an auto-property) and one *implementing* declaration (with accessor bodies). The main consumers are source generators — for example `[GeneratedRegex]` on a property, which is new in .NET 9.[^5][^6]
+Properties and indexers can be split into one *declaring* declaration (no bodies, looks like an auto-property) and one *implementing* declaration (with accessor bodies). The main consumers are source generators — for example `[GeneratedRegex]` on a property, which is new in .NET 9.
 
 ```csharp
 using System.Text.RegularExpressions;
@@ -413,7 +413,7 @@ static partial class Patterns
 
 #### New in C# 13: `[OverloadResolutionPriority]`
 
-`System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute` lets an API author prefer one overload over another among otherwise applicable candidates (higher wins, default 0).[^5]
+`System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute` lets an API author prefer one overload over another among otherwise applicable candidates (higher wins, default 0).
 
 ```csharp
 using System.Runtime.CompilerServices;
@@ -441,7 +441,7 @@ static class Log
 
 #### New in C# 13: Method Group Natural Type
 
-When a method group needs a natural (delegate) type — for example `var d = obj.M;` — C# 13 prunes inapplicable candidates (wrong generic arity, unsatisfied constraints) scope by scope, like normal overload resolution.[^5]
+When a method group needs a natural (delegate) type — for example `var d = obj.M;` — C# 13 prunes inapplicable candidates (wrong generic arity, unsatisfied constraints) scope by scope, like normal overload resolution.
 
 ```csharp
 var action = new Widget().Run;      // C# 12: CS8917 The delegate type could not be inferred
@@ -452,13 +452,13 @@ class Widget { public void Run<T>() => Console.WriteLine("generic"); }
 static class WidgetExtensions { public static void Run(this Widget w) => Console.WriteLine("extension"); }
 ```
 
-In reviews prefer an explicit delegate type (`Action a = w.Run;`) whenever more than one overload exists — inference rules also changed in compiler servicing (`params`/default-parameter candidates now produce an ambiguity error instead of an order-dependent pick).[^20]
+In reviews prefer an explicit delegate type (`Action a = w.Run;`) whenever more than one overload exists — inference rules also changed in compiler servicing (`params`/default-parameter candidates now produce an ambiguity error instead of an order-dependent pick).
 
 ***
 
 #### The `field` Keyword Is Preview in C# 13 — Do Not Use
 
-`field` (access to the compiler-synthesized backing field inside an accessor) compiles on the .NET 9 SDK only with `<LangVersion>preview</LangVersion>`; with C# 13 it is `CS8652: The feature 'field keyword' is currently in Preview and *unsupported*.` It is stable only in C# 14.[^5][^13]
+`field` (access to the compiler-synthesized backing field inside an accessor) compiles on the .NET 9 SDK only with `<LangVersion>preview</LangVersion>`; with C# 13 it is `CS8652: The feature 'field keyword' is currently in Preview and *unsupported*.` It is stable only in C# 14.
 
 ```csharp
 // GOOD in C# 13: explicit backing field
@@ -482,7 +482,7 @@ class Customer
 
 #### C# 13 Compiler Breaking Changes
 
-Verified with SDK 9.0.319 by compiling the same source with `LangVersion` 12 and 13:[^20]
+Verified with SDK 9.0.319 by compiling the same source with `LangVersion` 12 and 13:
 
 - **Collection expressions prefer exact element types.** `M([1])` with overloads `M(ReadOnlySpan<byte>)` and `M(Span<int>)` binds to `ReadOnlySpan<byte>` in C# 12 and to `Span<int>` in C# 13. Empty `[]` no longer uses "is it a span" as a tie-breaker: `M([])` with `M(ReadOnlySpan<int>)` and `M(Span<object>)` picks the `ReadOnlySpan<int>` overload in C# 12 and is `CS0121` (ambiguous) in C# 13.
 - **Expression trees + `params` span overloads** (see above).
@@ -582,7 +582,7 @@ Solution/
 ```
 
 - `global.json` with `rollForward: latestPatch` keeps the feature band (9.0.3xx) and accepts newer patches. `"rollForward": "disable"` demands that exact SDK, so builds fail on machines and images that only have a newer patch.
-- **NuGet audit**: on `net9.0` the default `NuGetAuditMode` is `direct` (top-level packages only); `all` is the default only for `net10.0`+ projects. Set `all` explicitly to see vulnerable transitive packages (`NU1901`–`NU1904`).[^22]
+- **NuGet audit**: on `net9.0` the default `NuGetAuditMode` is `direct` (top-level packages only); `all` is the default only for `net10.0`+ projects. Set `all` explicitly to see vulnerable transitive packages (`NU1901`–`NU1904`).
 - Central Package Management (`Directory.Packages.props` with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`) avoids version drift between projects.
 - Keep ASP.NET Core / EF Core / `Microsoft.Extensions.*` 9.x packages on the same patch as the runtime (9.0.21 in October 2026). Out-of-band `Microsoft.Extensions.*` libraries such as `Microsoft.Extensions.Http.Resilience` and `Microsoft.Extensions.Caching.Hybrid` use their own minor versions: the last 9.x release is 9.10.0 (October 14, 2025); the 10.x line (10.11.0 in October 2026) follows .NET 10.
 - `InvariantGlobalization` changes culture-sensitive behaviour: all cultures behave like the invariant culture, and `new CultureInfo("de-DE")` throws `CultureNotFoundException` (verified on 9.0.21; `PredefinedCulturesOnly` defaults to `true` in invariant mode). Flag it in apps that format dates/currencies for users.
@@ -684,7 +684,7 @@ The compiler warns `CS9124: Parameter 'string name' is captured into the state o
 
 - Keep structs small (≤ 16–24 bytes), immutable (`readonly struct`), and override `Equals`/`GetHashCode` (or use `record struct`) — the default `ValueType.Equals` uses reflection for some layouts.
 - Mark methods that do not mutate state `readonly` on mutable structs to avoid defensive copies.
-- `[InlineArray(n)]` structs (C# 12) cannot be `record struct`s, and the default `Equals`/`GetHashCode` throw for them in .NET 9.[^17]
+- `[InlineArray(n)]` structs (C# 12) cannot be `record struct`s, and the default `Equals`/`GetHashCode` throw for them in .NET 9.
 
 ***
 
@@ -918,8 +918,8 @@ Console.WriteLine((int)big);                              // .NET 9 x64: 2147483
 Console.WriteLine((int)nan);                              // .NET 9 x64: 0
 ```
 
-- **`TimeSpan.FromMilliseconds(integer)` breaks expression trees on .NET 9.** An `int`/`long` argument now binds to the new `FromMilliseconds(long milliseconds, long microseconds = 0)` overload, and expression trees cannot contain calls that rely on optional arguments: `Expression<Func<int, TimeSpan>> e = x => TimeSpan.FromMilliseconds(x);` compiles on .NET 8 and .NET 10 but fails on .NET 9 with `CS0854: An expression tree may not contain a call or invocation that uses optional arguments` — this hits EF Core `Where`/`Select` lambdas. `FromDays`/`FromHours`/`FromMinutes`/`FromSeconds`/`FromMicroseconds` have single-argument integer overloads and are not affected. Fix: pass a `double` (`TimeSpan.FromMilliseconds((double)x)`) or compute the `TimeSpan` outside the expression. (Verified on .NET 8.0.32, 9.0.21 and 10.0.13.)[^30]
-- **Float → integer conversions saturate on x86/x64 in .NET 9** (out-of-range values clamp to `MinValue`/`MaxValue`, `NaN` → 0). On .NET 8.0.32 x64 `(int)1e20`, `(int)-1e20` and `(int)double.NaN` all returned `int.MinValue` (`0x80000000`). Code that relied on the sentinel, or tests asserting it, change behaviour; validate ranges explicitly instead.[^23]
+- **`TimeSpan.FromMilliseconds(integer)` breaks expression trees on .NET 9.** An `int`/`long` argument now binds to the new `FromMilliseconds(long milliseconds, long microseconds = 0)` overload, and expression trees cannot contain calls that rely on optional arguments: `Expression<Func<int, TimeSpan>> e = x => TimeSpan.FromMilliseconds(x);` compiles on .NET 8 and .NET 10 but fails on .NET 9 with `CS0854: An expression tree may not contain a call or invocation that uses optional arguments` — this hits EF Core `Where`/`Select` lambdas. `FromDays`/`FromHours`/`FromMinutes`/`FromSeconds`/`FromMicroseconds` have single-argument integer overloads and are not affected. Fix: pass a `double` (`TimeSpan.FromMilliseconds((double)x)`) or compute the `TimeSpan` outside the expression. (Verified on .NET 8.0.32, 9.0.21 and 10.0.13.)
+- **Float → integer conversions saturate on x86/x64 in .NET 9** (out-of-range values clamp to `MinValue`/`MaxValue`, `NaN` → 0). On .NET 8.0.32 x64 `(int)1e20`, `(int)-1e20` and `(int)double.NaN` all returned `int.MinValue` (`0x80000000`). Code that relied on the sentinel, or tests asserting it, change behaviour; validate ranges explicitly instead.
 - Use `checked` (or `<CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>`) for arithmetic on sizes, money in minor units, and anything derived from user input.
 - **Dates**: store and compare `DateTimeOffset`/UTC; `new DateTime(...)` has `Kind = Unspecified`. Inject `TimeProvider` (.NET 8) instead of calling `DateTime.UtcNow`/`DateTimeOffset.UtcNow` in logic that needs testing.
 - **GUIDs — New in .NET 9**: `Guid.CreateVersion7()` produces RFC 9562 version-7 GUIDs with a 48-bit Unix-millisecond timestamp prefix.
@@ -976,7 +976,7 @@ Rules:
 - Catch the most specific exception you can handle; never `catch (Exception) { }` silently. Top-level handlers (middleware, `BackgroundService.ExecuteAsync` wrapper) may catch `Exception` to log and fail the request/job.
 - Wrap with context: `throw new OrderProcessingException($"Order {id} failed", ex);` keeps the inner exception.
 - `throw;` to rethrow; `ExceptionDispatchInfo.Capture(ex).Throw()` to rethrow later from another context.
-- Do not use exceptions for expected control flow (parsing user input → `TryParse`, missing keys → `TryGetValue`). .NET 9's managed exception handling is 2–4× faster, but throwing is still far more expensive than returning a result.[^11]
+- Do not use exceptions for expected control flow (parsing user input → `TryParse`, missing keys → `TryGetValue`). .NET 9's managed exception handling is 2–4× faster, but throwing is still far more expensive than returning a result.
 - `OperationCanceledException` is not an error when the caller's token was cancelled — let it propagate or handle it separately from failures; do not log it as an error.
 - `catch (Exception ex) when (ex is not OperationCanceledException)` is the idiomatic way to keep cancellation flowing.
 - Custom exceptions: derive from `Exception`, end the name with `Exception`, provide the standard constructors; do not add `[Serializable]`/serialization constructors (`BinaryFormatter` is gone; the `Exception(SerializationInfo, StreamingContext)` constructor is obsolete, `SYSLIB0051`).
@@ -1161,7 +1161,7 @@ Prefer bounded channels for producer/consumer pipelines fed by external input; a
 ##### Thread safety primitives
 
 - `Lock` (.NET 9) for short synchronous critical sections; `SemaphoreSlim` for async sections; `ReaderWriterLockSlim` only after measuring.
-- `Interlocked` for counters and flags. .NET 9 adds `Interlocked.Exchange`/`CompareExchange` for `byte`, `sbyte`, `short`, `ushort` and lets the generic overloads accept enums and other primitive types (previously `where T : class`).[^6]
+- `Interlocked` for counters and flags. .NET 9 adds `Interlocked.Exchange`/`CompareExchange` for `byte`, `sbyte`, `short`, `ushort` and lets the generic overloads accept enums and other primitive types (previously `where T : class`).
 - `volatile` and `Volatile.Read/Write` only for simple publication; `Thread.VolatileRead/Write` are obsolete (`SYSLIB0054`).
 - `static` mutable state in ASP.NET Core apps is shared by all requests — flag unsynchronized `static List<T>`/`Dictionary` fields.
 - `[ThreadStatic]`/`ThreadLocal<T>` do not flow across `await`; use `AsyncLocal<T>` for ambient async context, sparingly.
@@ -1218,11 +1218,11 @@ Review rules:
 - **Captive dependencies**: a singleton must not depend on a scoped service (e.g. a `DbContext`). In the `Development` environment `WebApplication`/the default host validate scopes and the whole service graph on `Build()` and throw `AggregateException` ("Cannot consume scoped service … from singleton …"); in `Production` the same registration builds and runs, silently sharing one scoped instance forever. Verified on .NET 9.0.21.
 - To use scoped services from a singleton or `BackgroundService`, inject `IServiceScopeFactory` and create a scope per unit of work (`await using var scope = scopeFactory.CreateAsyncScope();`).
 - **Do not call `BuildServiceProvider()`** in application code (`ASP0000`): it creates a second container with duplicate singletons.
-- **Keyed services**: `[FromKeyedServices("key")]` throws `InvalidOperationException` when no service is registered under that key — since .NET 9 (and 8.0.9) it no longer falls back to the non-keyed registration.[^24] Middleware constructors and `Invoke`/`InvokeAsync` parameters accept `[FromKeyedServices]` in ASP.NET Core 9.
+- **Keyed services**: `[FromKeyedServices("key")]` throws `InvalidOperationException` when no service is registered under that key — since .NET 9 (and 8.0.9) it no longer falls back to the non-keyed registration. Middleware constructors and `Invoke`/`InvokeAsync` parameters accept `[FromKeyedServices]` in ASP.NET Core 9.
 - Disposable transients resolved from the root provider are kept alive until the container is disposed — a memory leak. Resolve them from a scope or make them scoped.
 - Async-only disposables (`IAsyncDisposable` without `IDisposable`) must live in scopes disposed with `await using`/`CreateAsyncScope()`; a synchronous `scope.Dispose()` throws `InvalidOperationException: 'X' type only implements IAsyncDisposable`.
 - Constructor injection only; no service locator (`IServiceProvider.GetService` in business code) except in factories.
-- `ActivatorUtilities.CreateInstance` constructor selection changed in .NET 9 so that `[ActivatorUtilitiesConstructor]` is always honoured; check types with multiple public constructors.[^6]
+- `ActivatorUtilities.CreateInstance` constructor selection changed in .NET 9 so that `[ActivatorUtilitiesConstructor]` is always honoured; check types with multiple public constructors.
 
 ##### Options
 
@@ -1261,7 +1261,7 @@ public sealed class Mailer(IOptions<SmtpOptions> options)
 - `IOptions<T>` is a singleton snapshot; `IOptionsSnapshot<T>` is per scope (reloads per request, cannot be injected into singletons); `IOptionsMonitor<T>` for singletons that react to reloads.
 - Never bind secrets into types that get logged or serialized. Never put secrets in `appsettings.json`; use environment variables, user-secrets in development, or a vault provider.
 - For Native AOT/trimmed apps enable the configuration binding source generator (`<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>`) and the options validation source generator (`[OptionsValidator]`).
-- **Environment variables take precedence** in `runtimeconfig.json`-style app runtime settings (for example `DOTNET_gcServer`) since .NET 9.[^17]
+- **Environment variables take precedence** in `runtimeconfig.json`-style app runtime settings (for example `DOTNET_gcServer`) since .NET 9.
 
 ***
 
@@ -1289,8 +1289,8 @@ public partial class OrderWorker(ILogger<OrderWorker> logger)   // primary const
 Review rules:
 
 - **Message templates, not interpolation**: `logger.LogInformation($"User {id}")` allocates even when the level is disabled and loses structured properties (`CA2254`). Use `{Named}` placeholders; names should be stable PascalCase.
-- **`[LoggerMessage]` source generator** for hot paths (zero allocation when disabled). In .NET 9 it works in classes with a primary constructor that takes an `ILogger`.[^6]
-- **Never log secrets or personal data**: tokens, passwords, connection strings, full request bodies, `Authorization` headers. Since .NET 9, `IHttpClientFactory` no longer logs header *values* at `Trace` by default and redacts URI query strings in its logs and `HttpClient` EventSource events; re-enabling them (`RedactLoggedHeaders(_ => false)`) needs a justification.[^25]
+- **`[LoggerMessage]` source generator** for hot paths (zero allocation when disabled). In .NET 9 it works in classes with a primary constructor that takes an `ILogger`.
+- **Never log secrets or personal data**: tokens, passwords, connection strings, full request bodies, `Authorization` headers. Since .NET 9, `IHttpClientFactory` no longer logs header *values* at `Trace` by default and redacts URI query strings in its logs and `HttpClient` EventSource events; re-enabling them (`RedactLoggedHeaders(_ => false)`) needs a justification.
 - Use `logger.LogError(ex, "…")` — pass the exception object, not `ex.Message`.
 - Log levels: `Trace`/`Debug` for diagnostics, `Information` for business events, `Warning` for recoverable anomalies, `Error` for failed operations, `Critical` for process-wide failures.
 
@@ -1372,7 +1372,7 @@ Verified behaviours (.NET 9.0.21):
 
 Review rules:
 
-- **Never `new HttpClient()` per request** (socket exhaustion) and never a static client without `PooledConnectionLifetime` (stale DNS). Use `IHttpClientFactory` (typed/named clients) or a singleton `SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) }`. In .NET 9 the factory's default primary handler is `SocketsHttpHandler`, so casting the primary handler to `HttpClientHandler` in `ConfigurePrimaryHttpMessageHandler` callbacks fails.[^25]
+- **Never `new HttpClient()` per request** (socket exhaustion) and never a static client without `PooledConnectionLifetime` (stale DNS). Use `IHttpClientFactory` (typed/named clients) or a singleton `SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) }`. In .NET 9 the factory's default primary handler is `SocketsHttpHandler`, so casting the primary handler to `HttpClientHandler` in `ConfigurePrimaryHttpMessageHandler` callbacks fails.
 - Do not capture typed clients in singletons — the factory rotates handlers; a captured `HttpClient` never sees DNS changes.
 - Escape user input in URLs (`Uri.EscapeDataString`) or build them with a query builder; never concatenate raw input.
 - Dispose `HttpResponseMessage`; use `HttpCompletionOption.ResponseHeadersRead` + streaming for large bodies.
@@ -1430,8 +1430,8 @@ public enum Color { [JsonStringEnumMemberName("dark-red")] DarkRed }
 - **Polymorphism**: use `[JsonPolymorphic]` + `[JsonDerivedType]` (allow-list). Never deserialize into `object` with custom converters that resolve type names from the payload, and never use `TypeNameHandling.All`-style settings in Newtonsoft.Json on untrusted input.
 - **Untrusted input limits**: `MaxDepth` defaults to 64; for request bodies also bound the size (Kestrel `MaxRequestBodySize`).
 - `JsonDocument` is `IDisposable` (pooled buffers) — dispose it, or use `JsonNode`/`JsonElement.Clone()` for data that outlives the document.
-- Other .NET 9 additions: `IndentCharacter`/`IndentSize`, `JsonSchemaExporter.GetJsonSchemaAsNode(options, typeof(T))`, ordered `JsonObject` APIs (`IndexOf`, `Insert`), and `JsonReaderOptions.AllowMultipleValues` for whitespace-separated documents.[^26]
-- .NET 9 behaviour changes: nullable `JsonDocument` properties deserialize JSON `null` to a `JsonDocument` whose `RootElement.ValueKind` is `Null` (previously the property was `null`); metadata property names such as `$type` are now unescaped before comparison.[^17]
+- Other .NET 9 additions: `IndentCharacter`/`IndentSize`, `JsonSchemaExporter.GetJsonSchemaAsNode(options, typeof(T))`, ordered `JsonObject` APIs (`IndexOf`, `Insert`), and `JsonReaderOptions.AllowMultipleValues` for whitespace-separated documents.
+- .NET 9 behaviour changes: nullable `JsonDocument` properties deserialize JSON `null` to a `JsonDocument` whose `RootElement.ValueKind` is `Null` (previously the property was `null`); metadata property names such as `$type` are now unescaped before comparison.
 
 ##### Source generation (required for Native AOT and trimming)
 
@@ -1560,9 +1560,9 @@ app.MapGet("/me", (System.Security.Claims.ClaimsPrincipal user) => user.Identity
 app.Run();
 ```
 
-- **Forwarded headers**: since ASP.NET Core 9.0.6 (and 8.0.17) `X-Forwarded-*` headers from proxies not listed in `KnownProxies`/`KnownNetworks` are ignored. A deployment behind a TLS-terminating proxy that is not configured sees `http` requests (redirect loops, wrong `Request.IsHttps`). The fix is to list the proxy, not to clear `KnownProxies`/`KnownNetworks` or set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` without network isolation.[^27]
+- **Forwarded headers**: since ASP.NET Core 9.0.6 (and 8.0.17) `X-Forwarded-*` headers from proxies not listed in `KnownProxies`/`KnownNetworks` are ignored. A deployment behind a TLS-terminating proxy that is not configured sees `http` requests (redirect loops, wrong `Request.IsHttps`). The fix is to list the proxy, not to clear `KnownProxies`/`KnownNetworks` or set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` without network isolation.
 - **CORS**: `AllowAnyOrigin()` together with `AllowCredentials()` is rejected by ASP.NET Core with `InvalidOperationException` ("The CORS protocol does not allow specifying a wildcard (any) origin and credentials at the same time"). `SetIsOriginAllowed(_ => true).AllowCredentials()` compiles and works — and is a vulnerability (any site can make credentialed requests). Flag it.
-- **Authorization**: a fallback policy that requires authenticated users makes endpoints secure by default; anonymous endpoints opt out explicitly. Analyzer `ASP0026` (New in .NET 9) warns when an `[Authorize]` is overridden by an `[AllowAnonymous]` "farther away" (e.g. on the controller class).[^7]
+- **Authorization**: a fallback policy that requires authenticated users makes endpoints secure by default; anonymous endpoints opt out explicitly. Analyzer `ASP0026` (New in .NET 9) warns when an `[Authorize]` is overridden by an `[AllowAnonymous]` "farther away" (e.g. on the controller class).
 - **Antiforgery**: minimal API endpoints that bind forms (`[FromForm]`, `IFormFile`) validate antiforgery tokens when antiforgery services are registered (.NET 8+); `DisableAntiforgery()` on cookie-authenticated form endpoints enables CSRF.
 - **Data Protection**: in multi-instance deployments persist keys (`PersistKeysToFileSystem`/Azure/Redis) and protect them at rest; otherwise cookies and antiforgery tokens break on scale-out or restart.
 - **Kestrel limits**: keep defaults or tighten `MaxRequestBodySize` (default 30,000,000 bytes, about 28.6 MiB) and request header limits; raising them or setting `null` (unlimited) needs a reason.
@@ -1598,7 +1598,7 @@ public sealed record Forecast(string City, int TemperatureC);
 
 #### EF Core 9
 
-##### Breaking changes to check during upgrade or review[^28]
+##### Breaking changes to check during upgrade or review
 
 - **Pending model changes now throw.** `Migrate()`/`MigrateAsync()`/`dotnet ef database update` fail with `PendingModelChangesWarning` as an error when the model differs from the last migration's snapshot — commonly caused by non-deterministic `HasData` (`DateTime.Now`, `Guid.NewGuid()`) or by forgetting to add a migration. Fix the model; suppress (`ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))`) only for the documented false-positive cases.
 - **Migrations inside a user transaction now throw** (`MigrationsUserTransactionWarning`). EF 9 starts its own transaction and takes a migration lock to protect against concurrent application; remove the `BeginTransaction`/`CreateExecutionStrategy` wrapper around `MigrateAsync`.
@@ -1676,8 +1676,8 @@ Review rules:
 - **Pagination**: always `OrderBy` before `Skip`/`Take`; prefer keyset pagination for deep pages.
 - **`Find` vs `FirstOrDefault`**: `FindAsync` checks the change tracker first; both are fine, but do not use `SingleOrDefault` on non-unique columns.
 - **Migrations in production**: apply from a deployment step or a migration bundle, not from every app instance's startup. EF 9's migration lock prevents corruption but still serializes startup.
-- **Primitive collections** (`ids.Contains(p.Id)` with a `List<int>`) are sent as a single JSON parameter since EF 8; `EF.Constant()` (EF 8.0.2), and in EF 9 `EF.Parameter()` and the `TranslateParameterizedCollectionsToConstants()` context option, control it — use them only after measuring query plans. In EF 9, `EF.Constant`/`EF.Parameter` inside `EF.CompileQuery`/`EF.CompileAsyncQuery` throw `InvalidCastException` at runtime.[^28]
-- **Precompiled queries and Native AOT** in EF Core 9 are explicitly experimental — not for production.[^9]
+- **Primitive collections** (`ids.Contains(p.Id)` with a `List<int>`) are sent as a single JSON parameter since EF 8; `EF.Constant()` (EF 8.0.2), and in EF 9 `EF.Parameter()` and the `TranslateParameterizedCollectionsToConstants()` context option, control it — use them only after measuring query plans. In EF 9, `EF.Constant`/`EF.Parameter` inside `EF.CompileQuery`/`EF.CompileAsyncQuery` throw `InvalidCastException` at runtime.
+- **Precompiled queries and Native AOT** in EF Core 9 are explicitly experimental — not for production.
 - `HasData` seeding must be deterministic; use `UseSeeding`/`UseAsyncSeeding` (EF 9) for data that depends on runtime values.
 
 ***
@@ -1686,7 +1686,7 @@ Review rules:
 
 ##### Serialization and deserialization
 
-- **`BinaryFormatter` is gone in .NET 9**: every call throws `PlatformNotSupportedException`, and using the type is a compile-time error (`SYSLIB0011`) unless suppressed. Do not suppress it and do not add the unsupported `System.Runtime.Serialization.Formatters` compatibility package to "fix" the build — migrate to `System.Text.Json`, `DataContractSerializer` with known types, MessagePack/protobuf with explicit contracts.[^15] Existing persisted `BinaryFormatter` payloads can be parsed without instantiating arbitrary types with `NrbfDecoder` from the `System.Formats.Nrbf` NuGet package (9.0.x; not part of the shared framework, and marked experimental — using it reports `SYSLIB5005` as an error until suppressed).
+- **`BinaryFormatter` is gone in .NET 9**: every call throws `PlatformNotSupportedException`, and using the type is a compile-time error (`SYSLIB0011`) unless suppressed. Do not suppress it and do not add the unsupported `System.Runtime.Serialization.Formatters` compatibility package to "fix" the build — migrate to `System.Text.Json`, `DataContractSerializer` with known types, MessagePack/protobuf with explicit contracts. Existing persisted `BinaryFormatter` payloads can be parsed without instantiating arbitrary types with `NrbfDecoder` from the `System.Formats.Nrbf` NuGet package (9.0.x; not part of the shared framework, and marked experimental — using it reports `SYSLIB5005` as an error until suppressed).
 - **`TypeNameHandling`** other than `None` in Newtonsoft.Json on untrusted data is remote code execution; for type names from untrusted input use an allow-list (the .NET 9 `System.Reflection.Metadata.TypeName.TryParse` helps parse them safely).
 - **XML**: `XmlReader` with default settings is safe in .NET Core (`DtdProcessing.Prohibit`); flag `DtdProcessing.Parse` with an `XmlUrlResolver`.
 
@@ -1720,7 +1720,7 @@ Console.WriteLine(Convert.ToHexStringLower(CryptographicOperations.HashData(Hash
 Console.WriteLine(RandomNumberGenerator.GetHexString(32, lowercase: true));  // .NET 8
 ```
 
-- `X509CertificateLoader` loads exactly one format per method (no content sniffing). The old constructors and `X509Certificate2Collection.Import` are obsolete (`SYSLIB0057`) because sniffing was a source of security issues.[^16]
+- `X509CertificateLoader` loads exactly one format per method (no content sniffing). The old constructors and `X509Certificate2Collection.Import` are obsolete (`SYSLIB0057`) because sniffing was a source of security issues.
 - Use `RandomNumberGenerator` for anything security-relevant; `Random`/`Random.Shared` are predictable.
 - Compare secrets (HMACs, tokens) with `CryptographicOperations.FixedTimeEquals`, never `==`/`SequenceEqual`.
 - AES: `AesGcm` (with a unique 12-byte nonce per key and message) or `Aes` + HMAC; never ECB, never a constant IV. MD5/SHA-1 only for non-security checksums.
@@ -1751,13 +1751,13 @@ foreach (string input in new[] { "a.txt", "../etc/passwd", "/etc/passwd", "../fi
 
 ##### Named mutexes on Unix — changed in 9.0.21
 
-Starting with .NET 9.0.21 (and 8.0.32, 10.0.13), named `Mutex` objects on Unix are **user-scoped by default** instead of global; backing files move from `/tmp` to `$TMPDIR` where that is per-user (macOS), otherwise `$XDG_RUNTIME_DIR`, otherwise a directory under the home directory from the user database (not `$HOME`; on 9.0.21 without `XDG_RUNTIME_DIR` it was `~/.dotnet/corefx/Runtime/SharedMemory/`). Cross-user coordination via named mutexes stops working, and processes running as a UID without a passwd entry (common with `docker run -u <uid>` or Kubernetes `runAsUser`) fail to create named mutexes unless `XDG_RUNTIME_DIR` points to a writable directory. The opt-out is the `System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal` runtime configuration switch.[^29]
+Starting with .NET 9.0.21 (and 8.0.32, 10.0.13), named `Mutex` objects on Unix are **user-scoped by default** instead of global; backing files move from `/tmp` to `$TMPDIR` where that is per-user (macOS), otherwise `$XDG_RUNTIME_DIR`, otherwise a directory under the home directory from the user database (not `$HOME`; on 9.0.21 without `XDG_RUNTIME_DIR` it was `~/.dotnet/corefx/Runtime/SharedMemory/`). Cross-user coordination via named mutexes stops working, and processes running as a UID without a passwd entry (common with `docker run -u <uid>` or Kubernetes `runAsUser`) fail to create named mutexes unless `XDG_RUNTIME_DIR` points to a writable directory. The opt-out is the `System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal` runtime configuration switch.
 
 ***
 
 #### Performance
 
-.NET 9 runtime improvements that apply without code changes: dynamic PGO now optimizes type checks/casts, loop optimizations (induction-variable widening, strength reduction, counting down), inlining of shared generics needing runtime lookups, stack allocation of boxes that do not escape, Arm64 SVE (experimental) and AVX10.1 intrinsics, a 2–4× faster exception-handling implementation, and Server GC with DATAS enabled by default.[^11]
+.NET 9 runtime improvements that apply without code changes: dynamic PGO now optimizes type checks/casts, loop optimizations (induction-variable widening, strength reduction, counting down), inlining of shared generics needing runtime lookups, stack allocation of boxes that do not escape, Arm64 SVE (experimental) and AVX10.1 intrinsics, a 2–4× faster exception-handling implementation, and Server GC with DATAS enabled by default.
 
 Review rules:
 
@@ -1786,8 +1786,8 @@ Review rules:
 
 - Treat `IL2026` (RequiresUnreferencedCode), `IL2067`/`IL2070`-family (`DynamicallyAccessedMembers` mismatches) and `IL3050` (RequiresDynamicCode) warnings as errors in AOT-targeted projects; suppressing them hides runtime failures.
 - Use source generators: `System.Text.Json` contexts, `[LoggerMessage]`, `[GeneratedRegex]`, configuration binding and options validation generators, `WebApplication.CreateSlimBuilder` for minimal APIs.
-- .NET 9 adds `[FeatureSwitchDefinition("Name")]` (trimmer treats the property as a constant when the switch is set) and `[FeatureGuard(typeof(RequiresDynamicCodeAttribute))]` (calls to annotated APIs inside the guarded branch do not warn).[^11]
-- Not supported in Native AOT on .NET 9: MVC controllers/Razor Pages, Blazor Server, `System.Reflection.Emit`, dynamic assembly loading; EF Core support is experimental. SignalR supports trimming and Native AOT since .NET 9 with limitations (JSON protocol with source-generated contexts only, no strongly typed hubs under `PublishAot`). `TypeDescriptor` trimming support needs `TypeDescriptor.RegisterType<T>()` + `*FromRegisteredType` APIs (New in .NET 9).[^6]
+- .NET 9 adds `[FeatureSwitchDefinition("Name")]` (trimmer treats the property as a constant when the switch is set) and `[FeatureGuard(typeof(RequiresDynamicCodeAttribute))]` (calls to annotated APIs inside the guarded branch do not warn).
+- Not supported in Native AOT on .NET 9: MVC controllers/Razor Pages, Blazor Server, `System.Reflection.Emit`, dynamic assembly loading; EF Core support is experimental. SignalR supports trimming and Native AOT since .NET 9 with limitations (JSON protocol with source-generated contexts only, no strongly typed hubs under `PublishAot`). `TypeDescriptor` trimming support needs `TypeDescriptor.RegisterType<T>()` + `*FromRegisteredType` APIs (New in .NET 9).
 - Native AOT publish requires the platform native toolchain on the build machine (clang and the zlib development package on Linux, the MSVC C++ build tools on Windows).
 
 ***
@@ -1864,14 +1864,14 @@ Review rules:
 - `async` tests return `Task`, never `async void`.
 - Integration tests: `WebApplicationFactory<Program>`; replace infrastructure with `ConfigureTestServices`; real databases via Testcontainers rather than the EF in-memory provider (which does not enforce relational constraints or translate SQL).
 - Do not assert on exception *messages* from the BCL or on log text; assert types, status codes, and structured data.
-- `dotnet test` in .NET 9 runs test projects for multiple target frameworks in parallel (`TestTfmsInParallel=false` to opt out) — tests that share files, ports or databases across TFMs must be isolated.[^12]
+- `dotnet test` in .NET 9 runs test projects for multiple target frameworks in parallel (`TestTfmsInParallel=false` to opt out) — tests that share files, ports or databases across TFMs must be isolated.
 
 ***
 
 #### Analyzers and Tooling
 
 - **Defaults**: the .NET 9 SDK enables a small set of CA rules as warnings by default; in a plain `net9.0` project `CA2022` (inexact `Stream.Read`), `CA2264` (non-nullable value passed to `ThrowIfNull`) and `CA2265` (span compared to `null`/`default`) fire without configuration. `AnalysisLevel` `9.0-recommended` (or `latest-recommended`) additionally enabled `CA1871`, `CA1872` and `CA2262` in the same test file (verified on SDK 9.0.319). Recommend `<AnalysisLevel>9.0-recommended</AnalysisLevel>` + `TreatWarningsAsErrors`.
-- **New .NET 9 rules**: CA1514 (redundant length argument), CA1515 (public types in executables), CA1871 (nullable struct to `ThrowIfNull`), CA1872 (`BitConverter.ToString` → `Convert.ToHexString`), CA2022 (inexact `Stream.Read`, on by default — reported for variables typed `Stream`, not for `MemoryStream`), CA2262 (`MaxResponseHeadersLength` is in KB), CA2263 (prefer generic overload), CA2264, CA2265.[^12]
+- **New .NET 9 rules**: CA1514 (redundant length argument), CA1515 (public types in executables), CA1871 (nullable struct to `ThrowIfNull`), CA1872 (`BitConverter.ToString` → `Convert.ToHexString`), CA2022 (inexact `Stream.Read`, on by default — reported for variables typed `Stream`, not for `MemoryStream`), CA2262 (`MaxResponseHeadersLength` is in KB), CA2263 (prefer generic overload), CA2264, CA2265.
 - **Nullable warnings** (`CS86xx`) are part of the compiler, not of `AnalysisLevel` — `<Nullable>enable</Nullable>` plus `TreatWarningsAsErrors` makes them errors.
 - **BuildChecks** (`dotnet build /check`) catch MSBuild script problems (e.g. `BC0101` shared output path, `BC0102` double writes).
 - **Terminal Logger** is the default for `build`/`test`/`publish` in the .NET 9 SDK; CI logs that parse MSBuild output may need `--tl:off` or `MSBUILDTERMINALLOGGER=off`.
@@ -1882,7 +1882,7 @@ Review rules:
 
 #### Removed / Changed in .NET 9 — Migration Notes
 
-From .NET 8 / C# 12 to .NET 9 / C# 13:[^17][^20]
+From .NET 8 / C# 12 to .NET 9 / C# 13:
 
 | Area | Change | Action |
 |---|---|---|

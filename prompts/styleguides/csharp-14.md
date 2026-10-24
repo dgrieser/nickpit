@@ -1,27 +1,27 @@
 ### C# 14 on .NET 10 (LTS): The Complete Production Developer Guide
 
-> **Version**: C# 14 ships with .NET 10, released **November 11, 2025** (SDK 10.0.100, Visual Studio 2026 18.0).[^1][^2] Latest servicing release as of October 2026: **.NET 10.0.13 (October 13, 2026)** with SDKs **10.0.402** and **10.0.113**; it fixes 44 CVEs, so anything older than 10.0.13 is a finding.[^3]
-> **Support**: .NET 10 is a **Long Term Support (LTS)** release, in the *active* phase, supported until **November 14, 2028**.[^3][^4] .NET 8 (LTS) and .NET 9 (STS) both reach end of support on **November 10, 2026**.[^4] **.NET 11 / C# 15 is not released**: .NET 11 RC2 (11.0.0-rc.2, SDK 11.0.100-rc.2) shipped on October 13, 2026 with a go-live license; GA is planned for November 2026.[^5]
+> **Version**: C# 14 ships with .NET 10, released **November 11, 2025** (SDK 10.0.100, Visual Studio 2026 18.0). Latest servicing release as of October 2026: **.NET 10.0.13 (October 13, 2026)** with SDKs **10.0.402** and **10.0.113**; it fixes 44 CVEs, so anything older than 10.0.13 is a finding.
+> **Support**: .NET 10 is a **Long Term Support (LTS)** release, in the *active* phase, supported until **November 14, 2028**. .NET 8 (LTS) and .NET 9 (STS) both reach end of support on **November 10, 2026**. **.NET 11 / C# 15 is not released**: .NET 11 RC2 (11.0.0-rc.2, SDK 11.0.100-rc.2) shipped on October 13, 2026 with a go-live license; GA is planned for November 2026.
 > **Scope**: The C# 14 language, the .NET 10 base class library, runtime, SDK, ASP.NET Core 10 and EF Core 10 as they affect production code and code review: idioms, pitfalls, security, performance, testing, analyzers, trimming and Native AOT.
-> **Selection**: This guide applies when the project's language version is 14 — an explicit `<LangVersion>14</LangVersion>` (or `14.0`), or `<TargetFramework>net10.0</TargetFramework>` with no `LangVersion`, because C# 14 is the default for `net10.0`.[^6]
+> **Selection**: This guide applies when the project's language version is 14 — an explicit `<LangVersion>14</LangVersion>` (or `14.0`), or `<TargetFramework>net10.0</TargetFramework>` with no `LangVersion`, because C# 14 is the default for `net10.0`.
 > **Note**: This document is self-contained. Sections marked **New in C# 14** or **New in .NET 10** cover version-specific behavior; everything else applies to all modern C#. Every behavioral claim and example was compiled and run on SDK 10.0.402 / runtime 10.0.13 (Linux x64); "new in" boundaries were checked by compiling with `LangVersion` 13 and/or targeting `net9.0` (runtime 9.0.21).
 
 ---
 
 #### Overview and Global Truths
 
-C# 14 adds **extension members** (extension properties, static extension members and extension operators declared in `extension` blocks), the **`field` keyword** for field-backed properties, **null-conditional assignment** (`a?.B = x`), **`nameof` on unbound generic types** (`nameof(List<>)`), **first-class `Span<T>`/`ReadOnlySpan<T>` conversions**, **parameter modifiers on implicitly typed lambda parameters**, **partial constructors and partial events**, **user-defined compound assignment and increment operators**, optional and named arguments in expression trees, and the `#:` directives of **file-based apps**.[^6][^7] Several of these change the meaning of existing code (`field` inside accessors, overload resolution with spans, `extension`/`partial`/`scoped` as contextual keywords); see [Breaking changes in C# 14](#breaking-changes-in-c-14-must-know-for-upgrades).
+C# 14 adds **extension members** (extension properties, static extension members and extension operators declared in `extension` blocks), the **`field` keyword** for field-backed properties, **null-conditional assignment** (`a?.B = x`), **`nameof` on unbound generic types** (`nameof(List<>)`), **first-class `Span<T>`/`ReadOnlySpan<T>` conversions**, **parameter modifiers on implicitly typed lambda parameters**, **partial constructors and partial events**, **user-defined compound assignment and increment operators**, optional and named arguments in expression trees, and the `#:` directives of **file-based apps**. Several of these change the meaning of existing code (`field` inside accessors, overload resolution with spans, `extension`/`partial`/`scoped` as contextual keywords); see [Breaking changes in C# 14](#breaking-changes-in-c-14-must-know-for-upgrades).
 
-.NET 10 is the LTS successor of .NET 8. Its reviewer-relevant changes include: the runtime **no longer installs a default SIGTERM handler**, `BackgroundService.ExecuteAsync` **runs entirely on a background thread**, configuration binding **preserves `null`**, `System.Linq.AsyncEnumerable` is **in the box** (conflicts with `System.Linq.Async`), System.Text.Json gains `AllowDuplicateProperties`, `JsonSerializerOptions.Strict` and metadata-name conflict validation, LINQ gains `LeftJoin`/`RightJoin`/`Shuffle`/`Sequence`/`InfiniteSequence`, post-quantum cryptography (`MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa`), `Rfc2898DeriveBytes` constructors are obsolete, and ASP.NET Core 10 adds built-in minimal-API validation and returns **401/403 instead of login redirects** for API endpoints.[^8][^9][^10]
+.NET 10 is the LTS successor of .NET 8. Its reviewer-relevant changes include: the runtime **no longer installs a default SIGTERM handler**, `BackgroundService.ExecuteAsync` **runs entirely on a background thread**, configuration binding **preserves `null`**, `System.Linq.AsyncEnumerable` is **in the box** (conflicts with `System.Linq.Async`), System.Text.Json gains `AllowDuplicateProperties`, `JsonSerializerOptions.Strict` and metadata-name conflict validation, LINQ gains `LeftJoin`/`RightJoin`/`Shuffle`/`Sequence`/`InfiniteSequence`, post-quantum cryptography (`MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa`), `Rfc2898DeriveBytes` constructors are obsolete, and ASP.NET Core 10 adds built-in minimal-API validation and returns **401/403 instead of login redirects** for API endpoints.
 
-Everything from earlier versions is available and expected in modern code: records and `init` (C# 9); global usings, file-scoped namespaces, record structs (C# 10); raw string literals, list patterns, `required` members, generic math, UTF-8 literals `"..."u8` (C# 11); primary constructors for classes, collection expressions, `[InlineArray]`, alias any type, `ref readonly` parameters (C# 12); `params` collections, the `System.Threading.Lock` type, `\e`, partial properties/indexers, `ref struct` interfaces and `allows ref struct`, `[OverloadResolutionPriority]` (C# 13).[^11]
+Everything from earlier versions is available and expected in modern code: records and `init` (C# 9); global usings, file-scoped namespaces, record structs (C# 10); raw string literals, list patterns, `required` members, generic math, UTF-8 literals `"..."u8` (C# 11); primary constructors for classes, collection expressions, `[InlineArray]`, alias any type, `ref readonly` parameters (C# 12); `params` collections, the `System.Threading.Lock` type, `\e`, partial properties/indexers, `ref struct` interfaces and `allows ref struct`, `[OverloadResolutionPriority]` (C# 13).
 
 Global truths:
 
 - **Managed, garbage-collected, type-safe.** Value types (`struct`, `record struct`, enums, primitives) are copied; reference types are shared. The GC is generational; `Span<T>` and `ref struct` keep stack-only data off the heap.
 - **Nullable reference types are a compile-time contract only.** `string?` vs `string` produces warnings, never runtime checks. Public APIs still validate (`ArgumentNullException.ThrowIfNull`).
 - **Async is pervasive.** I/O APIs are asynchronous, take a `CancellationToken`, and return `Task`/`ValueTask`. Blocking on them (`.Result`, `.Wait()`) is a bug in server code.
-- **The SDK pins the language, not the runtime.** `LangVersion` defaults from the target framework (`net10.0` → 14, `net9.0` → 13). Using C# 14 with an older target framework is unsupported and can change overload resolution (see `Enumerable.Reverse` below).[^7]
+- **The SDK pins the language, not the runtime.** `LangVersion` defaults from the target framework (`net10.0` → 14, `net9.0` → 13). Using C# 14 with an older target framework is unsupported and can change overload resolution (see `Enumerable.Reverse` below).
 - **Analyzers are part of the compiler pipeline.** .NET analyzers (CAxxxx), IDE rules (IDExxxx), platform obsoletions (SYSLIBxxxx) and package analyzers (EF1003, xUnit1xxx) are build diagnostics; `TreatWarningsAsErrors` turns them into gates.
 
 ---
@@ -32,7 +32,7 @@ All examples in this section compile with `LangVersion` 14 and fail with `LangVe
 
 ##### 1. Extension members (`extension` blocks) [New in C# 14] ★★★
 
-An `extension` block inside a non-generic static class declares members for a *receiver*. A block with a named receiver parameter declares instance-like members (methods and **properties**); a block with only a receiver type declares **static** members of the extended type, including **user-defined operators**.[^6][^12]
+An `extension` block inside a non-generic static class declares members for a *receiver*. A block with a named receiver parameter declares instance-like members (methods and **properties**); a block with only a receiver type declares **static** members of the extended type, including **user-defined operators**.
 
 ```csharp
 var xs = new List<int> { 1, 2, 3 };
@@ -64,12 +64,12 @@ Review notes:
 - Extension members in blocks are source- and binary-compatible with classic `this`-parameter extension methods: a method in a block is emitted as a static method of the containing class and is still callable as `SequenceExtensions.CountFast(xs)`. Converting existing `this` methods to a block is not a breaking change for callers.
 - Extension properties cannot have backing state (no instance fields exist on the receiver). A property that "caches" into a static `Dictionary` keyed by the receiver keeps every receiver alive (memory leak); use `ConditionalWeakTable<TKey,TValue>` if per-instance state is unavoidable.
 - **Indexers in extension blocks are C# 15** (not available). **Extension constants/fields do not exist.**
-- `extension` is now a contextual keyword: a type, alias or type parameter named `extension` no longer compiles (escape as `@extension`).[^7]
-- Prefer a real instance member when you own the type. Use extension members for types you do not own, for interface "default" helpers, and for operators on generic interfaces (the .NET 10 `System.Numerics.Tensors` package uses extension operators this way).[^8]
+- `extension` is now a contextual keyword: a type, alias or type parameter named `extension` no longer compiles (escape as `@extension`).
+- Prefer a real instance member when you own the type. Use extension members for types you do not own, for interface "default" helpers, and for operators on generic interfaces (the .NET 10 `System.Numerics.Tensors` package uses extension operators this way).
 
 ##### 2. The `field` keyword [New in C# 14] ★★★
 
-Inside a property accessor, `field` refers to a compiler-synthesized backing field, so validation or normalization no longer needs a hand-written field.[^6]
+Inside a property accessor, `field` refers to a compiler-synthesized backing field, so validation or normalization no longer needs a hand-written field.
 
 ```csharp
 var p = new Person();
@@ -104,14 +104,14 @@ class Legacy
 }
 ```
 
-  Upgrading a project to C# 14 must treat CS9258 as an error: rename the member or write `this.field`/`@field`. A local variable (or a lambda/local-function parameter) named `field` in an accessor is now an error: Roslyn 5.9 (SDK 10.0.402) reports it as **CS9273** (the breaking-changes document still says CS9272).[^7]
+  Upgrading a project to C# 14 must treat CS9258 as an error: rename the member or write `this.field`/`@field`. A local variable (or a lambda/local-function parameter) named `field` in an accessor is now an error: Roslyn 5.9 (SDK 10.0.402) reports it as **CS9273** (the breaking-changes document still says CS9272).
 - The property initializer (`= ""`) assigns the backing field directly and bypasses the `set` logic, so the initializer value itself must already be valid. Object initializers, `with { Name = … }` and serializers go through the accessor; members not named in a `with` expression are copied field-by-field.
 - `field ??= …` lazy initialization is not thread-safe; use `Lazy<T>` or `LazyInitializer.EnsureInitialized` for shared instances.
 - `[field: JsonIgnore]`-style attribute targets apply to the synthesized field as before.
 
 ##### 3. Null-conditional assignment [New in C# 14] ★★
 
-`?.` and `?[]` may appear on the left of `=` and compound assignments. The right-hand side is evaluated **only if** the receiver is non-null.[^6]
+`?.` and `?[]` may appear on the left of `=` and compound assignments. The right-hand side is evaluated **only if** the receiver is non-null.
 
 ```csharp
 Customer? c = null;
@@ -141,11 +141,11 @@ Console.WriteLine(nameof(Dictionary<,>));   // Dictionary
 Console.WriteLine(nameof(List<>.Count));    // Count
 ```
 
-Before C# 14 a closed type (`nameof(List<int>)`) was required.[^6]
+Before C# 14 a closed type (`nameof(List<int>)`) was required.
 
 ##### 5. First-class span conversions [New in C# 14] ★★★
 
-The language now has implicit conversions `T[]` → `Span<T>`/`ReadOnlySpan<T>`, `Span<T>` → `ReadOnlySpan<T>` and `string` → `ReadOnlySpan<char>` that participate in **extension-method receiver lookup** and **generic type inference**.[^6][^13]
+The language now has implicit conversions `T[]` → `Span<T>`/`ReadOnlySpan<T>`, `Span<T>` → `ReadOnlySpan<T>` and `string` → `ReadOnlySpan<char>` that participate in **extension-method receiver lookup** and **generic type inference**.
 
 ```csharp
 int[] arr = [1, 2, 3];
@@ -171,7 +171,7 @@ static class C
 }
 ```
 
-  Library authors should offer `ReadOnlySpan<T>` (preferred by the new rules) rather than `Span<T>` overloads, or use `[OverloadResolutionPriority]`. Callers can force the old binding with `o.AsEnumerable()`.[^7]
+  Library authors should offer `ReadOnlySpan<T>` (preferred by the new rules) rather than `Span<T>` overloads, or use `[OverloadResolutionPriority]`. Callers can force the old binding with `o.AsEnumerable()`.
 - **Expression trees.** `array.Contains(x)` inside an `Expression<…>` now binds to `MemoryExtensions.Contains(ReadOnlySpan<T>, T)` instead of `Enumerable.Contains`. Verified: the tree contains an `op_Implicit` to `ReadOnlySpan<int>`; `Compile()` works, but `Compile(preferInterpretation: true)` throws `ArgumentException` (the interpreter cannot handle the `ReadOnlySpan<int>` generic argument), and LINQ providers that do not recognize `MemoryExtensions` fail to translate it. EF Core 10 (and patched EF Core 9.0.x) translate it; for other providers (OData, older Cosmos/Mongo providers, custom visitors) write `Enumerable.Contains(ids, x)` or `ids.AsEnumerable().Contains(x)`.
 
 ```csharp
@@ -186,11 +186,11 @@ Expression<Func<int, bool>> safe = x => Enumerable.Contains(ids, x);  // stays E
 Console.WriteLine(safe.Compile(preferInterpretation: true)(2));        // True
 ```
 
-- **`Enumerable.Reverse` on arrays** binds to the in-place, `void`-returning `MemoryExtensions.Reverse(Span<T>)` when C# 14 is used with a target framework **older than net10.0** (verified on net9.0: `var y = x.Reverse();` → CS0815). On `net10.0`, the new `Enumerable.Reverse<T>(this T[])` overload wins and behavior is unchanged.[^7]
+- **`Enumerable.Reverse` on arrays** binds to the in-place, `void`-returning `MemoryExtensions.Reverse(Span<T>)` when C# 14 is used with a target framework **older than net10.0** (verified on net9.0: `var y = x.Reverse();` → CS0815). On `net10.0`, the new `Enumerable.Reverse<T>(this T[])` overload wins and behavior is unchanged.
 
 ##### 6. Modifiers on simple lambda parameters [New in C# 14] ★
 
-`ref`, `out`, `in`, `ref readonly` and `scoped` can be used without spelling out parameter types; `params` still requires explicit types.[^6]
+`ref`, `out`, `in`, `ref readonly` and `scoped` can be used without spelling out parameter types; `params` still requires explicit types.
 
 ```csharp
 TryParse<int> parse = (text, out result) => int.TryParse(text, out result);
@@ -202,11 +202,11 @@ delegate bool TryParse<T>(string text, out T result);
 delegate void Bump(ref int x);
 ```
 
-`scoped` in a lambda parameter list is now always a modifier (`(scoped scoped s) => …` with a type named `scoped` breaks).[^7]
+`scoped` in a lambda parameter list is now always a modifier (`(scoped scoped s) => …` with a type named `scoped` breaks).
 
 ##### 7. Partial constructors and partial events [New in C# 14] ★
 
-Instance constructors and events can be `partial` (one defining and one implementing declaration) — primarily for source generators. Only the implementing constructor may have a `this(...)`/`base(...)` initializer; the implementing event declaration must have `add`/`remove` accessors.[^6]
+Instance constructors and events can be `partial` (one defining and one implementing declaration) — primarily for source generators. Only the implementing constructor may have a `this(...)`/`base(...)` initializer; the implementing event declaration must have `add`/`remove` accessors.
 
 ```csharp
 var w = new Widget(5);
@@ -231,11 +231,11 @@ partial class Widget
 }
 ```
 
-`partial` can no longer be used as a method return type without escaping (`@partial`).[^7] Partial *interface* properties and events became implicitly `public virtual` (previously they were not), which can change which implementation is called.[^7]
+`partial` can no longer be used as a method return type without escaping (`@partial`). Partial *interface* properties and events became implicitly `public virtual` (previously they were not), which can change which implementation is called.
 
 ##### 8. User-defined compound assignment and increment operators [New in C# 14] ★★
 
-A type can declare instance `operator +=`, `operator -=`, …, `operator ++` and `operator --` (returning `void`) that **mutate the receiver in place** instead of producing a new instance through `operator +`.[^14]
+A type can declare instance `operator +=`, `operator -=`, …, `operator ++` and `operator --` (returning `void`) that **mutate the receiver in place** instead of producing a new instance through `operator +`.
 
 ```csharp
 var acc = new Accumulator();
@@ -255,7 +255,7 @@ Review notes: for **reference types** an in-place `+=` is visible through every 
 
 ##### 9. Optional and named arguments in expression trees [New in C# 14]
 
-Expression trees may now contain calls that rely on optional parameters or use named arguments (in position order). Verified: C# 13 reports CS0854/CS0853; C# 14 compiles `() => M.F(1)` as `() => F(1, 10)`.[^15]
+Expression trees may now contain calls that rely on optional parameters or use named arguments (in position order). Verified: C# 13 reports CS0854/CS0853; C# 14 compiles `() => M.F(1)` as `() => F(1, 10)`.
 
 ```csharp
 using System.Linq.Expressions;
@@ -272,15 +272,15 @@ The default value is baked into the tree at compile time; changing the default i
 
 ##### 10. File-based apps and `#:` directives [New in .NET 10 SDK]
 
-`dotnet run app.cs` runs a single C# file without a project. `#:package Name@Version`, `#:sdk Microsoft.NET.Sdk.Web`, `#:property Name=Value` and `#:project ../Lib/Lib.csproj` configure the implicit project; a `#!/usr/bin/env dotnet` shebang makes the file executable. File-based apps **default to `PublishAot=true`** (and `PackAsTool=true`; verified with `dotnet project convert app.cs` on SDK 10.0.402); `dotnet publish app.cs` produces a native executable.[^16] Directives containing double quotes are rejected by the .NET 10 SDK (`error: Directives currently cannot contain double quotes (")`); quoted directive values arrive only with the .NET 11 SDK.[^9][^5] `dnx`/`dotnet tool exec` and file-based apps do not replace a project for production code.
+`dotnet run app.cs` runs a single C# file without a project. `#:package Name@Version`, `#:sdk Microsoft.NET.Sdk.Web`, `#:property Name=Value` and `#:project ../Lib/Lib.csproj` configure the implicit project; a `#!/usr/bin/env dotnet` shebang makes the file executable. File-based apps **default to `PublishAot=true`** (and `PackAsTool=true`; verified with `dotnet project convert app.cs` on SDK 10.0.402); `dotnet publish app.cs` produces a native executable. Directives containing double quotes are rejected by the .NET 10 SDK (`error: Directives currently cannot contain double quotes (")`); quoted directive values arrive only with the .NET 11 SDK. `dnx`/`dotnet tool exec` and file-based apps do not replace a project for production code.
 
 Review notes: a `#:package` directive without a version, or with a floating version, is not reproducible; pin versions. These files are scripts, not libraries — production services still need a project, central package management and the analyzers configured below.
 
 ##### 11. Other compiler changes that surface in review
 
-- **Redundant `or` pattern warning (CS9336).** `o is not null or 42` is parsed as `(not null) or 42`; C# 14 warns "The pattern is redundant". The author almost always meant `is not (null or 42)`. Verified: the two expressions return `True` and `False` for `o = 42`; C# 13 gives no warning.[^7]
-- **Disposed iterators stop.** `MoveNext()` on a disposed compiler-generated enumerator now returns `false` instead of resuming user code.[^7] This and the partial interface member change (section 7) come from the newer compiler and apply even with `LangVersion` 13 (verified on SDK 10.0.402).
-- **`[Obsolete]` on pattern-based `DisposeAsync`/`Dispose` is now reported in `foreach`/`await foreach`.**[^7]
+- **Redundant `or` pattern warning (CS9336).** `o is not null or 42` is parsed as `(not null) or 42`; C# 14 warns "The pattern is redundant". The author almost always meant `is not (null or 42)`. Verified: the two expressions return `True` and `False` for `o = 42`; C# 13 gives no warning.
+- **Disposed iterators stop.** `MoveNext()` on a disposed compiler-generated enumerator now returns `false` instead of resuming user code. This and the partial interface member change (section 7) come from the newer compiler and apply even with `LangVersion` 13 (verified on SDK 10.0.402).
+- **`[Obsolete]` on pattern-based `DisposeAsync`/`Dispose` is now reported in `foreach`/`await foreach`.**
 
 ##### Breaking changes in C# 14 (must know for upgrades)
 
@@ -294,7 +294,7 @@ Review notes: a `#:package` directive without a version, or with a floating vers
 | Partial interface properties/events | Implicitly `public virtual` | Add `private`/`sealed` to keep old behavior |
 | Redundant `or` pattern | New warning CS9336 | Parenthesize: `is not (A or B)` |
 
-Source: Roslyn "Compiler breaking changes since C# 13".[^7]
+Source: Roslyn "Compiler breaking changes since C# 13".
 
 ---
 
@@ -302,7 +302,7 @@ Source: Roslyn "Compiler breaking changes since C# 13".[^7]
 
 ##### Runtime and hosting behavior changes [New in .NET 10] ★★★
 
-**No default SIGTERM handler.** On Unix the runtime no longer installs a SIGTERM handler, and on Windows no longer handles `CTRL_CLOSE_EVENT`/`CTRL_SHUTDOWN_EVENT`. A plain console app that relies on `AppDomain.ProcessExit` to flush or clean up on `docker stop`/Kubernetes termination now gets killed without running it.[^17] Verified with `kill -TERM`: on .NET 9 the program printed `ProcessExit raised`; on .NET 10 the process died (exit 143) without it. Apps built on the Generic Host (`Host.CreateApplicationBuilder`, ASP.NET Core) are not affected because the host's console lifetime registers its own handlers.
+**No default SIGTERM handler.** On Unix the runtime no longer installs a SIGTERM handler, and on Windows no longer handles `CTRL_CLOSE_EVENT`/`CTRL_SHUTDOWN_EVENT`. A plain console app that relies on `AppDomain.ProcessExit` to flush or clean up on `docker stop`/Kubernetes termination now gets killed without running it. Verified with `kill -TERM`: on .NET 9 the program printed `ProcessExit raised`; on .NET 10 the process died (exit 143) without it. Apps built on the Generic Host (`Host.CreateApplicationBuilder`, ASP.NET Core) are not affected because the host's console lifetime registers its own handlers.
 
 ```csharp
 using System.Runtime.InteropServices;
@@ -325,13 +325,13 @@ catch (OperationCanceledException)
 }
 ```
 
-**`BackgroundService.ExecuteAsync` runs entirely on a background thread.** Previously the synchronous part before the first `await` ran on the startup thread and blocked other hosted services and the server from starting. Verified with Microsoft.Extensions.Hosting 9.0 vs 10.0: on 9.0 the synchronous prefix ran on thread 1 and finished *before* `StartAsync` returned; on 10.0 it ran on a pool thread and `StartAsync` returned first.[^18] Code that *relied* on that ordering (e.g., "initialize the cache synchronously at the top of `ExecuteAsync` before the app accepts requests") is now racy — move such work into `StartAsync` (before `base.StartAsync`), an `IHostedLifecycleService`, or a startup task awaited before `app.Run()`.
+**`BackgroundService.ExecuteAsync` runs entirely on a background thread.** Previously the synchronous part before the first `await` ran on the startup thread and blocked other hosted services and the server from starting. Verified with Microsoft.Extensions.Hosting 9.0 vs 10.0: on 9.0 the synchronous prefix ran on thread 1 and finished *before* `StartAsync` returned; on 10.0 it ran on a pool thread and `StartAsync` returned first. Code that *relied* on that ordering (e.g., "initialize the cache synchronously at the top of `ExecuteAsync` before the app accepts requests") is now racy — move such work into `StartAsync` (before `base.StartAsync`), an `IHostedLifecycleService`, or a startup task awaited before `app.Run()`.
 
-**Configuration preserves `null`.** The JSON provider no longer turns `null` into `""`, the binder binds `null` (and empty arrays). Verified with `{ "Name": null, "Count": null, "Tags": [] }` bound to a class whose properties default to `"init"`, `7` and `null`: .NET 9 produced `Name=''`, `Count=7`, `Tags=null`; .NET 10 produces `Name=null`, `Count=null`, `Tags=[]`. A `null` bound to a non-nullable value type now yields `default(T)` instead of throwing.[^19] Options classes that assumed "property keeps its default unless configured" need `[Required]` validation or nullable types.
+**Configuration preserves `null`.** The JSON provider no longer turns `null` into `""`, the binder binds `null` (and empty arrays). Verified with `{ "Name": null, "Count": null, "Tags": [] }` bound to a class whose properties default to `"init"`, `7` and `null`: .NET 9 produced `Name=''`, `Count=7`, `Tags=null`; .NET 10 produces `Name=null`, `Count=null`, `Tags=[]`. A `null` bound to a non-nullable value type now yields `default(T)` instead of throwing. Options classes that assumed "property keeps its default unless configured" need `[Required]` validation or nullable types.
 
-**`System.Linq.AsyncEnumerable` is in the box.** LINQ for `IAsyncEnumerable<T>` (`Where`, `Select`, `ToListAsync`, …) ships in .NET 10; a direct or transitive reference to the community `System.Linq.Async` (< 7.0) causes ambiguity errors. Remove it, upgrade to 7.x, or `<ExcludeAssets>compile</ExcludeAssets>` for transitive references. `SelectAwait` and friends become `Select` overloads that take `async` lambdas with a `CancellationToken`.[^20]
+**`System.Linq.AsyncEnumerable` is in the box.** LINQ for `IAsyncEnumerable<T>` (`Where`, `Select`, `ToListAsync`, …) ships in .NET 10; a direct or transitive reference to the community `System.Linq.Async` (< 7.0) causes ambiguity errors. Remove it, upgrade to 7.x, or `<ExcludeAssets>compile</ExcludeAssets>` for transitive references. `SelectAwait` and friends become `Select` overloads that take `async` lambdas with a `CancellationToken`.
 
-**Other runtime/library behavior changes** (all .NET 10):[^9]
+**Other runtime/library behavior changes** (all .NET 10):
 
 - `Uri` length limits were removed (verified: a 70,015-character URI throws `UriFormatException` on .NET 9 and parses on .NET 10). Code that relied on the limit as an input-size guard must validate length itself.
 - `GnuTarEntry`/`PaxTarEntry` no longer include atime/ctime by default.
@@ -351,7 +351,7 @@ catch (OperationCanceledException)
 
 ##### New BCL APIs worth recommending [New in .NET 10]
 
-Verified to exist on `net10.0` and to be absent on `net9.0`:[^8]
+Verified to exist on `net10.0` and to be absent on `net9.0`:
 
 | Area | API |
 | --- | --- |
@@ -388,57 +388,57 @@ Console.WriteLine(string.Join(",", left));                                    //
 Console.WriteLine(string.Join(",", Enumerable.Sequence(0, 10, 5)));           // 0,5,10
 ```
 
-**Post-quantum crypto availability:** `MLKem.IsSupported`, `MLDsa.IsSupported` and `SlhDsa.IsSupported` require OpenSSL **3.5+** on Linux or Windows CNG with PQC support. Verified: on Ubuntu 24.04 with OpenSSL 3.0.13 all three return `false`. Code must check `IsSupported` and have a fallback; never assume PQC works because the API compiles.[^8]
+**Post-quantum crypto availability:** `MLKem.IsSupported`, `MLDsa.IsSupported` and `SlhDsa.IsSupported` require OpenSSL **3.5+** on Linux or Windows CNG with PQC support. Verified: on Ubuntu 24.04 with OpenSSL 3.0.13 all three return `false`. Code must check `IsSupported` and have a fallback; never assume PQC works because the API compiles.
 
 ##### JIT and GC improvements (no code change needed)
 
-.NET 10 devirtualizes and inlines array interface methods (`foreach` over an array typed as `IEnumerable<T>`), stack-allocates small fixed-size arrays (of value and reference types) and non-escaping delegates, models struct fields in escape analysis, improves loop inversion and block layout, and adds a region-aware Arm64 write barrier (GC pause improvements of 8–20%+ in Microsoft's benchmarks). AVX10.2 intrinsics exist but are disabled by default.[^21] Do not "optimize" code by hand against these (e.g., rewriting all `IEnumerable<T>` parameters to arrays) without a benchmark.
+.NET 10 devirtualizes and inlines array interface methods (`foreach` over an array typed as `IEnumerable<T>`), stack-allocates small fixed-size arrays (of value and reference types) and non-escaping delegates, models struct fields in escape analysis, improves loop inversion and block layout, and adds a region-aware Arm64 write barrier (GC pause improvements of 8–20%+ in Microsoft's benchmarks). AVX10.2 intrinsics exist but are disabled by default. Do not "optimize" code by hand against these (e.g., rewriting all `IEnumerable<T>` parameters to arrays) without a benchmark.
 
 ##### SDK and tooling changes [New in .NET 10]
 
-- `dotnet tool exec` / `dnx` run a tool package without installing it (downloads after a prompt) — treat it like `npx`: pin versions in CI (`dnx tool@1.2.3`).[^16]
-- `dotnet new sln` creates **`.slnx`** files by default.[^9]
-- **NuGet Audit includes transitive packages** (`dotnet restore` reports vulnerable transitive dependencies), and framework-provided package references are **pruned** (`RestoreEnablePackagePruning`); `PackageReference` without a version is an error (NU1015); NU1510 flags direct references that the framework already provides.[^9][^16]
-- `dotnet test` can run on **Microsoft.Testing.Platform** natively (`"test": { "runner": "Microsoft.Testing.Platform" }` in `global.json`).[^16]
+- `dotnet tool exec` / `dnx` run a tool package without installing it (downloads after a prompt) — treat it like `npx`: pin versions in CI (`dnx tool@1.2.3`).
+- `dotnet new sln` creates **`.slnx`** files by default.
+- **NuGet Audit includes transitive packages** (`dotnet restore` reports vulnerable transitive dependencies), and framework-provided package references are **pruned** (`RestoreEnablePackagePruning`); `PackageReference` without a version is an error (NU1015); NU1510 flags direct references that the framework already provides.
+- `dotnet test` can run on **Microsoft.Testing.Platform** natively (`"test": { "runner": "Microsoft.Testing.Platform" }` in `global.json`).
 - Noun-first aliases: `dotnet package add|list|remove`, `dotnet reference add|list|remove`.
 - Console apps can `dotnet publish /t:PublishContainer` without `EnableSdkContainerSupport`; `<ContainerImageFormat>` selects Docker or OCI.
 - `--interactive` defaults to true in interactive terminals; CLI diagnostics go to stderr.
-- `dnx` scripts bypass `global.json` SDK selection; `dotnet tool install --local` creates a tool manifest if none exists; NuGet audit sources reject plain HTTP; .NET tool packages can be RuntimeIdentifier-specific.[^9]
+- `dnx` scripts bypass `global.json` SDK selection; `dotnet tool install --local` creates a tool manifest if none exists; NuGet audit sources reject plain HTTP; .NET tool packages can be RuntimeIdentifier-specific.
 - `PackageReference` without a version fails restore with **NU1015**, and a direct reference to a package the framework already provides is pruned with **NU1510** (both verified on SDK 10.0.402).
 
 ##### ASP.NET Core 10 highlights [New in .NET 10]
 
-- **Minimal API validation**: `builder.Services.AddValidation()` validates DataAnnotations on parameters and records (including nested types) and returns a 400 `application/problem+json` response; opt out per endpoint with `.DisableValidation()`. Without `AddValidation()` nothing is validated.[^10]
-- **Cookie authentication returns 401/403 for API endpoints** (endpoints with `IApiEndpointMetadata`: `[ApiController]`, minimal APIs that read/write JSON or return `TypedResults`, SignalR) instead of redirecting to the login page. Verified: an unauthenticated request to a `TypedResults.Ok(...)` endpoint returns `401`, while an HTML endpoint still returns `302`.[^10][^22]
+- **Minimal API validation**: `builder.Services.AddValidation()` validates DataAnnotations on parameters and records (including nested types) and returns a 400 `application/problem+json` response; opt out per endpoint with `.DisableValidation()`. Without `AddValidation()` nothing is validated.
+- **Cookie authentication returns 401/403 for API endpoints** (endpoints with `IApiEndpointMetadata`: `[ApiController]`, minimal APIs that read/write JSON or return `TypedResults`, SignalR) instead of redirecting to the login page. Verified: an unauthenticated request to a `TypedResults.Ok(...)` endpoint returns `401`, while an HTML endpoint still returns `302`.
 - **Server-Sent Events**: `TypedResults.ServerSentEvents(IAsyncEnumerable<T>, eventType)`.
 - **OpenAPI 3.1 by default**, `Microsoft.OpenApi` 2.0 (`OpenApiAny` removed; use `JsonNode`), YAML endpoint (`MapOpenApi("/openapi/{documentName}.yaml")`).
-- **`IExceptionHandler`**: when `TryHandleAsync` returns `true`, the exception handler middleware no longer emits diagnostics/logs for it (`ExceptionHandlerOptions.SuppressDiagnosticsCallback` restores them).[^22]
+- **`IExceptionHandler`**: when `TryHandleAsync` returns `true`, the exception handler middleware no longer emits diagnostics/logs for it (`ExceptionHandlerOptions.SuppressDiagnosticsCallback` restores them).
 - Form binding: empty strings bind to `null` for nullable value types.
-- JSON request bodies are read through `PipeReader`; custom `JsonConverter`s that ignore `Utf8JsonReader.HasValueSequence` can now fail.[^10]
+- JSON request bodies are read through `PipeReader`; custom `JsonConverter`s that ignore `Utf8JsonReader.HasValueSequence` can now fail.
 - Passkeys (WebAuthn) in ASP.NET Core Identity; `*.localhost` binds to loopback.
 - The validation APIs live in the `Microsoft.Extensions.Validation` package/namespace (usable outside HTTP); the resolver extensibility APIs are `[Experimental]`.
-- JSON Patch has a System.Text.Json implementation (`Microsoft.AspNetCore.JsonPatch.SystemTextJson`) that is not a drop-in replacement for the Newtonsoft one (no `dynamic`/`ExpandoObject`); JSON Patch documents from clients must still be authorization-checked per path.[^10]
+- JSON Patch has a System.Text.Json implementation (`Microsoft.AspNetCore.JsonPatch.SystemTextJson`) that is not a drop-in replacement for the Newtonsoft one (no `dynamic`/`ExpandoObject`); JSON Patch documents from clients must still be authorization-checked per path.
 - A source generator emits `public partial class Program` for top-level-statement apps, so `WebApplicationFactory<Program>` works without the hand-written declaration (an analyzer flags the now-redundant one).
 - The temporary escape hatch for converters broken by `PipeReader`-based parsing is the AppContext switch `Microsoft.AspNetCore.UseStreamBasedJsonParsing`; fix the converter instead.
 - Deprecated: `IncludeOpenAPIAnalyzers` and the MVC API analyzers, the `Microsoft.Extensions.ApiDescription.Client` package.
-- Obsoleted: `WebHostBuilder`/`IWebHost`/`WebHost`, `IActionContextAccessor`, `IPNetwork` and `ForwardedHeadersOptions.KnownNetworks` (use `KnownIPNetworks` with `System.Net.IPNetwork`), Razor runtime compilation, `WithOpenApi`.[^22]
+- Obsoleted: `WebHostBuilder`/`IWebHost`/`WebHost`, `IActionContextAccessor`, `IPNetwork` and `ForwardedHeadersOptions.KnownNetworks` (use `KnownIPNetworks` with `System.Net.IPNetwork`), Razor runtime compilation, `WithOpenApi`.
 
 ##### EF Core 10 highlights [New in .NET 10]
 
 - `LeftJoin`/`RightJoin` LINQ operators translate to `LEFT JOIN`/`RIGHT JOIN` (verified on SQLite).
-- `ExecuteUpdateAsync` takes a regular `Action<UpdateSettersBuilder<T>>` lambda, so setters can be conditional with plain `if` statements (code that built expression trees by hand no longer compiles).[^23]
-- Parameterized collections (`ids.Contains(x.Id)`) translate to **multiple scalar parameters** (`IN (@ids1, @ids2)`) instead of one JSON array parameter; tune with `UseParameterizedCollectionMode(ParameterTranslationMode.…)` or `EF.Parameter`/`EF.Constant`/`EF.MultipleParameters` per query.[^23]
-- SQL parameter names are simplified (`@city` instead of `@__city_0`) — snapshot tests of SQL text break; a one-time plan-cache recompilation spike happens after deployment.[^23]
-- SQL Server: the `json` data type is used for JSON columns with `UseAzureSql` or compatibility level ≥ 170 (an upgrade generates an `ALTER COLUMN` migration); complex types map to columns and JSON (`ComplexProperty(...).ToJson()`); named query filters; vector search.[^23][^24]
-- Microsoft.Data.Sqlite 10: `GetDateTimeOffset` without offset assumes **UTC**; `GetDateTime` with an offset returns UTC; `DateTimeOffset` written to REAL columns is converted to UTC.[^23]
+- `ExecuteUpdateAsync` takes a regular `Action<UpdateSettersBuilder<T>>` lambda, so setters can be conditional with plain `if` statements (code that built expression trees by hand no longer compiles).
+- Parameterized collections (`ids.Contains(x.Id)`) translate to **multiple scalar parameters** (`IN (@ids1, @ids2)`) instead of one JSON array parameter; tune with `UseParameterizedCollectionMode(ParameterTranslationMode.…)` or `EF.Parameter`/`EF.Constant`/`EF.MultipleParameters` per query.
+- SQL parameter names are simplified (`@city` instead of `@__city_0`) — snapshot tests of SQL text break; a one-time plan-cache recompilation spike happens after deployment.
+- SQL Server: the `json` data type is used for JSON columns with `UseAzureSql` or compatibility level ≥ 170 (an upgrade generates an `ALTER COLUMN` migration); complex types map to columns and JSON (`ComplexProperty(...).ToJson()`); named query filters; vector search.
+- Microsoft.Data.Sqlite 10: `GetDateTimeOffset` without offset assumes **UTC**; `GetDateTime` with an offset returns UTC; `DateTimeOffset` written to REAL columns is converted to UTC.
 - `dotnet ef` requires `--framework` for multi-targeted projects.
-- EF Core 10 injects an `Application Name` into SQL Server connection strings that lack one (can split connection pools or break login triggers keyed on it), and Microsoft.Data.SqlClient 6.1 pulls in `Microsoft.Identity.Client.Broker` (larger publish output).[^23]
+- EF Core 10 injects an `Application Name` into SQL Server connection strings that lack one (can split connection pools or break login triggers keyed on it), and Microsoft.Data.SqlClient 6.1 pulls in `Microsoft.Identity.Client.Broker` (larger publish output).
 
 ---
 
 #### Do Not Use or Recommend (C# 15 / .NET 11)
 
-C# 15 and .NET 11 are **release candidates** (RC2, October 13, 2026); GA is expected in November 2026 under the annual release cadence (the RC2 announcement itself gives no date). A project on C# 14 / `net10.0` does not have any of the following, and the reviewer must never suggest them:[^5][^25][^26]
+C# 15 and .NET 11 are **release candidates** (RC2, October 13, 2026); GA is expected in November 2026 under the annual release cadence (the RC2 announcement itself gives no date). A project on C# 14 / `net10.0` does not have any of the following, and the reviewer must never suggest them:
 
 **C# 15 language features (not available in C# 14):**
 
@@ -470,7 +470,7 @@ Also do **not** tell a .NET 10 project that it can stay on .NET 8 or .NET 9 for 
 
 #### Deprecated, Obsoleted and Removed APIs
 
-New obsoletions in .NET 10 (custom diagnostic IDs; suppressing CS0618 does not suppress them):[^27]
+New obsoletions in .NET 10 (custom diagnostic IDs; suppressing CS0618 does not suppress them):
 
 | ID | API | Replacement |
 | --- | --- | --- |
@@ -482,11 +482,11 @@ New obsoletions in .NET 10 (custom diagnostic IDs; suppressing CS0618 does not s
 
 Still relevant from earlier releases (all apply to .NET 10):
 
-- **`BinaryFormatter` is removed** (since .NET 9 its implementation always throws `PlatformNotSupportedException`); the same applies to `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter`. Replace with System.Text.Json, protobuf, or `System.Formats.Nrbf` for reading legacy payloads.[^28]
+- **`BinaryFormatter` is removed** (since .NET 9 its implementation always throws `PlatformNotSupportedException`); the same applies to `SoapFormatter`, `NetDataContractSerializer`, `LosFormatter`, `ObjectStateFormatter`. Replace with System.Text.Json, protobuf, or `System.Formats.Nrbf` for reading legacy payloads.
 - `WebRequest`/`HttpWebRequest`/`WebClient` (SYSLIB0014) — use `HttpClient`.
 - `Thread.Abort`, `Thread.Suspend`, CAS and `AppDomain` creation are unsupported.
 - `SHA1Managed`/`*CryptoServiceProvider` constructors and `RNGCryptoServiceProvider` (SYSLIB0021/0023) — use `SHA256.HashData`, `RandomNumberGenerator`.
-- ASP.NET Core 10: `WebHostBuilder`, `IWebHost`, `WebHost`, `IActionContextAccessor`, `IPNetwork`/`KnownNetworks`, Razor runtime compilation, `WithOpenApi()` are obsolete.[^22]
+- ASP.NET Core 10: `WebHostBuilder`, `IWebHost`, `WebHost`, `IActionContextAccessor`, `IPNetwork`/`KnownNetworks`, Razor runtime compilation, `WithOpenApi()` are obsolete.
 
 ---
 
@@ -496,7 +496,7 @@ Still relevant from earlier releases (all apply to .NET 10):
 - **Verify APIs against the pinned version before claiming something is missing or new.** Say "not available in .NET 10" only for APIs that are absent from the `net10.0` reference assemblies (the lists above were verified that way). Many APIs that look "new" exist since .NET 8/9: `Task.WhenEach`, `System.Threading.Lock`, `CountBy`, `AggregateBy`, `Index()`, `Guid.CreateVersion7()`, `Base64Url`, `SearchValues<string>`, `OrderedDictionary<TKey,TValue>`, `JsonSerializerOptions.Web`, `RespectNullableAnnotations`, `Convert.ToHexStringLower`, `CryptographicOperations.FixedTimeEquals`, `EqualityComparer<T>.Create`, `TimeProvider`, `FrozenDictionary`.
 - **Multi-targeted libraries** (`net8.0;net10.0`) must only use .NET 10 APIs behind `#if NET10_0_OR_GREATER`. Each target framework gets its own default language version (`net8.0` → C# 12), so C# 14 syntax in shared code breaks the `net8.0` build unless `LangVersion` is raised explicitly — an unsupported combination that can also change overload resolution (see `Enumerable.Reverse`).
 - **Package major versions follow the framework.** `Microsoft.Extensions.*`, `Microsoft.EntityFrameworkCore.*` and `Microsoft.AspNetCore.*` packages 10.x belong with `net10.0`; mixing 8.x and 10.x families causes downgrade warnings (NU1605) and runtime `MissingMethodException`s.
-- **Patch level matters.** The October 2026 servicing release (10.0.13) fixes 44 CVEs, including remote code execution in ASP.NET Core and the SDK; 10.0.7 (April 21, 2026) was an out-of-band fix for **CVE-2026-40372**, an HMAC validation regression in `Microsoft.AspNetCore.DataProtection` 10.0.0–10.0.6 that let attackers forge protected payloads — rotate the key ring if an affected version was deployed.[^3][^29] Flag Dockerfiles or `global.json` that pin an older patch.
+- **Patch level matters.** The October 2026 servicing release (10.0.13) fixes 44 CVEs, including remote code execution in ASP.NET Core and the SDK; 10.0.7 (April 21, 2026) was an out-of-band fix for **CVE-2026-40372**, an HMAC validation regression in `Microsoft.AspNetCore.DataProtection` 10.0.0–10.0.6 that let attackers forge protected payloads — rotate the key ring if an affected version was deployed. Flag Dockerfiles or `global.json` that pin an older patch.
 
 ---
 
@@ -527,7 +527,7 @@ Review rules:
 
 - `Nullable` must be `enable` for new code. `#nullable disable` regions and blanket `<NoWarn>CS86xx</NoWarn>` are findings unless justified.
 - `TreatWarningsAsErrors` without `WarningsNotAsErrors` for obsoletion IDs means an SDK/package upgrade can break the build — acceptable, but CI must pin the SDK via `global.json`.
-- `<AnalysisLevel>` values: `latest`, `preview`, a number (`10.0`), optionally suffixed with a mode: `-none`, `-default`, `-minimum`, `-recommended`, `-all` (e.g. `latest-recommended`). `AnalysisMode` alone sets the mode.[^30]
+- `<AnalysisLevel>` values: `latest`, `preview`, a number (`10.0`), optionally suffixed with a mode: `-none`, `-default`, `-minimum`, `-recommended`, `-all` (e.g. `latest-recommended`). `AnalysisMode` alone sets the mode.
 - `NoWarn` on security rules (`CA2100` SQL injection, `CA3075` insecure DTD, `CA5350`/`CA5351` weak crypto, `CA2300`-series deserialization) needs a written justification.
 - Pin the SDK: `global.json` with `"rollForward": "latestPatch"` keeps builds reproducible within a feature band; `latestFeature` lets a machine silently use a newer band. Feature bands matter: SDK 10.0.1xx, 2xx, 3xx and 4xx ship different Roslyn versions (10.0.402 ships Roslyn 5.9.0), with new warnings and preview features.
 
@@ -540,7 +540,7 @@ Review rules:
 
 ##### Central package management and supply chain
 
-Use `Directory.Packages.props` with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`; `PackageReference` items then carry no `Version`. In .NET 10, NuGet Audit scans **transitive** packages by default; keep `NuGetAuditMode=all` and do not suppress NU1901–NU1904 globally. Use `packages.lock.json` (`RestorePackagesWithLockFile`) plus `--locked-mode` in CI for reproducible restores, and `packageSourceMapping` in `nuget.config` to prevent dependency confusion.[^16]
+Use `Directory.Packages.props` with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`; `PackageReference` items then carry no `Version`. In .NET 10, NuGet Audit scans **transitive** packages by default; keep `NuGetAuditMode=all` and do not suppress NU1901–NU1904 globally. Use `packages.lock.json` (`RestorePackagesWithLockFile`) plus `--locked-mode` in CI for reproducible restores, and `packageSourceMapping` in `nuget.config` to prevent dependency confusion.
 
 ##### .editorconfig essentials
 
@@ -1163,7 +1163,7 @@ sealed class ReportCache(IUnitOfWork uow);
 - Resolve scoped services in singletons/background services through `IServiceScopeFactory.CreateAsyncScope()`.
 - `services.BuildServiceProvider()` inside `ConfigureServices`/registration code creates a second container (duplicate singletons) — flagged by ASP0000.
 - Transient `IDisposable`s resolved from the root provider are kept alive until the root is disposed (memory leak). Resolve them from a scope.
-- Keyed services (.NET 8+): `AddKeyedSingleton<IStore, S3Store>("s3")` + `[FromKeyedServices("s3")]`. .NET 10 fixed `KeyedService.AnyKey` behavior in `GetKeyedService`/`GetKeyedServices`.[^9]
+- Keyed services (.NET 8+): `AddKeyedSingleton<IStore, S3Store>("s3")` + `[FromKeyedServices("s3")]`. .NET 10 fixed `KeyedService.AnyKey` behavior in `GetKeyedService`/`GetKeyedServices`.
 - Do not inject `IServiceProvider` into domain classes (service locator); inject what you need.
 
 ##### Options pattern
@@ -1281,13 +1281,13 @@ static partial class Log
 - Pass the exception as the first argument (`logger.LogError(ex, "...")`), never `ex.Message` only.
 - Never log secrets, tokens, passwords, full request bodies or PII. `[LogProperties]`/redaction (`Microsoft.Extensions.Compliance.Redaction`) for structured objects.
 - Expensive arguments: guard with `if (logger.IsEnabled(LogLevel.Debug))` when not using the generator.
-- .NET 10: the JSON console formatter no longer duplicates the message in the output.[^9]
+- .NET 10: the JSON console formatter no longer duplicates the message in the output.
 
 ##### Metrics and tracing
 
-- Use `System.Diagnostics.Metrics.Meter` (via `IMeterFactory` from DI) and `ActivitySource`; export with OpenTelemetry. .NET 10 adds `ActivitySourceOptions` and telemetry schema URLs.[^8]
+- Use `System.Diagnostics.Metrics.Meter` (via `IMeterFactory` from DI) and `ActivitySource`; export with OpenTelemetry. .NET 10 adds `ActivitySourceOptions` and telemetry schema URLs.
 - Name meters/sources after the component (`"Contoso.Orders"`), use OpenTelemetry semantic conventions for tags, keep tag cardinality bounded (no user IDs or URLs with IDs as tag values).
-- ASP.NET Core 10 emits new metrics for authentication/authorization, Identity and memory pools.[^10]
+- ASP.NET Core 10 emits new metrics for authentication/authorization, Identity and memory pools.
 
 ---
 
@@ -1361,10 +1361,10 @@ record Rec(int Value);
 record Person(string Name);
 ```
 
-- `JsonSerializerOptions.Strict` (new in .NET 10) = `UnmappedMemberHandling.Disallow` + `AllowDuplicateProperties = false` + case-sensitive + `RespectNullableAnnotations = true` + `RespectRequiredConstructorParameters = true`. Use it (or the individual options) for **security-relevant input**: duplicate keys are a classic parser-differential attack (one component validates the first `"role"`, another uses the last).[^8]
+- `JsonSerializerOptions.Strict` (new in .NET 10) = `UnmappedMemberHandling.Disallow` + `AllowDuplicateProperties = false` + case-sensitive + `RespectNullableAnnotations = true` + `RespectRequiredConstructorParameters = true`. Use it (or the individual options) for **security-relevant input**: duplicate keys are a classic parser-differential attack (one component validates the first `"role"`, another uses the last).
 - `JsonSerializerOptions.Web` (and ASP.NET Core) use camelCase, case-insensitive matching and `JsonNumberHandling.AllowReadingFromString`.
 - **Cache `JsonSerializerOptions` instances** (static readonly or DI). Creating new options per call rebuilds metadata caches — a severe performance bug (CA1869).
-- **Metadata name conflicts throw in .NET 10**: a polymorphic type whose own property is named like the discriminator (`"Type"`, `$type`, `$id`, `$ref`) throws `InvalidOperationException` on first use; .NET 9 silently wrote invalid JSON with a duplicate key (verified: `{"Type":"Dog","Type":"dog"}` — discriminator first, then the property). Rename or `[JsonIgnore]` the property.[^31]
+- **Metadata name conflicts throw in .NET 10**: a polymorphic type whose own property is named like the discriminator (`"Type"`, `$type`, `$id`, `$ref`) throws `InvalidOperationException` on first use; .NET 9 silently wrote invalid JSON with a duplicate key (verified: `{"Type":"Dog","Type":"dog"}` — discriminator first, then the property). Rename or `[JsonIgnore]` the property.
 - Polymorphism needs `[JsonPolymorphic]`/`[JsonDerivedType]`; only listed derived types are (de)serialized — never enable type names from the payload.
 - Use `JsonSerializer.DeserializeAsync`/`SerializeAsync` with streams; avoid `ReadAsStringAsync` + `Deserialize` for large bodies.
 - Set `MaxDepth` (default 64) consciously; never raise it for untrusted input without reason.
@@ -1391,7 +1391,7 @@ public sealed record WeatherForecast(DateOnly Date, int TemperatureC, string? Su
 internal partial class AppJsonContext : JsonSerializerContext;
 ```
 
-In ASP.NET Core register the context with `ConfigureHttpJsonOptions(o => o.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default))`. .NET 10 allows `ReferenceHandler = JsonKnownReferenceHandler.Preserve` on `[JsonSourceGenerationOptions]`.[^8]
+In ASP.NET Core register the context with `ConfigureHttpJsonOptions(o => o.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default))`. .NET 10 allows `ReferenceHandler = JsonKnownReferenceHandler.Preserve` on `[JsonSourceGenerationOptions]`.
 
 ---
 #### ASP.NET Core 10 Minimal APIs
@@ -1438,16 +1438,16 @@ Verified behavior of this shape on ASP.NET Core 10.0.13: for an authenticated ca
 
 Review points:
 
-- **Validation is opt-in.** Without `AddValidation()` (and for endpoints with `.DisableValidation()`) DataAnnotations on parameters are ignored. The validation source generator only discovers types in the assembly that calls `AddValidation()`.[^10]
+- **Validation is opt-in.** Without `AddValidation()` (and for endpoints with `.DisableValidation()`) DataAnnotations on parameters are ignored. The validation source generator only discovers types in the assembly that calls `AddValidation()`.
 - Use `TypedResults` and `Results<T1, T2>` return types — they document responses in OpenAPI and mark endpoints as API endpoints for the cookie 401/403 behavior.
 - Bind `CancellationToken` and pass it on. Do not inject scoped services into singletons used by endpoints.
 - **Authorization**: `RequireAuthorization()` on groups; a missing `UseAuthorization()`/wrong middleware order is a security bug. Check object-level authorization (the user may access *this* resource), not just authentication.
 - **Mass assignment**: never bind request bodies directly to EF entities; use request DTOs.
 - **Antiforgery**: when antiforgery services are registered (`AddAntiforgery()`), minimal-API endpoints that bind forms (`[FromForm]`, `IFormFile`) validate antiforgery tokens automatically; `.DisableAntiforgery()` on such endpoints needs a justification. Cookie-authenticated form endpoints without antiforgery are CSRF-prone.
-- **Forwarded headers**: `UseForwardedHeaders` with `KnownProxies`/`KnownIPNetworks` (`KnownNetworks` and `Microsoft.AspNetCore.HttpOverrides.IPNetwork` are obsolete in .NET 10).[^22]
+- **Forwarded headers**: `UseForwardedHeaders` with `KnownProxies`/`KnownIPNetworks` (`KnownNetworks` and `Microsoft.AspNetCore.HttpOverrides.IPNetwork` are obsolete in .NET 10).
 - **CORS**: `AllowAnyOrigin()` with credentials is rejected by the framework; `SetIsOriginAllowed(_ => true)` + `AllowCredentials()` is the same hole by another name.
 - **Rate limiting** (`AddRateLimiter`/`RequireRateLimiting`) on login, signup and expensive endpoints; request size limits (`MaxRequestBodySize`) for uploads.
-- `IExceptionHandler` that returns `true` suppresses the middleware's diagnostics in .NET 10 — make sure the handler logs.[^22]
+- `IExceptionHandler` that returns `true` suppresses the middleware's diagnostics in .NET 10 — make sure the handler logs.
 - Return RFC 9457 problem details; never return exception messages/stack traces outside Development (`app.Environment.IsDevelopment()` guard around `UseDeveloperExceptionPage`).
 - `WebApplication.CreateSlimBuilder` omits some defaults (no HTTPS configuration, minimal logging providers) and is the template for Native AOT.
 - `WebHostBuilder`/`IWebHost` are obsolete in .NET 10; use `WebApplication.CreateBuilder`.
@@ -1515,7 +1515,7 @@ sealed class Post { public int Id { get; set; } public required string Title { g
 - `Count()` on an `IQueryable` runs `SELECT COUNT(*)`; `.ToList().Count` loads everything.
 - Long-lived contexts accumulate tracked entities (memory, slow `DetectChanges`); keep units of work short.
 - C# 14 span conversion: `ids.Contains(x.Id)` in queries binds to `MemoryExtensions.Contains`; EF Core 10 translates it, other LINQ providers may not (see C# 14 section).
-- .NET 10 parameterized collections use one parameter per element (`IN (@ids1, @ids2, ...)`); very large lists can hit parameter limits (SQL Server 2,100) — use `EF.Parameter(ids)` (JSON parameter) or a temp table for big sets.[^23]
+- .NET 10 parameterized collections use one parameter per element (`IN (@ids1, @ids2, ...)`); very large lists can hit parameter limits (SQL Server 2,100) — use `EF.Parameter(ids)` (JSON parameter) or a temp table for big sets.
 
 ##### Raw SQL and injection
 
@@ -1539,10 +1539,10 @@ sealed class Blog { public int Id { get; set; } public required string Name { ge
 
 ##### Migrations and model
 
-- Review generated migrations: column renames that EF generates as drop+add lose data; `ALTER COLUMN` to the SQL Server `json` type is generated automatically when moving to `UseAzureSql`/compatibility level 170 in EF Core 10.[^23]
+- Review generated migrations: column renames that EF generates as drop+add lose data; `ALTER COLUMN` to the SQL Server `json` type is generated automatically when moving to `UseAzureSql`/compatibility level 170 in EF Core 10.
 - Do not call `Database.Migrate()` from multiple app instances concurrently at startup; run migrations as a deployment step (bundles: `dotnet ef migrations bundle`).
 - Configure `decimal` precision (`HasPrecision(18, 2)`), string lengths, and indexes for filtered/joined columns; concurrency tokens (`IsRowVersion()`) for optimistic concurrency.
-- `EnableSensitiveDataLogging()` logs parameter values (PII/secrets) — Development only. EF Core 10 redacts inlined constants in logs unless it is enabled.[^23]
+- `EnableSensitiveDataLogging()` logs parameter values (PII/secrets) — Development only. EF Core 10 redacts inlined constants in logs unless it is enabled.
 - Microsoft.Data.Sqlite 10 changed `DateTime`/`DateTimeOffset` handling to UTC; the `Microsoft.Data.Sqlite.Pre10TimeZoneHandling` AppContext switch is a temporary escape hatch.
 
 ---
@@ -1551,7 +1551,7 @@ sealed class Blog { public int Id { get; set; } public required string Name { ge
 
 ##### Deserialization
 
-- `BinaryFormatter` and friends are gone (throw `PlatformNotSupportedException` since .NET 9); do not re-enable them through the unsupported compatibility package.[^28]
+- `BinaryFormatter` and friends are gone (throw `PlatformNotSupportedException` since .NET 9); do not re-enable them through the unsupported compatibility package.
 - Newtonsoft.Json `TypeNameHandling.All/Auto/Objects` and `JavaScriptSerializer` with type resolvers on untrusted data are RCE.
 - `DataContractSerializer`/`XmlSerializer`: only with known types; never construct the serializer from a type name read from input.
 - System.Text.Json polymorphism only via `[JsonDerivedType]` allow-lists. For security-critical payloads use `AllowDuplicateProperties = false` or `JsonSerializerOptions.Strict` (.NET 10).
@@ -1624,7 +1624,7 @@ Console.WriteLine(MLKem.IsSupported ? "ML-KEM available" : "ML-KEM unavailable (
 - Symmetric encryption: `AesGcm` or `ChaCha20Poly1305` (authenticated). AES-CBC without a MAC, ECB mode, and static IVs are findings. `AesGcm` constructor requires the tag size (the parameterless-tag constructor is obsolete, SYSLIB0053).
 - Asymmetric: RSA ≥ 2048 bits with OAEP-SHA256 / PSS; ECDSA P-256+. Dispose key objects.
 - `X509Certificate2` loading: use `X509CertificateLoader` (.NET 9+; the `X509Certificate2(byte[])`/`(string)` constructors are obsolete, SYSLIB0057). Find certificates by SHA-256 thumbprint with `FindByThumbprint(HashAlgorithmName.SHA256, …)` (.NET 10).
-- Data Protection: persist keys to durable shared storage in multi-instance deployments and protect them at rest; patch to ≥ 10.0.7 (CVE-2026-40372) and rotate keys if 10.0.0–10.0.6 was deployed.[^29]
+- Data Protection: persist keys to durable shared storage in multi-instance deployments and protect them at rest; patch to ≥ 10.0.7 (CVE-2026-40372) and rotate keys if 10.0.0–10.0.6 was deployed.
 - PQC types (`MLKem`, `MLDsa`, `SlhDsa`, `CompositeMLDsa`) depend on OS crypto (OpenSSL 3.5+ / Windows CNG with PQC); `SlhDsa` and `CompositeMLDsa` are `[Experimental]` types (SYSLIB5006), and several `MLKem`/`MLDsa` key import/export members (PKCS#8, SPKI, PEM) are `[Experimental]` too (verified by reflection on 10.0.13) — their APIs may change.
 
 ##### Other injection and parsing risks
@@ -1635,7 +1635,7 @@ Console.WriteLine(MLKem.IsSupported ? "ML-KEM available" : "ML-KEM unavailable (
 - **Open redirects**: validate `returnUrl` with `Url.IsLocalUrl` / `LocalRedirect`.
 - **Logging/headers**: CRLF in user input written to headers is rejected by Kestrel, but log forging via newlines is not — use structured logging.
 - **Secrets**: never in source, `appsettings*.json` in the repo, or logs; environment variables (`MyApp__Db__Password`) injected by the platform, or a secret store.
-- **Timing/size limits**: `Uri` no longer enforces a ~65 KB limit in .NET 10 — validate input lengths explicitly.[^9]
+- **Timing/size limits**: `Uri` no longer enforces a ~65 KB limit in .NET 10 — validate input lengths explicitly.
 
 ---
 
@@ -1649,7 +1649,7 @@ Console.WriteLine(MLKem.IsSupported ? "ML-KEM available" : "ML-KEM unavailable (
 - Boxing: generic constraints instead of `object`/interfaces on structs; `Enum.HasFlag` is fine on .NET Core (JIT intrinsic).
 - Server GC is default in ASP.NET Core; for containers with small memory limits consider `DOTNET_GCHeapHardLimit`/`GCHeapAffinitizeMask` or DATAS (dynamic adaptation, default for Server GC since .NET 9).
 - Use `ReadyToRun`/Native AOT for startup-sensitive workloads; Tiered PGO is on by default.
-- .NET 10 JIT improvements (array interface devirtualization, stack allocation of small arrays/delegates) reduce the cost of abstractions — benchmark before replacing LINQ/`IEnumerable<T>` with hand-written loops.[^21]
+- .NET 10 JIT improvements (array interface devirtualization, stack allocation of small arrays/delegates) reduce the cost of abstractions — benchmark before replacing LINQ/`IEnumerable<T>` with hand-written loops.
 - `HttpClient`, `JsonSerializerOptions`, `Regex` (non-generated), `XmlSerializer(Type, ...)` overloads other than `(Type)` and `(Type, string)` must be cached — constructing them per call leaks or recompiles.
 
 ---
@@ -1695,15 +1695,15 @@ public static class PriceCalculator
 }
 ```
 
-- Current versions (October 2026): **xunit.v3 4.0.2** (4.0.0 released August 2026: Native AOT support, full test parallelization, new test class/method orderers, Microsoft.Testing.Platform v2 by default, MTP v1 support removed), **MSTest 4.5.1**, **NUnit 5.0.0** (September 27, 2026), Microsoft.NET.Test.Sdk 18.11.0.[^32][^33] xUnit v3 test projects are executables (`<OutputType>Exe</OutputType>`) and run with `dotnet run`, `dotnet test` or the MTP runner.
-- **Always `await` async assertions** (`await Assert.ThrowsAsync<T>(...)`). An un-awaited `Assert.ThrowsAsync` never fails the test. **NUnit 5 changed `Assert.ThrowsAsync`/`CatchAsync`/`DoesNotThrowAsync` to return a `Task`** that must be awaited; NUnit 4-style un-awaited calls now silently pass (verified: in NUnit 5.0.0 the three methods return `Task<T>`/`Task`, in 4.6.1 they returned the exception/`void`); NUnit.Analyzers 4.14+ helps convert existing code.[^33]
+- Current versions (October 2026): **xunit.v3 4.0.2** (4.0.0 released August 2026: Native AOT support, full test parallelization, new test class/method orderers, Microsoft.Testing.Platform v2 by default, MTP v1 support removed), **MSTest 4.5.1**, **NUnit 5.0.0** (September 27, 2026), Microsoft.NET.Test.Sdk 18.11.0. xUnit v3 test projects are executables (`<OutputType>Exe</OutputType>`) and run with `dotnet run`, `dotnet test` or the MTP runner.
+- **Always `await` async assertions** (`await Assert.ThrowsAsync<T>(...)`). An un-awaited `Assert.ThrowsAsync` never fails the test. **NUnit 5 changed `Assert.ThrowsAsync`/`CatchAsync`/`DoesNotThrowAsync` to return a `Task`** that must be awaited; NUnit 4-style un-awaited calls now silently pass (verified: in NUnit 5.0.0 the three methods return `Task<T>`/`Task`, in 4.6.1 they returned the exception/`void`); NUnit.Analyzers 4.14+ helps convert existing code.
 - Use `TestContext.Current.CancellationToken` (xUnit v3) so tests stop on timeout/cancellation; xUnit analyzers flag missing tokens (xUnit1051).
 - Do not share mutable static state between tests — xUnit v3 4.0 can parallelize all tests, not just collections.
 - Use `TimeProvider`/`FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`) instead of `Thread.Sleep`/`DateTime.Now` in tests.
 - Integration tests: `WebApplicationFactory<Program>` (`Microsoft.AspNetCore.Mvc.Testing` 10.x), Testcontainers for real databases. EF Core `InMemory` provider does not behave like a relational database (no transactions, no SQL translation errors) — prefer SQLite in-memory or a container.
 - Mocks: mock interfaces you own; do not mock `HttpClient` directly — mock the `HttpMessageHandler` or use a fake server. Avoid mocking `DbContext`.
 - Snapshot tests of EF Core SQL break on upgrade to EF Core 10 (simplified parameter names, multi-parameter `IN`).
-- Coverage: `coverlet.collector` or `Microsoft.Testing.Extensions.CodeCoverage`; in .NET 10 `EnableDynamicNativeInstrumentation` defaults to `false`.[^9]
+- Coverage: `coverlet.collector` or `Microsoft.Testing.Extensions.CodeCoverage`; in .NET 10 `EnableDynamicNativeInstrumentation` defaults to `false`.
 
 ---
 
@@ -1721,8 +1721,8 @@ public static class PriceCalculator
 - Reflection-based System.Text.Json, configuration binding, DI with open generics over reflection, `Activator.CreateInstance(Type)` on unknown types, `Assembly.Load`, `Reflection.Emit`, `dynamic` and LINQ `Expression.Compile()` (interpreted under AOT) are not AOT-friendly. Use source generators: JSON `JsonSerializerContext`, `[LoggerMessage]`, `[GeneratedRegex]`, configuration binding generator, minimal API request delegate generator (automatic with `PublishAot`), `[LibraryImport]` instead of `[DllImport]`.
 - Annotate reflection with `[DynamicallyAccessedMembers]`, `[RequiresUnreferencedCode]`, `[RequiresDynamicCode]` rather than suppressing.
 - ASP.NET Core Native AOT supports minimal APIs, gRPC and worker services; SignalR only partially; MVC controllers, Razor Pages and Blazor Server are not supported. EF Core Native AOT support (precompiled queries) is experimental.
-- File-based apps (`dotnet run app.cs`) publish as Native AOT by default in .NET 10.[^16]
-- `PublishTrimmed` disables HTTP/3 by default in .NET 10.[^9]
+- File-based apps (`dotnet run app.cs`) publish as Native AOT by default in .NET 10.
+- `PublishTrimmed` disables HTTP/3 by default in .NET 10.
 
 ---
 

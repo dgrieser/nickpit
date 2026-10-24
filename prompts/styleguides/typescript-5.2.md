@@ -1,7 +1,7 @@
 ### TypeScript 5.2: The Complete Production Developer Guide
 
-> **Version**: TypeScript 5.2 — beta `5.2.0-beta` (2023-06-30), RC `5.2.1-rc` (2023-08-09), stable **5.2.2 (2023-08-24)**. 5.2.2 is the first and **only** stable 5.2 release; no later 5.2.x patch was ever published.[^1][^2][^3]
-> **Status (October 2026)**: TypeScript has no LTS lines and does not backport fixes, so 5.2 has been frozen since TypeScript 5.3.2 shipped on 2023-11-20. The newest stable release is **TypeScript 7.0** (7.0.2, 2026-07-08, the native Go compiler); the last JavaScript-based line is 6.0 (6.0.3, 2026-04-16); 7.1.0-beta appeared on 2026-10-20.[^3] DefinitelyTyped only tests `@types/*` packages against TypeScript versions younger than two years, so since August 2025 new `@types` releases are no longer guaranteed to compile under 5.2 (see Ecosystem compatibility).[^4]
+> **Version**: TypeScript 5.2 — beta `5.2.0-beta` (2023-06-30), RC `5.2.1-rc` (2023-08-09), stable **5.2.2 (2023-08-24)**. 5.2.2 is the first and **only** stable 5.2 release; no later 5.2.x patch was ever published.
+> **Status (October 2026)**: TypeScript has no LTS lines and does not backport fixes, so 5.2 has been frozen since TypeScript 5.3.2 shipped on 2023-11-20. The newest stable release is **TypeScript 7.0** (7.0.2, 2026-07-08, the native Go compiler); the last JavaScript-based line is 6.0 (6.0.3, 2026-04-16); 7.1.0-beta appeared on 2026-10-20. DefinitelyTyped only tests `@types/*` packages against TypeScript versions younger than two years, so since August 2025 new `@types` releases are no longer guaranteed to compile under 5.2 (see Ecosystem compatibility).
 > **Scope**: The full TypeScript language as usable with the 5.2 compiler: every 5.2 change versus 5.1 (explicit resource management, decorator metadata, tuple labels, array-union methods, ES2023 copying array methods, symbols as weak keys, type-only `.ts` import paths, breaking changes), the type system, narrowing, generics, classes and both decorator systems, enums, modules and module resolution (`bundler`, `node16`, `nodenext`), `verbatimModuleSyntax`, strictness flags, the 5.0 deprecations, tsconfig recommendations, reviewer-relevant compiler pitfalls and tooling. Every TypeScript example was compiled with `tsc` 5.2.2; boundary claims were checked against 5.1.6 and 5.3.3 (and later compilers where named); emitted JavaScript was run on Node.js 16.20.2, 18.20.8, 20.20.2, 22.23.4, 24.22.1 and 26.12.1 where runtime behaviour matters.
 > **Note**: This document is self-contained. Sections marked **[New in 5.2]** cover behaviour introduced in 5.2.
 
@@ -9,7 +9,7 @@
 
 #### What's New in TypeScript 5.2
 
-TypeScript 5.2 is a feature release with one large addition — **explicit resource management** (`using` and `await using`) — plus decorator metadata, several type-system relaxations, new library typings and four breaking changes.[^1][^2]
+TypeScript 5.2 is a feature release with one large addition — **explicit resource management** (`using` and `await using`) — plus decorator metadata, several type-system relaxations, new library typings and four breaking changes.
 
 | Area | Change in 5.2 | Verified boundary (5.1.6 → 5.2.2) |
 |---|---|---|
@@ -29,7 +29,7 @@ TypeScript 5.2 is a feature release with one large addition — **explicit resou
 
 What 5.2 **does not** change: the default `target` is still ES5 and the default `module` is still CommonJS when no tsconfig sets them; `strict` is still off unless enabled; there is no new `target` value (`es2023` as a *target* arrives only in 5.5, see below), and `lib: ["esnext"]` in 5.2 means `es2023` plus `esnext.intl`, `esnext.decorators` and `esnext.disposable` — nothing else.
 
-Everything from 5.0 and 5.1 is available and should be used where it fits: standard (TC39) decorators, `const` type parameters, `moduleResolution: "bundler"`, `verbatimModuleSyntax`, `allowImportingTsExtensions`, `customConditions`, `resolvePackageJsonExports`/`Imports`, `allowArbitraryExtensions`, `export type *`, `extends` arrays in tsconfig, all enums as union enums, JSDoc `@satisfies` and `@overload` (5.0); unrelated getter/setter types, implicit `undefined` returns for `undefined`-returning functions, decoupled JSX element typing and namespaced JSX attributes (5.1).[^5][^6]
+Everything from 5.0 and 5.1 is available and should be used where it fits: standard (TC39) decorators, `const` type parameters, `moduleResolution: "bundler"`, `verbatimModuleSyntax`, `allowImportingTsExtensions`, `customConditions`, `resolvePackageJsonExports`/`Imports`, `allowArbitraryExtensions`, `export type *`, `extends` arrays in tsconfig, all enums as union enums, JSDoc `@satisfies` and `@overload` (5.0); unrelated getter/setter types, implicit `undefined` returns for `undefined`-returning functions, decoupled JSX element typing and namespaced JSX attributes (5.1).
 
 ***
 
@@ -46,13 +46,13 @@ Everything from 5.0 and 5.1 is available and should be used where it fits: stand
 
 These belong to newer compilers. Syntax, compiler options, library typings and narrowing items were executed (5.2.2 rejects them, the named version accepts them); editor features and a few diagnostics are taken from the respective release notes.
 
-- **5.3**: import attributes — `import data from "./data.json" with { type: "json" }` is a parse error in 5.2 (TS1005); `import(…, { with: … })` fails with TS2322 because 5.2's `ImportCallOptions` only knows `assert`. `switch (true)` narrowing (`case typeof v === "string":` does not narrow in 5.2). Narrowing when a type-guard call is compared to `true` (`if (isA(x) === true)`). `instanceof` narrowing through `Symbol.hasInstance`. Interactive inlay hints.[^7]
-- **5.4**: preserved narrowing in closures created after the last assignment; the `NoInfer<T>` utility type; `Object.groupBy`, `Map.groupBy` and `Promise.withResolvers` typings; `--module preserve`; checked import attributes.[^8]
-- **5.5**: inferred type predicates (`arr.filter((x) => x !== undefined)` stays `(T | undefined)[]` in 5.2); narrowing of constant indexed accesses (`obj[key]` after `typeof obj[key] === "string"`); regular-expression syntax checking; `Set.prototype.union`/`intersection`/`difference`/… typings; `Array.fromAsync` and `String.prototype.isWellFormed` typings; JSDoc `@import`; `isolatedDeclarations`; `${configDir}` in tsconfig; `target: "es2023"` (5.2 accepts only `es3`…`es2022` and `esnext` as targets).[^9]
-- **5.6**: "always truthy/nullish" checks (TS2872/TS2869); Iterator helper typings (`IteratorObject`, `Iterator.from`); `--strictBuiltinIteratorReturn`; `--noUncheckedSideEffectImports`; `--noCheck`; arbitrary module identifiers; `tsc --build` continuing past errors.[^10]
-- **5.7**: checks for never-initialized variables in nested functions; `--rewriteRelativeImportExtensions`; `target`/`lib` `es2024`; `ArrayBuffer.prototype.transfer` and other ES2024 typings; the JSON-import attribute requirement under `nodenext`.[^11]
-- **5.8–5.9**: `--erasableSyntaxOnly`, `--module node18`, `require()` of ES modules under `nodenext`, `--libReplacement` (5.8); `import defer`, `--module node20`, the minimal `tsc --init` (5.9).[^12]
-- **6.0 / 7.0**: new defaults (`strict` on, `module: esnext`, `types: []`, …), the 6.0 deprecations, `ignoreDeprecations: "6.0"` (TS5103 "Invalid value" in 5.2), the native compiler and its performance. None of this applies to a 5.2 build.[^13]
+- **5.3**: import attributes — `import data from "./data.json" with { type: "json" }` is a parse error in 5.2 (TS1005); `import(…, { with: … })` fails with TS2322 because 5.2's `ImportCallOptions` only knows `assert`. `switch (true)` narrowing (`case typeof v === "string":` does not narrow in 5.2). Narrowing when a type-guard call is compared to `true` (`if (isA(x) === true)`). `instanceof` narrowing through `Symbol.hasInstance`. Interactive inlay hints.
+- **5.4**: preserved narrowing in closures created after the last assignment; the `NoInfer<T>` utility type; `Object.groupBy`, `Map.groupBy` and `Promise.withResolvers` typings; `--module preserve`; checked import attributes.
+- **5.5**: inferred type predicates (`arr.filter((x) => x !== undefined)` stays `(T | undefined)[]` in 5.2); narrowing of constant indexed accesses (`obj[key]` after `typeof obj[key] === "string"`); regular-expression syntax checking; `Set.prototype.union`/`intersection`/`difference`/… typings; `Array.fromAsync` and `String.prototype.isWellFormed` typings; JSDoc `@import`; `isolatedDeclarations`; `${configDir}` in tsconfig; `target: "es2023"` (5.2 accepts only `es3`…`es2022` and `esnext` as targets).
+- **5.6**: "always truthy/nullish" checks (TS2872/TS2869); Iterator helper typings (`IteratorObject`, `Iterator.from`); `--strictBuiltinIteratorReturn`; `--noUncheckedSideEffectImports`; `--noCheck`; arbitrary module identifiers; `tsc --build` continuing past errors.
+- **5.7**: checks for never-initialized variables in nested functions; `--rewriteRelativeImportExtensions`; `target`/`lib` `es2024`; `ArrayBuffer.prototype.transfer` and other ES2024 typings; the JSON-import attribute requirement under `nodenext`.
+- **5.8–5.9**: `--erasableSyntaxOnly`, `--module node18`, `require()` of ES modules under `nodenext`, `--libReplacement` (5.8); `import defer`, `--module node20`, the minimal `tsc --init` (5.9).
+- **6.0 / 7.0**: new defaults (`strict` on, `module: esnext`, `types: []`, …), the 6.0 deprecations, `ignoreDeprecations: "6.0"` (TS5103 "Invalid value" in 5.2), the native compiler and its performance. None of this applies to a 5.2 build.
 - **Library APIs without 5.2 typings** even with `lib: ["esnext"]`: `Promise.try`, `RegExp.escape`, `Float16Array`, `Iterator` as a value, `Map.prototype.getOrInsert`, `Temporal`, `Error.isError`, `Uint8Array.fromBase64`. Using them requires a local `declare global` augmentation **and** a runtime that has them.
 
 ##### Deprecated or removed older features
@@ -69,8 +69,8 @@ These belong to newer compilers. Syntax, compiler options, library typings and n
 A 5.2 project in 2026 runs a three-year-old compiler against current dependencies. These break most often:
 
 - **`@types/node`**: verified against `tsc` 5.2.2 *without* `skipLibCheck`: `@types/node` 20.19.37, 22.19.21 and 24.19.2 type-check cleanly; **26.6.5 does not** — it references `IteratorObject`, `AsyncIteratorObject` and `BuiltinIteratorReturn` (TypeScript 5.6 lib types) and produces TS2304/TS2416 errors in `globals.d.ts`, `fs.d.ts` and `stream.d.ts`. `skipLibCheck: true` hides these errors, but declarations that mention the missing types degrade silently. The npm dist-tag `ts5.2` of `@types/node` points to 25.5.0 (2026-03-12); per major, the last releases whose `typeScriptVersion` field is still `5.2` are 20.19.37 and 22.19.15 (both 2026-03-06) — later 20.x/22.x releases declare `5.3`, and 24.19.2 declares `5.6` even though it currently type-checks under 5.2. Pin `@types/node` to the **major of the deployment runtime** (`~22.19.x` for Node.js 22) and do not let a caret range float to 26.
-- **typescript-eslint**: 8.x (8.72.0 in October 2026) declares `typescript: ">=4.8.4 <6.1.0"` and therefore still supports 5.2.[^19] Type-aware lint rules (`no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unnecessary-condition`) are the most valuable complement to the compiler on 5.2, which lacks the 5.6 truthiness checks.
-- **`tslib`**: with `importHelpers: true`, `using` needs `__addDisposableResource`/`__disposeResources`, which first appear in **tslib 2.6.0** (2023-06-26).[^18] Verified: with tslib 2.5.3 installed, 5.2 reports `TS2343: This syntax requires an imported helper named '__addDisposableResource' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.`; 2.6.2 compiles.
+- **typescript-eslint**: 8.x (8.72.0 in October 2026) declares `typescript: ">=4.8.4 <6.1.0"` and therefore still supports 5.2. Type-aware lint rules (`no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unnecessary-condition`) are the most valuable complement to the compiler on 5.2, which lacks the 5.6 truthiness checks.
+- **`tslib`**: with `importHelpers: true`, `using` needs `__addDisposableResource`/`__disposeResources`, which first appear in **tslib 2.6.0** (2023-06-26). Verified: with tslib 2.5.3 installed, 5.2 reports `TS2343: This syntax requires an imported helper named '__addDisposableResource' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.`; 2.6.2 compiles.
 - Libraries that ship `.d.ts` files written for newer compilers (using `NoInfer`, `IteratorObject`, `BuiltinIteratorReturn`, import attributes in `import()` types) fail the same way. When a dependency upgrade produces errors inside `node_modules/**/*.d.ts`, the fix is to pin the dependency or upgrade TypeScript — not to add `@ts-ignore` or blanket `skipLibCheck` without understanding the cause.
 
 ***
@@ -79,7 +79,7 @@ A 5.2 project in 2026 runs a three-year-old compiler against current dependencie
 
 ##### Semantics
 
-A `using` declaration binds a value whose `[Symbol.dispose]()` method runs when the enclosing block exits — normally, through `return`/`break`/`continue`, or by an exception. `await using` does the same with `[Symbol.asyncDispose]()` and awaits it. Resources are disposed in **reverse order of declaration** (last in, first out).[^1][^14]
+A `using` declaration binds a value whose `[Symbol.dispose]()` method runs when the enclosing block exits — normally, through `return`/`break`/`continue`, or by an exception. `await using` does the same with `[Symbol.asyncDispose]()` and awaits it. Resources are disposed in **reverse order of declaration** (last in, first out).
 
 ```ts
 // flags: --lib es2022,esnext.disposable,dom
@@ -243,7 +243,7 @@ If the body throws and a disposer also throws, the result is a `SuppressedError`
 
 #### Decorator Metadata [New in 5.2]
 
-Standard (TC39) decorators — available since 5.0 — receive a `context` object. In 5.2 every context gains a `metadata` property: one plain object per class, shared by all decorators of that class, and exposed afterwards as `TheClass[Symbol.metadata]`.[^1][^15]
+Standard (TC39) decorators — available since 5.0 — receive a `context` object. In 5.2 every context gains a `metadata` property: one plain object per class, shared by all decorators of that class, and exposed afterwards as `TheClass[Symbol.metadata]`.
 
 ```ts
 // flags: --lib es2022,esnext,dom
@@ -425,7 +425,7 @@ Because tuples can mix labels, `TupleType.labeledElementDeclarations` is now `re
 
 ##### Defaults in 5.2 you must override
 
-Verified with `tsc` 5.2.2 (emit, `--traceResolution`) and the TSConfig reference.[^16]
+Verified with `tsc` 5.2.2 (emit, `--traceResolution`) and the TSConfig reference.
 
 | Option | 5.2 default | Why it matters |
 |---|---|---|
@@ -434,7 +434,7 @@ Verified with `tsc` 5.2.2 (emit, `--traceResolution`) and the TSConfig reference
 | `moduleResolution` | `node10` for `commonjs`; **`classic`** for `es2015`/`es2020`/`es2022`/`esnext`; `node16`/`nodenext` for those modules | Verified with `--traceResolution`: `"module": "esnext"` without `moduleResolution` resolves with `Classic`, which never looks into `node_modules` package folders — `@types/node` 22 then fails with TS2792 "Cannot find module 'undici-types'". `classic` and `node10` also ignore `package.json` `exports`. Always set `moduleResolution` (or use `nodenext`). |
 | `strict` | `false` | Every serious project sets it. |
 | `useDefineForClassFields` | `true` when `target` ≥ `es2022`, else `false` | Changes class-field semantics (see Classes). |
-| `esModuleInterop` | `false`, but implied `true` when `module` is `node16`/`nodenext` (verified in the 5.2 compiler source, `getESModuleInterop`)[^16] | Default imports of CommonJS packages behave differently. |
+| `esModuleInterop` | `false`, but implied `true` when `module` is `node16`/`nodenext` (verified in the 5.2 compiler source, `getESModuleInterop`) | Default imports of CommonJS packages behave differently. |
 | `types` | every package under `node_modules/@types` | Globals from unrelated `@types` packages leak in; list them explicitly. |
 | `lib` | derived from `target` | With `target: "es2022"` the default lib has no `toSorted` and no `Disposable`. |
 
@@ -528,7 +528,7 @@ A project that sets `"strict": false` or disables individual strict flags must j
 
 #### The 5.0 Deprecations (still accepted with `ignoreDeprecations: "5.0"`)
 
-TypeScript 5.0 deprecated a set of options. In 5.0–5.4 they are errors unless `"ignoreDeprecations": "5.0"` is set; 5.5 removed them completely.[^5] Verified on 5.2.2:
+TypeScript 5.0 deprecated a set of options. In 5.0–5.4 they are errors unless `"ignoreDeprecations": "5.0"` is set; 5.5 removed them completely. Verified on 5.2.2:
 
 | Option | 5.2 without escape hatch | Replacement |
 |---|---|---|
@@ -589,7 +589,7 @@ TypeScript 5.2 can only parse **import assertions** (`assert { type: "json" }`);
 | `import data from "./data.json" assert { type: "json" }` | works | works | `SyntaxError: Unexpected identifier 'assert'` |
 | `import data from "./data.json"` (accepted by 5.2) | `ERR_IMPORT_ASSERTION_TYPE_MISSING` | `ERR_IMPORT_ASSERTION_TYPE_MISSING` | `ERR_IMPORT_ATTRIBUTE_MISSING` |
 
-So **no static JSON import form that 5.2 accepts runs on Node.js 22 or later**[^17], and every form type-checks. Load JSON explicitly instead:
+So **no static JSON import form that 5.2 accepts runs on Node.js 22 or later**, and every form type-checks. Load JSON explicitly instead:
 
 ```ts
 // flags: --module nodenext --moduleResolution nodenext
@@ -698,7 +698,7 @@ if (isConfig(raw)) {
 raw.port; // error TS18046
 ```
 
-At trust boundaries prefer a schema validator (Zod, Valibot, ArkType, TypeBox) whose output type is derived from the schema. Check the validator's documented minimum TypeScript version first: Zod 4, for example, is tested only against TypeScript 5.5 and later, so a 5.2 project may have to stay on an older major.[^20] A hand-written guard that checks fewer fields than the type declares is a lie the compiler cannot detect.
+At trust boundaries prefer a schema validator (Zod, Valibot, ArkType, TypeBox) whose output type is derived from the schema. Check the validator's documented minimum TypeScript version first: Zod 4, for example, is tested only against TypeScript 5.5 and later, so a 5.2 project may have to stay on an older major. A hand-written guard that checks fewer fields than the type declares is a lie the compiler cannot detect.
 
 ##### Type assertions and non-null assertions
 
@@ -1622,7 +1622,7 @@ export function safeMerge(target: Record<string, unknown>, input: unknown): Reco
 
 ##### Compiler
 
-- 5.2 speeds up relation checks of deeply nested recursive types (the release notes measured a drizzle-based case at about 1.5× faster).[^1]
+- 5.2 speeds up relation checks of deeply nested recursive types (the release notes measured a drizzle-based case at about 1.5× faster).
 - Use `tsc --extendedDiagnostics` and `tsc --generateTrace <dir>` to find slow files and types; look for huge unions, deeply recursive conditional types and inferred types of enormous object literals.
 - `incremental: true` (with `tsBuildInfoFile`) and project references (`composite: true`, `tsc -b`) cut rebuild times. In 5.2 `tsc -b` stops at the first project with errors (continuing past errors is 5.6).
 - Prefer `interface extends` over large intersections, and explicit return types on exported functions — they reduce re-checking and declaration-emit work.

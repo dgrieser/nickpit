@@ -2,7 +2,7 @@
 
 #### Overview
 
-Python 2.7 is the final release of the Python 2 line, released on July 3, 2010.[^1] It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. This guide covers every language feature, data type, pattern, and production consideration you need to write rock-solid, efficient Python 2.7 code.
+Python 2.7 is the final release of the Python 2 line, released on July 3, 2010. It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. This guide covers every language feature, data type, pattern, and production consideration you need to write rock-solid, efficient Python 2.7 code.
 
 A few global truths about Python 2.7 before diving in:
 
@@ -17,17 +17,17 @@ A few global truths about Python 2.7 before diving in:
 
 ##### Source File Encoding
 
-By default, Python 2.7 assumes ASCII source encoding. Any non-ASCII byte in a source file without a declared encoding declaration produces a `SyntaxError`.[^2] Always declare the encoding in the first or second line:
+By default, Python 2.7 assumes ASCII source encoding. Any non-ASCII byte in a source file without a declared encoding declaration produces a `SyntaxError`. Always declare the encoding in the first or second line:
 
 ```python
 # -*- coding: utf-8 -*-
 ```
 
-This is mandatory whenever your source contains Unicode literals, docstrings with non-ASCII characters, or comments in non-ASCII scripts.[^2]
+This is mandatory whenever your source contains Unicode literals, docstrings with non-ASCII characters, or comments in non-ASCII scripts.
 
 ##### The `__future__` Module
 
-Python 2.7 provides a mechanism to opt into Python 3 behaviors at the module level. These imports must appear before any other code (except the docstring and encoding declaration).[^3]
+Python 2.7 provides a mechanism to opt into Python 3 behaviors at the module level. These imports must appear before any other code (except the docstring and encoding declaration).
 
 ```python
 from __future__ import print_function    # print() becomes a function
@@ -36,9 +36,9 @@ from __future__ import unicode_literals  # string literals are unicode by defaul
 from __future__ import absolute_import   # disables implicit relative imports
 ```
 
-These are not optional suggestions for production code — they are essential guards against the most common Python 2.7 pitfalls (integer division truncation, print statement syntax, silent ASCII encoding errors).[^3][^4]
+These are not optional suggestions for production code — they are essential guards against the most common Python 2.7 pitfalls (integer division truncation, print statement syntax, silent ASCII encoding errors).
 
-**Pitfall:** `import __future__` (without `from`) does NOT activate any feature; only `from __future__ import X` syntax triggers the compiler special-case behavior.[^3]
+**Pitfall:** `import __future__` (without `from`) does NOT activate any feature; only `from __future__ import X` syntax triggers the compiler special-case behavior.
 
 **Note on the examples in this guide:** code samples deliberately use the interpreter's *default* semantics — `print` statements, truncating `/` division — so each snippet runs as-is in a bare 2.7 session and matches what legacy code looks like. New production modules should start with the `__future__` imports above and use the `print()` function form; converting a multi-argument `print a, b` requires the import, since without it `print(a, b)` prints a tuple (see The `print` Statement).
 
@@ -130,7 +130,7 @@ from myapp.utils import format_date
 
 ##### Integers: `int` and `long`
 
-Python 2.7 has two integer types.[^5]
+Python 2.7 has two integer types.
 
 - **`int`**: A C `long`, platform-dependent (at least 32 bits). `sys.maxint` is the maximum value.
 - **`long`**: Arbitrary precision integers. Python automatically promotes `int` to `long` on overflow.
@@ -143,9 +143,9 @@ print type(x)             # <type 'long'>
 x_explicit = 123456789L   # L suffix forces long literal (uppercase L preferred)
 ```
 
-**Pitfall:** Integer literal with lowercase `l` (`1l`) looks like `11`. Always use uppercase `L`.[^5]
+**Pitfall:** Integer literal with lowercase `l` (`1l`) looks like `11`. Always use uppercase `L`.
 
-**Bitwise operations** work on both `int` and `long`:[^5]
+**Bitwise operations** work on both `int` and `long`:
 
 ```python
 a = 0b1010   # binary literal
@@ -159,11 +159,11 @@ print a << 2 # left shift
 print a >> 1 # right shift
 ```
 
-**Negative shift counts raise `ValueError`.** Left shift by `n` is equivalent to multiplication by `2**n`; the result promotes to `long` if it overflows `int`.[^5]
+**Negative shift counts raise `ValueError`.** Left shift by `n` is equivalent to multiplication by `2**n`; the result promotes to `long` if it overflows `int`.
 
 ##### Floats
 
-Floats are C `double` (64-bit IEEE 754).[^5]
+Floats are C `double` (64-bit IEEE 754).
 
 ```python
 x = 3.14
@@ -197,7 +197,7 @@ print result  # 0.3
 
 ##### Booleans
 
-`bool` is a subtype of `int`. `True == 1` and `False == 0`.[^5]
+`bool` is a subtype of `int`. `True == 1` and `False == 0`.
 
 ```python
 print isinstance(True, int)  # True
@@ -205,7 +205,7 @@ print True + True             # 2
 print True * 5                # 5
 ```
 
-**Falsy values** in Python 2.7:[^5]
+**Falsy values** in Python 2.7:
 - `None`
 - `False`
 - Zero of any numeric type: `0`, `0L`, `0.0`, `0j`
@@ -233,8 +233,8 @@ This is the single most important area to understand in Python 2.7 for productio
 
 ##### The Two String Types
 
-- **`str`**: A sequence of raw bytes (8-bit). The "native" string type. Does NOT inherently carry encoding information.[^2][^6]
-- **`unicode`**: A sequence of Unicode code points. Declared with `u''` prefix or created by `unicode()` or `.decode()`.[^2]
+- **`str`**: A sequence of raw bytes (8-bit). The "native" string type. Does NOT inherently carry encoding information.
+- **`unicode`**: A sequence of Unicode code points. Declared with `u''` prefix or created by `unicode()` or `.decode()`.
 
 ```python
 byte_str = 'hello'           # str — bytes
@@ -242,7 +242,7 @@ uni_str  = u'hello'          # unicode — code points
 uni_str2 = u'\u03b1\u03b2'   # greek alpha-beta
 ```
 
-**The Unicode sandwich rule for production code:**[^2]
+**The Unicode sandwich rule for production code:**
 1. Decode all bytes to `unicode` on input boundaries (file reads, network, stdin, databases).
 2. Work with `unicode` internally throughout your application.
 3. Encode `unicode` back to `str`/bytes on output boundaries (file writes, network, stdout).
@@ -275,7 +275,7 @@ encoded = uni.encode('utf-8')
 print encoded                 # 'caf\xc3\xa9'
 ```
 
-**Pitfall: implicit ASCII coercion.** When you mix `str` and `unicode`, Python 2.7 implicitly tries to decode the `str` using ASCII. This works fine for pure-ASCII bytes but raises `UnicodeDecodeError` the moment any byte exceeds 127.[^2][^7]
+**Pitfall: implicit ASCII coercion.** When you mix `str` and `unicode`, Python 2.7 implicitly tries to decode the `str` using ASCII. This works fine for pure-ASCII bytes but raises `UnicodeDecodeError` the moment any byte exceeds 127.
 
 ```python
 # DANGEROUS — works only if 'name' is pure ASCII
@@ -285,11 +285,11 @@ greeting = u'Hello, ' + name  # 'name' is str; implicit decode
 greeting = u'Hello, ' + force_unicode(name)
 ```
 
-**Pitfall: default encoding is ASCII.** Python 2.7's `sys.getdefaultencoding()` is `'ascii'`. Any implicit encode/decode uses ASCII unless you change this — which you should NOT do via `sys.setdefaultencoding()` as that causes subtle bugs across the whole runtime.[^8]
+**Pitfall: default encoding is ASCII.** Python 2.7's `sys.getdefaultencoding()` is `'ascii'`. Any implicit encode/decode uses ASCII unless you change this — which you should NOT do via `sys.setdefaultencoding()` as that causes subtle bugs across the whole runtime.
 
 ##### String Methods
 
-All of the following work on both `str` and `unicode`:[^5]
+All of the following work on both `str` and `unicode`:
 
 ```python
 s = 'Hello, World!'
@@ -312,7 +312,7 @@ print 'abc'.partition('b')   # ('a', 'b', 'c')
 print 'abc'.splitlines()     # ['abc']
 ```
 
-**`find` vs `index`:** Use `in` operator to check membership; use `find` when you need the position; use `index` when absence is a programming error that should raise.[^5]
+**`find` vs `index`:** Use `in` operator to check membership; use `find` when you need the position; use `index` when absence is a programming error that should raise.
 
 ##### String Formatting
 
@@ -354,7 +354,7 @@ print '{0:^10}'.format('ctr')    # '   ctr    '
 
 ##### String Concatenation Performance
 
-Building strings by concatenation in a loop is O(n²) because each `+` creates a new string object.[^5]
+Building strings by concatenation in a loop is O(n²) because each `+` creates a new string object.
 
 ```python
 # BAD — quadratic performance
@@ -366,7 +366,7 @@ for item in large_list:
 result = ''.join(str(item) for item in large_list)
 ```
 
-For small counts (< ~5 concatenations), `+` is fine. The threshold where `join` becomes measurably faster is around 6+ concatenations.[^5]
+For small counts (< ~5 concatenations), `+` is fine. The threshold where `join` becomes measurably faster is around 6+ concatenations.
 
 ##### Raw Strings and Escape Sequences
 
@@ -395,13 +395,13 @@ docstring_example = (
 )
 ```
 
-Adjacent string literals (separated only by whitespace) are automatically concatenated at compile time — no `+` needed, no runtime cost.[^5]
+Adjacent string literals (separated only by whitespace) are automatically concatenated at compile time — no `+` needed, no runtime cost.
 
 ***
 
 #### Lists
 
-Lists are mutable, ordered, heterogeneous sequences of objects.[^5]
+Lists are mutable, ordered, heterogeneous sequences of objects.
 
 ```python
 lst = [1, 'two', 3.0, [4, 5]]
@@ -444,7 +444,7 @@ lst2 = lst[:]                 # shallow copy
 lst3 = list(lst)              # also shallow copy
 ```
 
-**Pitfall: List multiplication shares references:**[^5]
+**Pitfall: List multiplication shares references:**
 
 ```python
 # WRONG — all three sublists are the SAME object
@@ -477,7 +477,7 @@ lst = [item for item in lst if not condition(item)]
 
 ##### List Comprehensions
 
-List comprehensions are the idiomatic Python way to build or transform lists.[^9]
+List comprehensions are the idiomatic Python way to build or transform lists.
 
 ```python
 squares = [x**2 for x in xrange(10)]
@@ -502,7 +502,7 @@ print x   # 10 — x untouched
 
 #### Tuples
 
-Tuples are immutable, ordered sequences. Immutability makes them hashable (if all elements are hashable), lighter than lists, and suitable as dictionary keys.[^5]
+Tuples are immutable, ordered sequences. Immutability makes them hashable (if all elements are hashable), lighter than lists, and suitable as dictionary keys.
 
 ```python
 t = (1, 2, 3)
@@ -525,13 +525,13 @@ print p[0], p[1]      # 3 4 — also supports index access
 print p._asdict()     # OrderedDict([('x', 3), ('y', 4)])
 ```
 
-**When to use tuple vs list:** Use tuples for heterogeneous collections of fixed structure (a record, a coordinate). Use lists for homogeneous collections of variable length.[^5]
+**When to use tuple vs list:** Use tuples for heterogeneous collections of fixed structure (a record, a coordinate). Use lists for homogeneous collections of variable length.
 
 ***
 
 #### Dictionaries
 
-Dictionaries are mutable, unordered (insertion order is NOT preserved in Python 2.7 — that guarantee came in Python 3.7) mappings from hashable keys to arbitrary values.[^5]
+Dictionaries are mutable, unordered (insertion order is NOT preserved in Python 2.7 — that guarantee came in Python 3.7) mappings from hashable keys to arbitrary values.
 
 ```python
 d = {'name': 'Alice', 'age': 30}
@@ -569,7 +569,7 @@ print 'name' in d             # True — O(1) average
 print 'name' in d.keys()      # SLOWER — creates a list first, then O(n) scan
 ```
 
-**Performance note:** `d.iteritems()`, `d.iterkeys()`, `d.itervalues()` return lazy iterators and do not copy the data. Prefer them in loops. `d.items()`, `d.keys()`, `d.values()` construct full lists — avoid in hot loops over large dicts or when you only need to iterate once.[^10]
+**Performance note:** `d.iteritems()`, `d.iterkeys()`, `d.itervalues()` return lazy iterators and do not copy the data. Prefer them in loops. `d.items()`, `d.keys()`, `d.values()` construct full lists — avoid in hot loops over large dicts or when you only need to iterate once.
 
 **Pitfall:** Modifying a dictionary's keys while iterating it raises `RuntimeError`. Iterate a copy or collect modifications, then apply:
 
@@ -640,7 +640,7 @@ c.update('hello')
 
 #### Sets
 
-Sets are mutable, unordered collections of unique, hashable elements.[^5]
+Sets are mutable, unordered collections of unique, hashable elements.
 
 ```python
 s = {1, 2, 3}
@@ -676,7 +676,7 @@ unique_squares = {x**2 for x in range(-5, 6)}  # duplicates collapsed
 
 #### `range` vs `xrange`
 
-This is a critical Python 2.7 performance decision.[^11]
+This is a critical Python 2.7 performance decision.
 
 - **`range(n)`**: Returns a **list** of `n` integers. Allocates all values in memory at once. O(n) memory.
 - **`xrange(n)`**: Returns a lazy **iterator** that generates values on demand. O(1) memory.
@@ -690,7 +690,7 @@ for i in xrange(1000000):
 indices = range(10)  # store as list for random access
 ```
 
-**Rule of thumb:** In Python 2.7, use `xrange` in `for` loops unless you specifically need a list.[^12][^13]
+**Rule of thumb:** In Python 2.7, use `xrange` in `for` loops unless you specifically need a list.
 
 ```python
 # Memory comparison (approximate)
@@ -887,7 +887,7 @@ squares = [x**2 for x in xrange(10)]
 evens   = [x for x in xrange(10) if x % 2 == 0]
 ```
 
-In Python 2.7, `map`, `filter`, and `zip` return lists. For memory-efficient lazy variants use `itertools.imap`, `itertools.ifilter`, and `itertools.izip`.[^14]
+In Python 2.7, `map`, `filter`, and `zip` return lists. For memory-efficient lazy variants use `itertools.imap`, `itertools.ifilter`, and `itertools.izip`.
 
 ***
 
@@ -1037,7 +1037,7 @@ class UserService(object):
 
 ##### The Iterator Protocol
 
-An iterator is any object with a `__iter__()` method (returning itself) and a `next()` method (returning the next value or raising `StopIteration`).[^5]
+An iterator is any object with a `__iter__()` method (returning itself) and a `next()` method (returning the next value or raising `StopIteration`).
 
 ```python
 class CountDown(object):
@@ -1082,7 +1082,7 @@ def read_lines_lazily(filename):
 
 ##### Generator Expressions
 
-Generator expressions are comprehension-like syntax producing a generator (not a list). They are memory-efficient for large or infinite sequences.[^9][^15]
+Generator expressions are comprehension-like syntax producing a generator (not a list). They are memory-efficient for large or infinite sequences.
 
 ```python
 # List comprehension — builds entire list in memory
@@ -1119,7 +1119,7 @@ print acc.send(5)  # 35
 
 #### `itertools` — Efficient Iteration
 
-`itertools` provides memory-efficient building blocks for iterators:[^16]
+`itertools` provides memory-efficient building blocks for iterators:
 
 ```python
 import itertools
@@ -1158,7 +1158,7 @@ for a, b in itertools.izip([1,2,3], [4,5,6]):  # no list copy; use in hot loops
 
 ##### New-Style vs Old-Style Classes
 
-**Always use new-style classes** in Python 2.7: inherit explicitly from `object`.[^17][^18]
+**Always use new-style classes** in Python 2.7: inherit explicitly from `object`.
 
 ```python
 # OLD-STYLE — DO NOT USE in Python 2.7
@@ -1170,7 +1170,7 @@ class NewFoo(object):
     pass
 ```
 
-Old-style classes have a completely different and broken MRO (method resolution order), do not support `super()`, `property`, `classmethod`, `staticmethod`, descriptors, or `__slots__` correctly.[^17][^19]
+Old-style classes have a completely different and broken MRO (method resolution order), do not support `super()`, `property`, `classmethod`, `staticmethod`, descriptors, or `__slots__` correctly.
 
 ##### Class Definition
 
@@ -1307,7 +1307,7 @@ class Config(object):
 
 ##### `__slots__`
 
-`__slots__` restricts attribute creation to a fixed set, eliminating the per-instance `__dict__`. This reduces memory usage significantly for large numbers of small objects:[^20]
+`__slots__` restricts attribute creation to a fixed set, eliminating the per-instance `__dict__`. This reduces memory usage significantly for large numbers of small objects:
 
 ```python
 class Point(object):
@@ -1322,7 +1322,7 @@ p = Point(1, 2)
 p.z = 3   # AttributeError: 'Point' object has no attribute 'z'
 ```
 
-**Caveats:** Classes with `__slots__` cannot be weakly referenced unless `'__weakref__'` is explicitly listed in `__slots__`. Subclasses must also declare `__slots__` (without re-declaring parent slots) to gain the memory benefit.[^20][^21]
+**Caveats:** Classes with `__slots__` cannot be weakly referenced unless `'__weakref__'` is explicitly listed in `__slots__`. Subclasses must also declare `__slots__` (without re-declaring parent slots) to gain the memory benefit.
 
 ##### Important Dunder (Magic) Methods
 
@@ -1492,7 +1492,7 @@ def read_remote_file(url):
 
 ##### Syntax
 
-Python 2.7 supports both the old comma syntax and the new `as` keyword. Always use `as`:[^22]
+Python 2.7 supports both the old comma syntax and the new `as` keyword. Always use `as`:
 
 ```python
 # DEPRECATED — old syntax; works in 2.7 but not in Python 3
@@ -1536,7 +1536,7 @@ BaseException
       └── ...
 ```
 
-**Pitfall: Never catch `BaseException` or bare `except:` in production** unless you are at the topmost level of a main loop that must guarantee cleanup. Catching `BaseException` also catches `KeyboardInterrupt` and `SystemExit`, preventing clean shutdown.[^23]
+**Pitfall: Never catch `BaseException` or bare `except:` in production** unless you are at the topmost level of a main loop that must guarantee cleanup. Catching `BaseException` also catches `KeyboardInterrupt` and `SystemExit`, preventing clean shutdown.
 
 ```python
 # BAD — swallows everything including Ctrl-C and sys.exit()
@@ -1636,7 +1636,7 @@ except SomeError as e:
     raise   # re-raise the original exception with original traceback
 ```
 
-Using bare `raise` preserves the original traceback. Do NOT do `raise e` — that resets the traceback to the current line.[^24]
+Using bare `raise` preserves the original traceback. Do NOT do `raise e` — that resets the traceback to the current line.
 
 ##### Exception Chaining
 
@@ -1661,7 +1661,7 @@ keep the `exc_info=True` logging either way.
 
 #### Context Managers and the `with` Statement
 
-The `with` statement ensures cleanup code runs even when exceptions occur.[^25] It was added in Python 2.5.
+The `with` statement ensures cleanup code runs even when exceptions occur. It was added in Python 2.5.
 
 ```python
 # File handling — the canonical use case
@@ -1697,11 +1697,11 @@ with DatabaseTransaction(db_conn) as conn:
     conn.execute('UPDATE ...')
 ```
 
-**Return value of `__exit__`:** Return `True` to suppress the exception (pretend it never happened). Return `False` (or `None`) to let the exception propagate. Suppressing exceptions should be rare and deliberate.[^26]
+**Return value of `__exit__`:** Return `True` to suppress the exception (pretend it never happened). Return `False` (or `None`) to let the exception propagate. Suppressing exceptions should be rare and deliberate.
 
 ##### `contextlib.contextmanager`
 
-Use this decorator to write context managers as generators, which is often cleaner:[^27]
+Use this decorator to write context managers as generators, which is often cleaner:
 
 ```python
 from contextlib import contextmanager
@@ -1768,7 +1768,7 @@ with io.open('output.txt', 'w', encoding='utf-8') as f:
     f.write(u'Caf\xe9\n')
 ```
 
-**Recommendation:** Always use `io.open` for text files in production. It works identically in Python 2.7 and Python 3, and it prevents accidental binary/text mixing.[^6]
+**Recommendation:** Always use `io.open` for text files in production. It works identically in Python 2.7 and Python 3, and it prevents accidental binary/text mixing.
 
 ##### File Positions and Random Access
 
@@ -1839,7 +1839,7 @@ finally:
     shutil.rmtree(tmpdir)
 ```
 
-**Do NOT use `tempfile.mktemp()`** — it is deprecated and vulnerable to race conditions (TOCTOU: the file name is returned before the file is created, allowing another process to create a file with the same name in between).[^28]
+**Do NOT use `tempfile.mktemp()`** — it is deprecated and vulnerable to race conditions (TOCTOU: the file name is returned before the file is created, allowing another process to create a file with the same name in between).
 
 ***
 
@@ -1936,13 +1936,13 @@ q.popleft()
 q.pop()
 ```
 
-`deque.appendleft` and `deque.popleft` are O(1). `list.insert(0, item)` is O(n). Use `deque` whenever you need FIFO or double-ended access.[^16]
+`deque.appendleft` and `deque.popleft` are O(1). `list.insert(0, item)` is O(n). Use `deque` whenever you need FIFO or double-ended access.
 
 ***
 
 #### Division
 
-The `/` operator in Python 2.7 performs **integer division** when both operands are integers, discarding the remainder.[^29][^30]
+The `/` operator in Python 2.7 performs **integer division** when both operands are integers, discarding the remainder.
 
 ```python
 print 7 / 2      # 3  — integer division (UNEXPECTED if you wanted 3.5)
@@ -1952,7 +1952,7 @@ print 7 // 2     # 3  — explicit floor division (works in Python 2 and 3)
 print 7 % 2      # 1  — modulo
 ```
 
-**Production recommendation:** Always add `from __future__ import division` at the top of every module. This makes `/` always perform true division (like Python 3), and `//` always perform floor division.[^3][^31]
+**Production recommendation:** Always add `from __future__ import division` at the top of every module. This makes `/` always perform true division (like Python 3), and `//` always perform floor division.
 
 ```python
 from __future__ import division
@@ -1964,7 +1964,7 @@ print 7 // 2   # 3
 
 #### The `print` Statement
 
-In Python 2.7, `print` is a statement with special syntax. For production code, always use the print function via `from __future__ import print_function`.[^4]
+In Python 2.7, `print` is a statement with special syntax. For production code, always use the print function via `from __future__ import print_function`.
 
 ```python
 from __future__ import print_function
@@ -1984,7 +1984,7 @@ print 'a', 'b'     # prints 'a b'
 print >> sys.stderr, 'error'
 ```
 
-**Pitfall:** `print(a, b)` in Python 2 without the `__future__` import prints the tuple `(a, b)` if `a` and `b` are separate arguments — it is NOT the same as calling a function with two arguments.[^4]
+**Pitfall:** `print(a, b)` in Python 2 without the `__future__` import prints the tuple `(a, b)` if `a` and `b` are separate arguments — it is NOT the same as calling a function with two arguments.
 
 ***
 
@@ -2007,7 +2007,7 @@ except ValueError:
 
 #### Logging
 
-Use the `logging` module — never `print` — for production observability.[^32]
+Use the `logging` module — never `print` — for production observability.
 
 ```python
 import logging
@@ -2039,7 +2039,7 @@ except Exception as e:
     logger.error('Error: %s', e, exc_info=True)
 ```
 
-**Critical rules:**[^32][^33]
+**Critical rules:**
 - Use `logging.getLogger(__name__)` in each module — never pass loggers as function arguments.
 - Use `%` style format strings in logging calls, not `str.format()` or f-strings. The logging system defers formatting until the message actually needs to be emitted, avoiding the cost of string formatting for suppressed log levels.
 - Configure handlers and levels only in the application entry point, never in library modules.
@@ -2086,7 +2086,7 @@ re.findall(r'<.+?>', html)   # ['<b>', '</b>', '<i>', '</i>']
 
 #### Subprocess and Shell Execution
 
-**Never use `os.system()` with user-provided input.** It passes the command to the system shell, enabling OS command injection.[^34][^35]
+**Never use `os.system()` with user-provided input.** It passes the command to the system shell, enabling OS command injection.
 
 ```python
 import subprocess
@@ -2176,7 +2176,7 @@ q.task_done()
 q.join()   # block until all items are processed
 ```
 
-**Pitfall:** Do not share mutable state across threads without proper synchronization. Even `+=` on an integer is not atomic in Python.[^36]
+**Pitfall:** Do not share mutable state across threads without proper synchronization. Even `+=` on an integer is not atomic in Python.
 
 ##### `multiprocessing`
 
@@ -2207,7 +2207,7 @@ if __name__ == '__main__':   # REQUIRED on Windows — prevents recursive spawni
 
 #### Memory Management
 
-CPython uses reference counting as its primary memory management mechanism. When an object's reference count drops to zero, its memory is reclaimed immediately.[^37]
+CPython uses reference counting as its primary memory management mechanism. When an object's reference count drops to zero, its memory is reclaimed immediately.
 
 ##### Reference Counting
 
@@ -2234,7 +2234,7 @@ gc.disable()                          # disable automatic GC (use with care)
 print gc.get_count()                  # (gen0, gen1, gen2) object counts
 ```
 
-**Performance tip:** For applications that allocate many short-lived container objects, increasing the generation 0 threshold (e.g., to 50,000 from 700) can significantly reduce GC overhead.[^38]
+**Performance tip:** For applications that allocate many short-lived container objects, increasing the generation 0 threshold (e.g., to 50,000 from 700) can significantly reduce GC overhead.
 
 ##### Memory Optimization Patterns
 
@@ -2296,7 +2296,7 @@ with open('data.pkl', 'rb') as f:
     restored = pickle.load(f)
 ```
 
-**SECURITY WARNING:** **Never unpickle data from untrusted sources.** Pickle can execute arbitrary Python code on deserialization. A maliciously crafted pickle file can execute shell commands, read files, or install backdoors.[^28] For inter-system communication, use JSON, protobuf, or msgpack instead.
+**SECURITY WARNING:** **Never unpickle data from untrusted sources.** Pickle can execute arbitrary Python code on deserialization. A maliciously crafted pickle file can execute shell commands, read files, or install backdoors. For inter-system communication, use JSON, protobuf, or msgpack instead.
 
 ##### CSV
 
@@ -2381,7 +2381,7 @@ def safe_read_file(base_dir, user_filename):
 
 ##### SQL Injection Prevention
 
-Always use parameterized queries. Never format SQL strings with user input:[^28]
+Always use parameterized queries. Never format SQL strings with user input:
 
 ```python
 import sqlite3

@@ -1,20 +1,20 @@
 ### JavaScript on Legacy Node.js (16 and Older: 14, 15, 17) — Production Review Guide
 
-> **Version**: Node.js 16 "Gallium" — 16.0.0 released 2021-04-20; final release **16.20.2 (2023-08-08)**; **end-of-life since 2023-09-11**.[^1][^2][^3]
-> **Also covers**: Node.js 14 "Fermium" — 14.0.0 released 2020-04-21; final release **14.21.3 (2023-02-16)**; **end-of-life since 2023-04-30**. Node.js 15 (final 15.14.0, EOL 2021-06-01) and Node.js 17 (final 17.9.1, EOL 2022-06-01) were odd-numbered, never-LTS lines.[^1][^3]
-> **Status as of October 2026**: every line covered here is **unsupported and receives no security fixes**. Supported lines are Node.js 22 (Maintenance LTS, EOL 2027-04-30), Node.js 24 (LTS, Maintenance since 2026-10-20, EOL 2028-04-30) and Node.js 26 (Current, latest 26.12.1 of 2026-10-21; scheduled to become LTS on 2026-10-28). Node.js 20 reached EOL on 2026-04-30 and 18 on 2025-04-30. Node.js 27 exists only as a planned alpha channel (scheduled to start 2026-10-28; first stable 27.0.0 planned for 2027-04-22).[^1][^3]
+> **Version**: Node.js 16 "Gallium" — 16.0.0 released 2021-04-20; final release **16.20.2 (2023-08-08)**; **end-of-life since 2023-09-11**.
+> **Also covers**: Node.js 14 "Fermium" — 14.0.0 released 2020-04-21; final release **14.21.3 (2023-02-16)**; **end-of-life since 2023-04-30**. Node.js 15 (final 15.14.0, EOL 2021-06-01) and Node.js 17 (final 17.9.1, EOL 2022-06-01) were odd-numbered, never-LTS lines.
+> **Status as of October 2026**: every line covered here is **unsupported and receives no security fixes**. Supported lines are Node.js 22 (Maintenance LTS, EOL 2027-04-30), Node.js 24 (LTS, Maintenance since 2026-10-20, EOL 2028-04-30) and Node.js 26 (Current, latest 26.12.1 of 2026-10-21; scheduled to become LTS on 2026-10-28). Node.js 20 reached EOL on 2026-04-30 and 18 on 2025-04-30. Node.js 27 exists only as a planned alpha channel (scheduled to start 2026-10-28; first stable 27.0.0 planned for 2027-04-22).
 > **Scope**: JavaScript (CommonJS and ESM) running on Node.js 16, and — because the same rules apply to any project pinned **below Node 18** — on 14, 15 and 17. Every feature that needs 16 is marked **(Node 16+; not in 14)**, and where a 16.x *minor* matters it is named (for example **(16.9+)**). Features introduced in 17 or 18+ are listed as **not available**.
-> **Note**: This document is self-contained. Claims about availability were executed on Node.js 14.21.3, 15.14.0, 16.20.2, 17.9.1 and 18.20.8 (the final release of each line); minor-version boundaries inside 16.x and 14.x come from the official changelogs and the per-release V8 versions in the Node.js release index.[^3][^4][^5]
+> **Note**: This document is self-contained. Claims about availability were executed on Node.js 14.21.3, 15.14.0, 16.20.2, 17.9.1 and 18.20.8 (the final release of each line); minor-version boundaries inside 16.x and 14.x come from the official changelogs and the per-release V8 versions in the Node.js release index.
 
 ***
 
 #### Support status and upgrade advice
 
-Node.js 16 was originally scheduled to be supported until April 2024. Because it ships **OpenSSL 1.1.1**, whose upstream support ended on 2023-09-11, the Node.js project moved Node 16's end-of-life forward by seven months to **2023-09-11**.[^2] The last release, 16.20.2 (2023-08-08), was a security release; no 16.x release has been made since.[^3][^4] Node.js 14 ended on 2023-04-30 with 14.21.3 as its last release.[^1][^3]
+Node.js 16 was originally scheduled to be supported until April 2024. Because it ships **OpenSSL 1.1.1**, whose upstream support ended on 2023-09-11, the Node.js project moved Node 16's end-of-life forward by seven months to **2023-09-11**. The last release, 16.20.2 (2023-08-08), was a security release; no 16.x release has been made since. Node.js 14 ended on 2023-04-30 with 14.21.3 as its last release.
 
 Consequences a reviewer must keep in mind:
 
-- **Known vulnerabilities stay unfixed.** For example, the October 2023 security release fixed HTTP/2 "Rapid Reset" (CVE-2023-44487, High) and an undici cookie leak only on the then-active lines 18.x and 20.x — Node 16 never received those fixes.[^6] Every later Node.js security release likewise excludes 14/15/16/17. The Node.js project states it does not assess security reports for EOL release lines.[^7]
+- **Known vulnerabilities stay unfixed.** For example, the October 2023 security release fixed HTTP/2 "Rapid Reset" (CVE-2023-44487, High) and an undici cookie leak only on the then-active lines 18.x and 20.x — Node 16 never received those fixes. Every later Node.js security release likewise excludes 14/15/16/17. The Node.js project states it does not assess security reports for EOL release lines.
 - **OpenSSL 1.1.1 is itself EOL** (Node 14 and 16 both bundle it: 14.21.3 ships 1.1.1t, 16.20.2 ships 1.1.1v+quic).
 - **The ecosystem has moved on.** Current majors of most tools require Node 18+ (see [Tooling](#tooling-packaging-and-typescript)), so dependency updates — including security updates of dependencies — become progressively impossible.
 
@@ -49,9 +49,9 @@ Node 16 shipped seven V8 updates and many backports. A project that declares `"e
 | 16.19.0 | 2022-12-13 | 9.4 | `--watch` (experimental) |
 | 16.20.2 | 2023-08-08 | 9.4 | final release (security); npm 8.19.4 |
 
-Dates and V8 versions are from the Node.js release index; features from the 16.x changelog.[^3][^4]
+Dates and V8 versions are from the Node.js release index; features from the 16.x changelog.
 
-**Minors inside 14.x** matter the same way for projects that still claim `>=14`: 14.0.0 ships V8 8.1, so private methods/accessors and `WeakRef`/`FinalizationRegistry` need **14.6** (V8 8.4), top-level `await` in ESM **14.8**, CommonJS named-export detection and subpath patterns **14.13**, `import 'node:fs'` in ESM **14.13.1**, `fs.rm()` **14.14**, `crypto.randomUUID()` and `--experimental-abortcontroller` **14.17**, `require('node:fs')`, `base64url`, `spawn` `timeout` and `dns.setDefaultResultOrder()` **14.18**, `exports` pattern trailers and Corepack **14.19**.[^3][^5][^10]
+**Minors inside 14.x** matter the same way for projects that still claim `>=14`: 14.0.0 ships V8 8.1, so private methods/accessors and `WeakRef`/`FinalizationRegistry` need **14.6** (V8 8.4), top-level `await` in ESM **14.8**, CommonJS named-export detection and subpath patterns **14.13**, `import 'node:fs'` in ESM **14.13.1**, `fs.rm()` **14.14**, `crypto.randomUUID()` and `--experimental-abortcontroller` **14.17**, `require('node:fs')`, `base64url`, `spawn` `timeout` and `dns.setDefaultResultOrder()` **14.18**, `exports` pattern trailers and Corepack **14.19**.
 
 ##### Rules for claiming something is unavailable
 
@@ -82,7 +82,7 @@ Node.js 15 (October 2020) and 16 (April 2021) together brought the following ove
 | `new Error(msg, { cause })` | Node 16.9 (V8 9.3) | 14, 15 — option silently ignored |
 | Class `static { … }` initialization blocks | Node 16.11 (V8 9.4) | 14, 15 — **SyntaxError** |
 
-Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `??`, `Promise.allSettled`, `String.prototype.matchAll`, `BigInt`, `globalThis`, `Object.fromEntries`, `Array.prototype.flat/flatMap`, numeric separators `1_000`, public and private class fields (`#x`), `static` class fields, `Intl.DisplayNames`/`Intl.ListFormat`, hashbang lines, stable `Array.prototype.sort`. **Private methods and accessors (`#m()`, `get #x()`) and `WeakRef` / `FinalizationRegistry` need 14.6+**: they shipped in V8 8.4, which Node 14 only received in 14.6.0 (14.0–14.4 use V8 8.1, 14.5 uses V8 8.3). All were verified on 14.21.3; the 14.6 boundary comes from the V8 8.4 release notes and the per-release V8 versions in the release index.[^3][^8][^21]
+Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `??`, `Promise.allSettled`, `String.prototype.matchAll`, `BigInt`, `globalThis`, `Object.fromEntries`, `Array.prototype.flat/flatMap`, numeric separators `1_000`, public and private class fields (`#x`), `static` class fields, `Intl.DisplayNames`/`Intl.ListFormat`, hashbang lines, stable `Array.prototype.sort`. **Private methods and accessors (`#m()`, `get #x()`) and `WeakRef` / `FinalizationRegistry` need 14.6+**: they shipped in V8 8.4, which Node 14 only received in 14.6.0 (14.0–14.4 use V8 8.1, 14.5 uses V8 8.3). All were verified on 14.21.3; the 14.6 boundary comes from the V8 8.4 release notes and the per-release V8 versions in the release index.
 
 ##### Node.js APIs
 
@@ -107,14 +107,14 @@ Already in **14** (safe for both): optional chaining `?.`, nullish coalescing `?
 | `node:test`, `util.parseArgs()` (experimental) | Node 16.17 | **not in 17.x**, not in 14/15 |
 | `--watch` (experimental) | Node 16.19 | not in 17.x |
 
-Sources: Node.js 15/16 changelogs and the `added:` metadata of the 16.20.2 API docs.[^4][^9][^10]
+Sources: Node.js 15/16 changelogs and the `added:` metadata of the 16.20.2 API docs.
 
 ##### Platform
 
-- **V8 9.4** in 16.11+ (9.0 at 16.0); Node 14 uses V8 8.4 from 14.6 (8.1 in 14.0–14.4, 8.3 in 14.5); Node 15 uses V8 8.6; Node 17 uses V8 9.5/9.6; Node 18 uses V8 10.x.[^3]
-- **OpenSSL 1.1.1** in both 14 and 16 (17 switched to OpenSSL 3.0).[^11]
+- **V8 9.4** in 16.11+ (9.0 at 16.0); Node 14 uses V8 8.4 from 14.6 (8.1 in 14.0–14.4, 8.3 in 14.5); Node 15 uses V8 8.6; Node 17 uses V8 9.5/9.6; Node 18 uses V8 10.x.
+- **OpenSSL 1.1.1** in both 14 and 16 (17 switched to OpenSSL 3.0).
 - **ICU** full data is built in (`Intl` works for all locales); 16.20.2 ships ICU 71.1 / Unicode 14.
-- Node 16 is the first line with prebuilt Apple Silicon (arm64 macOS) binaries.[^4]
+- Node 16 is the first line with prebuilt Apple Silicon (arm64 macOS) binaries.
 
 ***
 
@@ -191,7 +191,7 @@ The reviewer must never suggest these as fixes for Node 16 code (and a fortiori 
 
 ##### Old APIs that are deprecated in 16
 
-See [Removed / changed](#removed--changed--migration-notes) for the full list: `new Buffer()` (runtime DEP0005), `fs.rmdir(path, { recursive: true })` (runtime DEP0147), `crypto.createCipher`/`createDecipher` (runtime DEP0106), `require('sys')` (runtime DEP0025), `OutgoingMessage#_headers` (runtime DEP0066), `exports` folder mappings `"./lib/": "./lib/"` (runtime DEP0148), `process.binding()` (doc-only DEP0111, several bindings runtime-deprecated in 16.0), `punycode` (doc-only DEP0040), `util.isArray()` and other `util.is*()` (doc-only), `buffer.slice()` (doc-only DEP0158 since 16.15; prefer `subarray()`).[^9]
+See [Removed / changed](#removed--changed--migration-notes) for the full list: `new Buffer()` (runtime DEP0005), `fs.rmdir(path, { recursive: true })` (runtime DEP0147), `crypto.createCipher`/`createDecipher` (runtime DEP0106), `require('sys')` (runtime DEP0025), `OutgoingMessage#_headers` (runtime DEP0066), `exports` folder mappings `"./lib/": "./lib/"` (runtime DEP0148), `process.binding()` (doc-only DEP0111, several bindings runtime-deprecated in 16.0), `punycode` (doc-only DEP0040), `util.isArray()` and other `util.is*()` (doc-only), `buffer.slice()` (doc-only DEP0158 since 16.15; prefer `subarray()`).
 
 ***
 
@@ -425,7 +425,7 @@ console.log(createUser({ name: 'Ann', email: 'a@example.com' }).role, withDefaul
 
 ##### Module type decision
 
-A file is an ES module if it ends in `.mjs`, or ends in `.js` and the nearest `package.json` has `"type": "module"`. A file is CommonJS if it ends in `.cjs`, or `.js` without `"type": "module"` (or with `"type": "commonjs"`). The ESM implementation was marked stable in 15.3 (and 12.22); the 16 docs mark ECMAScript modules "Stability: 2 – Stable". CommonJS named-export detection exists since 14.13, unflagged top-level `await` since 14.8.[^12]
+A file is an ES module if it ends in `.mjs`, or ends in `.js` and the nearest `package.json` has `"type": "module"`. A file is CommonJS if it ends in `.cjs`, or `.js` without `"type": "module"` (or with `"type": "commonjs"`). The ESM implementation was marked stable in 15.3 (and 12.22); the 16 docs mark ECMAScript modules "Stability: 2 – Stable". CommonJS named-export detection exists since 14.13, unflagged top-level `await` since 14.8.
 
 ##### No `require()` of ES modules in 14/15/16/17
 
@@ -440,7 +440,7 @@ async function main() {
 }
 ```
 
-Many popular packages went ESM-only in majors that *still support Node 14/16* (`node-fetch@3`, `chalk@5`, `execa@6`, `got@12`, `nanoid@4`). Upgrading one of them in a CommonJS project is a breaking change; staying on the last CJS major (`node-fetch@2`, `chalk@4`, `execa@5`, `got@11`, `nanoid@3`) is the usual fix.[^13]
+Many popular packages went ESM-only in majors that *still support Node 14/16* (`node-fetch@3`, `chalk@5`, `execa@6`, `got@12`, `nanoid@4`). Upgrading one of them in a CommonJS project is a breaking change; staying on the last CJS major (`node-fetch@2`, `chalk@4`, `execa@5`, `got@11`, `nanoid@3`) is the usual fix.
 
 ##### TypeScript and Babel can silently turn `import()` into `require()`
 
@@ -488,7 +488,7 @@ console.log(value);                               // 42
 
 ##### Importing CommonJS from ESM: named exports are a static guess
 
-`import cjs from './x.cjs'` always gives `module.exports` as the default export. Named imports work only for names that `cjs-module-lexer` detects statically.[^14] Verified on 14.21.3 and 16.20.2:
+`import cjs from './x.cjs'` always gives `module.exports` as the default export. Named imports work only for names that `cjs-module-lexer` detects statically. Verified on 14.21.3 and 16.20.2:
 
 | CommonJS source | Detected named exports |
 |---|---|
@@ -532,11 +532,11 @@ const { helper } = pkg;   // destructure from the default export instead of a na
 ```
 
 - `exports` **encapsulates**: any subpath not listed throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, including `require('pkg/package.json')` unless exported. Adding `exports` to an existing package is a breaking change.
-- Subpath patterns `"./feature/*"` need 14.13+/12.20+; pattern trailers (`"./features/*.js"`) need 16.9/14.19. Folder mappings `"./lib/": "./lib/"` are runtime-deprecated in 16 (DEP0148 warning, verified) and **fail in 17+** — flag them.[^9]
+- Subpath patterns `"./feature/*"` need 14.13+/12.20+; pattern trailers (`"./features/*.js"`) need 16.9/14.19. Folder mappings `"./lib/": "./lib/"` are runtime-deprecated in 16 (DEP0148 warning, verified) and **fail in 17+** — flag them.
 - `"imports"` (`#internal/*`) needs 14.6+.
 - Conditional exports are matched in object order; put `"types"` first for TypeScript and `"default"` last.
 - `main` is still used by Node versions without `exports` support and by bundlers; keep it.
-- **Dual-package hazard**: shipping both ESM and CJS builds can load two copies of the package (two module instances, two singletons, `instanceof` failures across them). Prefer one implementation with a thin ESM wrapper re-exporting the CJS build.[^15]
+- **Dual-package hazard**: shipping both ESM and CJS builds can load two copies of the package (two module instances, two singletons, `instanceof` failures across them). Prefer one implementation with a thin ESM wrapper re-exporting the CJS build.
 
 ##### `node:` scheme
 
@@ -547,7 +547,7 @@ const { helper } = pkg;   // destructure from the default export instead of a na
 - Circular `require()` returns a partially initialized `module.exports`; reassigning `module.exports` later breaks cycles. Flag cycles that read exports at load time.
 - `require` cache is keyed by resolved path; symlinked duplicates (`npm link`) are distinct modules.
 - `process.mainModule` (doc-deprecated since 14.0) and `module.parent` (doc-deprecated) — use `require.main === module` in CJS.
-- ESM loader hooks (`--experimental-loader`) changed shape in 16.12 (`resolve`/`load`) and again in 16.17 (chaining); loaders written for 14 or early 16 (`getFormat`, `getSource`, `transformSource`) do not work on 16.12+.[^4]
+- ESM loader hooks (`--experimental-loader`) changed shape in 16.12 (`resolve`/`load`) and again in 16.17 (chaining); loaders written for 14 or early 16 (`getFormat`, `getSource`, `transformSource`) do not work on 16.12+.
 
 ***
 
@@ -555,7 +555,7 @@ const { helper } = pkg;   // destructure from the default export instead of a na
 
 ##### Unhandled promise rejections — the biggest 14 → 16 behaviour change
 
-On **Node 15+** an unhandled rejection is raised as an uncaught exception and the process **exits with code 1**. On **Node 14** it only prints `UnhandledPromiseRejectionWarning` plus `DEP0018` and the process **keeps running** with exit code 0.[^16] Verified:
+On **Node 15+** an unhandled rejection is raised as an uncaught exception and the process **exits with code 1**. On **Node 14** it only prints `UnhandledPromiseRejectionWarning` plus `DEP0018` and the process **keeps running** with exit code 0. Verified:
 
 ```javascript
 // fragment: behaviour comparison — run with node 14 and node 16
@@ -788,7 +788,7 @@ main();
 
 ##### Async context: `AsyncLocalStorage`
 
-`AsyncLocalStorage` (13.10/12.17) is the supported way to carry request IDs; `run()`/`getStore()` were marked stable in 16.4.[^4] Prefer it over the `domain` module (deprecated) and over `cls-hooked`.
+`AsyncLocalStorage` (13.10/12.17) is the supported way to carry request IDs; `run()`/`getStore()` were marked stable in 16.4. Prefer it over the `domain` module (deprecated) and over `cls-hooked`.
 
 ```javascript
 const { AsyncLocalStorage } = require('async_hooks');
@@ -958,7 +958,7 @@ writeMany(slow, 100).then(() => console.log('wrote', bytes));        // wrote 79
 
 ##### Readable helpers are experimental in 16
 
-`readable.map/filter/forEach/toArray/some/every/find/reduce/flatMap/drop/take` (16.14–16.17) are **Stability 1 – Experimental** in the 16 docs and absent in 14/15. `stream.compose()` (16.9) and `readable.iterator()` (16.3) are experimental too. Using them in a library that claims `>=16` is a version bug; in an application pinned to 16.17+ it is acceptable but should be noted.[^17]
+`readable.map/filter/forEach/toArray/some/every/find/reduce/flatMap/drop/take` (16.14–16.17) are **Stability 1 – Experimental** in the 16 docs and absent in 14/15. `stream.compose()` (16.9) and `readable.iterator()` (16.3) are experimental too. Using them in a library that claims `>=16` is a version bug; in an application pinned to 16.17+ it is acceptable but should be noted.
 
 ```javascript
 const { Readable } = require('stream');
@@ -1047,7 +1047,7 @@ console.log(Buffer.from('ÿÿ>?', 'latin1').toString('base64url'));  // __8-Pw
 // atob/btoa (16+) are legacy and Latin-1 only; use Buffer for base64.
 ```
 
-`buffer.slice()` is documentation-deprecated in favour of `subarray()` (same semantics); new code should use `subarray()`.[^9]
+`buffer.slice()` is documentation-deprecated in favour of `subarray()` (same semantics); new code should use `subarray()`.
 
 ***
 
@@ -1057,7 +1057,7 @@ console.log(Buffer.from('ÿÿ>?', 'latin1').toString('base64url'));  // __8-Pw
 
 `fetch` is **absent** on 14/15/16/17 without flags (verified `typeof fetch === 'undefined'`). `--experimental-fetch` exists from 16.15 (and 17.5) and prints an `ExperimentalWarning`; it is an early undici build and must not be used in production on an EOL runtime. Options:
 
-- **`undici@5`** (last major supporting `>=14.0`; `undici@6` needs 18.17+, `undici@7` needs 20.18.1+).[^13]
+- **`undici@5`** (last major supporting `>=14.0`; `undici@6` needs 18.17+, `undici@7` needs 20.18.1+).
 - **`node-fetch@2`** (CommonJS); `node-fetch@3` is ESM-only.
 - **`axios`**, `got@11` (CJS; `got@12` is ESM-only and needs 14.16+).
 - Core `http`/`https` for small needs.
@@ -1113,11 +1113,11 @@ Review points:
 - `http.request` has **no default timeout**. Every outbound call needs `timeout` + `destroy`, or a signal.
 - Always consume or `resume()` the response body, even on error status codes.
 - `http.globalAgent` has `keepAlive: false` on 14–18 (verified); create a dedicated `new http.Agent({ keepAlive: true, maxSockets })` for high-volume clients.
-- `res.on('aborted')` / `req.aborted` are documentation-deprecated since 16.12 (DEP0156); listen for `'close'` and check `res.complete` / `writableFinished`.[^9]
+- `res.on('aborted')` / `req.aborted` are documentation-deprecated since 16.12 (DEP0156); listen for `'close'` and check `res.complete` / `writableFinished`.
 
 ##### Server timeouts (Node 16 defaults are unsafe)
 
-Verified defaults on 16.20.2: `server.requestTimeout = 0` (**no limit** on the time to receive a whole request), `headersTimeout = 60000`, `keepAliveTimeout = 5000`, `timeout = 0`, `maxHeaderSize = 16384`. Node 18.0 changed `requestTimeout` to 300 000 ms.[^18] A Node 16 server exposed directly to clients is open to slow-body (Slowloris-style) resource exhaustion unless `requestTimeout` is set:
+Verified defaults on 16.20.2: `server.requestTimeout = 0` (**no limit** on the time to receive a whole request), `headersTimeout = 60000`, `keepAliveTimeout = 5000`, `timeout = 0`, `maxHeaderSize = 16384`. Node 18.0 changed `requestTimeout` to 300 000 ms. A Node 16 server exposed directly to clients is open to slow-body (Slowloris-style) resource exhaustion unless `requestTimeout` is set:
 
 ```javascript
 const http = require('http');
@@ -1173,7 +1173,7 @@ Ending sockets mid-response truncates in-flight requests; production code sets a
 
 ##### DNS: IPv4-first ordering in 16, verbatim in 17+
 
-On 14/16 `dns.lookup()` sorts IPv4 addresses before IPv6 by default (`verbatim: false`). **Node 17 changed the default to `verbatim: true`** (resolver order), so `localhost` may resolve to `::1` after an upgrade and connections to services bound only to `127.0.0.1` fail with `ECONNREFUSED ::1`.[^19] `--dns-result-order=ipv4first` / `dns.setDefaultResultOrder()` (16.4 / 14.18) make the order explicit. Prefer explicit `127.0.0.1` in configs.
+On 14/16 `dns.lookup()` sorts IPv4 addresses before IPv6 by default (`verbatim: false`). **Node 17 changed the default to `verbatim: true`** (resolver order), so `localhost` may resolve to `::1` after an upgrade and connections to services bound only to `127.0.0.1` fail with `ECONNREFUSED ::1`. `--dns-result-order=ipv4first` / `dns.setDefaultResultOrder()` (16.4 / 14.18) make the order explicit. Prefer explicit `127.0.0.1` in configs.
 
 ##### Request validation and headers
 
@@ -1390,7 +1390,7 @@ setTimeout(() => {
 
 ##### `node:test` — available only on 16.17+ (and 18+), experimental, minimal
 
-The built-in test runner was added in 18.0 and backported to **16.17.0** ("with all the changes up to 18.7.0"); hooks (`before`, `after`, `beforeEach`, `afterEach`) arrived in **16.18.0**.[^4] It is **Stability 1 – Experimental** in 16 and prints an `ExperimentalWarning`. It is **absent on 14, 15 and 17.9.1** (verified). On 16.20.2 the module exports `after, afterEach, before, beforeEach, describe, it, run, test` — **no `mock`** (verified `t.mock` and `test.mock` are `undefined`), no reporters, no coverage, no `--test-name-pattern`. Only `--test` and `--test-only` CLI flags exist. Output is TAP.
+The built-in test runner was added in 18.0 and backported to **16.17.0** ("with all the changes up to 18.7.0"); hooks (`before`, `after`, `beforeEach`, `afterEach`) arrived in **16.18.0**. It is **Stability 1 – Experimental** in 16 and prints an `ExperimentalWarning`. It is **absent on 14, 15 and 17.9.1** (verified). On 16.20.2 the module exports `after, afterEach, before, beforeEach, describe, it, run, test` — **no `mock`** (verified `t.mock` and `test.mock` are `undefined`), no reporters, no coverage, no `--test-name-pattern`. Only `--test` and `--test-only` CLI flags exist. Output is TAP.
 
 ```javascript
 // fragment: test/math.test.js — run with: node --test test/   (16.17+)
@@ -1423,7 +1423,7 @@ For Node 16 projects, a mature runner is still the better choice:
 | Supertest | 7.x | `>=14.18.0` |
 | msw | 1.x | `>=14` |
 
-Engine ranges come from the npm registry metadata of the latest release of each major.[^13]
+Engine ranges come from the npm registry metadata of the latest release of each major.
 
 ##### What reviewers check in tests
 
@@ -1451,9 +1451,9 @@ console.log(typeof assert.match);                          // function (assert.m
 
 ##### Package managers
 
-- **npm**: Node 16.20.2 bundles **npm 8.19.4** (lockfile v2, readable by npm 6 and 7+); Node 14.21.3 bundles **npm 6.14.18** (lockfile v1; verified). npm 7+ installs **peer dependencies automatically** and fails on conflicting peers (`ERESOLVE`) — `--legacy-peer-deps` hides real incompatibilities and should be justified. npm 9 still supports `^14.17.0 || ^16.13.0 || >=18`; npm 10+ requires 18.17+.[^13]
+- **npm**: Node 16.20.2 bundles **npm 8.19.4** (lockfile v2, readable by npm 6 and 7+); Node 14.21.3 bundles **npm 6.14.18** (lockfile v1; verified). npm 7+ installs **peer dependencies automatically** and fails on conflicting peers (`ERESOLVE`) — `--legacy-peer-deps` hides real incompatibilities and should be justified. npm 9 still supports `^14.17.0 || ^16.13.0 || >=18`; npm 10+ requires 18.17+.
 - **Corepack** is bundled (experimental) from 16.9 / 14.19 (16.20.2 ships corepack 0.17.0). Current Corepack releases require Node 22+, so `corepack prepare pnpm@latest` style workflows may fetch package-manager versions that do not support 16.
-- **pnpm 8** needs 16.14+; **pnpm 9** needs 18.12+; **pnpm 7** supports 14.6+. **Yarn 1** runs everywhere.[^13]
+- **pnpm 8** needs 16.14+; **pnpm 9** needs 18.12+; **pnpm 7** supports 14.6+. **Yarn 1** runs everywhere.
 - `engines` is advisory for applications unless `engine-strict=true` is in `.npmrc`. Libraries should declare the real minimum including the minor.
 
 ```json
@@ -1465,7 +1465,7 @@ console.log(typeof assert.match);                          // function (assert.m
 
 ##### ESLint
 
-- **ESLint 8** is the last major supporting 14/16 (`^12.22.0 || ^14.17.0 || >=16.0.0`); ESLint 9 requires 18.18+.[^13] Use `.eslintrc.*` with `parserOptions.ecmaVersion: 2022` (or `2021` for 14) and `env: { node: true, es2021: true }`.
+- **ESLint 8** is the last major supporting 14/16 (`^12.22.0 || ^14.17.0 || >=16.0.0`); ESLint 9 requires 18.18+. Use `.eslintrc.*` with `parserOptions.ecmaVersion: 2022` (or `2021` for 14) and `env: { node: true, es2021: true }`.
 - `eslint-plugin-n` (16.x declares `>=16.0.0`; use 15.x for Node 14; 17.x needs 18.18+) checks `n/no-unsupported-features/es-syntax`, `n/no-unsupported-features/es-builtins` and `n/no-unsupported-features/node-builtins` against `engines.node`. This is the single most effective guard against using 17+/18+ APIs.
 - Recommended rules for these versions: `no-floating-promises` (via `@typescript-eslint`), `no-throw-literal`, `prefer-promise-reject-errors`, `n/no-deprecated-api`, `no-restricted-globals` for `fetch`/`structuredClone` when no polyfill exists.
 
@@ -1487,8 +1487,8 @@ console.log(typeof assert.match);                          // function (assert.m
 ##### TypeScript
 
 - Pin **`@types/node@16`** (latest 16.18.x) or **`@types/node@14`** (14.18.x). With newer `@types/node`, `fetch`, `structuredClone`, `AbortSignal.any` and `fs.glob` type-check and then fail at runtime. (The shared toolchain used to verify this guide had `@types/node` 26 installed — exactly the misconfiguration that hides such bugs.)
-- `@tsconfig/node16` sets `target`/`lib` to **`es2021`**, `module`/`moduleResolution` to `node16`; `@tsconfig/node14` uses `es2020`.[^20] With `lib: es2021`, `.at()` and `Object.hasOwn` are compile errors (`TS2550 … try changing the 'lib' compiler option to 'es2022'`, verified) even though Node 16.9+ supports them. Projects pinned to ≥16.11 may use `target`/`lib` `es2022`; projects that must run on 14 must use `es2020`, because `es2021` emits `??=`/`||=` verbatim, which is a SyntaxError on 14 (verified).
-- TypeScript itself still runs on 14.17+ (TS 5.9 and 6.0 declare `>=14.17`).[^13]
+- `@tsconfig/node16` sets `target`/`lib` to **`es2021`**, `module`/`moduleResolution` to `node16`; `@tsconfig/node14` uses `es2020`. With `lib: es2021`, `.at()` and `Object.hasOwn` are compile errors (`TS2550 … try changing the 'lib' compiler option to 'es2022'`, verified) even though Node 16.9+ supports them. Projects pinned to ≥16.11 may use `target`/`lib` `es2022`; projects that must run on 14 must use `es2020`, because `es2021` emits `??=`/`||=` verbatim, which is a SyntaxError on 14 (verified).
+- TypeScript itself still runs on 14.17+ (TS 5.9 and 6.0 declare `>=14.17`).
 - `esModuleInterop: true` for default-importing CommonJS; `module: node16` to keep `import()` as a real dynamic import in CommonJS output.
 - `tsx@4` and `esbuild@0.25` require Node 18+; `ts-node@10` works on 16 (no `engines` field) — check the version you pin.
 
@@ -1579,7 +1579,7 @@ void legacy;
 | `url.parse()` | DEP0116 | **Revoked** since 15.13 ("legacy", not deprecated) | prefer WHATWG `new URL()`; `url.parse` has known hostname-spoofing pitfalls |
 | Unhandled rejections | DEP0018 | End-of-Life (15+) | handle every rejection |
 
-Statuses come from the Node 16.20.2 deprecations document; the runtime ones were reproduced on 16.20.2.[^9]
+Statuses come from the Node 16.20.2 deprecations document; the runtime ones were reproduced on 16.20.2.
 
 ```javascript
 // WHATWG URL instead of url.parse: validates and normalizes.

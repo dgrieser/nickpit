@@ -2,21 +2,21 @@
 
 #### Overview
 
-Python 3.15 was released on October 9, 2026[^3] — one week later than planned, because a surprise third release candidate (3.15.0rc3, October 2, 2026) was cut to fix last-minute lazy-import release blockers.[^5][^2] The first maintenance release, **3.15.1**, followed on October 21, 2026 as an *expedited security release*: it bundles pip 26.2.2 (with certifi 2026.10.19, removing the distrusted emSign CA) and libexpat 2.9.0, plus about 330 bug fixes — several of them for lazy imports.[^4][^23] As of October 2026, 3.15 is the **latest stable release** and is in full bugfix support: bugfix releases roughly every two months until about October 2028 (3.15.12, planned for 2028-10-03, is the last regular bugfix release with binary installers), then source-only security releases until **October 2031**.[^2][^6] Python 3.16 is only a pre-release (final planned for October 2027).[^29]
+Python 3.15 was released on October 9, 2026 — one week later than planned, because a surprise third release candidate (3.15.0rc3, October 2, 2026) was cut to fix last-minute lazy-import release blockers. The first maintenance release, **3.15.1**, followed on October 21, 2026 as an *expedited security release*: it bundles pip 26.2.2 (with certifi 2026.10.19, removing the distrusted emSign CA) and libexpat 2.9.0, plus about 330 bug fixes — several of them for lazy imports. As of October 2026, 3.15 is the **latest stable release** and is in full bugfix support: bugfix releases roughly every two months until about October 2028 (3.15.12, planned for 2028-10-03, is the last regular bugfix release with binary installers), then source-only security releases until **October 2031**. Python 3.16 is only a pre-release (final planned for October 2027).
 
-The headline changes are **explicit lazy imports** (the `lazy` soft keyword, PEP 810), two new builtins — **`frozendict`** (PEP 814) and **`sentinel`** (PEP 661) — **UTF-8 as the default text encoding everywhere** (PEP 686), **`*`/`**` unpacking inside comprehensions** (PEP 798), the new **`math.integer`** module (PEP 791), a dedicated **`profiling`** package with the **Tachyon** sampling profiler (PEP 799), typed extra items for `TypedDict` (PEP 728), `TypeForm` (PEP 747), a substantially upgraded (still experimental, still off by default) JIT, frame pointers enabled by default (PEP 831), and a Stable ABI for free-threaded builds (`abi3t`, PEP 803). It also completes a large batch of removals scheduled years ago (see the migration notes near the end).[^1]
+The headline changes are **explicit lazy imports** (the `lazy` soft keyword, PEP 810), two new builtins — **`frozendict`** (PEP 814) and **`sentinel`** (PEP 661) — **UTF-8 as the default text encoding everywhere** (PEP 686), **`*`/`**` unpacking inside comprehensions** (PEP 798), the new **`math.integer`** module (PEP 791), a dedicated **`profiling`** package with the **Tachyon** sampling profiler (PEP 799), typed extra items for `TypedDict` (PEP 728), `TypeForm` (PEP 747), a substantially upgraded (still experimental, still off by default) JIT, frame pointers enabled by default (PEP 831), and a Stable ABI for free-threaded builds (`abi3t`, PEP 803). It also completes a large batch of removals scheduled years ago (see the migration notes near the end).
 
 This guide targets Python 3.15 specifically. Features introduced in earlier versions are fully available and are used freely here: 3.10 `match`/`case` and `X | Y` unions; 3.11 `ExceptionGroup`/`except*`, `asyncio.TaskGroup`, `tomllib`, `typing.Self`; 3.12 type-parameter syntax (`def f[T]`, `type Alias = ...`, PEP 695), the formalized f-string grammar (PEP 701), `@typing.override`, `itertools.batched`; 3.13 `copy.replace`, `@warnings.deprecated`, `TypeIs`/`ReadOnly`/TypeVar defaults; 3.14 deferred evaluation of annotations (PEP 649/749, `annotationlib`), template strings (`t"..."`, PEP 750), `except A, B:` without parentheses (PEP 758), `compression.zstd`, `concurrent.interpreters`, `uuid.uuid7()`, `Path.copy()`/`Path.move()`. Every section that covers a 3.15-specific change is marked **New in 3.15**.
 
 **Do not recommend anything newer than 3.15.** 3.15 is the newest release, so the boundary is: nothing from 3.16 (alpha/pre-release, PEP 826) or from `docs.python.org/3.16`/`dev` docs, and nothing that was *proposed* for 3.15 but did not ship in that form. Commonly repeated but wrong claims about 3.15:
 
 - There is **no `none` lazy-imports mode**. The PEP 810 text still describes three global modes (`normal`/`all`/`none`), but 3.15 ships only `normal` (default) and `all`. `-X lazy_imports=none` is a fatal startup error and `sys.set_lazy_imports("none")` raises `ValueError`.
-- The integer-math module is **`math.integer`**, not `imath`/`intmath` (naming-poll candidates; `intmath` is only a third-party backport package on PyPI).[^13]
+- The integer-math module is **`math.integer`**, not `imath`/`intmath` (naming-poll candidates; `intmath` is only a third-party backport package on PyPI).
 - The sentinel factory is the **builtin `sentinel(...)`**, not `typing.Sentinel` / `enum.Sentinel` (`typing_extensions.Sentinel` is a separate backport).
 - `frozendict` is **not** a `dict` subclass — `isinstance(fd, dict)` is `False`.
-- `locale.getdefaultlocale()` was **not removed** in 3.15 — it was *un-deprecated*.[^1]
+- `locale.getdefaultlocale()` was **not removed** in 3.15 — it was *un-deprecated*.
 - The free-threaded build is still **optional** (PEP 779 "phase II": supported, not default), and the JIT is still **experimental and disabled by default**.
-- The incremental garbage collector from 3.14.0 is **gone**: it was reverted in 3.14.5, and 3.15 uses the generational GC from 3.13.[^1]
+- The incremental garbage collector from 3.14.0 is **gone**: it was reverted in 3.14.5, and 3.15 uses the generational GC from 3.13.
 
 APIs scheduled for removal in **3.16** still exist in 3.15 but emit `DeprecationWarning` — flag any new use of them (see "Pending Removal in 3.16 and 3.17").
 
@@ -158,7 +158,7 @@ class Cache: ...
 
 #### New in 3.15: Explicit Lazy Imports (PEP 810)
 
-The single most consequential change in 3.15 for application code. Prefixing an import with the soft keyword `lazy` binds a lightweight proxy instead of loading the module; the module is loaded ("reified") the first time the name is used.[^7][^8]
+The single most consequential change in 3.15 for application code. Prefixing an import with the soft keyword `lazy` binds a lightweight proxy instead of loading the module; the module is loaded ("reified") the first time the name is used.
 
 ```python
 import sys
@@ -282,7 +282,7 @@ real = {name: value for name, value in globals().items()
 print('json' in real)                           # False
 ```
 
-**Pitfall (fixed in 3.15.1): module-level `__getattr__` shadowed lazy imports.** On 3.15.0, if a module defines `__getattr__` and also has `lazy import json`, then `othermodule.json` from *outside* calls `__getattr__('json')` instead of reifying the lazy import (gh-158824).[^23] Other 3.15.1 lazy-import fixes: `unittest.mock.patch(..., autospec=True)` on lazily imported objects (gh-153888), `@dataclass` with a *string* annotation naming an unresolvable lazy import (gh-158936), and a crash (now `RecursionError`) on long chains like `lazy import a.b.c as d` (gh-159288). **Require ≥ 3.15.1 for code that uses lazy imports.**
+**Pitfall (fixed in 3.15.1): module-level `__getattr__` shadowed lazy imports.** On 3.15.0, if a module defines `__getattr__` and also has `lazy import json`, then `othermodule.json` from *outside* calls `__getattr__('json')` instead of reifying the lazy import (gh-158824). Other 3.15.1 lazy-import fixes: `unittest.mock.patch(..., autospec=True)` on lazily imported objects (gh-153888), `@dataclass` with a *string* annotation naming an unresolvable lazy import (gh-158936), and a crash (now `RecursionError`) on long chains like `lazy import a.b.c as d` (gh-159288). **Require ≥ 3.15.1 for code that uses lazy imports.**
 
 ##### Lazy Imports and Annotations
 
@@ -340,7 +340,7 @@ from json import dumps      # lazy: the `from` module ('json') is what is matche
 print('json' in sys.modules, 'decimal' in sys.modules)   # False False on 3.15
 ```
 
-Relative imports are resolved to their absolute name before matching (`from .sub.utils import f` in package `pkg` matches `'pkg.sub.utils'`). Imports inside functions, class bodies and `try` blocks stay eager regardless.[^8]
+Relative imports are resolved to their absolute name before matching (`from .sub.utils import f` in package `pkg` matches `'pkg.sub.utils'`). Imports inside functions, class bodies and `try` blocks stay eager regardless.
 
 ##### Review Rules for Lazy Imports
 
@@ -356,7 +356,7 @@ Relative imports are resolved to their absolute name before matching (`from .sub
 
 #### New in 3.15: `frozendict` Built-in Type (PEP 814)
 
-`frozendict` is an immutable, insertion-ordered mapping in `builtins`. It inherits directly from `object` (it is **not** a `dict` subclass), is hashable when all keys and values are hashable, and compares equal regardless of order.[^9]
+`frozendict` is an immutable, insertion-ordered mapping in `builtins`. It inherits directly from `object` (it is **not** a `dict` subclass), is hashable when all keys and values are hashable, and compares equal regardless of order.
 
 ```python
 fd = frozendict(x=1, y=2)
@@ -401,7 +401,7 @@ def accepts_any_mapping(arg: object) -> bool:
 print(bad_accepts(fd), accepts(fd), accepts_any_mapping(fd))   # False True True
 ```
 
-Stdlib support: `copy`, `decimal`, `json`, `marshal`, `pickle`, `pprint`, `plistlib` (serialization only) and `xml.etree.ElementTree` accept `frozendict`; `eval()`/`exec()` accept it as globals (it must already contain `__builtins__` — a frozendict cannot have it inserted, so `eval(src, frozendict(a=1))` raises `TypeError`); `type()` and `str.maketrans()` accept it where they took a dict.[^1]
+Stdlib support: `copy`, `decimal`, `json`, `marshal`, `pickle`, `pprint`, `plistlib` (serialization only) and `xml.etree.ElementTree` accept `frozendict`; `eval()`/`exec()` accept it as globals (it must already contain `__builtins__` — a frozendict cannot have it inserted, so `eval(src, frozendict(a=1))` raises `TypeError`); `type()` and `str.maketrans()` accept it where they took a dict.
 
 ##### Shallow Immutability and Hashing
 
@@ -477,7 +477,7 @@ print(hash(cfg) == hash(cfg))   # True — fully hashable
 
 #### New in 3.15: `sentinel` Built-in Type (PEP 661)
 
-The builtin `sentinel(name, /, *, repr=None)` creates unique marker objects with a readable repr — the standard replacement for `_MISSING = object()`.[^10]
+The builtin `sentinel(name, /, *, repr=None)` creates unique marker objects with a readable repr — the standard replacement for `_MISSING = object()`.
 
 ```python
 import copy
@@ -518,7 +518,7 @@ Rules:
 
 #### New in 3.15: Unpacking in Comprehensions (PEP 798)
 
-List, set and dict comprehensions and generator expressions accept `*` and `**` unpacking in the element position — a flat, readable alternative to nested comprehensions and `itertools.chain.from_iterable()`.[^11]
+List, set and dict comprehensions and generator expressions accept `*` and `**` unpacking in the element position — a flat, readable alternative to nested comprehensions and `itertools.chain.from_iterable()`.
 
 ```python
 import itertools
@@ -569,7 +569,7 @@ On 3.14, `[*L for L in lists]` is `SyntaxError: iterable unpacking cannot be use
 
 #### New in 3.15: UTF-8 Is the Default Encoding (PEP 686)
 
-Python now runs in UTF-8 mode by default on every platform. `open()`, `Path.read_text()`, `subprocess` text mode, `sys.stdin`/`stdout` and the filesystem encoding all use UTF-8 when no encoding is given, regardless of the locale (Windows code pages like cp1252 no longer leak in).[^12][^1]
+Python now runs in UTF-8 mode by default on every platform. `open()`, `Path.read_text()`, `subprocess` text mode, `sys.stdin`/`stdout` and the filesystem encoding all use UTF-8 when no encoding is given, regardless of the locale (Windows code pages like cp1252 no longer leak in).
 
 ```python
 import locale
@@ -628,7 +628,7 @@ except ValueError as e:
 
 ##### New in 3.15: `math.integer` (PEP 791)
 
-Integer-only functions now live in the `math.integer` submodule. The six functions are `comb`, `factorial`, `gcd`, `isqrt`, `lcm` and `perm`; the old `math.*` names are kept as **soft-deprecated aliases** (no warning, no removal planned — but new code should use `math.integer`).[^13]
+Integer-only functions now live in the `math.integer` submodule. The six functions are `comb`, `factorial`, `gcd`, `isqrt`, `lcm` and `perm`; the old `math.*` names are kept as **soft-deprecated aliases** (no warning, no removal planned — but new code should use `math.integer`).
 
 ```python
 import math
@@ -652,7 +652,7 @@ print(1 + integer.isqrt(17 - 1))   # 5
 
 ##### Floats
 
-Floats are C `double` (IEEE 754 binary64). 3.15 adds `math.isnormal()`, `math.issubnormal()`, `math.fmax()`, `math.fmin()` and `math.signbit()`:[^1]
+Floats are C `double` (IEEE 754 binary64). 3.15 adds `math.isnormal()`, `math.issubnormal()`, `math.fmax()`, `math.fmin()` and `math.signbit()`:
 
 ```python
 import math
@@ -686,7 +686,7 @@ print(not True)             # False — what was meant
 
 ##### `bytes` and `bytearray` — New in 3.15: `bytearray.take_bytes()`
 
-`bytearray.take_bytes(n=None, /)` removes and returns the first `n` bytes (or all) **without copying** — the idiom for buffers in protocol parsers and stream decoders:[^1]
+`bytearray.take_bytes(n=None, /)` removes and returns the first `n` bytes (or all) **without copying** — the idiom for buffers in protocol parsers and stream decoders:
 
 ```python
 buffer = bytearray(b'abc\ndef')
@@ -759,7 +759,7 @@ print(f'{x = }')                       # x = 42 — debugging only, never in log
 
 ##### Template Strings (PEP 750, 3.14+)
 
-A `t'...'` literal produces a `string.templatelib.Template` instead of a `str`, so the receiving function can escape interpolations. Use them for SQL, HTML, shell commands — anywhere f-string interpolation would be an injection risk. 3.15 adds t-string support to `pprint`.[^26]
+A `t'...'` literal produces a `string.templatelib.Template` instead of a `str`, so the receiving function can escape interpolations. Use them for SQL, HTML, shell commands — anywhere f-string interpolation would be an injection risk. 3.15 adds t-string support to `pprint`.
 
 ```python
 from string.templatelib import Interpolation, Template
@@ -790,7 +790,7 @@ print(type(tpl).__name__, tpl.strings)   # Template ('Hi ', '!')
 
 ##### Annotations Are Lazy (PEP 649/749, 3.14+)
 
-Annotations are evaluated only when requested, so forward references need no quotes and `from __future__ import annotations` is unnecessary in 3.14+ code. Use `annotationlib` to read annotations safely:[^25]
+Annotations are evaluated only when requested, so forward references need no quotes and `from __future__ import annotations` is unnecessary in 3.14+ code. Use `annotationlib` to read annotations safely:
 
 ```python
 import annotationlib
@@ -844,7 +844,7 @@ Write `X | None`, never `Optional[X]`, and import ABCs (`Callable`, `Iterable`, 
 
 ##### New in 3.15: `TypedDict` with `closed` and `extra_items` (PEP 728)
 
-A **closed** `TypedDict` declares that no keys beyond the listed ones may appear; `extra_items=T` allows arbitrary extra keys whose values must be `T`. The checks are for **static type checkers** — at runtime a `TypedDict` is still a plain `dict` and nothing is validated.[^14]
+A **closed** `TypedDict` declares that no keys beyond the listed ones may appear; `extra_items=T` allows arbitrary extra keys whose values must be `T`. The checks are for **static type checkers** — at runtime a `TypedDict` is still a plain `dict` and nothing is validated.
 
 ```python
 from typing import NotRequired, ReadOnly, TypedDict
@@ -881,7 +881,7 @@ Removed in 3.15 (see migration notes): `TypedDict('TD')` and `TypedDict('TD', No
 
 ##### New in 3.15: `typing.TypeForm` (PEP 747)
 
-`TypeForm[T]` annotates a value that is itself a type expression (`int`, `str | None`, `list[int]`, a `TypedDict` class). At runtime `TypeForm(x)` just returns `x`.[^15]
+`TypeForm[T]` annotates a value that is itself a type expression (`int`, `str | None`, `list[int]`, a `TypedDict` class). At runtime `TypeForm(x)` just returns `x`.
 
 ```python
 from typing import Any, TypeForm
@@ -898,7 +898,7 @@ Prefer `TypeForm[T]` over `type[T]` in validators/deserializers that accept unio
 
 ##### New in 3.15: `@typing.disjoint_base` (PEP 800) and `TypeVarTuple` Options
 
-`@disjoint_base` tells type checkers that a class cannot be combined with other disjoint bases in multiple inheritance (mirroring builtins/C extensions with incompatible layouts). It's for stub/library authors; application code rarely needs it. `TypeVarTuple` now accepts `bound=`, `covariant=`, `contravariant=` and `infer_variance=` like `TypeVar` (bound semantics are not yet specified for type checkers).[^16]
+`@disjoint_base` tells type checkers that a class cannot be combined with other disjoint bases in multiple inheritance (mirroring builtins/C extensions with incompatible layouts). It's for stub/library authors; application code rarely needs it. `TypeVarTuple` now accepts `bound=`, `covariant=`, `contravariant=` and `infer_variance=` like `TypeVar` (bound semantics are not yet specified for type checkers).
 
 ```python
 from typing import TypeVarTuple, disjoint_base
@@ -1220,7 +1220,7 @@ class Formatter:
 print(Formatter().fmt(3), Formatter().fmt('x'))   # int:3 x
 ```
 
-3.15: `singledispatchmethod` supports non-descriptor callables and, when it wraps a regular method accessed through the class, dispatches on the second argument.[^1] `functools.cache` arguments must be hashable — pass `frozendict`/`tuple` instead of `dict`/`list`.
+3.15: `singledispatchmethod` supports non-descriptor callables and, when it wraps a regular method accessed through the class, dispatches on the second argument. `functools.cache` arguments must be hashable — pass `frozendict`/`tuple` instead of `dict`/`list`.
 
 ##### Generators and `itertools`
 
@@ -1330,7 +1330,7 @@ print(Circle.unit(), round(Circle(2).area, 2))   # Circle(color='black') 12.57
 print(Shape.__hash__)                             # None
 ```
 
-**3.15 slot changes:** any class may now list `__dict__` and `__weakref__` in `__slots__`, and subclasses of `tuple` (including `namedtuple` classes) may define arbitrary `__slots__`.[^1]
+**3.15 slot changes:** any class may now list `__dict__` and `__weakref__` in `__slots__`, and subclasses of `tuple` (including `namedtuple` classes) may define arbitrary `__slots__`.
 
 ##### Improved `AttributeError` Hints (New in 3.15)
 
@@ -1468,7 +1468,7 @@ with ExitStack() as stack:
 
 ##### New in 3.15: Context-Manager Decorators Respect Generators and Coroutines
 
-`ContextDecorator`/`AsyncContextDecorator` — and therefore `@contextmanager`/`@asynccontextmanager` objects used **as decorators** — now detect generator, coroutine and async-generator functions and keep the context open across iteration/await. Previously the context exited as soon as the generator object was created, so the body ran *outside* it.[^30]
+`ContextDecorator`/`AsyncContextDecorator` — and therefore `@contextmanager`/`@asynccontextmanager` objects used **as decorators** — now detect generator, coroutine and async-generator functions and keep the context open across iteration/await. Previously the context exited as soon as the generator object was created, so the body ran *outside* it.
 
 ```python
 from contextlib import contextmanager
@@ -1562,7 +1562,7 @@ print(os.path.commonpath(['/srv/app', '/srv/apple']))   # /srv  ✅ component-ba
 
 ##### Archives: `tarfile` Hardening
 
-Since 3.14, `extract()`/`extractall()` default to the `'data'` filter. `data_filter()` also normalizes symlink targets (CVE-2025-4138), the filter is re-applied when substituting links (`LinkFallbackError`, CVE-2025-4330), and rejected members are no longer extracted when `errorlevel=0` (CVE-2025-4435). These fixes are listed in the 3.15 What's New but are **not 3.15-only**: they already shipped in 3.14.0 (see the 3.14 What's New) and were backported to security releases of older branches.[^1][^24]
+Since 3.14, `extract()`/`extractall()` default to the `'data'` filter. `data_filter()` also normalizes symlink targets (CVE-2025-4138), the filter is re-applied when substituting links (`LinkFallbackError`, CVE-2025-4330), and rejected members are no longer extracted when `errorlevel=0` (CVE-2025-4435). These fixes are listed in the 3.15 What's New but are **not 3.15-only**: they already shipped in 3.14.0 (see the 3.14 What's New) and were backported to security releases of older branches.
 
 ```python
 import io
@@ -1605,7 +1605,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ##### Structured Concurrency — New in 3.15: `TaskGroup.cancel()`
 
-`TaskGroup.cancel()` ends a task group early (e.g. once one task found the answer) without the old "raise a private exception and suppress it" boilerplate:[^1]
+`TaskGroup.cancel()` ends a task group early (e.g. once one task found the answer) without the old "raise a private exception and suppress it" boilerplate:
 
 ```python
 import asyncio
@@ -1666,7 +1666,7 @@ async def worker() -> None:
 
 ##### asyncio APIs That Disappear in 3.16
 
-These still work in 3.15 but emit `DeprecationWarning` and are **removed in 3.16** — flag every use:[^1]
+These still work in 3.15 but emit `DeprecationWarning` and are **removed in 3.16** — flag every use:
 
 | Deprecated (removed in 3.16) | Replacement |
 |---|---|
@@ -1693,14 +1693,14 @@ print(asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop))   # ok ✅ (i
 
 ##### Free-Threading Status in 3.15
 
-The free-threaded ("no-GIL") build is **officially supported but optional** — PEP 779 "phase II", reached in 3.14; 3.15 does **not** make it the default. It is a separate interpreter (`python3.15t`, ABI tag `cp315t`); the default `python3.15` still has a GIL.[^19][^20]
+The free-threaded ("no-GIL") build is **officially supported but optional** — PEP 779 "phase II", reached in 3.14; 3.15 does **not** make it the default. It is a separate interpreter (`python3.15t`, ABI tag `cp315t`); the default `python3.15` still has a GIL.
 
 What changed for free-threading in 3.15:
 
-- **Stable ABI for free-threaded builds (`abi3t`, PEP 803).** Extensions can ship one wheel for all free-threaded 3.15+ interpreters (after porting to PEP 697/793/820 APIs). Build tools with `abi3t` support include meson-python, scikit-build-core and Maturin; otherwise build `cp315t` wheels separately.[^21]
-- The official **macOS installers now install free-threading support by default**.[^1]
+- **Stable ABI for free-threaded builds (`abi3t`, PEP 803).** Extensions can ship one wheel for all free-threaded 3.15+ interpreters (after porting to PEP 697/793/820 APIs). Build tools with `abi3t` support include meson-python, scikit-build-core and Maturin; otherwise build `cp315t` wheels separately.
+- The official **macOS installers now install free-threading support by default**.
 - `mimalloc` is the default raw allocator (better free-threaded performance).
-- Many free-threading crash fixes continued into 3.15.1 (e.g. concurrent `bytes.join()` mutation, split-dict iteration) — run the latest patch release.[^23]
+- Many free-threading crash fixes continued into 3.15.1 (e.g. concurrent `bytes.join()` mutation, split-dict iteration) — run the latest patch release.
 
 ```python
 import sys
@@ -1711,12 +1711,12 @@ print(sys.abi_info.free_threaded)                     # new in 3.15: build-level
 print(sys._is_gil_enabled())                          # runtime: GIL may be re-enabled
 ```
 
-On a free-threaded build: the GIL is **re-enabled automatically** (with a warning) when an extension that isn't marked free-threading-safe is imported, and can be forced with `PYTHON_GIL=1`/`-X gil=1`; threads inherit the caller's `contextvars` context (`sys.flags.thread_inherit_context == 1`) and `warnings.catch_warnings` is context-local (`sys.flags.context_aware_warnings == 1`) — both are `0` on the default build. Single-threaded overhead is roughly 1–8% depending on platform, and memory use is higher.[^19]
+On a free-threaded build: the GIL is **re-enabled automatically** (with a warning) when an extension that isn't marked free-threading-safe is imported, and can be forced with `PYTHON_GIL=1`/`-X gil=1`; threads inherit the caller's `contextvars` context (`sys.flags.thread_inherit_context == 1`) and `warnings.catch_warnings` is context-local (`sys.flags.context_aware_warnings == 1`) — both are `0` on the default build. Single-threaded overhead is roughly 1–8% depending on platform, and memory use is higher.
 
 Review rules for code that claims free-threading support:
 
 - Built-in containers are internally locked, but **compound operations are not atomic** (`if k not in d: d[k] = v`, `x += 1` on shared state). Use `threading.Lock`.
-- **Sharing one iterator/generator between threads is unsafe** (duplicated or missing items; generators raise `ValueError: generator already executing`). Wrap it with the new 3.15 helpers:[^27]
+- **Sharing one iterator/generator between threads is unsafe** (duplicated or missing items; generators raise `ValueError: generator already executing`). Wrap it with the new 3.15 helpers:
 
 ```python
 import threading
@@ -1801,7 +1801,7 @@ Since 3.14 the default `multiprocessing` start method on Linux/BSD is **`forkser
 
 #### New in 3.15: The `profiling` Package and Tachyon (PEP 799)
 
-The new `profiling` package groups the built-in profilers:[^17][^18]
+The new `profiling` package groups the built-in profilers:
 
 - `profiling.tracing` — the deterministic profiler (the `cProfile` implementation; `cProfile` stays as an alias, `profiling.tracing.Profile is cProfile.Profile`).
 - `profiling.sampling` — **Tachyon**, a statistical sampling profiler that can attach to a **running process by PID** with negligible overhead, at up to 1,000,000 Hz.
@@ -1845,10 +1845,10 @@ Review guidance: prefer Tachyon for production investigations (attach, no restar
 
 ##### Interpreter and JIT
 
-- **JIT (experimental, off by default).** 3.15's JIT has a new tracing frontend, basic register allocation and better code generation: about 7–8% geometric-mean speedup on x86-64 Linux over the standard interpreter and 11–12% on AArch64 macOS over the tail-calling interpreter, with individual benchmarks ranging from ~15% slower to 2× faster. Enable it per process with `PYTHON_JIT=1` on JIT-capable builds; measure before adopting.[^1]
-- **Tail-calling interpreter on Windows.** Official 64-bit Windows binaries are built with MSVC 18's tail-calling interpreter (15–20% pyperformance speedup reported).[^1]
-- **Frame pointers by default (PEP 831).** Native profilers (`perf`, eBPF tools) can unwind through Python. Extensions built by tools that consume `sysconfig` inherit `-fno-omit-frame-pointer`; custom native builds should add it too.[^28]
-- **GC:** the generational collector (the 3.14 incremental GC was reverted in 3.14.5); `gc.get_threshold()` is `(2000, 10, 10)` again.[^24]
+- **JIT (experimental, off by default).** 3.15's JIT has a new tracing frontend, basic register allocation and better code generation: about 7–8% geometric-mean speedup on x86-64 Linux over the standard interpreter and 11–12% on AArch64 macOS over the tail-calling interpreter, with individual benchmarks ranging from ~15% slower to 2× faster. Enable it per process with `PYTHON_JIT=1` on JIT-capable builds; measure before adopting.
+- **Tail-calling interpreter on Windows.** Official 64-bit Windows binaries are built with MSVC 18's tail-calling interpreter (15–20% pyperformance speedup reported).
+- **Frame pointers by default (PEP 831).** Native profilers (`perf`, eBPF tools) can unwind through Python. Extensions built by tools that consume `sysconfig` inherit `-fno-omit-frame-pointer`; custom native builds should add it too.
+- **GC:** the generational collector (the 3.14 incremental GC was reverted in 3.14.5); `gc.get_threshold()` is `(2000, 10, 10)` again.
 
 ```python
 import sys
@@ -1890,7 +1890,7 @@ for k, v in [('a', 1), ('b', 2), ('a', 3)]:
 print(dict(groups))                                      # {'a': [1, 3], 'b': [2]}
 ```
 
-3.15 also speeds up `base64` (2× encode/3× decode), rewrites Base32/Base85/Ascii85 in C (two orders of magnitude faster), and makes `subprocess.Popen.wait(timeout=...)` event-driven (pidfd on Linux ≥ 5.3, kqueue on macOS/BSD) instead of a sleep loop.[^1]
+3.15 also speeds up `base64` (2× encode/3× decode), rewrites Base32/Base85/Ascii85 in C (two orders of magnitude faster), and makes `subprocess.Popen.wait(timeout=...)` event-driven (pidfd on Linux ≥ 5.3, kqueue on macOS/BSD) instead of a sleep loop.
 
 ***
 
@@ -1929,14 +1929,14 @@ except ZeroDivisionError:
 
 ##### Security Content of 3.15 Point Releases
 
-- **3.15.1 (October 21, 2026, expedited):** bundled pip 26.2.2 with certifi 2026.10.19 (removes the distrusted eMudhra/emSign root CA); libexpat updated to 2.9.0; on Windows `mimetypes` no longer reads `mimetypes.knownfiles` by default (registry only). The release notes ask users to **upgrade pip/uv/certifi in every existing virtual environment** too — upgrading the interpreter does not touch venvs.[^4][^23]
-- **3.15.0** includes the tarfile hardening listed under File I/O (CVE-2025-4138, CVE-2025-4330, CVE-2025-4435, CVE-2024-12718) and `os.path.realpath(strict=ALLOW_MISSING)` (CVE-2025-4517) — both already present since 3.14.0 — plus Expat billion-laughs/allocation-amplification tuning methods on `xmlparser` objects (documented as new in 3.15, but also backported to 3.14.x/3.13.x patch releases).[^1][^24]
+- **3.15.1 (October 21, 2026, expedited):** bundled pip 26.2.2 with certifi 2026.10.19 (removes the distrusted eMudhra/emSign root CA); libexpat updated to 2.9.0; on Windows `mimetypes` no longer reads `mimetypes.knownfiles` by default (registry only). The release notes ask users to **upgrade pip/uv/certifi in every existing virtual environment** too — upgrading the interpreter does not touch venvs.
+- **3.15.0** includes the tarfile hardening listed under File I/O (CVE-2025-4138, CVE-2025-4330, CVE-2025-4435, CVE-2024-12718) and `os.path.realpath(strict=ALLOW_MISSING)` (CVE-2025-4517) — both already present since 3.14.0 — plus Expat billion-laughs/allocation-amplification tuning methods on `xmlparser` objects (documented as new in 3.15, but also backported to 3.14.x/3.13.x patch releases).
 
 Pin deployments to the latest 3.15.x; treat 3.15.0 as superseded.
 
 ##### New in 3.15: Auditable Startup Code (PEP 829)
 
-`.pth` files in site-packages can execute arbitrary code on **every** interpreter start via `import` lines — a known supply-chain persistence vector. 3.15 adds `<name>.start` files containing entry points (`pkg.mod:callable`); when a matching `<name>.start` exists, `import` lines in `<name>.pth` are ignored. `import` lines in `.pth` files are now *silently* deprecated, will be ignored in 3.18 and warn from 3.20.[^22]
+`.pth` files in site-packages can execute arbitrary code on **every** interpreter start via `import` lines — a known supply-chain persistence vector. 3.15 adds `<name>.start` files containing entry points (`pkg.mod:callable`); when a matching `<name>.start` exists, `import` lines in `<name>.pth` are ignored. `import` lines in `.pth` files are now *silently* deprecated, will be ignored in 3.18 and warn from 3.20.
 
 ```python
 import pathlib
@@ -2101,7 +2101,7 @@ Always open CSV files with `newline=''` and an explicit `encoding=`. `csv.Sniffe
 
 ##### New in 3.15: `re.prefixmatch()` (and soft-deprecated `re.match()`)
 
-`re.prefixmatch()` / `Pattern.prefixmatch()` are new, explicit names for what `match()` always did: match **at the start** of the string. `re.match()` is now **soft deprecated** — no warning, no removal; new 3.15-only code should prefer `prefixmatch()`, code supporting older versions keeps `match()`.[^31]
+`re.prefixmatch()` / `Pattern.prefixmatch()` are new, explicit names for what `match()` always did: match **at the start** of the string. `re.match()` is now **soft deprecated** — no warning, no removal; new 3.15-only code should prefer `prefixmatch()`, code supporting older versions keeps `match()`.
 
 ```python
 import re
@@ -2180,7 +2180,7 @@ print('a' in cache)                     # False — weak refs don't keep objects
 ```
 
 - 3.15's default build uses the **generational GC** (3.14.0–3.14.4's incremental GC was reverted for memory-pressure regressions) — memory tuning advice for 3.13 applies again.
-- Free-threaded builds use more memory: immortal interned strings, larger non-GC object headers, delayed freeing (QSBR, biased/deferred reference counting). `gc.collect()` releases memory held for delayed freeing.[^19]
+- Free-threaded builds use more memory: immortal interned strings, larger non-GC object headers, delayed freeing (QSBR, biased/deferred reference counting). `gc.collect()` releases memory held for delayed freeing.
 - `mmap.mmap.set_name()` (3.15, Linux ≥ 5.17) labels anonymous mappings in `/proc/<pid>/maps`.
 - `bytearray.take_bytes()` avoids one full copy when turning a buffer into `bytes`.
 
@@ -2246,7 +2246,7 @@ uv pip install -r requirements.txt
 uv python install 3.15t                  # free-threaded build, side by side
 ```
 
-3.15 venv change: on POSIX platforms whose `sys.platlibdir` is not `lib` (e.g. `lib64`), `venv` now creates a real platlib directory instead of a `lib64 -> lib` symlink, so purelib and platlib no longer share a directory.[^1]
+3.15 venv change: on POSIX platforms whose `sys.platlibdir` is not `lib` (e.g. `lib64`), `venv` now creates a real platlib directory instead of a `lib64 -> lib` symlink, so purelib and platlib no longer share a directory.
 
 ##### `pyproject.toml`
 
@@ -2276,9 +2276,9 @@ If the project must support older interpreters, set `requires-python` accordingl
 
 ##### C Extensions on 3.15
 
-- Free-threaded wheels: target `abi3t` (one wheel for free-threaded 3.15+) when the extension can use PEP 697/793/820 APIs; otherwise build `cp315t`.[^21]
-- Frame pointers: keep `-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer` in custom native builds (Rust/C++ included), or native stack unwinding breaks for the whole process.[^28]
-- `PyGILState_Ensure()/Release()` are soft deprecated in favour of the PEP 788 thread-state/interpreter-guard APIs; several long-deprecated C APIs (`PyWeakref_GetObject`, `Py_GetPath`, `Py_GetPrefix`, `PyImport_ImportModuleNoBlock`, ...) were removed — `pythoncapi-compat` provides replacements.[^1]
+- Free-threaded wheels: target `abi3t` (one wheel for free-threaded 3.15+) when the extension can use PEP 697/793/820 APIs; otherwise build `cp315t`.
+- Frame pointers: keep `-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer` in custom native builds (Rust/C++ included), or native stack unwinding breaks for the whole process.
+- `PyGILState_Ensure()/Release()` are soft deprecated in favour of the PEP 788 thread-state/interpreter-guard APIs; several long-deprecated C APIs (`PyWeakref_GetObject`, `Py_GetPath`, `Py_GetPrefix`, `PyImport_ImportModuleNoBlock`, ...) were removed — `pythoncapi-compat` provides replacements.
 
 ##### Project Layout
 
@@ -2360,7 +2360,7 @@ python3.15 -W error::DeprecationWarning -X warn_default_encoding -m pytest
 
 #### Removed and Changed in 3.15 — Migration Notes
 
-APIs **removed** in 3.15 — code using them fails on 3.15:[^1]
+APIs **removed** in 3.15 — code using them fails on 3.15:
 
 | Removed in 3.15 | Replacement |
 |---|---|

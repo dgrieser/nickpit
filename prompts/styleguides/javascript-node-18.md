@@ -2,13 +2,13 @@
 
 #### Overview
 
-Node.js 18.0.0 ("Hydrogen") was released on **April 19, 2022**, entered Active LTS with 18.12.0 on **October 25, 2022**, moved to Maintenance LTS on **October 18, 2023**, and reached **End-of-Life on April 30, 2025**.[^2] The final release of the line is **18.20.8 (March 27, 2025)**; there will be no 18.20.9.[^3] As of October 2026 Node 18 has been unsupported for eighteen months: the project does not assess security reports for EOL lines and treats every new CVE as affecting them by default, and several security releases since (for example the one published January 13, 2026, which fixed three high-severity issues) shipped only for supported lines.[^6][^7] The bundled **OpenSSL 3.0** branch has itself left upstream support.[^24]
+Node.js 18.0.0 ("Hydrogen") was released on **April 19, 2022**, entered Active LTS with 18.12.0 on **October 25, 2022**, moved to Maintenance LTS on **October 18, 2023**, and reached **End-of-Life on April 30, 2025**. The final release of the line is **18.20.8 (March 27, 2025)**; there will be no 18.20.9. As of October 2026 Node 18 has been unsupported for eighteen months: the project does not assess security reports for EOL lines and treats every new CVE as affecting them by default, and several security releases since (for example the one published January 13, 2026, which fixed three high-severity issues) shipped only for supported lines. The bundled **OpenSSL 3.0** branch has itself left upstream support.
 
-Supported lines in October 2026: **Node 22** (Maintenance LTS until April 30, 2027; latest 22.23.4), **Node 24** (Maintenance LTS since October 20, 2026, until April 30, 2028; latest 24.22.1) and **Node 26** (Current; latest 26.12.1 of October 21, 2026; scheduled to become Active LTS on October 28, 2026, supported until April 30, 2029). Node 20 reached EOL on April 30, 2026. Node 27 has no release yet — only an alpha channel scheduled to start on October 28, 2026.[^2][^3] **Recommend upgrading to Node 24 or 26** whenever you review a Node 18 project — but review the code *as written for Node 18*: do not suggest APIs the pinned runtime does not have.
+Supported lines in October 2026: **Node 22** (Maintenance LTS until April 30, 2027; latest 22.23.4), **Node 24** (Maintenance LTS since October 20, 2026, until April 30, 2028; latest 24.22.1) and **Node 26** (Current; latest 26.12.1 of October 21, 2026; scheduled to become Active LTS on October 28, 2026, supported until April 30, 2029). Node 20 reached EOL on April 30, 2026. Node 27 has no release yet — only an alpha channel scheduled to start on October 28, 2026. **Recommend upgrading to Node 24 or 26** whenever you review a Node 18 project — but review the code *as written for Node 18*: do not suggest APIs the pinned runtime does not have.
 
-Exact component versions in **18.20.8** (verified with `process.versions`): V8 **10.2.154.26-node.39**, OpenSSL **3.0.16**, undici **5.29.0** (powers `fetch`), npm **10.8.2**, Corepack **0.32.0**, ICU **74.2** (Unicode 15.1, CLDR 44.1, tz 2024a), libuv **1.44.2**, `NODE_MODULE_VERSION` **108**, Node-API **9**. Prebuilt Linux binaries need glibc ≥ 2.28; macOS binaries need 10.15+.[^1][^4]
+Exact component versions in **18.20.8** (verified with `process.versions`): V8 **10.2.154.26-node.39**, OpenSSL **3.0.16**, undici **5.29.0** (powers `fetch`), npm **10.8.2**, Corepack **0.32.0**, ICU **74.2** (Unicode 15.1, CLDR 44.1, tz 2024a), libuv **1.44.2**, `NODE_MODULE_VERSION` **108**, Node-API **9**. Prebuilt Linux binaries need glibc ≥ 2.28; macOS binaries need 10.15+.
 
-This guide also applies to **Node 19** projects (19.0.0 released October 18, 2022; EOL June 1, 2023; last release 19.9.0 with OpenSSL 3.0.8). Review Node 19 code against the 18 feature set documented here: 19 adds a few things 18 lacks (global `crypto`, global `CustomEvent`, `fs.openAsBlob`, `Intl.NumberFormat` v3 methods, recursive `fs.watch` on Linux, keep-alive default agent, `server.close()` closing idle sockets) and *lacks* several later 18.x backports (`AbortSignal.any`, `module.register`, `events.addAbortListener`, `Symbol.dispose`, mock timers, import attributes with `with`). Where this matters it is called out explicitly.[^23]
+This guide also applies to **Node 19** projects (19.0.0 released October 18, 2022; EOL June 1, 2023; last release 19.9.0 with OpenSSL 3.0.8). Review Node 19 code against the 18 feature set documented here: 19 adds a few things 18 lacks (global `crypto`, global `CustomEvent`, `fs.openAsBlob`, `Intl.NumberFormat` v3 methods, recursive `fs.watch` on Linux, keep-alive default agent, `server.close()` closing idle sockets) and *lacks* several later 18.x backports (`AbortSignal.any`, `module.register`, `events.addAbortListener`, `Symbol.dispose`, mock timers, import attributes with `with`). Where this matters it is called out explicitly.
 
 This guide is self-contained: it describes the JavaScript language as implemented by V8 10.2 (ES2022 plus `findLast`/`findLastIndex` from ES2023) and the Node.js 18 runtime APIs. Behavioral claims and examples were executed on Node **18.20.8** unless stated otherwise (Windows-only behavior and single executable applications are documented from release notes); "new in" and "not available" boundaries were checked against 16.20.2, 17.9.1, 19.9.0 and every newer major up to 26.12.1. Minor-version boundaries inside 18.x come from the release notes and API docs.
 
@@ -18,7 +18,7 @@ Global truths about JavaScript on Node 18:
 - **Unhandled promise rejections crash the process** (default `--unhandled-rejections=throw` since Node 15).
 - **Two module systems.** CommonJS (`require`) and ES modules (`import`) coexist; `require()` cannot load an ES module on Node 18 (`ERR_REQUIRE_ESM`).
 - **Web platform APIs are partly global.** `fetch`, `Headers`, `Request`, `Response`, `FormData`, `Blob`, `BroadcastChannel`, `structuredClone`, `AbortController`, `EventTarget`, Web Streams and `TextEncoder`/`TextDecoder` are globals; `crypto` (Web Crypto), `File`, `CustomEvent`, `navigator` and `WebSocket` are **not** (see the "Do not use" list).
-- **`fetch` is experimental in 18** (stability 1, built on undici 5.x). It works and no longer prints a warning since 18.13.0, but its behavior differs from browsers and from later Node lines in documented ways.[^8]
+- **`fetch` is experimental in 18** (stability 1, built on undici 5.x). It works and no longer prints a warning since 18.13.0, but its behavior differs from browsers and from later Node lines in documented ways.
 - **OpenSSL 3** is the crypto backend (since Node 17). Legacy algorithms (MD4, RC4, Blowfish, single DES, Whirlpool) throw `ERR_OSSL_EVP_UNSUPPORTED`.
 
 ***
@@ -32,7 +32,7 @@ Rules for reviewing Node 18 code:
 1. **Find the pinned version first**: `engines.node` in `package.json`, `.nvmrc`/`.node-version`, `volta.node`, the Dockerfile `FROM node:18.x…` tag, CI matrices (`actions/setup-node` `node-version`). If only the major is pinned, assume the code may run on **any** 18.x unless `engines` says otherwise.
 2. **Check the minor that introduced an API** before approving it (table below). If the code uses, for example, `AbortSignal.any()` (18.17.0) but `engines` says `>=18`, flag the mismatch and suggest `"engines": { "node": ">=18.17" }` or a fallback.
 3. **Verify before claiming something is unavailable.** Say "not available in Node 18" only when the feature was introduced in a later major (see the "Do not use or recommend" list) or after the pinned minor. Many Node 20+ features were backported to 18.x (`--import`, `module.register`, `AbortSignal.any`, `node:test` mocks, `URL.canParse`, …); do not flag those as unavailable on 18.20.
-4. **Verify against the runtime, not TypeScript `lib`.** `lib: ["es2023"]` (used by `@tsconfig/node18`) types `Array.prototype.toSorted()`, which **throws `TypeError` on Node 18** (see Tooling).[^25]
+4. **Verify against the runtime, not TypeScript `lib`.** `lib: ["es2023"]` (used by `@tsconfig/node18`) types `Array.prototype.toSorted()`, which **throws `TypeError` on Node 18** (see Tooling).
 5. **Never suggest features from Node 20+** to fix a Node 18 problem; give the Node 18 idiom and, separately, recommend the upgrade.
 
 Quick check commands a reviewer can quote:
@@ -71,7 +71,7 @@ The upgrade target for a Node 19 project is the same: Node 24 or 26.
 
 #### What's New in Node 18 (vs. 16.20.2 and 17.9.1)
 
-Node 17 was a short-lived odd line; most projects jump from 16 to 18, so the 17.0 changes (OpenSSL 3, DNS ordering, `structuredClone`) are new to them. Several 18.x features were later backported to 16.x (16.17–16.20), marked "also 16.x" below — on a 16 → 18 upgrade those are not new, but code that relies on them still needs ≥ that 16 minor.[^1][^5]
+Node 17 was a short-lived odd line; most projects jump from 16 to 18, so the 17.0 changes (OpenSSL 3, DNS ordering, `structuredClone`) are new to them. Several 18.x features were later backported to 16.x (16.17–16.20), marked "also 16.x" below — on a 16 → 18 upgrade those are not new, but code that relies on them still needs ≥ that 16 minor.
 
 | Feature | Since | Also in 16.20.2? | Notes |
 |---|---|---|---|
@@ -107,11 +107,11 @@ Node 17 was a short-lived odd line; most projects jump from 16 to 18, so the 17.
 | Import attributes (`with { type: 'json' }`), `Dirent.parentPath` | 18.20.0 | no | `assert` still works with a V8 deprecation warning |
 | JSON modules / import attributes marked stable | 18.20.5 | no | |
 
-Breaking or behavior-changing items in **18.0.0** itself: `fs.write()`/`fs.writeFileSync()` coercion of objects with own `toString` became a runtime deprecation (DEP0162; an error in 19), `process.on('multipleResolves')` became a runtime deprecation (DEP0160), `dns.lookup()` option type coercion and `tls.parseCertString()` reached end-of-life, stream thenable support was removed (DEP0157), and `ERR_INVALID_CALLBACK` is gone (DEP0159; use `ERR_INVALID_ARG_TYPE`).[^1][^9]
+Breaking or behavior-changing items in **18.0.0** itself: `fs.write()`/`fs.writeFileSync()` coercion of objects with own `toString` became a runtime deprecation (DEP0162; an error in 19), `process.on('multipleResolves')` became a runtime deprecation (DEP0160), `dns.lookup()` option type coercion and `tls.parseCertString()` reached end-of-life, stream thenable support was removed (DEP0157), and `ERR_INVALID_CALLBACK` is gone (DEP0159; use `ERR_INVALID_ARG_TYPE`).
 
 ##### Do Not Use or Recommend (Newer Than Node 18)
 
-The project's runtime does not have these. Never suggest them as a fix or modernization for Node 18 code. (Major = first release line where the feature is available unflagged; verified by running every major from 19 to 26.)[^21][^22]
+The project's runtime does not have these. Never suggest them as a fix or modernization for Node 18 code. (Major = first release line where the feature is available unflagged; verified by running every major from 19 to 26.)
 
 **JavaScript language / built-ins (V8 newer than 10.2):**
 
@@ -148,7 +148,7 @@ The project's runtime does not have these. Never suggest them as a fix or modern
 
 **Test runner (`node:test`):** module mocking (`mock.module()`, 22.3 / 20.18), snapshot testing (`t.assert.snapshot`, 22.3), `assert.partialDeepStrictEqual()` (23.4 / 22.13), `--test-timeout` (21.2 / 20.11), `--test-force-exit` (22.0 / 20.14), `--test-skip-pattern` (22.1), glob patterns as `node --test` arguments (21), `MockTimers` with `Date` and the object form `enable({ apis, now })` (21.2 / 20.11) — on 18.19+ `enable()` takes only an array of timer names. Since 18.13.0, `node --test --watch` reruns tests on changes.
 
-**Tooling majors that no longer support Node 18** (from their published `engines` fields):[^26] ESLint 10 (needs ^20.19 / ^22.13 / ≥ 24; ESLint 9 supports ^18.18), Mocha 12 (^20.19 / ≥ 22.12; Mocha 11 supports ^18.18), Vitest 4 (^20 / ^22 / ≥ 24) and Vitest 5 (^22.12 / ^24 / ≥ 26; Vitest 3 supports ^18), undici 7+ (≥ 20.18.1; undici 6 supports ≥ 18.17), npm 11 (^20.17 / ≥ 22.9; Node 18 ships npm 10.8.2). Recommending one of these on Node 18 is a breaking change, not a cleanup.
+**Tooling majors that no longer support Node 18** (from their published `engines` fields): ESLint 10 (needs ^20.19 / ^22.13 / ≥ 24; ESLint 9 supports ^18.18), Mocha 12 (^20.19 / ≥ 22.12; Mocha 11 supports ^18.18), Vitest 4 (^20 / ^22 / ≥ 24) and Vitest 5 (^22.12 / ^24 / ≥ 26; Vitest 3 supports ^18), undici 7+ (≥ 20.18.1; undici 6 supports ≥ 18.17), npm 11 (^20.17 / ≥ 22.9; Node 18 ships npm 10.8.2). Recommending one of these on Node 18 is a breaking change, not a cleanup.
 
 ##### Deprecated or Removed by Node 18
 
@@ -167,13 +167,13 @@ The project's runtime does not have these. Never suggest them as a fix or modern
 - `--trace-atomics-wait` — doc-deprecated (DEP0165).
 - `tls.parseCertString()` and stream thenables — end-of-life in 18.0.
 - `"exports"` folder mappings with trailing `/` — end-of-life in 17 (DEP0148); use `"./*"` patterns.
-- `import … assert { type: 'json' }` — superseded by `with` in 18.20.0; V8 prints a deprecation warning, and `assert` was removed in Node 22.[^9][^12]
+- `import … assert { type: 'json' }` — superseded by `with` in 18.20.0; V8 prints a deprecation warning, and `assert` was removed in Node 22.
 
 ***
 
 #### Language and Syntax (V8 10.2 / ES2022)
 
-Everything up to ES2022 is available: classes with public, private and static fields, private methods and accessors, class static blocks, `#field in obj`, top-level `await` in ES modules, `Array.prototype.at()`, `Object.hasOwn()`, `Error` `cause`, RegExp match indices (`/d`), logical assignment (`??=`, `||=`, `&&=`), numeric separators, `String.prototype.replaceAll()`, `Promise.any()`/`AggregateError`, `WeakRef`/`FinalizationRegistry`, optional chaining and nullish coalescing. From ES2023 only `findLast()`/`findLastIndex()` are present.[^10]
+Everything up to ES2022 is available: classes with public, private and static fields, private methods and accessors, class static blocks, `#field in obj`, top-level `await` in ES modules, `Array.prototype.at()`, `Object.hasOwn()`, `Error` `cause`, RegExp match indices (`/d`), logical assignment (`??=`, `||=`, `&&=`), numeric separators, `String.prototype.replaceAll()`, `Promise.any()`/`AggregateError`, `WeakRef`/`FinalizationRegistry`, optional chaining and nullish coalescing. From ES2023 only `findLast()`/`findLastIndex()` are present.
 
 ##### Variables, Equality and Nullish Values
 
@@ -507,7 +507,7 @@ console.log(out.toString('hex'));
 
 ##### Symbols as WeakMap Keys — Do Not Rely On It
 
-Non-registered symbols are accepted as `WeakMap` keys and `WeakRef` targets on **18.20.8** but rejected by 19.9.0 (`TypeError: Invalid value used as weak map key`) — observed, not documented. The 18.20.0 release backported V8 commits (nodejs/node#51004) so that Node's module loader could key a `WeakMap` by symbols (nodejs/node#48510); older 18.x minors lack those commits. The ES2023 feature (symbols as WeakMap keys) is officially available from Node 20. Do not depend on it in code that must run on any 18.x.[^1]
+Non-registered symbols are accepted as `WeakMap` keys and `WeakRef` targets on **18.20.8** but rejected by 19.9.0 (`TypeError: Invalid value used as weak map key`) — observed, not documented. The 18.20.0 release backported V8 commits (nodejs/node#51004) so that Node's module loader could key a `WeakMap` by symbols (nodejs/node#48510); older 18.x minors lack those commits. The ES2023 feature (symbols as WeakMap keys) is officially available from Node 20. Do not depend on it in code that must run on any 18.x.
 
 ***
 
@@ -552,7 +552,7 @@ Consequences reviewers must catch: upgrading a dependency to an ESM-only major (
 
 ##### Importing CommonJS from ESM
 
-Named imports from CommonJS work only for exports that `cjs-module-lexer` can detect statically[^11] (`exports.a = …`, `module.exports.b = …`, `module.exports = { a, b }`). Computed assignments are not detected:
+Named imports from CommonJS work only for exports that `cjs-module-lexer` can detect statically (`exports.a = …`, `module.exports.b = …`, `module.exports = { a, b }`). Computed assignments are not detected:
 
 ```js
 // file: cjslib.cjs
@@ -577,7 +577,7 @@ console.log(a, b, lib.c);                     // 1 2 3
 | `import data from './x.json' with { type: 'json' }` | **SyntaxError** | works (stable since 18.20.5) | **SyntaxError** | works |
 | no attribute | `ERR_IMPORT_ASSERTION_TYPE_MISSING` | `ERR_IMPORT_ASSERTION_TYPE_MISSING` | `ERR_IMPORT_ASSERTION_TYPE_MISSING` | `ERR_IMPORT_ATTRIBUTE_MISSING` |
 
-(18.20.8, 19.9.0 and 22.23.4 were executed; the 18.0–18.19 column follows the 18.20.0 release notes, which introduced `with`.)[^12]
+(18.20.8, 19.9.0 and 22.23.4 were executed; the 18.0–18.19 column follows the 18.20.0 release notes, which introduced `with`.)
 
 For code that must run on every 18.x (and on 22+), avoid both syntaxes and read JSON explicitly:
 
@@ -637,7 +637,7 @@ console.log(signal.reason.name); // TimeoutError
 
 - `--experimental-loader` (alias `--loader`) still works on 18 but prints an `ExperimentalWarning` recommending `register()`.
 - **18.19.0+**: `module.register(specifier, parentURL, { data, transferList })` plus the `initialize` hook; run it from a preload file with `--import` (18.18.0+). Hooks run on a **separate thread** (backported from Node 20): `console.log` inside a hook may never appear — use `fs.writeSync(2, …)` for debugging, and communicate with the main thread via `data`/`MessagePort`.
-- `globalPreload` is replaced by `initialize`.[^13][^14]
+- `globalPreload` is replaced by `initialize`.
 - In Node 25.9+/26 `module.register()` is deprecated in favor of `module.registerHooks()` (DEP0205; 26.12.1 prints a runtime `DeprecationWarning`, 25.9.0 does not) — that newer API does not exist on 18, so `register()` is correct for Node 18 code.
 
 ```js
@@ -822,7 +822,7 @@ Use `AsyncLocalStorage` instead of `async_hooks.createHook` or the `domain` modu
 
 ##### New in 18: `fetch` Is Experimental — Know Its Behavior
 
-`fetch` (undici **5.x**; 5.29.0 in 18.20.8) is enabled by default since 18.0.0; `--no-experimental-fetch` disables it; the `ExperimentalWarning` was removed in 18.13.0; it became stable only in Node 21.[^4][^8]
+`fetch` (undici **5.x**; 5.29.0 in 18.20.8) is enabled by default since 18.0.0; `--no-experimental-fetch` disables it; the `ExperimentalWarning` was removed in 18.13.0; it became stable only in Node 21.
 
 ```js
 // file: fetch-demo.mjs
@@ -865,7 +865,7 @@ Review rules for `fetch` on Node 18:
 - `res.body` is a **web** `ReadableStream`; convert with `Readable.fromWeb(res.body)` for Node stream APIs.
 - `Headers#getSetCookie()` is available in 18.20.8 (bundled undici 5.29.0); `headers.get('set-cookie')` joins values with `, `, which is ambiguous for cookies.
 - `FormData` file parts: append a `Blob` with a filename (`form.append('file', blob, 'report.txt')`). On 18.20.8 this internally creates a `buffer.File` and prints *"ExperimentalWarning: buffer.File is an experimental feature"* once (verified) — harmless, but it shows up in logs. The global `File` is Node 20+; `require('node:buffer').File` (18.13+) prints the same warning.
-- Security fixes to the bundled undici landed in 18.14.1, 18.18.2, 18.19.1 (`fetch()` brotli DoS), 18.20.1 and 18.20.6 (insufficiently random multipart boundary, CVE-2025-22150); anything before 18.20.6 has known `fetch` vulnerabilities, and later undici CVEs are not fixed in any 18.x.[^1][^32]
+- Security fixes to the bundled undici landed in 18.14.1, 18.18.2, 18.19.1 (`fetch()` brotli DoS), 18.20.1 and 18.20.6 (insufficiently random multipart boundary, CVE-2025-22150); anything before 18.20.6 has known `fetch` vulnerabilities, and later undici CVEs are not fixed in any 18.x.
 
 ```js
 // file: fetch-stream.mjs
@@ -941,7 +941,7 @@ Pitfall for reviewers: in `node -e`/`node -p` and the REPL, built-in modules are
 | `http.globalAgent.keepAlive` | false | **false** | **true** |
 | `server.close()` closes idle keep-alive sockets | no | **no** | yes (19.0) |
 
-All values were read from the running binaries. Behind a load balancer, set `server.keepAliveTimeout` **higher** than the balancer's idle timeout (and `headersTimeout` higher than `keepAliveTimeout`) to avoid sporadic 502s. Long uploads or streaming responses beyond 5 minutes need an explicit `requestTimeout`.[^17]
+All values were read from the running binaries. Behind a load balancer, set `server.keepAliveTimeout` **higher** than the balancer's idle timeout (and `headersTimeout` higher than `keepAliveTimeout`) to avoid sporadic 502s. Long uploads or streaming responses beyond 5 minutes need an explicit `requestTimeout`.
 
 ##### Graceful Shutdown on Node 18
 
@@ -979,7 +979,7 @@ process.once('SIGTERM', shutdown);
 
 ##### New Since 16: DNS Ordering and `localhost` (17.0)
 
-Since 17.0.0, `dns.lookup()` returns addresses in the order the resolver gives them (`verbatim: true`); before, IPv4 was sorted first. On hosts where `localhost` maps to `::1` first, a client connecting to `localhost` gets `ECONNREFUSED ::1:PORT` when the server listens on `127.0.0.1` only. Happy-eyeballs (`autoSelectFamily`) exists on 18.13+ but is **off by default** until Node 20.[^5][^30][^31]
+Since 17.0.0, `dns.lookup()` returns addresses in the order the resolver gives them (`verbatim: true`); before, IPv4 was sorted first. On hosts where `localhost` maps to `::1` first, a client connecting to `localhost` gets `ECONNREFUSED ::1:PORT` when the server listens on `127.0.0.1` only. Happy-eyeballs (`autoSelectFamily`) exists on 18.13+ but is **off by default** until Node 20.
 
 - Bind servers to `::` (dual stack) or connect to `127.0.0.1` explicitly.
 - If necessary: `dns.setDefaultResultOrder('ipv4first')` or `--dns-result-order=ipv4first`, or `net.connect({ autoSelectFamily: true })` / `--enable-network-family-autoselection` (18.18.0).
@@ -998,7 +998,7 @@ console.log(dns.getDefaultResultOrder());   // 'verbatim' (getter added in 18.17
 
 ##### HTTP/2
 
-`node:http2` is stable, but several HTTP/2 denial-of-service fixes reached 18.x late (CVE-2023-44487 "Rapid Reset" via nghttp2 in 18.18.2, CVE-2024-27983 in 18.20.1, CVE-2025-23085 memory leak in 18.20.6) and the January 2026 HTTP/2 server crash on malformed HEADERS frames (CVE-2025-59465) has no 18.x fix.[^1][^7] Do not expose a Node 18 HTTP/2 server directly to the internet; terminate HTTP/2 at a maintained proxy.
+`node:http2` is stable, but several HTTP/2 denial-of-service fixes reached 18.x late (CVE-2023-44487 "Rapid Reset" via nghttp2 in 18.18.2, CVE-2024-27983 in 18.20.1, CVE-2025-23085 memory leak in 18.20.6) and the January 2026 HTTP/2 server crash on malformed HEADERS frames (CVE-2025-59465) has no 18.x fix. Do not expose a Node 18 HTTP/2 server directly to the internet; terminate HTTP/2 at a maintained proxy.
 
 ##### Frameworks: Async Errors in Express 4 vs 5
 
@@ -1063,7 +1063,7 @@ const { json, text } = require('node:stream/consumers');
 - Respect `write()`'s return value or use `pipeline`; ignoring it buffers unboundedly.
 - `stream.getDefaultHighWaterMark()`/`setDefaultHighWaterMark()` require 18.17.0.
 - Since 18.0, returning a promise (thenable) from `_construct`, `_write`, `_final`, etc. is no longer awaited — call the callback (DEP0157).
-- Web streams interop: `Readable.toWeb()`, `Readable.fromWeb()`, `Writable.toWeb()`, `Duplex.from(webStreamPair)` (18.17.0).[^28]
+- Web streams interop: `Readable.toWeb()`, `Readable.fromWeb()`, `Writable.toWeb()`, `Duplex.from(webStreamPair)` (18.17.0).
 
 ##### New in 18: Web Streams as Globals
 
@@ -1135,7 +1135,7 @@ try {
 ```
 
 - `fs.cp()`/`fsPromises.cp()` exist (16.7) but are **experimental** on 18.
-- `fs.statfs()` requires 18.15.0.[^27]
+- `fs.statfs()` requires 18.15.0.
 - `fs.watch(dir, { recursive: true })` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` on **Linux** in Node 18 (works on macOS/Windows; Linux support is 19.1). Use chokidar or watch individual directories.
 - Pass strings/Buffers/TypedArrays to `fs.write*`; passing an object with its own `toString` prints DEP0162 on 18 and throws on 19+.
 - Avoid `fs.exists()`; check-then-act is racy. Open with the right flag (`'wx'` for create-exclusive) and handle `EEXIST`/`ENOENT`.
@@ -1161,7 +1161,7 @@ try { safeJoin('/srv/files', '/etc/passwd'); } catch (e) { console.log(e.code); 
 
 - `target.startsWith(base)` alone is wrong (`/srv/files-evil` passes).
 - Resolve symlinks (`fs.realpath`) before the check if users can create links.
-- On Windows, reserved device names and drive-relative paths need extra care; 18.20.6 fixed a `path.normalize()` traversal (CVE-2025-23084), and later Windows path fixes (2025–2026) are not in any 18.x.[^1]
+- On Windows, reserved device names and drive-relative paths need extra care; 18.20.6 fixed a `path.normalize()` traversal (CVE-2025-23084), and later Windows path fixes (2025–2026) are not in any 18.x.
 
 ***
 
@@ -1189,8 +1189,8 @@ gitLog('.', 'HEAD').then((s) => console.log(typeof s), (e) => console.log('git u
 ```
 
 - `exec()` and `spawn(..., { shell: true })` run a shell; never interpolate untrusted data. Pass `--` before positional user arguments to stop option injection.
-- On **Windows**, since 18.20.2 `spawn`/`execFile` of `.bat`/`.cmd` files without `shell: true` throws `EINVAL` (CVE-2024-27980 "BatBadBut" fix; 18.20.4 fixed an incomplete fix, CVE-2024-36138). Code that relied on running batch files directly must now use `shell: true` with carefully escaped arguments — or better, avoid batch files.[^20]
-- Always pass `timeout`/`signal` and consume or ignore stdio (`stdio: 'ignore'`); a child blocked on a full pipe never exits.[^29]
+- On **Windows**, since 18.20.2 `spawn`/`execFile` of `.bat`/`.cmd` files without `shell: true` throws `EINVAL` (CVE-2024-27980 "BatBadBut" fix; 18.20.4 fixed an incomplete fix, CVE-2024-36138). Code that relied on running batch files directly must now use `shell: true` with carefully escaped arguments — or better, avoid batch files.
+- Always pass `timeout`/`signal` and consume or ignore stdio (`stdio: 'ignore'`); a child blocked on a full pipe never exits.
 - `subprocess[Symbol.dispose]()` exists since 18.18.0, but without `using` syntax you call `subprocess.kill()` yourself.
 
 **Worker threads** for CPU-bound work:
@@ -1216,8 +1216,8 @@ Use a pool (piscina or a hand-written queue) sized by `os.availableParallelism()
 
 ##### Node 18 Is End-of-Life — Treat It as a Finding
 
-- No security fixes since 18.20.8 (March 27, 2025); CVEs published since then are assumed to affect 18.x.[^6] Examples of fixes that exist only in supported lines: the January 13, 2026 release (CVE-2025-55131 non-zero-filled `Buffer.alloc`/`Uint8Array` when allocations are interrupted by a `vm` `timeout`, CVE-2025-59465 HTTP/2 server crash on malformed HEADERS, CVE-2025-59466 uncatchable stack overflow via `async_hooks`, CVE-2026-21637 TLS callback exceptions bypassing error handlers).[^7]
-- OpenSSL 3.0 (bundled 3.0.16) is out of upstream support; certificate store updates stopped at NSS 3.108.[^1][^24]
+- No security fixes since 18.20.8 (March 27, 2025); CVEs published since then are assumed to affect 18.x. Examples of fixes that exist only in supported lines: the January 13, 2026 release (CVE-2025-55131 non-zero-filled `Buffer.alloc`/`Uint8Array` when allocations are interrupted by a `vm` `timeout`, CVE-2025-59465 HTTP/2 server crash on malformed HEADERS, CVE-2025-59466 uncatchable stack overflow via `async_hooks`, CVE-2026-21637 TLS callback exceptions bypassing error handlers).
+- OpenSSL 3.0 (bundled 3.0.16) is out of upstream support; certificate store updates stopped at NSS 3.108.
 - Running 18 on the public internet requires compensating controls (patched reverse proxy terminating TLS and HTTP/2, WAF) or a commercial extended-support build; the recommendation is to upgrade.
 
 ##### New Since 16: OpenSSL 3 Implications (Node 17+)
@@ -1233,8 +1233,8 @@ Verified on 18.20.8 (OpenSSL 3.0.16) vs 16.20.2 (OpenSSL 1.1.1):
 | `privateDecrypt` with `RSA_PKCS1_PADDING` | ok | `ERR_INVALID_ARG_VALUE` since 18.19.1 (Marvin attack, CVE-2023-46809) |
 
 - `ERR_OSSL_EVP_UNSUPPORTED` from old toolchains (webpack 4 uses MD4 for hashing) is fixed by upgrading the tool, **not** by `--openssl-legacy-provider` or `NODE_OPTIONS=--openssl-legacy-provider` in production; that flag re-enables broken algorithms process-wide.
-- `--security-revert=CVE-2023-46809` re-enables PKCS#1 v1.5 decryption — flag it; migrate to `RSA_PKCS1_OAEP_PADDING` with SHA-256.[^19]
-- Since 18.5.0 Node reads only the `nodejs_conf` section of `openssl.cnf` by default (CVE-2022-32223); `--openssl-shared-config` restores the shared section and its risks.[^33]
+- `--security-revert=CVE-2023-46809` re-enables PKCS#1 v1.5 decryption — flag it; migrate to `RSA_PKCS1_OAEP_PADDING` with SHA-256.
+- Since 18.5.0 Node reads only the `nodejs_conf` section of `openssl.cnf` by default (CVE-2022-32223); `--openssl-shared-config` restores the shared section and its risks.
 - `crypto.createCipher()`/`createDecipher()` (no IV, MD5 key derivation) are runtime-deprecated (DEP0106) and removed in Node 22; use `createCipheriv` with a random IV, preferably AES-256-GCM.
 
 ##### Cryptography Idioms
@@ -1286,7 +1286,7 @@ console.log(token.length, id.length, safeEqual('a', 'a'), verifyPassword('pw', h
 - Never reuse a GCM IV with the same key; never truncate auth tags (pass `authTagLength` when decrypting with nonstandard tags).
 - `===` on secrets leaks timing; use `timingSafeEqual`.
 - Use the async `crypto.scrypt`/`pbkdf2` on request paths (the `*Sync` variants block the loop).
-- `crypto.hash()` (one-shot) is Node 21.7+; on 18 use `createHash(alg).update(data).digest()`.[^18]
+- `crypto.hash()` (one-shot) is Node 21.7+; on 18 use `createHash(alg).update(data).digest()`.
 
 ##### Injection, Deserialization and Sandboxing
 
@@ -1315,7 +1315,7 @@ console.log(token.length, id.length, safeEqual('a', 'a'), verifyPassword('pw', h
 - **Buffers**: `Buffer.allocUnsafe()` is faster but contains old memory — only when every byte is overwritten. Use `buf.subarray()` to avoid copies and `Buffer.concat(list, totalLength)`.
 - **JSON**: `JSON.parse` of very large payloads blocks the loop; stream-parse or move to a worker.
 - **Logging**: `process.stdout`/`stderr` writes are synchronous for files and TTYs on POSIX (asynchronous for pipes); heavy `console.log` use in hot paths blocks the loop — use an asynchronous structured logger (pino).
-- **Class fields and private methods** initialize as fast as ordinary property stores since V8 10.1 (Node 18); no need to avoid them for performance.[^4]
+- **Class fields and private methods** initialize as fast as ordinary property stores since V8 10.1 (Node 18); no need to avoid them for performance.
 - **URL parsing**: Ada (18.16/18.17) made `new URL()` much faster; do not hand-roll URL parsing for speed.
 - **Keep-alive**: the default `http.globalAgent` closes connections (see HTTP) — set `keepAlive: true` for outbound HTTP-heavy services.
 
@@ -1412,7 +1412,7 @@ Node 18 test-runner pitfalls (verified on 18.20.8):
 - **Subtests must be awaited**: `t.test(...)` without `await` is cancelled when the parent finishes (*"test did not finish before its parent and was cancelled"*).
 - The default reporter is `spec` on a TTY and **TAP** otherwise (CI logs); pass `--test-reporter=spec` (or junit plus `--test-reporter-destination`) explicitly in CI.
 - `--experimental-test-coverage` is experimental and prints a text table; use c8 for thresholds/lcov.
-- Default discovery: files named `*.test.{js,cjs,mjs}`, `*-test.*`, `*_test.*`, `test-*.*`, `test.*`, and every `.js/.cjs/.mjs` under `test/` directories (`node_modules` excluded).[^16]
+- Default discovery: files named `*.test.{js,cjs,mjs}`, `*-test.*`, `*_test.*`, `test-*.*`, `test.*`, and every `.js/.cjs/.mjs` under `test/` directories (`node_modules` excluded).
 - Use `node:assert/strict` (or `assert.strictEqual`/`deepStrictEqual`); loose `assert.equal`/`deepEqual` coerce types. Since 18.0, deep-equality also compares `RegExp` `lastIndex`.
 
 **Third-party runners**: Jest 29/30 (30 requires ≥ 18.14), Vitest ≤ 3, Mocha ≤ 11 support Node 18; Vitest 4/5 and Mocha 12 do not. Jest 30's `--experimental-vm-modules` ESM support relies on `vm` APIs that are experimental on 18.
@@ -1435,11 +1435,11 @@ Node 18 test-runner pitfalls (verified on 18.20.8):
 ```
 
 - Put the exact minor floor your code needs in `engines` (18.17 for `AbortSignal.any`/`URL.canParse`/recursive `readdir`; 18.19 for `module.register`/mock timers; 18.20 for import attributes/`parentPath`). npm only warns on mismatches unless `engine-strict=true` is set in `.npmrc`.
-- `node --watch` (18.11.0, experimental, prints a warning) restarts on changes of imported files; `--watch-path` fails on Linux in 18 (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`). Use it for development only.[^15]
+- `node --watch` (18.11.0, experimental, prints a warning) restarts on changes of imported files; `--watch-path` fails on Linux in 18 (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`). Use it for development only.
 
 ##### TypeScript Configuration for a Node 18 Runtime
 
-`@tsconfig/node18` sets `target: "es2022"`, `lib: ["es2023"]`, `module`/`moduleResolution: "node16"`.[^25] `lib: es2023` declares the change-array-by-copy methods that Node 18 lacks — verified: code using `xs.toSorted()` type-checks under `lib: ["es2023"]` and fails at runtime with `TypeError: xs.toSorted is not a function`. With `lib: ["es2022"]`, `findLast` (which Node 18 has) is not typed.
+`@tsconfig/node18` sets `target: "es2022"`, `lib: ["es2023"]`, `module`/`moduleResolution: "node16"`. `lib: es2023` declares the change-array-by-copy methods that Node 18 lacks — verified: code using `xs.toSorted()` type-checks under `lib: ["es2023"]` and fails at runtime with `TypeError: xs.toSorted is not a function`. With `lib: ["es2022"]`, `findLast` (which Node 18 has) is not typed.
 
 Options:
 

@@ -1,16 +1,16 @@
 ### C# 9 on .NET 5 (End of Life): The Complete Production Developer Guide
 
-> **Version**: C# 9 shipped with **.NET 5.0 on November 10, 2020** (SDK 5.0.100, Visual Studio 2019 16.8).[^1][^2] The final servicing release is **.NET 5.0.17 (May 10, 2022)** with SDKs **5.0.408** and **5.0.214**; it fixed CVE-2022-29117, CVE-2022-23267 and CVE-2022-29145.[^2]
-> **Support**: .NET 5 was a short-term ("Current", now called STS) release. It reached **end of support on May 10, 2022** — as of October 2026 it has gone more than four years without security fixes.[^2][^3] The recommended target is **.NET 10 (LTS)**: latest servicing release **10.0.13 (October 13, 2026)**, SDK 10.0.402, supported until **November 14, 2028**. .NET 8 (LTS, 8.0.32) and .NET 9 (STS, 9.0.21) both reach end of support on **November 10, 2026**, so they are not sensible migration targets any more. **.NET 11 / C# 15 is not released**: 11.0.0-rc.2 (SDK 11.0.100-rc.2) shipped on October 13, 2026 with a go-live license.[^3]
+> **Version**: C# 9 shipped with **.NET 5.0 on November 10, 2020** (SDK 5.0.100, Visual Studio 2019 16.8). The final servicing release is **.NET 5.0.17 (May 10, 2022)** with SDKs **5.0.408** and **5.0.214**; it fixed CVE-2022-29117, CVE-2022-23267 and CVE-2022-29145.
+> **Support**: .NET 5 was a short-term ("Current", now called STS) release. It reached **end of support on May 10, 2022** — as of October 2026 it has gone more than four years without security fixes. The recommended target is **.NET 10 (LTS)**: latest servicing release **10.0.13 (October 13, 2026)**, SDK 10.0.402, supported until **November 14, 2028**. .NET 8 (LTS, 8.0.32) and .NET 9 (STS, 9.0.21) both reach end of support on **November 10, 2026**, so they are not sensible migration targets any more. **.NET 11 / C# 15 is not released**: 11.0.0-rc.2 (SDK 11.0.100-rc.2) shipped on October 13, 2026 with a go-live license.
 > **Scope**: The C# 9 language, the .NET 5 base class library and runtime, ASP.NET Core 5 and EF Core 5 as they affect production code and code review: idioms, pitfalls, security, performance, testing and analyzers — plus C# 9 used with `<LangVersion>9</LangVersion>` on `netstandard2.0`, .NET Framework and newer TFMs.
-> **Selection**: This guide applies when the project's C# language version is 9: an explicit `<LangVersion>9</LangVersion>` (or `9.0`), or `<TargetFramework>net5.0</TargetFramework>` (also `net5.0-windows`) with no `LangVersion`, because C# 9 is the default for .NET 5.[^4]
+> **Selection**: This guide applies when the project's C# language version is 9: an explicit `<LangVersion>9</LangVersion>` (or `9.0`), or `<TargetFramework>net5.0</TargetFramework>` (also `net5.0-windows`) with no `LangVersion`, because C# 9 is the default for .NET 5.
 > **Note**: This document is self-contained. Sections marked **New in C# 9** or **New in .NET 5** cover version-specific behaviour; the rest applies to all C# 9 code. Every example and behavioural claim was compiled and run with the original toolchain — **SDK 5.0.408 / runtime 5.0.17 / ASP.NET Core 5.0.17** (official `mcr.microsoft.com/dotnet/sdk:5.0` image, Linux x64) and EF Core 5.0.17. "New in C# 9" boundaries were checked by compiling the same code with `LangVersion` 8; "not available" claims for C# 10–14 were checked with SDK 10.0.402 at `LangVersion` 9 and 10; `LangVersion` 9 on `net6.0` was run with SDK 6.0.428 / runtime 6.0.36, and on `netstandard2.0` with SDK 5.0.408. Windows-only behaviour (WinForms/WPF, NLS vs ICU on Windows, registry) was not executed.
 
 ---
 
 #### Overview and Global Truths
 
-C# 9 is the language of .NET 5, the release that merged .NET Core and the "one .NET" naming (`netcoreapp3.1` → `net5.0`). Its headline features are **records**, **init-only setters**, **top-level statements**, the **pattern-matching upgrade** (relational `<`/`>=`, logical `and`/`or`/`not`, type patterns, parenthesized patterns), **target-typed `new()`**, and a set of low-level features (`nint`/`nuint`, function pointers, `[SkipLocalsInit]`, module initializers, extended partial methods) aimed at interop and source generators, which also debuted with .NET 5.[^1][^5]
+C# 9 is the language of .NET 5, the release that merged .NET Core and the "one .NET" naming (`netcoreapp3.1` → `net5.0`). Its headline features are **records**, **init-only setters**, **top-level statements**, the **pattern-matching upgrade** (relational `<`/`>=`, logical `and`/`or`/`not`, type patterns, parenthesized patterns), **target-typed `new()`**, and a set of low-level features (`nint`/`nuint`, function pointers, `[SkipLocalsInit]`, module initializers, extended partial methods) aimed at interop and source generators, which also debuted with .NET 5.
 
 Global truths for C# 9 / .NET 5 code:
 
@@ -23,7 +23,7 @@ Global truths for C# 9 / .NET 5 code:
 - **No implicit usings, no global usings, no file-scoped namespaces.** Every file has its own `using` directives and a block-bodied `namespace { }`.
 - **ASP.NET Core 5 uses `Startup` + the generic host.** Minimal hosting (`WebApplication`) and minimal APIs are .NET 6.
 - **System.Text.Json is the default serializer** for ASP.NET Core and `System.Net.Http.Json`; Newtonsoft.Json is opt-in via `Microsoft.AspNetCore.Mvc.NewtonsoftJson`.
-- **Globalization uses ICU** on Linux and macOS (and, new in .NET 5, on Windows 10 May 2019 Update and later), so culture-sensitive string APIs behave differently from .NET Framework's NLS.[^6]
+- **Globalization uses ICU** on Linux and macOS (and, new in .NET 5, on Windows 10 May 2019 Update and later), so culture-sensitive string APIs behave differently from .NET Framework's NLS.
 
 ---
 
@@ -39,7 +39,7 @@ Global truths for C# 9 / .NET 5 code:
 | .NET 10 (C# 14, LTS) | Nov 11, 2025 | 10.0.13 (Oct 13, 2026) | Nov 14, 2028 | **Active — recommended** |
 | .NET 11 (C# 15) | — | 11.0.0-rc.2 (Oct 13, 2026) | — | Release candidate (go-live), not GA |
 
-Sources: the official release metadata (`releases-index.json` and per-channel `releases.json`).[^2][^3]
+Sources: the official release metadata (`releases-index.json` and per-channel `releases.json`).
 
 Review guidance:
 
@@ -62,7 +62,7 @@ Review guidance:
 | `netcoreapp2.x`, `netstandard2.0`, `netstandard1.x`, all .NET Framework | C# 7.3 |
 | `net6.0` / `net7.0` / `net8.0` / `net9.0` / `net10.0` | C# 10 / 11 / 12 / 13 / 14 |
 
-The default is chosen by the compiler from the TFM.[^4] So code is "C# 9" when it targets `net5.0` without `LangVersion`, or when any project sets `<LangVersion>9</LangVersion>` / `9.0` — typically a `netstandard2.0` or .NET Framework library that wants records and init-only properties, or a newer-TFM project held back on purpose.
+The default is chosen by the compiler from the TFM. So code is "C# 9" when it targets `net5.0` without `LangVersion`, or when any project sets `<LangVersion>9</LangVersion>` / `9.0` — typically a `netstandard2.0` or .NET Framework library that wants records and init-only properties, or a newer-TFM project held back on purpose.
 
 ```xml
 <!-- Library that ships to .NET Framework and modern .NET, written in C# 9 -->
@@ -94,7 +94,7 @@ Measured with SDK 5.0.408, `netstandard2.0`, `<LangVersion>9.0</LangVersion>`:
 | Top-level statements | Work in an `Exe` project | — |
 | (C# 8) default interface members | CS8701 — runtime does not support them | No fix |
 
-Covariant returns are the one C# 9 feature that cannot be back-ported: the compiler checks `RuntimeFeature.CovariantReturnsOfClasses`, which only the .NET 5+ runtime reports as supported.[^7]
+Covariant returns are the one C# 9 feature that cannot be back-ported: the compiler checks `RuntimeFeature.CovariantReturnsOfClasses`, which only the .NET 5+ runtime reports as supported.
 
 The compiler only needs types with the right *names* in the right namespace. Declare polyfills `internal` so they never clash with the real types when a consumer targets `net5.0`+:
 
@@ -127,11 +127,11 @@ Review points:
 
 #### What's New in C# 9
 
-Every feature below fails to compile with `LangVersion 8` (CS8400 "Feature '…' is not available in C# 8.0. Please use language version 9.0 or greater.") — except `[SkipLocalsInit]`, which the SDK 5.0.408 compiler honours even at `LangVersion 8` (only `AllowUnsafeBlocks` is required; verified via `MethodBody.InitLocals == false`).[^1][^5]
+Every feature below fails to compile with `LangVersion 8` (CS8400 "Feature '…' is not available in C# 8.0. Please use language version 9.0 or greater.") — except `[SkipLocalsInit]`, which the SDK 5.0.408 compiler honours even at `LangVersion 8` (only `AllowUnsafeBlocks` is required; verified via `MethodBody.InitLocals == false`).
 
 ##### 1. Records [New in C# 9] ★★★
 
-A `record` is a class with compiler-synthesized value equality (`Equals`, `GetHashCode`, `==`, `!=`, `IEquatable<T>`), a virtual `EqualityContract`, `ToString()` that prints public members, `Deconstruct` (positional records), a protected copy constructor, and a hidden `<Clone>$` method that powers `with` expressions.[^8]
+A `record` is a class with compiler-synthesized value equality (`Equals`, `GetHashCode`, `==`, `!=`, `IEquatable<T>`), a virtual `EqualityContract`, `ToString()` that prints public members, `Deconstruct` (positional records), a protected copy constructor, and a hidden `<Clone>$` method that powers `with` expressions.
 
 ```csharp
 public record Person(string First, string Last);              // positional: init-only props + ctor + Deconstruct
@@ -241,7 +241,7 @@ return 0;                        // optional exit code
 
 ##### 4. Pattern matching enhancements [New in C# 9] ★★★
 
-New pattern forms: **relational** (`<`, `<=`, `>`, `>=` against a constant), **logical** (`and`, `or`, `not`), **parenthesized** patterns, and **type patterns** (a bare type, `int => ...`, without a designation).[^9]
+New pattern forms: **relational** (`<`, `<=`, `>`, `>=` against a constant), **logical** (`and`, `or`, `not`), **parenthesized** patterns, and **type patterns** (a bare type, `int => ...`, without a designation).
 
 ```csharp
 static string Classify(int t) => t switch
@@ -443,30 +443,30 @@ Before C# 9, partial methods had to be `private void` and could be omitted. Now 
 
 ##### Runtime and library changes [New in .NET 5] ★★★
 
-- **One TFM: `net5.0`** (plus OS-specific `net5.0-windows`); `netcoreapp`/`netstandard` targeting for new apps is replaced. `NET5_0`, `NET5_0_OR_GREATER` and `NETCOREAPP3_1_OR_GREATER` (the `_OR_GREATER` symbols are new in the .NET 5 SDK) are defined; `NETCOREAPP3_1` is not defined for `net5.0` (all verified).[^10]
-- **ICU on Windows**: on Windows 10 May 2019 Update or later, .NET 5 uses ICU instead of NLS for globalization. Culture-sensitive `string.IndexOf(string)` etc. now behave like Linux. Example (verified on Linux 5.0.17): `"line1\r\nline2".IndexOf("\n")` returns **-1** with the current culture (because `\r\n` is one grapheme), but `6` with `StringComparison.Ordinal` or with the `char` overload.[^6]
-- **`string.LastIndexOf("")`** returns the string length (`3` for `"abc"`) — changed from `Length - 1` in .NET Core 3.1.[^10]
-- **Default `ActivityIdFormat` is W3C** (trace context) instead of hierarchical; ASP.NET Core 5 correlates with W3C `traceparent` headers by default.[^10]
-- **HttpClient timeouts** throw `TaskCanceledException` whose `InnerException` is a `TimeoutException` (new in .NET 5) — distinguish timeouts from caller cancellation by checking that (verified).[^11]
+- **One TFM: `net5.0`** (plus OS-specific `net5.0-windows`); `netcoreapp`/`netstandard` targeting for new apps is replaced. `NET5_0`, `NET5_0_OR_GREATER` and `NETCOREAPP3_1_OR_GREATER` (the `_OR_GREATER` symbols are new in the .NET 5 SDK) are defined; `NETCOREAPP3_1` is not defined for `net5.0` (all verified).
+- **ICU on Windows**: on Windows 10 May 2019 Update or later, .NET 5 uses ICU instead of NLS for globalization. Culture-sensitive `string.IndexOf(string)` etc. now behave like Linux. Example (verified on Linux 5.0.17): `"line1\r\nline2".IndexOf("\n")` returns **-1** with the current culture (because `\r\n` is one grapheme), but `6` with `StringComparison.Ordinal` or with the `char` overload.
+- **`string.LastIndexOf("")`** returns the string length (`3` for `"abc"`) — changed from `Length - 1` in .NET Core 3.1.
+- **Default `ActivityIdFormat` is W3C** (trace context) instead of hierarchical; ASP.NET Core 5 correlates with W3C `traceparent` headers by default.
+- **HttpClient timeouts** throw `TaskCanceledException` whose `InnerException` is a `TimeoutException` (new in .NET 5) — distinguish timeouts from caller cancellation by checking that (verified).
 - **`HttpResponseMessage.Content` is never null** in .NET 5 (an empty content is created by default) — verified.
-- **BinaryFormatter** is obsolete (SYSLIB0011 warning) and **throws `NotSupportedException` in ASP.NET Core apps** (`Microsoft.NET.Sdk.Web`) by default — verified.[^12]
-- **`Thread.Abort`** is obsolete (SYSLIB0006) and throws `PlatformNotSupportedException`; **UTF-7** (`Encoding.UTF7`) is obsolete (SYSLIB0001); code-access-security, GAC, remoting, CER APIs are obsolete (SYSLIB0002–0012).[^13]
-- **`OrderBy(...).First(predicate)`/`FirstOrDefault(predicate)`** is O(N log N) again (full sort, as in .NET Framework) instead of O(N) in .NET Core 1.x–3.x, but the predicate runs fewer times (2 calls for 1,000 elements in a test on 5.0.17, instead of N) — side-effecting predicates behave differently after an upgrade from 3.1.[^10]
-- **Nullable annotations**: about 80% of the BCL is annotated, so upgrading from 3.1 surfaces new nullable warnings.[^14]
-- **Single-file apps and trimming** (`PublishSingleFile`, `PublishTrimmed`) are officially supported; in single-file apps `Assembly.Location` returns an empty string.[^10]
+- **BinaryFormatter** is obsolete (SYSLIB0011 warning) and **throws `NotSupportedException` in ASP.NET Core apps** (`Microsoft.NET.Sdk.Web`) by default — verified.
+- **`Thread.Abort`** is obsolete (SYSLIB0006) and throws `PlatformNotSupportedException`; **UTF-7** (`Encoding.UTF7`) is obsolete (SYSLIB0001); code-access-security, GAC, remoting, CER APIs are obsolete (SYSLIB0002–0012).
+- **`OrderBy(...).First(predicate)`/`FirstOrDefault(predicate)`** is O(N log N) again (full sort, as in .NET Framework) instead of O(N) in .NET Core 1.x–3.x, but the predicate runs fewer times (2 calls for 1,000 elements in a test on 5.0.17, instead of N) — side-effecting predicates behave differently after an upgrade from 3.1.
+- **Nullable annotations**: about 80% of the BCL is annotated, so upgrading from 3.1 surfaces new nullable warnings.
+- **Single-file apps and trimming** (`PublishSingleFile`, `PublishTrimmed`) are officially supported; in single-file apps `Assembly.Location` returns an empty string.
 - **New types**: `System.Half`, `System.Runtime.CompilerServices.IsExternalInit`/`ModuleInitializerAttribute`/`SkipLocalsInitAttribute`, `UnmanagedCallersOnlyAttribute`, `MemberNotNull[When]Attribute`, non-generic `TaskCompletionSource`, `ValueTask.CompletedTask`, `Process.WaitForExitAsync`, `Convert.ToHexString`/`FromHexString`, `SHA256.HashData(...)` (static one-shot), `Enum.GetValues<T>()`, `Environment.ProcessId`, `GC.AllocateUninitializedArray<T>`, `CollectionsMarshal.AsSpan(List<T>)`, `Interlocked.And`/`Or`, `Encoding.Latin1`, `HttpClient.Send` (synchronous), `HttpVersionPolicy`, `X509Certificate2.CreateFromPemFile`, `ActivitySource` — all verified to compile on `net5.0`.
 
 ##### System.Text.Json 5.0 [New in .NET 5] ★★
 
-Records and immutable types via constructors (`[JsonConstructor]` or the single public constructor), `IncludeFields`, `[JsonInclude]` for non-public accessors, `JsonIgnoreCondition` (`WhenWritingNull`, `WhenWritingDefault`, `Never`), `JsonNumberHandling` (quoted numbers), `ReferenceHandler.Preserve`, non-string dictionary keys, `JsonSerializerDefaults.Web`, a copy constructor for `JsonSerializerOptions`, and `HttpClient`/`HttpContent` JSON extensions (`System.Net.Http.Json`).[^15] Details and pitfalls are in the System.Text.Json section.
+Records and immutable types via constructors (`[JsonConstructor]` or the single public constructor), `IncludeFields`, `[JsonInclude]` for non-public accessors, `JsonIgnoreCondition` (`WhenWritingNull`, `WhenWritingDefault`, `Never`), `JsonNumberHandling` (quoted numbers), `ReferenceHandler.Preserve`, non-string dictionary keys, `JsonSerializerDefaults.Web`, a copy constructor for `JsonSerializerOptions`, and `HttpClient`/`HttpContent` JSON extensions (`System.Net.Http.Json`). Details and pitfalls are in the System.Text.Json section.
 
 ##### ASP.NET Core 5 [New in .NET 5]
 
-Model binding and validation of C# 9 records; `DateTime` binding of UTC strings as UTC; OpenAPI (Swashbuckle) on by default in the `webapi` template; `HttpRequest.ReadFromJsonAsync` / `HttpResponse.WriteAsJsonAsync`; `[FromBody(EmptyBodyBehavior = ...)]`; `IAuthorizationMiddlewareResultHandler`; endpoint `AllowAnonymous()`; console logger formatters including JSON (`AddJsonConsole`); Kestrel endpoint-specific configuration; HTTP/2 and gRPC performance work; and in an ASP.NET Core app, JSON request bodies accept quoted numbers (`JsonSerializerDefaults.Web`).[^16]
+Model binding and validation of C# 9 records; `DateTime` binding of UTC strings as UTC; OpenAPI (Swashbuckle) on by default in the `webapi` template; `HttpRequest.ReadFromJsonAsync` / `HttpResponse.WriteAsJsonAsync`; `[FromBody(EmptyBodyBehavior = ...)]`; `IAuthorizationMiddlewareResultHandler`; endpoint `AllowAnonymous()`; console logger formatters including JSON (`AddJsonConsole`); Kestrel endpoint-specific configuration; HTTP/2 and gRPC performance work; and in an ASP.NET Core app, JSON request bodies accept quoted numbers (`JsonSerializerDefaults.Web`).
 
 ##### EF Core 5 [New in .NET 5]
 
-Many-to-many without a join entity, split queries (`AsSplitQuery`), filtered `Include`, `LogTo` simple logging, `ToQueryString()`, `DbContextFactory` (`AddDbContextFactory`), table-per-type mapping, `HasPrecision`, `[Index]` and `[Keyless]` attributes, `ChangeTracker.Clear()`, transaction savepoints, database/column collations (`UseCollation`), `ExcludeFromMigrations`, required one-to-one dependents, property bags/shared-type entities, SQLite table rebuilds in migrations, and event counters (the attribute and API names were compiled against EF Core 5.0.17). `[Precision]` and `[Unicode]` attributes are EF Core 6. EF Core 5 targets `netstandard2.1`, so it **does not run on .NET Framework**.[^17][^18]
+Many-to-many without a join entity, split queries (`AsSplitQuery`), filtered `Include`, `LogTo` simple logging, `ToQueryString()`, `DbContextFactory` (`AddDbContextFactory`), table-per-type mapping, `HasPrecision`, `[Index]` and `[Keyless]` attributes, `ChangeTracker.Clear()`, transaction savepoints, database/column collations (`UseCollation`), `ExcludeFromMigrations`, required one-to-one dependents, property bags/shared-type entities, SQLite table rebuilds in migrations, and event counters (the attribute and API names were compiled against EF Core 5.0.17). `[Precision]` and `[Unicode]` attributes are EF Core 6. EF Core 5 targets `netstandard2.1`, so it **does not run on .NET Framework**.
 
 ---
 
@@ -564,7 +564,7 @@ The project's compiler and runtime do not have these. The syntax items were chec
 | `WinHttpHandler` in the shared framework | removed | NuGet `System.Net.Http.WinHttpHandler` |
 | `Microsoft.DotNet.PlatformAbstractions` package | removed | `RuntimeInformation` |
 
-Not yet obsolete in .NET 5 (obsoleted later, still worth flagging): `Uri.EscapeUriString` (SYSLIB0013 in .NET 6), `WebRequest`/`WebClient`/`HttpWebRequest` (SYSLIB0014 in .NET 6), `RNGCryptoServiceProvider` and the derived `*CryptoServiceProvider`/`*Managed` crypto types (SYSLIB0021/0023 in .NET 6), `JsonSerializerOptions.IgnoreNullValues` (SYSLIB0020 in .NET 6 — no warning on .NET 5, verified), `Rfc2898DeriveBytes` constructors without a `HashAlgorithmName` (SYSLIB0041 in .NET 7; they default to **SHA-1 and 1,000 iterations** — verified).[^13]
+Not yet obsolete in .NET 5 (obsoleted later, still worth flagging): `Uri.EscapeUriString` (SYSLIB0013 in .NET 6), `WebRequest`/`WebClient`/`HttpWebRequest` (SYSLIB0014 in .NET 6), `RNGCryptoServiceProvider` and the derived `*CryptoServiceProvider`/`*Managed` crypto types (SYSLIB0021/0023 in .NET 6), `JsonSerializerOptions.IgnoreNullValues` (SYSLIB0020 in .NET 6 — no warning on .NET 5, verified), `Rfc2898DeriveBytes` constructors without a `HashAlgorithmName` (SYSLIB0041 in .NET 7; they default to **SHA-1 and 1,000 iterations** — verified).
 
 ***
 
@@ -603,16 +603,16 @@ Not yet obsolete in .NET 5 (obsoleted later, still worth flagging): `Uri.EscapeU
 { "sdk": { "version": "5.0.408", "rollForward": "latestFeature" } }
 ```
 
-- **Analyzers are on by default for `net5.0`** (`EnableNETAnalyzers` defaults to `true`, `AnalysisLevel` to `latest`). Only a handful of CA rules are warnings out of the box; the ones a C# 9 review should expect to see are CA2200 (rethrow with `throw ex`), CA2013 (`ReferenceEquals` on value types), CA2014 (`stackalloc` in a loop), CA2247 (`TaskContinuationOptions` passed to `TaskCompletionSource`), CA1416 (platform compatibility), CA1417, CA1831 and CA2015 — all listed as new .NET 5 warnings; CA2200, CA2013, CA2014 and CA2247 were triggered in a test build.[^10][^19]
+- **Analyzers are on by default for `net5.0`** (`EnableNETAnalyzers` defaults to `true`, `AnalysisLevel` to `latest`). Only a handful of CA rules are warnings out of the box; the ones a C# 9 review should expect to see are CA2200 (rethrow with `throw ex`), CA2013 (`ReferenceEquals` on value types), CA2014 (`stackalloc` in a loop), CA2247 (`TaskContinuationOptions` passed to `TaskCompletionSource`), CA1416 (platform compatibility), CA1417, CA1831 and CA2015 — all listed as new .NET 5 warnings; CA2200, CA2013, CA2014 and CA2247 were triggered in a test build.
 - **`AnalysisMode` values differ by SDK.** The .NET 5 SDK understands `AllEnabledByDefault`/`AllDisabledByDefault`/`Default`; the .NET 6+ values `All`, `Recommended`, `Minimum`, `None` are silently ignored by SDK 5.0.408 (verified: `All` produced 1 CA rule, `AllEnabledByDefault` 25 on the same code). A project file with `<AnalysisMode>All</AnalysisMode>` on SDK 5 therefore has no extra analysis.
 - `TreatWarningsAsErrors` plus `<WarningsAsErrors>nullable</WarningsAsErrors>` (or the whole set) keeps nullable warnings from accumulating.
 - `<Nullable>enable</Nullable>` at project level; avoid file-level `#nullable disable` except in generated code.
-- Use `Directory.Build.props` for shared settings. Note that the .NET 5 SDK **imports a `Directory.Packages.props` file by default** (a breaking change that can surprise solutions that already had a file of that name); central package management with `ManagePackageVersionsCentrally` itself only works with later NuGet versions.[^10]
+- Use `Directory.Build.props` for shared settings. Note that the .NET 5 SDK **imports a `Directory.Packages.props` file by default** (a breaking change that can surprise solutions that already had a file of that name); central package management with `ManagePackageVersionsCentrally` itself only works with later NuGet versions.
 - `dotnet format` is a separate global tool for .NET 5 (it became part of the SDK in .NET 6).
 
 ##### Single-file and trimming
 
-`PublishSingleFile` and `PublishTrimmed` are supported in .NET 5. Review points: `Assembly.Location` and `AppContext.BaseDirectory` semantics (`Location` is empty in single-file apps — use `AppContext.BaseDirectory`), reflection-heavy code (DI with open generics, `System.Text.Json` reflection serialization, EF Core) is not trim-safe and needs `[DynamicallyAccessedMembers]` annotations or must not be trimmed — the trim-compatibility Roslyn analyzer only arrives with .NET 6, so .NET 5 gives little warning.[^21] `EnableUnsafeBinaryFormatterSerialization=false` and `EnableUnsafeUTF7Encoding=false` are feature switches that remove those insecure code paths.
+`PublishSingleFile` and `PublishTrimmed` are supported in .NET 5. Review points: `Assembly.Location` and `AppContext.BaseDirectory` semantics (`Location` is empty in single-file apps — use `AppContext.BaseDirectory`), reflection-heavy code (DI with open generics, `System.Text.Json` reflection serialization, EF Core) is not trim-safe and needs `[DynamicallyAccessedMembers]` annotations or must not be trimmed — the trim-compatibility Roslyn analyzer only arrives with .NET 6, so .NET 5 gives little warning. `EnableUnsafeBinaryFormatterSerialization=false` and `EnableUnsafeUTF7Encoding=false` are feature switches that remove those insecure code paths.
 
 ***
 
@@ -977,7 +977,7 @@ await DoWorkAsync(timeout.Token);
   Dispose `CancellationTokenSource` instances (they hold timers); `TryReset` is .NET 6, so create a new one per operation.
 - **Cancellation surfaces as `OperationCanceledException`** (often the derived `TaskCanceledException`); catch the base type and check which token fired.
 - **`ConfigureAwait(false)`** in library code; application code in ASP.NET Core (no synchronization context) may omit it but it does no harm.
-- **`ValueTask`/`ValueTask<T>`**: await exactly once; never await twice, never `.Result` before completion, never `WhenAll` without `.AsTask()`. Return `ValueTask` only where synchronous completion is common and measured. `ValueTask.CompletedTask` and pooling of async `ValueTask` state machines (opt-in via `DOTNET_SYSTEM_THREADING_POOLASYNCVALUETASKS`) are new in .NET 5.[^20]
+- **`ValueTask`/`ValueTask<T>`**: await exactly once; never await twice, never `.Result` before completion, never `WhenAll` without `.AsTask()`. Return `ValueTask` only where synchronous completion is common and measured. `ValueTask.CompletedTask` and pooling of async `ValueTask` state machines (opt-in via `DOTNET_SYSTEM_THREADING_POOLASYNCVALUETASKS`) are new in .NET 5.
 - **`lock` cannot contain `await`** (CS1996). Use `SemaphoreSlim(1, 1)` with `WaitAsync`/`Release` in `try/finally`. `System.Threading.Lock` is .NET 9.
 - **`Task.Run` is for CPU-bound work**, not for wrapping async I/O in ASP.NET Core.
 - **Fire-and-forget** needs explicit error handling and a lifetime owner (a `BackgroundService` or a `Channel<T>` consumer), otherwise exceptions disappear and the work dies with the request scope.
@@ -1188,7 +1188,7 @@ public sealed class QueueWorker : BackgroundService
 }
 ```
 
-- **An unhandled exception in `BackgroundService.ExecuteAsync` is swallowed in .NET 5**: the host keeps running without the worker (verified: host alive 400 ms after the worker threw, no log because the exception is only stored in the task). .NET 6 changed the default to stop the host and added `HostOptions.BackgroundServiceExceptionBehavior` (absent in 5.0, verified).[^22] Every `ExecuteAsync` in .NET 5 needs the catch-all above.
+- **An unhandled exception in `BackgroundService.ExecuteAsync` is swallowed in .NET 5**: the host keeps running without the worker (verified: host alive 400 ms after the worker threw, no log because the exception is only stored in the task). .NET 6 changed the default to stop the host and added `HostOptions.BackgroundServiceExceptionBehavior` (absent in 5.0, verified). Every `ExecuteAsync` in .NET 5 needs the catch-all above.
 - Do not block in `StartAsync`/before the first `await` in `ExecuteAsync` — the host's startup waits for it.
 - Graceful shutdown timeout is `HostOptions.ShutdownTimeout` (5 seconds by default in .NET 5, verified; current versions default to 30 seconds); long-running work must observe `stoppingToken`.
 
@@ -1225,7 +1225,7 @@ public sealed partial class OrderProcessor
 - **Arguments are evaluated even when the level is disabled** (verified). Guard expensive arguments with `if (_logger.IsEnabled(LogLevel.Debug))`.
 - Pass the exception as the first argument (`_logger.LogError(ex, "...")`), never `ex.Message` in the template.
 - Use scopes for correlation (`using (_logger.BeginScope("Order {OrderId}", id))`); console scopes need `IncludeScopes`.
-- **New in .NET 5**: console formatters — `AddSimpleConsole(o => o.SingleLine = true)`, `AddJsonConsole()`, `AddSystemdConsole()`; the older `ConsoleLoggerOptions` formatting properties are obsolete.[^10][^16]
+- **New in .NET 5**: console formatters — `AddSimpleConsole(o => o.SingleLine = true)`, `AddJsonConsole()`, `AddSystemdConsole()`; the older `ConsoleLoggerOptions` formatting properties are obsolete.
 - Never log secrets, tokens, full request bodies or personal data; remember that records print every public property.
 - **Tracing**: `Activity`/`ActivitySource` (`ActivitySource` is new in .NET 5) with the W3C ID format by default — the basis for OpenTelemetry .NET. **Metrics**: `System.Diagnostics.Metrics` is .NET 6; in .NET 5 use `EventCounters` (`dotnet-counters`) or a metrics library.
 - Health checks: `services.AddHealthChecks()` + `endpoints.MapHealthChecks("/healthz")` (verified in the ASP.NET Core 5 sample below).
@@ -1405,7 +1405,7 @@ Review points:
 - **Authorization**: put `[Authorize]` on controllers (or a fallback policy: `services.AddAuthorization(o => o.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())`), and `[AllowAnonymous]` explicitly. Endpoint-level `.RequireAuthorization()`/`.AllowAnonymous()` exist in 5.0.
 - **Over-posting**: bind request DTOs (records), not EF entities.
 - **`[FromBody]` with an empty body** returns 400 by default; `[FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]` is new in 5.0.
-- **JSON**: MVC uses System.Text.Json with Web defaults (configure via `AddControllers().AddJsonOptions(o => ...)`); quoted numbers are accepted in ASP.NET Core 5 apps (breaking change from 3.1).[^10]
+- **JSON**: MVC uses System.Text.Json with Web defaults (configure via `AddControllers().AddJsonOptions(o => ...)`); quoted numbers are accepted in ASP.NET Core 5 apps (breaking change from 3.1).
 - **Model binding of `DateTime`**: UTC strings (`...Z`) bind as `DateTimeKind.Utc` in 5.0 (previously local).
 - **No built-in rate limiting or output caching** (.NET 7) — use a reverse proxy or a library; `ResponseCaching` middleware exists.
 - **Problem details**: `[ApiController]` produces `ProblemDetails` for 4xx; customize via `ProblemDetailsFactory`. `AddProblemDetails()` is .NET 7.
@@ -1414,9 +1414,9 @@ Review points:
 - **Antiforgery** for cookie-authenticated form posts (Razor Pages validate by default; MVC needs `[ValidateAntiForgeryToken]` or `AutoValidateAntiforgeryTokenAttribute`).
 - **Swashbuckle** is in the 5.0 `webapi` template; expose Swagger UI only in Development or behind auth.
 - **BinaryFormatter throws `NotSupportedException`** in ASP.NET Core 5 apps (verified) — legacy session/cache code using it fails at runtime. The switch (`System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization: false`) lives in the web app's `runtimeconfig.json`; integration tests with `WebApplicationFactory` run under the *test* project's runtimeconfig, where the same endpoint succeeds (verified) — so passing tests do not prove the code works in production.
-- **Authorization handlers**: with endpoint routing, `AuthorizationHandlerContext.Resource` is the `HttpContext` in 5.0 (it was the `Endpoint` in 3.x) — handlers that cast it to `Endpoint` silently stop matching.[^23]
-- **Kestrel TLS defaults**: Kestrel's default `SslProtocols` changed to `None` (OS defaults) in 5.0; code that pins `Tls11`/`Tls` re-enables obsolete protocols.[^23]
-- **Exception handler middleware** rethrows the original exception when the error handler path returns 404, instead of returning the 404.[^23]
+- **Authorization handlers**: with endpoint routing, `AuthorizationHandlerContext.Resource` is the `HttpContext` in 5.0 (it was the `Endpoint` in 3.x) — handlers that cast it to `Endpoint` silently stop matching.
+- **Kestrel TLS defaults**: Kestrel's default `SslProtocols` changed to `None` (OS defaults) in 5.0; code that pins `Tls11`/`Tls` re-enables obsolete protocols.
+- **Exception handler middleware** rethrows the original exception when the error handler path returns 404, instead of returning the 404.
 
 ***
 
@@ -1476,7 +1476,7 @@ Pitfalls a reviewer must catch:
 - **Diagnostics** (new in 5.0): `optionsBuilder.LogTo(Console.WriteLine, LogLevel.Information)`, `query.ToQueryString()`, `ChangeTracker.DebugView`. `EnableSensitiveDataLogging()` logs parameter values — development only.
 - **Migrations**: review generated migrations (column drops, type changes); SQLite migrations in 5.0 rebuild tables for unsupported `ALTER`s. Apply migrations from a deployment step, not from every app instance on startup.
 - **Async all the way**: `ToListAsync`, `FirstOrDefaultAsync`, `SaveChangesAsync` with the request's `CancellationToken`.
-- EF Core 5 does not run on .NET Framework (it targets `netstandard2.1`); EF Core 6+ requires .NET 6+.[^18]
+- EF Core 5 does not run on .NET Framework (it targets `netstandard2.1`); EF Core 6+ requires .NET 6+.
 
 ***
 
@@ -1505,7 +1505,7 @@ public static string ResolveUnder(string root, string userPath)
   - Compare secrets/MACs with `CryptographicOperations.FixedTimeEquals`.
   - Symmetric encryption: `AesGcm` (authenticated) over `Aes` + CBC without MAC; never ECB, never static IVs.
   - Hashing: `SHA256.HashData(bytes)` (new in .NET 5); MD5/SHA-1 only for non-security checksums.
-- **TLS**: do not set `ServicePointManager`/`SslProtocols` to specific old versions; leave `SslProtocols.None` (OS default). Never accept all certificates. On Linux, .NET 5 uses a restricted default cipher-suite list (OpenSSL configuration).[^10]
+- **TLS**: do not set `ServicePointManager`/`SslProtocols` to specific old versions; leave `SslProtocols.None` (OS default). Never accept all certificates. On Linux, .NET 5 uses a restricted default cipher-suite list (OpenSSL configuration).
 - **Regex DoS**: user-controlled input against backtracking patterns needs a match timeout (`new Regex(pattern, RegexOptions.None, TimeSpan.FromMilliseconds(100))`); `RegexOptions.NonBacktracking` is .NET 7. Never build a pattern from user input without `Regex.Escape`.
 - **Process execution**: `ProcessStartInfo` with `UseShellExecute = false` and `ArgumentList` (each argument separately) instead of concatenating a command string.
 - **ASP.NET Core**: HTTPS redirection + HSTS in production, secure/HttpOnly/SameSite cookies, antiforgery for cookie auth, CORS with explicit origins (never `AllowAnyOrigin` together with credentials — the framework throws for that combination), authorization by default via a fallback policy, Data Protection keys persisted and protected in multi-instance deployments.
@@ -1617,12 +1617,12 @@ public class TokenServiceTests
 - New nullable annotations across the BCL produce new warnings.
 - `BinaryFormatter` obsolete (warning) and blocked in ASP.NET Core apps.
 - `Thread.Abort`, CAS, remoting, GAC, UTF-7, `Assembly.CodeBase` obsolete (SYSLIB0001–0012); `PrincipalPermissionAttribute` is a compile **error**.
-- `string.LastIndexOf("")`, `OrderBy().First(predicate)` complexity, `Activity` ID format, cookie path handling (RFC 6265), Unix UNC/non-ASCII URI parsing, `Vector<T>` `NotSupportedException` for unsupported `T`, TLS cipher suites on Linux — behaviour changes to re-test.[^10]
-- System.Text.Json: non-public parameterless constructors are no longer used; `char` needs single-character strings; options honoured for `KeyValuePair`; `Serialize` with a `null` `Type` throws `ArgumentNullException`; ASP.NET Core accepts quoted numbers.[^10]
+- `string.LastIndexOf("")`, `OrderBy().First(predicate)` complexity, `Activity` ID format, cookie path handling (RFC 6265), Unix UNC/non-ASCII URI parsing, `Vector<T>` `NotSupportedException` for unsupported `T`, TLS cipher suites on Linux — behaviour changes to re-test.
+- System.Text.Json: non-public parameterless constructors are no longer used; `char` needs single-character strings; options honoured for `KeyValuePair`; `Serialize` with a `null` `Type` throws `ArgumentNullException`; ASP.NET Core accepts quoted numbers.
 - WinForms/WPF: projects use `Microsoft.NET.Sdk` with `UseWindowsForms`/`UseWPF` and `net5.0-windows`; built-in WinRT support removed (use C#/WinRT).
-- Other runtime behaviour changes from the official list: `Environment.OSVersion` returns the real OS version on Windows and macOS (no more compatibility-shimmed values); `RuntimeInformation.FrameworkDescription` starts with `.NET` instead of `.NET Core`; `StringInfo`/`TextElementEnumerator` follow UAX #29 grapheme rules; the Unicode category of some Latin-1 characters changed (affects `char.IsLetter`/`IsUpper`-style checks); `Oid` is init-only (value/friendly name can be set once); `TripleDES` default `FeedbackSize` changed; the order of `Activity.Tags` is reversed; P/Invoke no longer probes `A`/`W` suffixes on non-Windows platforms.[^10]
-- ASP.NET Core 5: the authorization resource is `HttpContext`, Kestrel TLS defaults to the OS, `IHttpClientFactory` logs integer status codes, Kestrel detects configuration changes at run time by default, the Libuv transport and `BadHttpRequestException` types are obsolete, `UseSignalR`/`UseConnections` are removed, `AzureAD.UI`/`AzureADB2C.UI` are obsolete (use Microsoft.Identity.Web).[^23]
-- EF Core 5 breaking changes: no .NET Framework support (targets `netstandard2.1`), `IProperty.GetColumnName()` obsolete (use `GetColumnBaseName()`), decimal parameters now carry the model's precision/scale (rounding moves into SqlClient — configure precision), required navigations from principal to dependent change semantics, non-null reference navigations are no longer overwritten by queries (do not initialize reference navigations to empty objects), `ToView()` no longer makes migrations ignore the table, `ToTable(null)` means "not mapped to a table", discriminators are read-only, `IndexBuilder.HasName` obsolete (use `HasDatabaseName`).[^18]
+- Other runtime behaviour changes from the official list: `Environment.OSVersion` returns the real OS version on Windows and macOS (no more compatibility-shimmed values); `RuntimeInformation.FrameworkDescription` starts with `.NET` instead of `.NET Core`; `StringInfo`/`TextElementEnumerator` follow UAX #29 grapheme rules; the Unicode category of some Latin-1 characters changed (affects `char.IsLetter`/`IsUpper`-style checks); `Oid` is init-only (value/friendly name can be set once); `TripleDES` default `FeedbackSize` changed; the order of `Activity.Tags` is reversed; P/Invoke no longer probes `A`/`W` suffixes on non-Windows platforms.
+- ASP.NET Core 5: the authorization resource is `HttpContext`, Kestrel TLS defaults to the OS, `IHttpClientFactory` logs integer status codes, Kestrel detects configuration changes at run time by default, the Libuv transport and `BadHttpRequestException` types are obsolete, `UseSignalR`/`UseConnections` are removed, `AzureAD.UI`/`AzureADB2C.UI` are obsolete (use Microsoft.Identity.Web).
+- EF Core 5 breaking changes: no .NET Framework support (targets `netstandard2.1`), `IProperty.GetColumnName()` obsolete (use `GetColumnBaseName()`), decimal parameters now carry the model's precision/scale (rounding moves into SqlClient — configure precision), required navigations from principal to dependent change semantics, non-null reference navigations are no longer overwritten by queries (do not initialize reference navigations to empty objects), `ToView()` no longer makes migrations ignore the table, `ToTable(null)` means "not mapped to a table", discriminators are read-only, `IndexBuilder.HasName` obsolete (use `HasDatabaseName`).
 
 ##### From .NET 5 to .NET 10 (the recommended upgrade)
 
@@ -1630,7 +1630,7 @@ public class TokenServiceTests
 - Update all `Microsoft.Extensions.*`, ASP.NET Core and EF Core packages to 10.0.x; EF Core 6–10 contain many query and behaviour changes — read the EF Core breaking-change lists for 6.0 through 10.0.
 - `BackgroundService` exceptions stop the host by default since .NET 6 (the .NET 5 catch-all remains good practice).
 - `BinaryFormatter` is removed entirely (always throws) since .NET 9.
-- `Rfc2898DeriveBytes` constructors without a hash algorithm become SYSLIB0041 in .NET 7, and all of its constructors are obsolete (SYSLIB0060) in .NET 10 — move to `Rfc2898DeriveBytes.Pbkdf2`.[^13]
+- `Rfc2898DeriveBytes` constructors without a hash algorithm become SYSLIB0041 in .NET 7, and all of its constructors are obsolete (SYSLIB0060) in .NET 10 — move to `Rfc2898DeriveBytes.Pbkdf2`.
 - The generic host with a `Startup` class still works on .NET 10; moving to `WebApplication` is optional. `WebApplicationBuilder` does not support `UseStartup<T>()`, so a move means relocating `ConfigureServices`/`Configure` code into `Program.cs`.
 - Re-run all tests; expect new analyzer and nullable warnings.
 

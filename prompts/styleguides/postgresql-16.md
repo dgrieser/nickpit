@@ -2,14 +2,14 @@
 
 #### Overview
 
-> **Version**: PostgreSQL 16.0 was released on **September 14, 2023**.[^1][^4] The latest minor release is **16.15 (August 13, 2026)**; the next scheduled minor release date is November 12, 2026.[^2][^3] PostgreSQL 16 is **supported until November 9, 2028**.[^2]
-> **Newest releases (October 2026)**: PostgreSQL **18** is the current stable major version (18.0 on September 25, 2025; current minor 18.6). PostgreSQL 17 is at 17.11. PostgreSQL **19 is at Release Candidate 1** (October 15, 2026). It is pre-release software and not a deployment target.[^2] PostgreSQL 14 reaches end of life on November 12, 2026, and PostgreSQL 15 on November 11, 2027.
+> **Version**: PostgreSQL 16.0 was released on **September 14, 2023**. The latest minor release is **16.15 (August 13, 2026)**; the next scheduled minor release date is November 12, 2026. PostgreSQL 16 is **supported until November 9, 2028**.
+> **Newest releases (October 2026)**: PostgreSQL **18** is the current stable major version (18.0 on September 25, 2025; current minor 18.6). PostgreSQL 17 is at 17.11. PostgreSQL **19 is at Release Candidate 1** (October 15, 2026). It is pre-release software and not a deployment target. PostgreSQL 14 reaches end of life on November 12, 2026, and PostgreSQL 15 on November 11, 2027.
 > **Scope**: SQL that runs on a PostgreSQL 16 server: schema migrations, queries embedded in application code, functions, procedures and triggers, schema design, indexing, transactions, security, JSON, partitioning, connection pooling and operations-facing SQL.
 > **Note**: This document is self-contained. It carries forward everything from PostgreSQL 14 and 15 that is still correct, and it marks the version in which each feature arrived. Sections that cover 16-specific behaviour are marked **New in 16**. Every example was executed on PostgreSQL 16.15. "New in 16" claims were checked to fail on 15.19, "not available in 16" claims were checked to fail on 16.15 (and the 17 behaviour changes were checked on 17.11). "Since 15" markers were checked to fail on 14.24.
 
-PostgreSQL 16 is a developer-experience, security and replication release. Its SQL-visible headline features are the **SQL/JSON constructors and predicates** (`JSON_OBJECT()`, `JSON_ARRAY()`, `JSON_OBJECTAGG()`, `JSON_ARRAYAGG()`, `IS JSON [VALUE | OBJECT | ARRAY | SCALAR] [WITH UNIQUE KEYS]`), **non-decimal integer literals** (`0x1F`, `0o17`, `0b101`) and **underscores in numbers** (`1_000_000`), the **`any_value()` aggregate**, **`pg_input_is_valid()`/`pg_input_error_info()`**, time-zone-aware **`date_add()`/`date_subtract()`/`generate_series()`**, **`COPY ... DEFAULT`**, and **`EXPLAIN (GENERIC_PLAN)`**. For operations it adds **`pg_stat_io`**, `last_seq_scan`/`last_idx_scan`, **parallel `FULL` and right outer hash joins**, **incremental sort for `DISTINCT`**, pre-sorted input for `ORDER BY`/`DISTINCT` aggregates, **logical decoding on standbys**, **parallel apply** of large transactions on subscribers, the `pg_create_subscription` and `pg_use_reserved_connections` roles, **regular expressions and include files in `pg_hba.conf`**, and the libpq options **`require_auth`**, **`load_balance_hosts`** and **`sslrootcert=system`**.[^1][^4]
+PostgreSQL 16 is a developer-experience, security and replication release. Its SQL-visible headline features are the **SQL/JSON constructors and predicates** (`JSON_OBJECT()`, `JSON_ARRAY()`, `JSON_OBJECTAGG()`, `JSON_ARRAYAGG()`, `IS JSON [VALUE | OBJECT | ARRAY | SCALAR] [WITH UNIQUE KEYS]`), **non-decimal integer literals** (`0x1F`, `0o17`, `0b101`) and **underscores in numbers** (`1_000_000`), the **`any_value()` aggregate**, **`pg_input_is_valid()`/`pg_input_error_info()`**, time-zone-aware **`date_add()`/`date_subtract()`/`generate_series()`**, **`COPY ... DEFAULT`**, and **`EXPLAIN (GENERIC_PLAN)`**. For operations it adds **`pg_stat_io`**, `last_seq_scan`/`last_idx_scan`, **parallel `FULL` and right outer hash joins**, **incremental sort for `DISTINCT`**, pre-sorted input for `ORDER BY`/`DISTINCT` aggregates, **logical decoding on standbys**, **parallel apply** of large transactions on subscribers, the `pg_create_subscription` and `pg_use_reserved_connections` roles, **regular expressions and include files in `pg_hba.conf`**, and the libpq options **`require_auth`**, **`load_balance_hosts`** and **`sslrootcert=system`**.
 
-PostgreSQL 16 also changes behaviour that breaks old code and scripts. **`CREATEROLE` no longer means "almost superuser"**: changing, dropping or granting other roles now needs `ADMIN OPTION` on them. **Role membership has explicit `INHERIT` and `SET` options**, fixed at `GRANT` time. **Manually created `ON SELECT` rules (hand-made views) are rejected**, **`NULLS NOT DISTINCT` indexes can no longer back a primary key**, **`REINDEX DATABASE` skips system catalogs**, **PL/pgSQL bound cursor variables are no longer named after the variable**, and the settings `force_parallel_mode` (now `debug_parallel_query`), `vacuum_defer_cleanup_age`, `promote_trigger_file`, `lc_collate` and `lc_ctype` are gone.[^1]
+PostgreSQL 16 also changes behaviour that breaks old code and scripts. **`CREATEROLE` no longer means "almost superuser"**: changing, dropping or granting other roles now needs `ADMIN OPTION` on them. **Role membership has explicit `INHERIT` and `SET` options**, fixed at `GRANT` time. **Manually created `ON SELECT` rules (hand-made views) are rejected**, **`NULLS NOT DISTINCT` indexes can no longer back a primary key**, **`REINDEX DATABASE` skips system catalogs**, **PL/pgSQL bound cursor variables are no longer named after the variable**, and the settings `force_parallel_mode` (now `debug_parallel_query`), `vacuum_defer_cleanup_age`, `promote_trigger_file`, `lc_collate` and `lc_ctype` are gone.
 
 Global truths about PostgreSQL 16:
 
@@ -39,7 +39,7 @@ The project pins PostgreSQL 16 (for example `image: postgres:16`, `postgresql 16
 
 #### What's New in PostgreSQL 16
 
-All items below are verified against the official release notes[^1] and, where they are SQL-visible, were executed on 16.15 and shown to fail on 15.19.
+All items below are verified against the official release notes and, where they are SQL-visible, were executed on 16.15 and shown to fail on 15.19.
 
 ##### SQL and data types
 
@@ -83,7 +83,7 @@ All items below are verified against the official release notes[^1] and, where t
 
 ##### Server, performance and operations
 
-- **Planner.** Parallel hash `FULL` and right outer joins; incremental sort for `SELECT DISTINCT`; aggregates with `ORDER BY`/`DISTINCT` (`array_agg(x ORDER BY x)`, `string_agg(DISTINCT ...)`) can use pre-sorted input (`enable_presorted_aggregate`); anti-joins with the non-nullable side as the inner relation; `Memoize` above `UNION ALL`; window functions use `ROWS` mode internally when `RANGE` is unnecessary; run conditions for `ntile()`, `cume_dist()` and `percent_rank()`; `string_agg()` and `array_agg()` can run in parallel; cached `RANGE`/`LIST` partition lookups.[^1]
+- **Planner.** Parallel hash `FULL` and right outer joins; incremental sort for `SELECT DISTINCT`; aggregates with `ORDER BY`/`DISTINCT` (`array_agg(x ORDER BY x)`, `string_agg(DISTINCT ...)`) can use pre-sorted input (`enable_presorted_aggregate`); anti-joins with the non-nullable side as the inner relation; `Memoize` above `UNION ALL`; window functions use `ROWS` mode internally when `RANGE` is unnecessary; run conditions for `ntile()`, `cume_dist()` and `percent_rank()`; `string_agg()` and `array_agg()` can run in parallel; cached `RANGE`/`LIST` partition lookups.
 - **Vacuum.** Opportunistic page freezing during normal vacuums makes anti-wraparound full-table freezes less necessary. `vacuum_buffer_usage_limit` and `BUFFER_USAGE_LIMIT` control the buffer ring size.
 - **HOT updates** are now possible when only BRIN-indexed columns change.
 - **Monitoring.** `pg_stat_io` (I/O per backend type, object and context), `pg_stat_*_tables.last_seq_scan`/`last_idx_scan` and `pg_stat_*_indexes.last_idx_scan`, `n_tup_newpage_upd`, speculative insertion locks in `pg_locks`, result types in `pg_prepared_statements`, checkpoint and REDO LSN in `log_checkpoints` messages, `pg_stat_get_backend_subxact()`.
@@ -100,7 +100,7 @@ All items below are verified against the official release notes[^1] and, where t
 
 #### Do Not Use or Recommend (PostgreSQL 17+ Features)
 
-The server is PostgreSQL 16. Everything in the first table was introduced in **PostgreSQL 17** (released September 26, 2024)[^5] and was shown to fail on 16.15. Never suggest these, and flag them as bugs when they appear in code that targets 16:
+The server is PostgreSQL 16. Everything in the first table was introduced in **PostgreSQL 17** (released September 26, 2024) and was shown to fail on 16.15. Never suggest these, and flag them as bugs when they appear in code that targets 16:
 
 | PostgreSQL 17 feature | What happens on 16 | Use on 16 instead |
 |---|---|---|
@@ -132,9 +132,9 @@ The server is PostgreSQL 16. Everything in the first table was introduced in **P
 | `pg_stat_reset_shared()` with no argument | `function pg_stat_reset_shared() does not exist` | Pass the target (`'bgwriter'`, `'io'`, ...) |
 | PL/pgSQL `%TYPE[]`/`%ROWTYPE[]` | not available | Declare the array type explicitly |
 
-From **PostgreSQL 18** (released September 25, 2025)[^6], also shown to fail on 16.15: `uuidv7()`/`uuidv4()` (`function uuidv7() does not exist`; use `gen_random_uuid()`, core since 13), virtual generated columns (`GENERATED ALWAYS AS (expr)` without `STORED` is a **syntax error** on 16), `RETURNING old.*/new.*` (`missing FROM-clause entry for table "old"`), `WITHOUT OVERLAPS`/`PERIOD` temporal keys (use an `EXCLUDE USING gist` constraint with `btree_gist`), `NOT ENFORCED` constraints, `NOT NULL ... NOT VALID` constraints, `VACUUM ONLY`/`ANALYZE ONLY`, `COPY ... REJECT_LIMIT`, `casefold()`, `array_sort()`, `array_reverse()`, `crc32()`, `reverse(bytea)`, `gamma()`, integer↔`bytea` casts (`cannot cast type integer to bytea`), `('null'::jsonb)::int` returning NULL (16 raises `cannot cast jsonb null to type integer`), `jsonb_strip_nulls(x, true)`, asynchronous I/O (`io_method`), B-tree skip scan, `EXPLAIN ANALYZE` that includes `BUFFERS` automatically, OAuth authentication, `md5_password_warnings`, and `pg_upgrade` keeping optimizer statistics.
+From **PostgreSQL 18** (released September 25, 2025), also shown to fail on 16.15: `uuidv7()`/`uuidv4()` (`function uuidv7() does not exist`; use `gen_random_uuid()`, core since 13), virtual generated columns (`GENERATED ALWAYS AS (expr)` without `STORED` is a **syntax error** on 16), `RETURNING old.*/new.*` (`missing FROM-clause entry for table "old"`), `WITHOUT OVERLAPS`/`PERIOD` temporal keys (use an `EXCLUDE USING gist` constraint with `btree_gist`), `NOT ENFORCED` constraints, `NOT NULL ... NOT VALID` constraints, `VACUUM ONLY`/`ANALYZE ONLY`, `COPY ... REJECT_LIMIT`, `casefold()`, `array_sort()`, `array_reverse()`, `crc32()`, `reverse(bytea)`, `gamma()`, integer↔`bytea` casts (`cannot cast type integer to bytea`), `('null'::jsonb)::int` returning NULL (16 raises `cannot cast jsonb null to type integer`), `jsonb_strip_nulls(x, true)`, asynchronous I/O (`io_method`), B-tree skip scan, `EXPLAIN ANALYZE` that includes `BUFFERS` automatically, OAuth authentication, `md5_password_warnings`, and `pg_upgrade` keeping optimizer statistics.
 
-Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released) is also unavailable, for example the `REPACK` command (`syntax error at or near "REPACK"` on 16.15) and `error_on_null()`.[^7] `GROUP BY ALL` is not available on 16 either (syntax error).
+Anything from **PostgreSQL 19** (Release Candidate 1, October 15, 2026, not yet released) is also unavailable, for example the `REPACK` command (`syntax error at or near "REPACK"` on 16.15) and `error_on_null()`. `GROUP BY ALL` is not available on 16 either (syntax error).
 
 ##### Removed or changed in 16 (do not use)
 
@@ -166,7 +166,7 @@ Still present in 16 but **removed in 17**, so new code should not start dependin
 
 #### Features from PostgreSQL 14–15 You Can Rely On
 
-All of these exist on 16 and should be used where they fit.[^8]
+All of these exist on 16 and should be used where they fit.
 
 ##### Since 14
 
@@ -199,7 +199,7 @@ All of these exist on 16 and should be used where they fit.[^8]
 
 #### New in 16: SQL/JSON Constructors and IS JSON
 
-16 adds the SQL-standard constructor syntax and the `IS JSON` predicate.[^9] The query functions (`JSON_VALUE`, `JSON_QUERY`, `JSON_EXISTS`, `JSON_TABLE`) are **not** in 16; they arrived in 17.
+16 adds the SQL-standard constructor syntax and the `IS JSON` predicate. The query functions (`JSON_VALUE`, `JSON_QUERY`, `JSON_EXISTS`, `JSON_TABLE`) are **not** in 16; they arrived in 17.
 
 ##### IS JSON
 
@@ -273,7 +273,7 @@ SELECT JSON_ARRAYAGG(x) FROM (SELECT 1 WHERE false) v(x);                       
 - Over zero rows the aggregates return **NULL**, not `[]`/`{}`, exactly like `json_agg()`. API code that returns "an empty list" needs `coalesce(JSON_ARRAYAGG(...), '[]')`.
 - `json_agg()` keeps NULLs (`[null]`), while `JSON_ARRAYAGG()` drops them by default. Replacing one with the other changes results.
 - Order inside the aggregate is unspecified without `ORDER BY` in the call.
-- 16.11 fixed the planner treating JSON constructor expressions as strict (it could perform wrong query transformations when an input was NULL).[^10] Make sure the server is on a current minor.
+- 16.11 fixed the planner treating JSON constructor expressions as strict (it could perform wrong query transformations when an input was NULL). Make sure the server is on a current minor.
 
 On 15: `function json_array(integer) does not exist` and `syntax error at or near ":"`.
 
@@ -307,7 +307,7 @@ SELECT 0x;        -- ERROR: invalid hexadecimal integer at or near "0x"
 SELECT 1__000;    -- ERROR: trailing junk after numeric literal at or near "1__000"
 ```
 
-On 15 all of these literals fail with `trailing junk after numeric literal`. On 14 and older they do **not** fail: `SELECT 1_000, 0x1F` parses as `SELECT 1 AS _000, 0 AS x1F` and silently returns `1 | 0` (15 started rejecting trailing junk after numbers).[^8] Code that must also run on 14 must not use these literals.
+On 15 all of these literals fail with `trailing junk after numeric literal`. On 14 and older they do **not** fail: `SELECT 1_000, 0x1F` parses as `SELECT 1 AS _000, 0 AS x1F` and silently returns `1 | 0` (15 started rejecting trailing junk after numbers). Code that must also run on 14 must not use these literals.
 
 **Behaviour change for input strings (found by testing; easy to miss).** The integer types and `numeric` also accept the new forms when converting **text input**:
 
@@ -399,7 +399,7 @@ SELECT '+infinity'::timestamptz, pg_size_bytes('10 B');
 
 #### New in 16: Roles, CREATEROLE and Membership Options
 
-This is the most important behaviour change in 16 for provisioning scripts, multi-tenant setups and admin tooling.[^1][^11]
+This is the most important behaviour change in 16 for provisioning scripts, multi-tenant setups and admin tooling.
 
 ##### CREATEROLE is restricted
 
@@ -465,8 +465,8 @@ Measured: with `createrole_self_grant = 'set, inherit'`, creating `child` produc
 
 ##### New predefined roles and reserved connections
 
-- **`pg_create_subscription`**: lets a role run `CREATE SUBSCRIPTION`, but only **with `CREATE` privilege on the database** (measured: `permission denied for database postgres` without it). Non-superusers must put a password in the connection string (`ERROR: password is required`), and `password_required = false` is superuser-only.[^11]
-- **`pg_use_reserved_connections`** with **`reserved_connections`** (default 0): when free slots fall to `superuser_reserved_connections + reserved_connections` or fewer, only superusers and members of this role can connect. Give it to monitoring and admin roles so they can still log in when the application exhausts `max_connections`.[^12]
+- **`pg_create_subscription`**: lets a role run `CREATE SUBSCRIPTION`, but only **with `CREATE` privilege on the database** (measured: `permission denied for database postgres` without it). Non-superusers must put a password in the connection string (`ERROR: password is required`), and `password_required = false` is superuser-only.
+- **`pg_use_reserved_connections`** with **`reserved_connections`** (default 0): when free slots fall to `superuser_reserved_connections + reserved_connections` or fewer, only superusers and members of this role can connect. Give it to monitoring and admin roles so they can still log in when the application exhausts `max_connections`.
 - **`LOCK TABLE`** permissions are simpler: `UPDATE`, `DELETE` or `TRUNCATE` on the table permits every lock mode, `INSERT` permits `ROW EXCLUSIVE` and weaker modes, and `SELECT` permits `ACCESS SHARE`. Measured: a role with only `UPDATE` can now `LOCK TABLE lt IN ACCESS SHARE MODE` and also `IN ACCESS EXCLUSIVE MODE` (15: `permission denied for table lt` for `ACCESS SHARE`); a role with only `SELECT` still cannot take `ROW EXCLUSIVE`.
 - `makeaclitem()` accepts a list (`'SELECT, UPDATE'`).
 
@@ -646,7 +646,7 @@ SELECT indexrelname, idx_scan, last_idx_scan FROM pg_stat_user_indexes ORDER BY 
 
 | Change | Review notes |
 |---|---|
-| Logical decoding on **standbys**[^24] | A standby can be a publisher (create the slot on the standby; `pg_log_standby_snapshot()` on the primary speeds slot creation). Needs `wal_level = logical` on the primary, `hot_standby_feedback = on` on the standby and, as the documentation recommends, a physical replication slot between primary and standby; otherwise catalog rows can be removed and the logical slot is invalidated. Slots are **not** synchronized across failover in 16 (that is 17). |
+| Logical decoding on **standbys** | A standby can be a publisher (create the slot on the standby; `pg_log_standby_snapshot()` on the primary speeds slot creation). Needs `wal_level = logical` on the primary, `hot_standby_feedback = on` on the standby and, as the documentation recommends, a physical replication slot between primary and standby; otherwise catalog rows can be removed and the logical slot is invalidated. Slots are **not** synchronized across failover in 16 (that is 17). |
 | `CREATE SUBSCRIPTION ... WITH (streaming = parallel)` | Large in-progress transactions are applied by parallel workers (`max_parallel_apply_workers_per_subscription`, default 2). Apply order of separate transactions is unchanged. |
 | `origin = none` | The subscriber ignores changes that came from another replication origin. Use it for bidirectional setups to avoid loops; it does not resolve conflicts. |
 | Apply runs **as the table owner** | The subscription owner must be a superuser or be able to `SET ROLE` to every table owner. `run_as_owner = true` restores the old behaviour (apply as the subscription owner) and is less safe: table owners can then run code (triggers) as the subscription owner. |
@@ -654,13 +654,13 @@ SELECT indexrelname, idx_scan, last_idx_scan FROM pg_stat_user_indexes ORDER BY 
 | `REPLICA IDENTITY FULL` uses B-tree indexes on the subscriber | Tables without a primary key no longer force a sequential scan per change, if a suitable index exists. Still prefer a primary key. |
 | `password_required = false` | Superuser-only. Non-superuser subscription owners must supply a password in the connection string. |
 
-16.14 fixed SQL injection through unquoted schema and table names in `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` (CVE-2026-6638), and 16.15 restricts logical decoding output plugins to `output_plugin_libraries` (default `pgoutput, test_decoding`; CVE-2026-6471).[^2][^10] After updating to 16.15, add any third-party plugin (for example `wal2json`) to that setting or decoding stops.
+16.14 fixed SQL injection through unquoted schema and table names in `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` (CVE-2026-6638), and 16.15 restricts logical decoding output plugins to `output_plugin_libraries` (default `pgoutput, test_decoding`; CVE-2026-6471). After updating to 16.15, add any third-party plugin (for example `wal2json`) to that setting or decoding stops.
 
 ***
 
 #### New in 16: Authentication, Connections and libpq
 
-Sources: libpq connection parameters[^22] and `pg_hba.conf`[^23].
+Sources: libpq connection parameters and `pg_hba.conf`.
 
 ```text
 # pg_hba.conf (16): regular expressions start with a slash; include files
@@ -714,7 +714,7 @@ This is the most important review area for production PostgreSQL. A migration th
 | `VACUUM FULL`, `CLUSTER` | `ACCESS EXCLUSIVE` | yes | yes | rewrite |
 | plain `REINDEX INDEX` | `SHARE` on the table, `ACCESS EXCLUSIVE` on the index | queries that would use the index block | yes | rebuilds the index |
 
-The rewrite facts above were measured by comparing `pg_relation_filenode()` before and after each statement inside a rolled-back transaction, and the lock modes by reading `pg_locks` for the session before `ROLLBACK`. Source for lock modes: the "Explicit Locking" and `ALTER TABLE` documentation.[^13][^14]
+The rewrite facts above were measured by comparing `pg_relation_filenode()` before and after each statement inside a rolled-back transaction, and the lock modes by reading `pg_locks` for the session before `ROLLBACK`. Source for lock modes: the "Explicit Locking" and `ALTER TABLE` documentation.
 
 ##### The lock queue: why "fast" DDL still causes outages
 
@@ -1009,7 +1009,7 @@ With `plan_cache_mode = auto` (the default), the first five executions are plann
 
 #### Transactions, Isolation and Concurrency
 
-##### Isolation levels (all behaviour verified with two sessions on 16.15)[^15]
+##### Isolation levels (all behaviour verified with two sessions on 16.15)
 
 | Level | Snapshot | What you must handle |
 |---|---|---|
@@ -1062,7 +1062,7 @@ RETURNING *, (xmax = 0) AS inserted;    -- xmax = 0 → row was inserted (implem
 - A multi-row `INSERT ... ON CONFLICT DO UPDATE` with the same key twice fails: `ON CONFLICT DO UPDATE command cannot affect row a second time`. Deduplicate input first.
 - `ON CONFLICT DO NOTHING RETURNING *` returns **no row** for conflicting keys. Code that expects an id back must `SELECT` it afterwards, or use `DO UPDATE SET k = EXCLUDED.k` (which takes a row lock and writes a new row version).
 - The conflict target must match a unique index or constraint exactly, including expression and partial-index predicate.
-- **`MERGE` (15+)** on 16 has no `RETURNING`, no `WHEN NOT MATCHED BY SOURCE` and cannot target views (all 17). It is **not** an atomic upsert: with concurrent inserts of the same key, the `WHEN NOT MATCHED THEN INSERT` branch can raise a unique violation. For "insert or update one row by key" under concurrency, use `INSERT ... ON CONFLICT DO UPDATE`.[^16] If one target row matches several source rows, `MERGE` fails with `MERGE command cannot affect row a second time`. Deduplicate the source (`DISTINCT ON`) first. 16.1 fixed a `READ COMMITTED` recheck bug in concurrent `MERGE` updates, so run a current minor.
+- **`MERGE` (15+)** on 16 has no `RETURNING`, no `WHEN NOT MATCHED BY SOURCE` and cannot target views (all 17). It is **not** an atomic upsert: with concurrent inserts of the same key, the `WHEN NOT MATCHED THEN INSERT` branch can raise a unique violation. For "insert or update one row by key" under concurrency, use `INSERT ... ON CONFLICT DO UPDATE`. If one target row matches several source rows, `MERGE` fails with `MERGE command cannot affect row a second time`. Deduplicate the source (`DISTINCT ON`) first. 16.1 fixed a `READ COMMITTED` recheck bug in concurrent `MERGE` updates, so run a current minor.
 
 ```sql
 MERGE INTO stock s
@@ -1099,7 +1099,7 @@ EXECUTE format('SELECT count(*) FROM %I.%I WHERE name = $1', schema_name, table_
 
 `format()` placeholders: `%I` quotes identifiers (`"Weird Name"`), `%L` quotes literals and renders NULL as the bare word `NULL`, and **`%s` does no quoting at all** (`format('%s', 'O''Reilly')` gives `O'Reilly`). Any `%s` that receives external input in SQL text is an injection. The same applies to `quote_ident()`/`quote_literal()`/`quote_nullable()`, which work but are easier to get wrong than `format()` + `USING`.
 
-In application code: always use driver parameters (`$1`, `?`, named binds). Identifiers (table names, `ORDER BY` columns, sort direction) cannot be parameters. Validate them against an allow-list. Don't "escape" them by hand. Never build `IN (...)` lists by string joining. Use `= ANY($1)`. Code that quotes with libpq's `PQescapeLiteral()`/`PQescapeString()` needs libpq 16.8 or later (CVE-2025-1094, fixed in 16.7 with a regression fixed in 16.8: invalidly encoded input could break out of the quotes).[^10]
+In application code: always use driver parameters (`$1`, `?`, named binds). Identifiers (table names, `ORDER BY` columns, sort direction) cannot be parameters. Validate them against an allow-list. Don't "escape" them by hand. Never build `IN (...)` lists by string joining. Use `= ANY($1)`. Code that quotes with libpq's `PQescapeLiteral()`/`PQescapeString()` needs libpq 16.8 or later (CVE-2025-1094, fixed in 16.7 with a regression fixed in 16.8: invalidly encoded input could break out of the quotes).
 
 ##### SECURITY DEFINER functions
 
@@ -1126,7 +1126,7 @@ REVOKE EXECUTE ON FUNCTION app.n_safe() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.n_safe() TO app_role;
 ```
 
-Measured on 16.15: `n_unsafe()` called the attacker's `lower()` as `postgres`; `n_safe()` did not. Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`. Measured on 16.15: the per-schema form (`ALTER DEFAULT PRIVILEGES IN SCHEMA s REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) stored nothing and had **no effect**, because per-schema default privileges can only add to the global defaults. The global form worked, but only for functions later created by the role it names (or the current role); a function that another role created in the same schema was still executable by `PUBLIC`. Keep the explicit `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC` per function.[^17] Owners should be dedicated, non-superuser roles.
+Measured on 16.15: `n_unsafe()` called the attacker's `lower()` as `postgres`; `n_safe()` did not. Every `SECURITY DEFINER` function needs `SET search_path` with trusted schemas only and `pg_temp` **last**, schema-qualified object references, and `REVOKE EXECUTE ... FROM PUBLIC`. Functions are executable by `PUBLIC` by default. To stop new functions from being executable by `PUBLIC`, run `ALTER DEFAULT PRIVILEGES [FOR ROLE owner] REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` **without** `IN SCHEMA`. Measured on 16.15: the per-schema form (`ALTER DEFAULT PRIVILEGES IN SCHEMA s REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) stored nothing and had **no effect**, because per-schema default privileges can only add to the global defaults. The global form worked, but only for functions later created by the role it names (or the current role); a function that another role created in the same schema was still executable by `PUBLIC`. Keep the explicit `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC` per function. Owners should be dedicated, non-superuser roles.
 
 ##### Roles and privileges
 
@@ -1147,7 +1147,7 @@ CREATE POLICY tenant_isolation ON docs
   WITH CHECK (tenant = current_setting('app.tenant', true));
 ```
 
-Behaviour verified on 16.15:[^18]
+Behaviour verified on 16.15:
 
 - **Superusers and roles with `BYPASSRLS` always bypass RLS**, even with `FORCE`.
 - Without `FORCE ROW LEVEL SECURITY`, the **table owner bypasses** policies (a non-superuser owner saw all 2 rows). With `FORCE` the owner saw 0 rows with no tenant set.
@@ -1156,15 +1156,15 @@ Behaviour verified on 16.15:[^18]
 - With transaction pooling, set the tenant with `SET LOCAL` / `set_config(..., true)` **inside each transaction**. A session-level `SET` leaks to the next client that gets the connection.
 - Views run with the **view owner's** privileges and bypass RLS for the owner unless they are created `WITH (security_invoker = true)` (15+). In the test, a definer view owned by a superuser returned all rows to an unprivileged role, while the invoker view raised `permission denied for table docs`.
 - Leakproof matters. User functions in policies or in queries on RLS tables may see rows before the policy filters them, unless they are `LEAKPROOF`. Keep policies simple and indexable.
-- 16.5 fixed CVE-2024-10976: cached plans could ignore a role change when RLS applied to a subquery, CTE or security-invoker view, and return the wrong rows. 16.15 adds further invalidation of role-dependent cached plans. Multi-tenant RLS setups must run a current minor.[^10]
+- 16.5 fixed CVE-2024-10976: cached plans could ignore a role change when RLS applied to a subquery, CTE or security-invoker view, and return the wrong rows. 16.15 adds further invalidation of role-dependent cached plans. Multi-tenant RLS setups must run a current minor.
 
 ##### Other security items
 
 - `COPY ... FROM/TO 'file'` and `COPY ... PROGRAM` run on the server with the server's OS user (superuser or `pg_read_server_files`/`pg_write_server_files`/`pg_execute_server_program`). Treat them as remote code execution if inputs reach them.
 - `dblink`/`postgres_fdw` connection strings built from user input are injection and SSRF vectors.
 - Statistics views: since 16.3 `pg_stats_ext`/`pg_stats_ext_exprs` show rows only to the table owner (CVE-2024-4317). Existing clusters needed the `fix-CVE-2024-4317.sql` script in every database.
-- `pg_dump` scripts restored with psql can now protect the restoring OS user with `\restrict` (16.10, CVE-2025-8714/8715). Only restore dumps from trusted sources, and restore with the matching (current) client tools.[^10]
-- Keep the server on the latest 16.x. 16.15 alone fixed 28 CVEs, including memory-safety bugs in `to_char()`, regexp functions and `ascii()`, and missing `USAGE` checks on data types.[^2]
+- `pg_dump` scripts restored with psql can now protect the restoring OS user with `\restrict` (16.10, CVE-2025-8714/8715). Only restore dumps from trusted sources, and restore with the matching (current) client tools.
+- Keep the server on the latest 16.x. 16.15 alone fixed 28 CVEs, including memory-safety bugs in `to_char()`, regexp functions and `ascii()`, and missing `USAGE` checks on data types.
 
 ***
 
@@ -1187,7 +1187,7 @@ SELECT timestamptz '2024-10-27 00:00 Europe/Berlin' + interval '24 hours'; -- 20
 SELECT (timestamptz '2024-01-31 00:00+00' + interval '1 month')::date;  -- 2024-02-29 (clamped)
 ```
 
-- Use **`timestamptz`** for points in time.[^19] It stores UTC and converts on input and output using the session `TimeZone`. Plain `timestamp` drops offsets on input and is only right for "wall clock" values (for example a store's opening hours).
+- Use **`timestamptz`** for points in time. It stores UTC and converts on input and output using the session `TimeZone`. Plain `timestamp` drops offsets on input and is only right for "wall clock" values (for example a store's opening hours).
 - `now()::timestamp AT TIME ZONE 'UTC'` is a common bug. It first converts to session-local wall time and then interprets that as UTC. With a Berlin session it produced a value two hours off. Use `now() AT TIME ZONE 'UTC'` (gives `timestamp`) or keep `timestamptz`.
 - `now()`/`CURRENT_TIMESTAMP` is the **transaction start time**. All rows in one transaction get the same value. Use `clock_timestamp()` for wall time inside long transactions.
 - `timestamp(0)` **rounds**: `'2024-01-01 23:59:59.7'::timestamp(0)` gives `2024-01-02 00:00:00`.
@@ -1324,7 +1324,7 @@ CREATE TABLE m_2025 PARTITION OF m FOR VALUES FROM ('2025-01-01') TO ('2026-01-0
 CREATE TABLE m_def  PARTITION OF m DEFAULT;
 ```
 
-Rules verified on 16.15:[^20]
+Rules verified on 16.15:
 
 - **Unique and primary keys must include all partition key columns**: `PRIMARY KEY (id)` on a table partitioned by `at` fails (`unique constraint on partitioned table must include all partitioning columns`). Global uniqueness of `id` alone is not enforced, so don't assume it.
 - **Pruning needs the raw partition key.** `WHERE at >= '2025-03-01' AND at < '2025-04-01'` scans only `m_2025`. `WHERE date_trunc('month', at) = '2025-03-01'` scans **every** partition. Stable expressions like `now() - interval '1 day'` are pruned at execution time (`EXPLAIN ANALYZE` shows `Subplans Removed: 2`).
@@ -1491,8 +1491,8 @@ BEGIN; SELECT open_report(); FETCH ALL FROM report_cur; COMMIT;
 #### Connection Pooling and Application Access
 
 - **Always pool.** Each PostgreSQL connection is a process with several MB of memory. Size pools to roughly a small multiple of CPU cores, not to the number of application threads. `max_connections` in the thousands is a design smell. Keep a few slots for operators with `reserved_connections` + `pg_use_reserved_connections` (16).
-- **PgBouncer transaction mode** (the most common setup) forbids session state across transactions: `SET` without `LOCAL`, session advisory locks, `LISTEN`, `WITH HOLD` cursors, temporary tables, and SQL-level `PREPARE`/`EXECUTE`.[^21] Use `SET LOCAL`/`set_config(..., true)` inside transactions, and `pg_advisory_xact_lock`.
-- **Protocol-level prepared statements** work in transaction mode with PgBouncer 1.21+ when `max_prepared_statements` is non-zero (default 200 in current releases). SQL `PREPARE` statements are still not tracked.[^21]
+- **PgBouncer transaction mode** (the most common setup) forbids session state across transactions: `SET` without `LOCAL`, session advisory locks, `LISTEN`, `WITH HOLD` cursors, temporary tables, and SQL-level `PREPARE`/`EXECUTE`. Use `SET LOCAL`/`set_config(..., true)` inside transactions, and `pg_advisory_xact_lock`.
+- **Protocol-level prepared statements** work in transaction mode with PgBouncer 1.21+ when `max_prepared_statements` is non-zero (default 200 in current releases). SQL `PREPARE` statements are still not tracked.
 - `idle_in_transaction_session_timeout` and `idle_session_timeout` **terminate** the server connection. Pools must validate connections and drivers must retry.
 - Set `application_name` per service so `pg_stat_activity` and the logs identify the caller.
 - Retries: retry on `40001` (serialization), `40P01` (deadlock), and connection loss before commit. Never blindly retry after an unknown commit outcome for non-idempotent writes. Use idempotency keys.
@@ -1563,7 +1563,7 @@ FROM pg_stat_io WHERE reads > 0 OR writes > 0;
 
 ##### 16.x minor releases
 
-Minor releases contain only fixes and need no dump/restore, but some require actions:[^10]
+Minor releases contain only fixes and need no dump/restore, but some require actions:
 
 - **16.1 (November 9, 2023)**: three CVEs (CVE-2023-5868 memory disclosure via `DISTINCT "any"` aggregates, CVE-2023-5869 array overflow with possible code execution, CVE-2023-5870 `pg_signal_backend` signalling background workers). **Reindex** all GiST indexes built with a recursive page-split bug, all B-tree indexes on `interval` columns (de-duplication could give wrong index-only scan results), and BRIN `minmax_multi` indexes on `date`/`timestamp`/`timestamptz`. A `MERGE` recheck bug under `READ COMMITTED` was fixed.
 - **16.2 (February 8, 2024)**: CVE-2024-0985 (`REFRESH MATERIALIZED VIEW CONCURRENTLY` running code with the refreshing user's privileges). Reindex GIN indexes suspected of corruption from concurrent updates.
@@ -1578,7 +1578,7 @@ Minor releases contain only fixes and need no dump/restore, but some require act
 - **16.11 (November 13, 2025)**: CVE-2025-12817 (`CREATE STATISTICS` now checks `CREATE` on the schema) and CVE-2025-12818 (libpq allocation overflow). JSON constructor expressions are no longer treated as strict by the planner.
 - **16.12 (February 12, 2026)**: four CVEs (CVE-2026-2003 to 2006: `oidvector` checks, `intarray` selectivity estimator code execution, pgcrypto PGP buffer overrun, multibyte length validation). Attaching a non-built-in selectivity estimator to an operator now needs superuser, and string functions may now report invalid encoding for invalid text already stored. **16.13 (February 26, 2026)** was out of cycle and fixed regressions from 16.12 (multixact WAL replay on standbys, a too-strict `substring()` encoding check).
 - **16.14 (May 14, 2026)**: nine CVEs, including unbounded recursion on startup packets, allocation-size overflows, quoting in `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` (CVE-2026-6638), `CREATE` checks for multirange type schemas, timing-safe authentication comparisons and path traversal in `pg_basebackup`/`pg_rewind`. libpq's `PQfn()` is marked unsafe and deprecated.
-- **16.15 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must be allow-listed with `output_plugin_libraries` (CVE-2026-6471). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing `COPY` commands. `amcheck` restricts `search_path` before running index expressions (CVE-2026-14673), role-dependent cached plans are invalidated after role changes, and missing `USAGE` checks on data types were added. Reindex `btree_gist` float indexes that may contain `NaN` and `ltree` B-tree indexes with very long values.[^2]
+- **16.15 (August 13, 2026)**: 28 CVE fixes. Logical decoding output plugins other than `pgoutput`/`test_decoding` must be allow-listed with `output_plugin_libraries` (CVE-2026-6471). psql now skips the inline data of a failed `COPY ... FROM STDIN` (CVE-2026-6464): test scripts need a `\.` after deliberately failing `COPY` commands. `amcheck` restricts `search_path` before running index expressions (CVE-2026-14673), role-dependent cached plans are invalidated after role changes, and missing `USAGE` checks on data types were added. Reindex `btree_gist` float indexes that may contain `NaN` and `ltree` B-tree indexes with very long values.
 
 Pin `postgres:16` (floating minor) or an exact `postgres:16.15` in containers, and update minors promptly.
 

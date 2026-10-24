@@ -2,8 +2,8 @@
 
 #### Overview
 
-> **Version**: TypeScript 5.9. The stable release **5.9.2** was published to npm on July 31, 2025 and announced on August 1, 2025 (5.9.0-beta: July 8, 2025; 5.9.1-rc: July 24, 2025).[^1][^2] The latest and **final** patch release is **5.9.3**, published to npm on September 30, 2025 (the GitHub release is dated October 1, 2025).[^2][^3]
-> **Status as of October 2026**: 5.9 is the **last 5.x release** and is no longer updated. TypeScript has no LTS lines; fixes ship only in new releases. **TypeScript 6.0** (6.0.2, March 23, 2026; latest 6.0.3, April 16, 2026) is the last release of the JavaScript-based compiler and the bridge to **TypeScript 7.0**, the native (Go) compiler, released July 8, 2026 (latest 7.0.2; 7.1 is in beta).[^2][^4][^5] DefinitelyTyped tests `@types` packages only against TypeScript versions less than two years old, so 5.9 leaves that window around August 2027.[^6]
+> **Version**: TypeScript 5.9. The stable release **5.9.2** was published to npm on July 31, 2025 and announced on August 1, 2025 (5.9.0-beta: July 8, 2025; 5.9.1-rc: July 24, 2025). The latest and **final** patch release is **5.9.3**, published to npm on September 30, 2025 (the GitHub release is dated October 1, 2025).
+> **Status as of October 2026**: 5.9 is the **last 5.x release** and is no longer updated. TypeScript has no LTS lines; fixes ship only in new releases. **TypeScript 6.0** (6.0.2, March 23, 2026; latest 6.0.3, April 16, 2026) is the last release of the JavaScript-based compiler and the bridge to **TypeScript 7.0**, the native (Go) compiler, released July 8, 2026 (latest 7.0.2; 7.1 is in beta). DefinitelyTyped tests `@types` packages only against TypeScript versions less than two years old, so 5.9 leaves that window around August 2027.
 > **Scope**: the TypeScript language and type system as usable in 5.9, the compiler options and module system, the 5.9 delta over 5.8, the deprecations that become errors in 6.0, idioms, pitfalls and a review checklist for production code.
 > **Note**: this document is self-contained. Everything from earlier releases that 5.9 supports is carried forward. Sections that cover 5.9-specific behaviour are marked **New in 5.9**. All examples were compiled with `tsc` 5.9.3 (and boundary claims with 5.8.3 and 6.0.3); the default checking configuration is `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noImplicitReturns`, `verbatimModuleSyntax`, `module: nodenext`, `target: esnext`, unless an example states otherwise with a `// @option: value` line (the same convention the TypeScript playground uses).
 
@@ -20,7 +20,7 @@ Global truths about TypeScript 5.9:
 
 #### What's New in TypeScript 5.9
 
-TypeScript 5.9 is a small release. There were no changes between the release candidate and the stable release.[^1][^7]
+TypeScript 5.9 is a small release. There were no changes between the release candidate and the stable release.
 
 | Change | Kind | Section |
 |---|---|---|
@@ -37,22 +37,22 @@ TypeScript 5.9 is a small release. There were no changes between the release can
 | Expandable hovers (preview) and configurable maximum hover length | Editor | [Tooling](#editor-and-language-service) |
 | Caching of instantiations on type mappers; fewer closures in file-existence checks | Performance | [Compiler performance](#compiler-performance) |
 
-Everything earlier remains available and should be used where it fits: `satisfies` (4.9); standard decorators, `const` type parameters, `--moduleResolution bundler`, `--verbatimModuleSyntax` and union enums (5.0); unrelated getter/setter types (5.1); `using`/`await using` and decorator metadata (5.2); import attributes and `switch (true)` narrowing (5.3); `NoInfer<T>` and narrowing preserved in closures after the last assignment (5.4); inferred type predicates, `isolatedDeclarations`, regular-expression syntax checking, JSDoc `@import` and `Set` method types (5.5); disallowed always-truthy/always-nullish checks, `strictBuiltinIteratorReturn`, `--noUncheckedSideEffectImports`, `--noCheck` and iterator-helper types (5.6); never-initialized-variable checks, `--rewriteRelativeImportExtensions`, `target: es2024` and generic typed arrays (5.7); `require()` of ESM under `nodenext`, `--module node18`, `--erasableSyntaxOnly`, `--libReplacement` and per-branch checking of conditional `return` expressions (5.8).[^8]
+Everything earlier remains available and should be used where it fits: `satisfies` (4.9); standard decorators, `const` type parameters, `--moduleResolution bundler`, `--verbatimModuleSyntax` and union enums (5.0); unrelated getter/setter types (5.1); `using`/`await using` and decorator metadata (5.2); import attributes and `switch (true)` narrowing (5.3); `NoInfer<T>` and narrowing preserved in closures after the last assignment (5.4); inferred type predicates, `isolatedDeclarations`, regular-expression syntax checking, JSDoc `@import` and `Set` method types (5.5); disallowed always-truthy/always-nullish checks, `strictBuiltinIteratorReturn`, `--noUncheckedSideEffectImports`, `--noCheck` and iterator-helper types (5.6); never-initialized-variable checks, `--rewriteRelativeImportExtensions`, `target: es2024` and generic typed arrays (5.7); `require()` of ESM under `nodenext`, `--module node18`, `--erasableSyntaxOnly`, `--libReplacement` and per-branch checking of conditional `return` expressions (5.8).
 
 ##### Do not use or recommend (newer than 5.9)
 
 The project's compiler is 5.9. **Never suggest any of the following** — they do not exist in 5.9 or behave differently:
 
-- **TypeScript 6.0 options and values**: `target`/`lib` value `es2025` (5.9 rejects it with TS6046), `lib: ["esnext.temporal"]` and the `Temporal` global types, `RegExp.escape` types, `Map`/`WeakMap` `getOrInsert()`/`getOrInsertComputed()` types, `Uint8Array` `toBase64()`/`fromBase64()`/`toHex()` types (`esnext.typedarrays` in 6.0), `--stableTypeOrdering`, `--ignoreConfig`, `"ignoreDeprecations": "6.0"` (5.9 reports TS5103 *Invalid value*), `"types": ["*"]` (5.9 treats `*` as a package name and fails with TS2688), `#/` subpath-import patterns (5.9 cannot resolve `"#/*"` keys; `#name/*` works), and `moduleResolution: bundler` together with `module: commonjs` (TS5095 in 5.9).[^4]
-- **TypeScript 6.0 default changes**: in 5.9 `strict` is **off** by default, `module` defaults to `commonjs`, `target` to `es5`, `types` to "all visible `@types` packages", `noUncheckedSideEffectImports` to `false`, `libReplacement` to `true`, and `rootDir` is inferred from the input files. Do not assume 6.0's defaults (`strict: true`, `module: esnext`, `target: es2025`, `types: []`, `rootDir` = tsconfig directory) — a 5.9 tsconfig must spell them out.[^4]
+- **TypeScript 6.0 options and values**: `target`/`lib` value `es2025` (5.9 rejects it with TS6046), `lib: ["esnext.temporal"]` and the `Temporal` global types, `RegExp.escape` types, `Map`/`WeakMap` `getOrInsert()`/`getOrInsertComputed()` types, `Uint8Array` `toBase64()`/`fromBase64()`/`toHex()` types (`esnext.typedarrays` in 6.0), `--stableTypeOrdering`, `--ignoreConfig`, `"ignoreDeprecations": "6.0"` (5.9 reports TS5103 *Invalid value*), `"types": ["*"]` (5.9 treats `*` as a package name and fails with TS2688), `#/` subpath-import patterns (5.9 cannot resolve `"#/*"` keys; `#name/*` works), and `moduleResolution: bundler` together with `module: commonjs` (TS5095 in 5.9).
+- **TypeScript 6.0 default changes**: in 5.9 `strict` is **off** by default, `module` defaults to `commonjs`, `target` to `es5`, `types` to "all visible `@types` packages", `noUncheckedSideEffectImports` to `false`, `libReplacement` to `true`, and `rootDir` is inferred from the input files. Do not assume 6.0's defaults (`strict: true`, `module: esnext`, `target: es2025`, `types: []`, `rootDir` = tsconfig directory) — a 5.9 tsconfig must spell them out.
 - **TypeScript 6.0 lib merges**: in 5.9 `"dom"` does **not** include `dom.iterable`/`dom.asynciterable`; `for (const el of document.querySelectorAll("div"))` fails with TS2488 unless `"dom.iterable"` is listed. Iterator helpers, `Set` methods, `Promise.try`, `Float16Array`/`Math.f16round` are only in `lib: esnext` in 5.9 (6.0 moves them to `es2025`).
 - **TypeScript 6.0 checker changes**: the "functions that do not use `this` are not context-sensitive" inference improvement and the 6.0 deprecation errors (see [Deprecations that become errors in 6.0](#deprecations-that-become-errors-in-60)) do not apply to 5.9.
-- **TypeScript 7.0**: the native Go compiler (the preview binary was `tsgo`; 7.0's npm package ships it as `tsc`), its LSP-based editor extension, and its removal of every option deprecated in 6.0. TypeScript 7.0 ships no compiler API; tools built on the `typescript` package API (typescript-eslint, ts-morph, many bundler plugins) need the 5.x/6.0 JavaScript compiler.[^5]
+- **TypeScript 7.0**: the native Go compiler (the preview binary was `tsgo`; 7.0's npm package ships it as `tsc`), its LSP-based editor extension, and its removal of every option deprecated in 6.0. TypeScript 7.0 ships no compiler API; tools built on the `typescript` package API (typescript-eslint, ts-morph, many bundler plugins) need the 5.x/6.0 JavaScript compiler.
 - **Runtime features 5.9 has no types for** (even with `lib: esnext`): `Temporal`, `RegExp.escape`, `Uint8Array.prototype.toBase64`, `Map.prototype.getOrInsert`. Code that uses them needs local `declare global` augmentations — flag such augmentations for review.
 
 Deprecated or removed **older** features that 5.9 still rejects or warns about:
 
-- The options deprecated in 5.0 are **removed** and fail with TS5102/TS5108 in 5.9 (since 5.6); `"ignoreDeprecations": "5.0"` is still accepted as a value but no longer silences them: `importsNotUsedAsValues` (except the no-op value `"remove"`), `preserveValueImports`, `target: es3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, and `prepend` in project references. Replace the first two with `verbatimModuleSyntax`.[^9]
+- The options deprecated in 5.0 are **removed** and fail with TS5102/TS5108 in 5.9 (since 5.6); `"ignoreDeprecations": "5.0"` is still accepted as a value but no longer silences them: `importsNotUsedAsValues` (except the no-op value `"remove"`), `preserveValueImports`, `target: es3`, `out`, `noImplicitUseStrict`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noStrictGenericChecks`, `charset`, and `prepend` in project references. Replace the first two with `verbatimModuleSyntax`.
 - Import **assertions** (`assert { type: "json" }`) are an error under `--module node20` and `nodenext` (TS2880); 5.9 still accepts them silently under `esnext`, `preserve` and `node18`, but 6.0 rejects them everywhere. Use import **attributes** (`with { type: "json" }`).
 - Options and syntax that still work in 5.9 but **are errors in 6.0 and removed in 7.0**: `target: es5`, `downlevelIteration`, `moduleResolution: node`/`node10` and `classic`, `module: amd`/`umd`/`system`/`none`, `outFile`, `baseUrl`, `esModuleInterop: false`, `allowSyntheticDefaultImports: false`, `alwaysStrict: false`, the `module Foo {}` namespace keyword, `/// <reference no-default-lib="true"/>`. New code must not introduce them (details in [Deprecations that become errors in 6.0](#deprecations-that-become-errors-in-60)).
 
@@ -69,7 +69,7 @@ Deprecated or removed **older** features that 5.9 still rejects or warns about:
 
 ##### New in 5.9: `tsc --init` output
 
-`tsc --init` in 5.9 writes a 44-line `tsconfig.json` (5.8 wrote 113 lines, mostly comments) with prescriptive settings:[^1]
+`tsc --init` in 5.9 writes a 44-line `tsconfig.json` (5.8 wrote 113 lines, mostly comments) with prescriptive settings:
 
 ```jsonc
 {
@@ -209,7 +209,7 @@ Without the flag, `{ ...defaults, ...userOptions }` silently replaces a default 
 
 ##### Target and lib
 
-`target` controls syntax downlevelling *and* the default `lib`. 5.9 accepts `es5`, `es2015` … `es2024`, `esnext` (no `es2025`). `lib` only declares types; it never polyfills.[^10]
+`target` controls syntax downlevelling *and* the default `lib`. 5.9 accepts `es5`, `es2015` … `es2024`, `esnext` (no `es2025`). `lib` only declares types; it never polyfills.
 
 | Runtime | Suggested `target` / `lib` in 5.9 |
 |---|---|
@@ -218,7 +218,7 @@ Without the flag, `{ ...defaults, ...userOptions }` silently replaces a default 
 | Node.js 24 (maintenance LTS since October 20, 2026) / 26 (Current; LTS from October 28, 2026) | `es2024` plus selected `esnext.*` libs for APIs the runtime has |
 | Evergreen browsers via bundler | `es2022`–`es2024`, `lib: ["es2024", "dom", "dom.iterable"]` |
 
-Node.js release dates are from the Node.js release schedule.[^11]
+Node.js release dates are from the Node.js release schedule.
 
 API availability in 5.9's lib files (verified by compiling each call):
 
@@ -272,9 +272,9 @@ export { w, w2 };
 
 Facts verified with `tsc --showConfig` and compilation on 5.9.3 and 5.8.3:
 
-- `--module node20` is rejected by 5.8 (TS6046). It implies `target: es2023`, `moduleResolution: node16`, `resolveJsonModule: true`, `esModuleInterop`, `resolvePackageJsonExports`/`Imports` and `moduleDetection: force`.[^1]
+- `--module node20` is rejected by 5.8 (TS6046). It implies `target: es2023`, `moduleResolution: node16`, `resolveJsonModule: true`, `esModuleInterop`, `resolvePackageJsonExports`/`Imports` and `moduleDetection: force`.
 - **New in 5.9**: `--module nodenext` now also implies `resolveJsonModule`; in 5.8, `import data from "./data.json" with { type: "json" }` under `nodenext` failed with TS2732 unless `resolveJsonModule` was set.
-- `require()` of an ES module (`import m = require("./esm.mjs")` in a `.cts` file) is allowed under `nodenext` (since 5.8) and `node20`; it fails with TS1471 under `node16`/`node18`. Node.js unflagged `require(esm)` in 22.12 and 20.19; modules with top-level `await` still cannot be `require`d.[^12]
+- `require()` of an ES module (`import m = require("./esm.mjs")` in a `.cts` file) is allowed under `nodenext` (since 5.8) and `node20`; it fails with TS1471 under `node16`/`node18`. Node.js unflagged `require(esm)` in 22.12 and 20.19; modules with top-level `await` still cannot be `require`d.
 - Import assertions (`assert { type: "json" }`) are an error under `node20` and `nodenext` (TS2880) and allowed under `node18` (6.0 rejects them under `node18` too).
 - `moduleResolution: bundler` requires `module: preserve` or `es2015`+ in 5.9 (TS5095).
 - `moduleResolution: node20` does not exist; with `module: node20`, setting `moduleResolution: bundler` is TS5109.
@@ -333,7 +333,7 @@ Under `nodenext`/`node20`, a JSON import from an ES module **must** carry `with 
 
 ##### New in 5.9: `import defer`
 
-`import defer` (TC39 "Deferring Module Evaluation", Stage 3) loads a module and its dependencies but delays *executing* it until an export of the namespace is first accessed.[^1][^13]
+`import defer` (TC39 "Deferring Module Evaluation", Stage 3) loads a module and its dependencies but delays *executing* it until an export of the namespace is first accessed.
 
 ```ts
 // @module: esnext
@@ -958,7 +958,7 @@ Without `NoInfer`, `"done"` would be inferred into `S` and the call would compil
 
 ##### New in 5.9: type-argument inference changes
 
-5.9 fixes "leaks" of type variables during inference (microsoft/TypeScript#61668). Some calls now infer different types or report new errors; the documented fix is to add explicit type arguments.[^1][^14]
+5.9 fixes "leaks" of type variables during inference (microsoft/TypeScript#61668). Some calls now infer different types or report new errors; the documented fix is to add explicit type arguments.
 
 ```ts
 declare function call<A, R>(obj: { x: (a: A) => R }, arg: A): R;
@@ -1265,7 +1265,7 @@ Getters and setters may have unrelated types since 5.1 (the setter type need not
 
 #### Decorators
 
-TypeScript 5.9 supports two incompatible decorator systems:[^15]
+TypeScript 5.9 supports two incompatible decorator systems:
 
 | | Standard (TC39, default since 5.0) | Legacy (`experimentalDecorators: true`) |
 |---|---|---|
@@ -1498,7 +1498,7 @@ export { firstFive, v };
 
 #### New in 5.9: ArrayBuffer, Typed Arrays and `Buffer`
 
-5.7 made typed arrays generic over their buffer (`Uint8Array<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike>`). 5.9 completes the change: `ArrayBuffer` is no longer a structural supertype of typed arrays, and `SharedArrayBuffer` is no longer structurally assignable to `ArrayBuffer` (in 5.9's lib, `ArrayBuffer[Symbol.toStringTag]` is the literal type `"ArrayBuffer"` instead of `string`, so a `Uint8Array` or `SharedArrayBuffer` — tagged `"Uint8Array"`/`"SharedArrayBuffer"` — no longer matches it structurally; the `SharedArrayBuffer` `[Symbol.species]` member also moved from the instance type to the constructor), so a view typed with the default `ArrayBufferLike` is no longer a `BufferSource`.[^1]
+5.7 made typed arrays generic over their buffer (`Uint8Array<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike>`). 5.9 completes the change: `ArrayBuffer` is no longer a structural supertype of typed arrays, and `SharedArrayBuffer` is no longer structurally assignable to `ArrayBuffer` (in 5.9's lib, `ArrayBuffer[Symbol.toStringTag]` is the literal type `"ArrayBuffer"` instead of `string`, so a `Uint8Array` or `SharedArrayBuffer` — tagged `"Uint8Array"`/`"SharedArrayBuffer"` — no longer matches it structurally; the `SharedArrayBuffer` `[Symbol.species]` member also moved from the instance type to the constructor), so a view typed with the default `ArrayBufferLike` is no longer a `BufferSource`.
 
 The exact boundary, measured with 5.8.3 and 5.9.3 (`Uint8Array → ArrayBuffer`, `SharedArrayBuffer → ArrayBuffer`, `Uint8Array<ArrayBufferLike> → Uint8Array<ArrayBuffer>`, `Uint8Array<ArrayBufferLike> → BufferSource`):
 
@@ -1559,7 +1559,7 @@ Use it in libraries and monorepos; it pairs with `--noCheck` (5.6) for "emit dec
 
 - Ship `.d.ts` files generated by `tsc` (`declaration: true`, `declarationMap: true` for go-to-source). Hand-written declarations drift from the implementation.
 - Check exports with `@arethetypeswrong/cli` before publishing: wrong `"types"` condition order, CJS-only types for an ESM package, or missing `.d.mts`/`.d.cts` are common.
-- A `.d.ts` compiled by 5.8+ may contain computed property names (`[propName]: number`) that TypeScript 5.7 and older read differently; libraries that support older consumers must test with the oldest supported compiler (`typesVersions` can redirect old compilers).[^8]
+- A `.d.ts` compiled by 5.8+ may contain computed property names (`[propName]: number`) that TypeScript 5.7 and older read differently; libraries that support older consumers must test with the oldest supported compiler (`typesVersions` can redirect old compilers).
 - `skipLibCheck: true` skips checking all `.d.ts` files, including your own hand-written ones. Keep it on for speed but check hand-written declaration files in a separate CI step or move them into `.ts` files.
 - `declare global { ... }` and `declare module "x" { ... }` augmentations change types for the whole program. Review them like global mutable state.
 - `/// <reference types="..." />` in published `.d.ts` files forces a dependency on the consumer; prefer imports.
@@ -1689,7 +1689,7 @@ export { setPathBad, setPath };
 
 ##### Compiler performance
 
-- **New in 5.9**: the checker caches instantiations on type mappers (fewer repeated instantiations in libraries such as Zod and tRPC), and file-existence checks avoid closure allocation (about 11% faster in some large projects, per the release notes).[^1]
+- **New in 5.9**: the checker caches instantiations on type mappers (fewer repeated instantiations in libraries such as Zod and tRPC), and file-existence checks avoid closure allocation (about 11% faster in some large projects, per the release notes).
 - Measure before tuning: `tsc --extendedDiagnostics` (time per phase, instantiation counts), `tsc --generateTrace <dir>` (open in Perfetto / `@typescript/analyze-trace`), `tsc --explainFiles` (why each file is in the program), `tsc --listFilesOnly`.
 - Use project references (`composite: true`, `tsc -b`) and `incremental: true` (`.tsbuildinfo`) in large repositories. Keep `.tsbuildinfo` out of published packages.
 - `skipLibCheck: true` removes the cost of checking `node_modules` declarations.
@@ -1734,7 +1734,7 @@ pick({ a: 1 }, "b");
 
 | Runner | Type checks? | Notes |
 |---|---|---|
-| Node.js type stripping (`node file.ts`) | No | On by default since Node.js 22.18/23.6, no warning since 22.18/24.3, stable since 24.12/25.2. Erasable syntax only: no enums, runtime namespaces, parameter properties, `import =`, decorators; no `.tsx`; does not read `tsconfig.json` (no `paths`); refuses `.ts` under `node_modules`; type-only imports must use `import type`.[^16] |
+| Node.js type stripping (`node file.ts`) | No | On by default since Node.js 22.18/23.6, no warning since 22.18/24.3, stable since 24.12/25.2. Erasable syntax only: no enums, runtime namespaces, parameter properties, `import =`, decorators; no `.tsx`; does not read `tsconfig.json` (no `paths`); refuses `.ts` under `node_modules`; type-only imports must use `import type`. |
 | `tsx` / esbuild / swc / Bun / Deno | No | Single-file transforms; same `isolatedModules` constraints |
 | `tsc` then `node` | Yes | Slowest, but the only option that type-checks |
 
@@ -1760,12 +1760,12 @@ With this configuration `enum`, parameter properties and runtime `namespace`s fa
 
 ##### Linting
 
-- typescript-eslint (8.x supports TypeScript `>=4.8.4 <6.1.0`, so 5.9 is supported) with type-aware rules (`recommendedTypeChecked` / `strictTypeChecked`). Key rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unsafe-*` (any leaks), `no-unnecessary-condition`, `switch-exhaustiveness-check`, `consistent-type-imports`, `no-non-null-assertion`, `prefer-nullish-coalescing`, `restrict-template-expressions`, `unbound-method`, `only-throw-error`.[^17]
+- typescript-eslint (8.x supports TypeScript `>=4.8.4 <6.1.0`, so 5.9 is supported) with type-aware rules (`recommendedTypeChecked` / `strictTypeChecked`). Key rules: `no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unsafe-*` (any leaks), `no-unnecessary-condition`, `switch-exhaustiveness-check`, `consistent-type-imports`, `no-non-null-assertion`, `prefer-nullish-coalescing`, `restrict-template-expressions`, `unbound-method`, `only-throw-error`.
 - Linting with type information needs the TypeScript compiler API; it cannot run on TypeScript 7.0's native compiler (no API in 7.0).
 
 ##### Editor and language service
 
-- **New in 5.9**: expandable hovers (preview) let you expand a type in a hover (`+`/`-` in VS Code), and the maximum hover length is configurable (`js/ts.hover.maximumLength` in VS Code) with a much larger default. DOM APIs show MDN-derived summary descriptions.[^1]
+- **New in 5.9**: expandable hovers (preview) let you expand a type in a hover (`+`/`-` in VS Code), and the maximum hover length is configurable (`js/ts.hover.maximumLength` in VS Code) with a much larger default. DOM APIs show MDN-derived summary descriptions.
 - Make sure the editor uses the workspace TypeScript (VS Code: "TypeScript: Select TypeScript Version" → "Use Workspace Version"), otherwise the editor and CI disagree.
 
 ***
@@ -1781,7 +1781,7 @@ With this configuration `enum`, parameter properties and runtime `namespace`s fa
 
 #### Deprecations That Become Errors in 6.0
 
-TypeScript 6.0 turns the following into errors (TS5101/TS5107 for options, specific errors for syntax) unless `"ignoreDeprecations": "6.0"` is set, and TypeScript 7.0 removes them entirely (TS5102/TS5108). **5.9 accepts all of them without any warning** (verified on 5.9.3), so a 5.9 codebase can accumulate them unnoticed. Flag new uses in review and prefer the replacements, which all work in 5.9.[^4]
+TypeScript 6.0 turns the following into errors (TS5101/TS5107 for options, specific errors for syntax) unless `"ignoreDeprecations": "6.0"` is set, and TypeScript 7.0 removes them entirely (TS5102/TS5108). **5.9 accepts all of them without any warning** (verified on 5.9.3), so a 5.9 codebase can accumulate them unnoticed. Flag new uses in review and prefer the replacements, which all work in 5.9.
 
 | Deprecated in 6.0 | 5.9 behaviour | Replacement valid in 5.9 |
 |---|---|---|
@@ -1816,7 +1816,7 @@ Upgrading from 5.8 to 5.9 (all verified by compiling the same code with 5.8.3 an
 7. **New syntax** (`import defer`) and **new option value** (`module: node20`) are rejected by 5.8 and earlier; do not use them in libraries whose `.ts` sources or tsconfig are consumed by older compilers.
 8. Nothing was removed from the compiler options in 5.9. The options deprecated in 5.0 were announced for removal in 5.5, but 5.5.4 still accepts them with `"ignoreDeprecations": "5.0"`; they fail unconditionally from 5.6 (verified on 5.5.4 and 5.6.3).
 
-Upgrading from 5.9 to 6.0 is covered in [Deprecations that become errors in 6.0](#deprecations-that-become-errors-in-60). Upgrading to 7.0 additionally needs every tool that imports the `typescript` API (linters, `ts-morph`, `ts-patch`, Angular compiler, custom transformers) to keep a 6.0 installation side by side, since 7.0 has no API.[^5]
+Upgrading from 5.9 to 6.0 is covered in [Deprecations that become errors in 6.0](#deprecations-that-become-errors-in-60). Upgrading to 7.0 additionally needs every tool that imports the `typescript` API (linters, `ts-morph`, `ts-patch`, Angular compiler, custom transformers) to keep a 6.0 installation side by side, since 7.0 has no API.
 
 ***
 

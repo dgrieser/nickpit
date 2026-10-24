@@ -1,8 +1,8 @@
 ### Kubernetes 1.31 — Manifests, Operators & Controllers Review Guide
 
-> **Version**: Kubernetes v1.31.0 "Elli", released **2024-08-13**.[^1] Final patch release: **v1.31.14**, published **2025-11-12** (built with Go 1.24.9; `https://dl.k8s.io/release/stable-1.31.txt` reports `v1.31.14`).[^2][^3]
-> **Support**: 1.31 is **out of support**. Its end-of-life date was **2025-11-11**; no further patches (including security fixes) are published. As of October 2026 the supported minors are **1.35**, **1.36** and **1.37** (newest: 1.37, released 2026-08-26, latest v1.37.1); 1.34 reaches end of life on 2026-10-27. Managed providers may still offer paid extended support for 1.31 — that does not change upstream status.[^2]
-> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.31.x** (final v0.31.14, `go 1.22.0` directive), **controller-runtime v0.19.x** (final v0.19.7, 2025-03-08), **controller-tools v0.16.x** (final v0.16.5). Kubebuilder **v4.2.0–v4.4.x** scaffolds controller-runtime v0.19 (v4.2.0: v0.19.0 + controller-tools v0.16.1, envtest 1.31.0).[^4][^5]
+> **Version**: Kubernetes v1.31.0 "Elli", released **2024-08-13**. Final patch release: **v1.31.14**, published **2025-11-12** (built with Go 1.24.9; `https://dl.k8s.io/release/stable-1.31.txt` reports `v1.31.14`).
+> **Support**: 1.31 is **out of support**. Its end-of-life date was **2025-11-11**; no further patches (including security fixes) are published. As of October 2026 the supported minors are **1.35**, **1.36** and **1.37** (newest: 1.37, released 2026-08-26, latest v1.37.1); 1.34 reaches end of life on 2026-10-27. Managed providers may still offer paid extended support for 1.31 — that does not change upstream status.
+> **Matching libraries**: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go`, `k8s.io/apiextensions-apiserver` **v0.31.x** (final v0.31.14, `go 1.22.0` directive), **controller-runtime v0.19.x** (final v0.19.7, 2025-03-08), **controller-tools v0.16.x** (final v0.16.5). Kubebuilder **v4.2.0–v4.4.x** scaffolds controller-runtime v0.19 (v4.2.0: v0.19.0 + controller-tools v0.16.1, envtest 1.31.0).
 > **Scope**: Kubernetes manifests (plain YAML, Kustomize output, Helm-rendered YAML), CustomResourceDefinitions with CEL validation, admission policies, and Go operators/controllers built with controller-runtime, client-go or Kubebuilder that target a 1.31 cluster.
 > **Note**: This document is self-contained. House rules for operator design, CRDs, status, finalizers, RBAC, webhooks, observability and testing are carried forward; sections marked **[NEW in 1.31]** cover behaviour specific to this release. Every manifest, CRD and policy example was applied (or `--dry-run=server`-applied) against a real v1.31.0 kube-apiserver; boundary claims were re-checked on v1.30.3 and v1.32.0 apiservers; Go snippets compile against k8s.io/* v0.31.14 + controller-runtime v0.19.7 and the reconciler was exercised with envtest on the v1.31.0 binaries. Pod *runtime* behaviour (kubelet, scheduler, controllers) is sourced from the release notes, KEPs and documentation, not executed.
 
@@ -15,16 +15,16 @@ The target is a **1.31 control plane** and **k8s.io/\* v0.31.x** client librarie
 - For manifests: the version comes from the cluster (`kubectl version`), the Helm chart's `kubeVersion`, CI's `kind`/`envtest` image, or a Kustomize/Helm render target. A field that exists in the OpenAPI schema is **not** proof that it works. `kubectl explain` on 1.31 lists alpha-gated fields such as `pod.spec.volumes.image`, `pod.spec.securityContext.supplementalGroupsPolicy`, `pod.spec.containers.resizePolicy`, `job.spec.managedBy` and `statefulset.spec.updateStrategy.rollingUpdate.maxUnavailable`, but a default 1.31 apiserver **silently drops** them on create (verified with `kubectl apply --dry-run=server -o yaml`). Only a server-side dry run against a 1.31 apiserver with the cluster's real feature gates proves a field is honoured.
 - Two different failure modes exist, and both were observed: a field the server's schema does not know at all is **rejected** (`strict decoding error: unknown field "spec.volumes[0].image"` on 1.30, because kubectl ≥ 1.27 requests strict server-side field validation), while a field the schema knows but whose feature gate is off is **accepted and dropped without any warning** (`image` volumes, `hostUsers`, `supplementalGroupsPolicy`, `resizePolicy`, `Job.spec.managedBy`, StatefulSet `rollingUpdate.maxUnavailable` on 1.31).
 - For Go code: the version comes from `go.mod` (`k8s.io/api v0.31.x`, `sigs.k8s.io/controller-runtime v0.19.x`). Verify a symbol with `go doc sigs.k8s.io/controller-runtime/pkg/cluster Cluster` (or the relevant package) in the module before flagging it.
-- Say "not available in 1.31" only when the pinned version proves it (unknown field, `Unsupported value`, dropped field, missing package/function). Say "available but off by default" for alpha features and for beta **APIs** (since 1.24, new beta API versions are not served unless `--runtime-config` enables them).[^6]
+- Say "not available in 1.31" only when the pinned version proves it (unknown field, `Unsupported value`, dropped field, missing package/function). Say "available but off by default" for alpha features and for beta **APIs** (since 1.24, new beta API versions are not served unless `--runtime-config` enables them).
 - A cluster may enable feature gates. If the repository contains cluster configuration (kubeadm `ClusterConfiguration`, kind config, managed-cluster settings) that enables a gate, review against that configuration, not against the defaults below.
-- **Patch level matters**: `DisableNodeKubeProxyVersion` was beta/on in v1.31.0 and reverted to off (deprecated gate) in v1.31.1; the beta gate `OrderedNamespaceDeletion` (default off) only exists from v1.31.7; several CVE fixes landed late in the 1.31 line (see "Removed / changed in 1.31").[^3]
+- **Patch level matters**: `DisableNodeKubeProxyVersion` was beta/on in v1.31.0 and reverted to off (deprecated gate) in v1.31.1; the beta gate `OrderedNamespaceDeletion` (default off) only exists from v1.31.7; several CVE fixes landed late in the 1.31 line (see "Removed / changed in 1.31").
 - **The release is end-of-life.** Treat "upgrade off 1.31" as a legitimate, low-priority review note for infrastructure code; do not flag every manifest for it.
 
 ---
 
 #### What's New in Kubernetes 1.31
 
-Kubernetes 1.31 contains 45 enhancements: 11 stable, 22 beta and 12 alpha.[^1] The tables list every change that a manifest author, CRD author or controller author can observe. "Default" is the state on an unmodified v1.31.0 control plane; gates were read from `kube-apiserver --help` of the v1.30.3, v1.31.0 and v1.32.0 binaries and from `pkg/features/kube_features.go` at v1.31.0 and v1.31.14, and API behaviour was tested on those apiservers.
+Kubernetes 1.31 contains 45 enhancements: 11 stable, 22 beta and 12 alpha. The tables list every change that a manifest author, CRD author or controller author can observe. "Default" is the state on an unmodified v1.31.0 control plane; gates were read from `kube-apiserver --help` of the v1.30.3, v1.31.0 and v1.32.0 binaries and from `pkg/features/kube_features.go` at v1.31.0 and v1.31.14, and API behaviour was tested on those apiservers.
 
 ##### Graduated to stable (GA) in 1.31
 
@@ -67,25 +67,25 @@ Kubernetes 1.31 contains 45 enhancements: 11 stable, 22 beta and 12 alpha.[^1] T
 
 ##### Alpha in 1.31 (off by default — treat as unavailable)
 
-**Image volumes** `volumes[].image` (`ImageVolume`); **fine-grained supplemental groups** `securityContext.supplementalGroupsPolicy` (`SupplementalGroupsPolicy`); DRA with **structured parameters** `resource.k8s.io/v1alpha3` (`DynamicResourceAllocation`) and "classic" DRA (`DRAControlPlaneController`); device health in `containerStatuses[].allocatedResourcesStatus` (`ResourceHealthStatus`); **authorization with selectors** (`AuthorizeWithSelectors`, `AuthorizeNodeWithSelectors`); configurable anonymous-auth endpoints (`AnonymousAuthConfigurableEndpoints`); **coordinated leader election** `coordination.k8s.io/v1alpha1` LeaseCandidate (`CoordinatedLeaderElection`); Job `managedBy` (`JobManagedBy`, alpha since 1.30); in-place Pod resize (`InPlacePodVerticalScaling`, alpha since 1.27); StatefulSet `maxUnavailable` (`MaxUnavailableStatefulSet`); relaxed environment-variable names (`RelaxedEnvironmentVariableValidation`); `StorageVersionMigrator` (`storagemigration.k8s.io/v1alpha1`); `ClusterTrustBundle` (`certificates.k8s.io/v1alpha1`); `SELinuxMount`; `HPAScaleToZero`.[^1][^3]
+**Image volumes** `volumes[].image` (`ImageVolume`); **fine-grained supplemental groups** `securityContext.supplementalGroupsPolicy` (`SupplementalGroupsPolicy`); DRA with **structured parameters** `resource.k8s.io/v1alpha3` (`DynamicResourceAllocation`) and "classic" DRA (`DRAControlPlaneController`); device health in `containerStatuses[].allocatedResourcesStatus` (`ResourceHealthStatus`); **authorization with selectors** (`AuthorizeWithSelectors`, `AuthorizeNodeWithSelectors`); configurable anonymous-auth endpoints (`AnonymousAuthConfigurableEndpoints`); **coordinated leader election** `coordination.k8s.io/v1alpha1` LeaseCandidate (`CoordinatedLeaderElection`); Job `managedBy` (`JobManagedBy`, alpha since 1.30); in-place Pod resize (`InPlacePodVerticalScaling`, alpha since 1.27); StatefulSet `maxUnavailable` (`MaxUnavailableStatefulSet`); relaxed environment-variable names (`RelaxedEnvironmentVariableValidation`); `StorageVersionMigrator` (`storagemigration.k8s.io/v1alpha1`); `ClusterTrustBundle` (`certificates.k8s.io/v1alpha1`); `SELinuxMount`; `HPAScaleToZero`.
 
 The `MutatingAdmissionPolicy` gate is listed as alpha in the 1.31 binary, but the API does not exist in 1.31: verified, an apiserver started with `--feature-gates=MutatingAdmissionPolicy=true --runtime-config=admissionregistration.k8s.io/v1alpha1=true` serves `admissionregistration.k8s.io/v1alpha1` without any `mutatingadmissionpolicies` resource. The API arrives as alpha in 1.32.
 
 ##### Other 1.31 changes that affect reviews
 
-- **All in-tree cloud-provider integrations are removed** (`DisableCloudProviders` and `DisableKubeletCloudCredentialProviders` are locked on; `k8s.io/legacy-cloud-providers` removed). `--cloud-provider=aws|gce|azure|…` on kube-apiserver/kube-controller-manager/kubelet no longer works — clusters must run an external cloud-controller-manager (`--cloud-provider=external`).[^1]
-- **In-tree volume plugins `cephfs` and `rbd` are removed** — Pods/PVs using `cephfs:` or `rbd:` volume sources become non-functional; use ceph-csi. The `InTreePlugin*Unregister` gates for AWS/Azure/GCE/OpenStack/vSphere were removed.[^1]
-- **`CSIMigrationPortworx` is now on by default**: install the Portworx CSI driver before upgrading if `portworxVolume` sources are in use.[^3]
-- **kubelet `--keep-terminated-pod-volumes`, `--iptables-masquerade-bit` and `--iptables-drop-bit` removed**; kube-proxy `--proxy-port-range` removed; kube-controller-manager `--horizontal-pod-autoscaler-upscale-delay`/`-downscale-delay`, `--volume-host-cidr-denylist`, `--volume-host-allow-local-loopback` removed; admission plugin `PersistentVolumeLabel` removed; `kubectl drain --delete-local-data` removed (verified: kubectl 1.31 `unknown flag`, 1.30 prints a deprecation notice) — use `--delete-emptydir-data`.[^3]
-- **Removed feature gates break component startup.** GA gates removed in 1.31 (`APIPriorityAndFairness`, `CSINodeExpandSecret`, `ConsistentHTTPGetHandlers`, `ReadWriteOncePod`, `ServiceNodePortStaticSubrange`, `JobReadyPods`, `DefaultHostNetworkHostPortsInPodTemplates`, `SkipReadOnlyValidationGCE`, the `InTreePlugin*Unregister` gates, `CustomResourceValidationExpressions`) are no longer accepted: verified, `kube-apiserver --feature-gates=APIPriorityAndFairness=true` exits with `unrecognized feature gate: APIPriorityAndFairness` on 1.31, while 1.30 only warns. Remove such entries from kubeadm `extraArgs`, kind configs and component configs before upgrading.[^3]
-- **Node `status.nodeInfo.kubeProxyVersion` deprecated** (KEP-4004): the kubelet never knew the real kube-proxy version. Do not read it in controllers.[^1]
-- **cgroup v1 in maintenance mode**: the kubelet logs a warning and emits an event on cgroup v1 hosts; a new `--fail-cgroupv1` flag/`failCgroupV1` option exists (default `false` in 1.31).[^1][^3]
-- **SHA-1 certificates** (not a 1.31 change, but it bites the final 1.31 patch): since Kubernetes 1.24 (Go 1.18) webhooks and aggregated API servers serving SHA-1-signed certificates only work with `GODEBUG=x509sha1=1`. Go 1.24 removed that escape hatch, and the final patch v1.31.14 is the only 1.31 release built with Go 1.24 (v1.31.13 and earlier use Go 1.22/1.23), so upgrading to v1.31.14 breaks such webhooks.[^3]
-- **CEL environment**: the default CEL compatibility version was raised to 1.30, so libraries introduced in 1.30 (notably the **IP and CIDR library**, `ip()`/`cidr()`/`isIP()`/`isCIDR()`) become usable in *new* CRD rules and policies on 1.31; libraries introduced in 1.31 (the **name formats library**, `format.dns1123Label()` etc.) are only usable for new expressions from 1.32. CEL expressions and `additionalProperties` are now allowed under nested quantifiers, and the CEL optional type is now named `optional_type` in error messages.[^3]
-- **CRD `caBundle` validation**: CRDs created with an invalid non-empty conversion-webhook `caBundle` are not served until it is fixed, and updates may no longer replace a valid `caBundle` with an invalid one.[^3]
+- **All in-tree cloud-provider integrations are removed** (`DisableCloudProviders` and `DisableKubeletCloudCredentialProviders` are locked on; `k8s.io/legacy-cloud-providers` removed). `--cloud-provider=aws|gce|azure|…` on kube-apiserver/kube-controller-manager/kubelet no longer works — clusters must run an external cloud-controller-manager (`--cloud-provider=external`).
+- **In-tree volume plugins `cephfs` and `rbd` are removed** — Pods/PVs using `cephfs:` or `rbd:` volume sources become non-functional; use ceph-csi. The `InTreePlugin*Unregister` gates for AWS/Azure/GCE/OpenStack/vSphere were removed.
+- **`CSIMigrationPortworx` is now on by default**: install the Portworx CSI driver before upgrading if `portworxVolume` sources are in use.
+- **kubelet `--keep-terminated-pod-volumes`, `--iptables-masquerade-bit` and `--iptables-drop-bit` removed**; kube-proxy `--proxy-port-range` removed; kube-controller-manager `--horizontal-pod-autoscaler-upscale-delay`/`-downscale-delay`, `--volume-host-cidr-denylist`, `--volume-host-allow-local-loopback` removed; admission plugin `PersistentVolumeLabel` removed; `kubectl drain --delete-local-data` removed (verified: kubectl 1.31 `unknown flag`, 1.30 prints a deprecation notice) — use `--delete-emptydir-data`.
+- **Removed feature gates break component startup.** GA gates removed in 1.31 (`APIPriorityAndFairness`, `CSINodeExpandSecret`, `ConsistentHTTPGetHandlers`, `ReadWriteOncePod`, `ServiceNodePortStaticSubrange`, `JobReadyPods`, `DefaultHostNetworkHostPortsInPodTemplates`, `SkipReadOnlyValidationGCE`, the `InTreePlugin*Unregister` gates, `CustomResourceValidationExpressions`) are no longer accepted: verified, `kube-apiserver --feature-gates=APIPriorityAndFairness=true` exits with `unrecognized feature gate: APIPriorityAndFairness` on 1.31, while 1.30 only warns. Remove such entries from kubeadm `extraArgs`, kind configs and component configs before upgrading.
+- **Node `status.nodeInfo.kubeProxyVersion` deprecated** (KEP-4004): the kubelet never knew the real kube-proxy version. Do not read it in controllers.
+- **cgroup v1 in maintenance mode**: the kubelet logs a warning and emits an event on cgroup v1 hosts; a new `--fail-cgroupv1` flag/`failCgroupV1` option exists (default `false` in 1.31).
+- **SHA-1 certificates** (not a 1.31 change, but it bites the final 1.31 patch): since Kubernetes 1.24 (Go 1.18) webhooks and aggregated API servers serving SHA-1-signed certificates only work with `GODEBUG=x509sha1=1`. Go 1.24 removed that escape hatch, and the final patch v1.31.14 is the only 1.31 release built with Go 1.24 (v1.31.13 and earlier use Go 1.22/1.23), so upgrading to v1.31.14 breaks such webhooks.
+- **CEL environment**: the default CEL compatibility version was raised to 1.30, so libraries introduced in 1.30 (notably the **IP and CIDR library**, `ip()`/`cidr()`/`isIP()`/`isCIDR()`) become usable in *new* CRD rules and policies on 1.31; libraries introduced in 1.31 (the **name formats library**, `format.dns1123Label()` etc.) are only usable for new expressions from 1.32. CEL expressions and `additionalProperties` are now allowed under nested quantifiers, and the CEL optional type is now named `optional_type` in error messages.
+- **CRD `caBundle` validation**: CRDs created with an invalid non-empty conversion-webhook `caBundle` are not served until it is fixed, and updates may no longer replace a valid `caBundle` with an invalid one.
 - **kubectl**: `kubectl exec POD CMD` without `--` is now an error; `kubectl wait --for=create`, `kubectl logs --all-pods`, and `kubectl debug --custom` (beta, on) plus `--keep-*` flags are new (all verified with kubectl 1.30 vs 1.31).
-- **Server-side apply**: Ingress `spec.defaultBackend` is now an atomic struct; no-op SSA patches no longer bump `resourceVersion` for custom resources or objects with empty maps.[^3]
-- **Pod Security Standards**: `container_engine_t` is now allowed as an SELinux type in the baseline policy.[^3]
+- **Server-side apply**: Ingress `spec.defaultBackend` is now an atomic struct; no-op SSA patches no longer bump `resourceVersion` for custom resources or objects with empty maps.
+- **Pod Security Standards**: `container_engine_t` is now allowed as an SELinux type in the baseline policy.
 
 ---
 
@@ -104,7 +104,7 @@ networking.k8s.io/v1   node.k8s.io/v1   policy/v1   rbac.authorization.k8s.io/v1
 scheduling.k8s.io/v1   storage.k8s.io/v1   v1
 ```
 
-1.30 serves the identical list. 1.32 serves the same list **minus `flowcontrol.apiserver.k8s.io/v1beta3`**, which was removed in 1.32 (verified warning on 1.31: `flowcontrol.apiserver.k8s.io/v1beta3 PriorityLevelConfiguration is deprecated in v1.29+, unavailable in v1.32+; use flowcontrol.apiserver.k8s.io/v1 PriorityLevelConfiguration`) — `FlowSchema`/`PriorityLevelConfiguration` manifests must use `flowcontrol.apiserver.k8s.io/v1` (GA since 1.29) to survive the next upgrade.[^7]
+1.30 serves the identical list. 1.32 serves the same list **minus `flowcontrol.apiserver.k8s.io/v1beta3`**, which was removed in 1.32 (verified warning on 1.31: `flowcontrol.apiserver.k8s.io/v1beta3 PriorityLevelConfiguration is deprecated in v1.29+, unavailable in v1.32+; use flowcontrol.apiserver.k8s.io/v1 PriorityLevelConfiguration`) — `FlowSchema`/`PriorityLevelConfiguration` manifests must use `flowcontrol.apiserver.k8s.io/v1` (GA since 1.29) to survive the next upgrade.
 
 On a default 1.31 cluster these are **not** served and manifests using them fail with `no matches for kind`:
 
@@ -178,7 +178,7 @@ Beta-and-on features that are safe to use on 1.31 (the API surface is stable eno
 
 #### Do not use or recommend (1.32+ features)
 
-The cluster is 1.31. Never suggest the following as available; they fail validation, are silently dropped, or need a newer apiserver/library. (Versions are taken from the 1.32–1.37 release notes; every 1.32 boundary below was verified on the v1.32.0 apiserver.)[^8]
+The cluster is 1.31. Never suggest the following as available; they fail validation, are silently dropped, or need a newer apiserver/library. (Versions are taken from the 1.32–1.37 release notes; every 1.32 boundary below was verified on the v1.32.0 apiserver.)
 
 **Kubernetes 1.32 (released 2024-12-11):**
 
@@ -198,7 +198,7 @@ The cluster is 1.31. Never suggest the following as available; they fail validat
 
 **Kubernetes 1.34 (released 2025-08-27):** DRA **GA** (`resource.k8s.io/v1`); VolumeAttributesClass **GA** (`storage.k8s.io/v1`); `PodLifecycleSleepAction` GA; Job `podReplacementPolicy` GA; pod-level resources beta-on; `MutatingAdmissionPolicy` beta; `PreferSameZone`/`PreferSameNode` traffic distribution (beta-on); relaxed environment-variable names GA; CEL `isSemver()`/`semver()` in new rules; AppArmor annotations no longer mirrored from fields.
 
-**Kubernetes 1.35–1.37:** in-place Pod resize GA, Pod `metadata.generation`/`status.observedGeneration`, Job `managedBy` GA, `supplementalGroupsPolicy` GA, container `restartPolicyRules`, `env[].valueFrom.fileKeyRef`, image volumes beta-on (1.35) and GA (1.36), MutatingAdmissionPolicy `v1` (1.36), user namespaces GA (1.36), Service names starting with a digit (1.36), StatefulSet `updateStrategy.type: Recreate` (alpha in 1.37), `storagemigration.k8s.io/v1` (1.37), KYAML output (`kubectl get -o kyaml`).[^8]
+**Kubernetes 1.35–1.37:** in-place Pod resize GA, Pod `metadata.generation`/`status.observedGeneration`, Job `managedBy` GA, `supplementalGroupsPolicy` GA, container `restartPolicyRules`, `env[].valueFrom.fileKeyRef`, image volumes beta-on (1.35) and GA (1.36), MutatingAdmissionPolicy `v1` (1.36), user namespaces GA (1.36), Service names starting with a digit (1.36), StatefulSet `updateStrategy.type: Recreate` (alpha in 1.37), `storagemigration.k8s.io/v1` (1.37), KYAML output (`kubectl get -o kyaml`).
 
 **Library versions to reject for a 1.31-only target:** `k8s.io/client-go v0.32+` with controller-runtime v0.20+ is fine on the wire (±1 minor skew), but raises the module's `go` directive to 1.23.0 and brings 1.32 API fields that a 1.31 apiserver drops. controller-runtime v0.22+ APIs such as `client.Client.Apply(ctx, applyConfiguration, ...)`, `mgr.GetEventRecorder` (events.k8s.io, v0.23), `ctrl.NewWebhookManagedBy(mgr, obj)` (generic, v0.23), `reconcile.Result.Priority` (v0.23) **do not exist in v0.19** — never suggest them for a v0.19 module.
 
@@ -482,7 +482,7 @@ Always define at minimum:
 
 #### CEL Validation Rules in CRDs
 
-CRD validation rules (`x-kubernetes-validations`) are GA since 1.29 and are the first choice for invariants that the OpenAPI schema cannot express.[^9] The following Go type compiles against k8s.io/* v0.31.14; its rules were exercised in envtest on the v1.31.0 binaries through the equivalent CRD schema (`premium tier needs at least 3 replicas, got 2`, `must be a CIDR`, `image must be pinned by digest` all reported together, `apierrors.IsInvalid` true):
+CRD validation rules (`x-kubernetes-validations`) are GA since 1.29 and are the first choice for invariants that the OpenAPI schema cannot express. The following Go type compiles against k8s.io/* v0.31.14; its rules were exercised in envtest on the v1.31.0 binaries through the equivalent CRD schema (`premium tier needs at least 3 replicas, got 2`, `must be a CIDR`, `image must be pinned by digest` all reported together, `apierrors.IsInvalid` true):
 
 ```go
 // RedisClusterSpec is the desired state.
@@ -661,7 +661,7 @@ The same CRD is **rejected by a 1.30 apiserver** (`undeclared reference to 'isCI
 5. **Prefer `fieldPath` + `reason`** (`FieldValueInvalid`, `FieldValueForbidden`, `FieldValueRequired`, `FieldValueDuplicate`) so clients see the right field and status cause.
 6. **Ratcheting** (beta-on since 1.30): unchanged invalid values in stored objects do not block unrelated updates. You may tighten validation for *new* writes, but still treat it as a breaking change for clients that create objects. On clusters that disabled `CRDValidationRatcheting`, a tightened rule blocks every update of an object that violates it.
 7. `x-kubernetes-int-or-string` fields are dynamic in CEL; guard with `type(self.x) == string` or use `quantity()` only after a `pattern` restricts the input.
-8. **CEL reserved keywords as field names** (`namespace`, `in`, `return`, …): 1.31 only *stores* expressions that reference them directly; full runtime support for new expressions comes in 1.32. Keep using the `__namespace__`-style escaping on 1.31.[^3]
+8. **CEL reserved keywords as field names** (`namespace`, `in`, `return`, …): 1.31 only *stores* expressions that reference them directly; full runtime support for new expressions comes in 1.32. Keep using the `__namespace__`-style escaping on 1.31.
 
 ---
 
@@ -1074,7 +1074,7 @@ SSA review rules:
 - `client.ForceOwnership` is appropriate for a controller that is the source of truth for those fields; without it, a conflict (another manager set a different value) returns `409 Conflict`. Never force-apply fields that users are expected to tune (e.g. `replicas` when an HPA targets the Deployment) — omit them from the apply configuration instead.
 - Do not mix SSA and `Update` on the same object from the same controller; `Update` takes ownership of every field (manager with operation `Update`) and later applies then fight the old manager entry.
 - For CRDs without generated apply configurations, either generate them (`controller-gen applyconfiguration`, or client-go's `applyconfiguration-gen` v0.31) or use `client.MergeFrom` patches; never hand-build `unstructured` apply payloads without `apiVersion`/`kind`.
-- Since 1.31 a no-op apply no longer bumps `resourceVersion` for custom resources and objects with empty maps (fixed regression) — controllers that compared `resourceVersion` to detect "something changed" after an apply behaved differently on 1.30.[^3]
+- Since 1.31 a no-op apply no longer bumps `resourceVersion` for custom resources and objects with empty maps (fixed regression) — controllers that compared `resourceVersion` to detect "something changed" after an apply behaved differently on 1.30.
 
 ---
 
@@ -1234,7 +1234,7 @@ CRD schema + CEL rules  →  ValidatingAdmissionPolicy (CEL, GA 1.30)  →  Vali
 
 Mutation on 1.31: a **mutating webhook** is the only mechanism. MutatingAdmissionPolicy does not exist in 1.31 (first alpha in 1.32), even though `--help` lists a `MutatingAdmissionPolicy` gate.
 
-##### ValidatingAdmissionPolicy (verified on 1.31)[^10]
+##### ValidatingAdmissionPolicy (verified on 1.31)
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -1293,7 +1293,7 @@ Review points for policies:
 
 ##### Admission webhooks (controller-runtime v0.19)
 
-On v0.19 the webhook builder is **not** generic: `ctrl.NewWebhookManagedBy(mgr).For(&cachev1.RedisCluster{})` with an `admission.CustomValidator` / `admission.CustomDefaulter` whose methods take `runtime.Object`. The older `admission.Validator`/`Defaulter` interfaces (methods implemented on the API type itself, `webhook.Validator` in Kubebuilder v3 scaffolds) are **deprecated** in v0.19 ("Deprecated: Use CustomValidator instead") and removed in v0.20.[^11]
+On v0.19 the webhook builder is **not** generic: `ctrl.NewWebhookManagedBy(mgr).For(&cachev1.RedisCluster{})` with an `admission.CustomValidator` / `admission.CustomDefaulter` whose methods take `runtime.Object`. The older `admission.Validator`/`Defaulter` interfaces (methods implemented on the API type itself, `webhook.Validator` in Kubebuilder v3 scaffolds) are **deprecated** in v0.19 ("Deprecated: Use CustomValidator instead") and removed in v0.20.
 
 ```go
 type RedisClusterValidator struct{}
@@ -1370,7 +1370,7 @@ Review points:
 
 ##### `pods/exec`, `pods/attach`, `pods/portforward` on 1.31
 
-On 1.31, kubectl uses **WebSockets** for exec/attach (beta since 1.30) and port-forward (beta-on in 1.31). The apiserver authorizes a WebSocket upgrade, which is an HTTP `GET`, with the **`get`** verb, whereas SPDY requests (`POST`) need **`create`**. A role with only `get` on `pods/exec` therefore lets a WebSocket client exec into Pods on 1.31; this loophole is closed in 1.35 (`AuthorizePodWebsocketUpgradeCreatePermission`).[^12]
+On 1.31, kubectl uses **WebSockets** for exec/attach (beta since 1.30) and port-forward (beta-on in 1.31). The apiserver authorizes a WebSocket upgrade, which is an HTTP `GET`, with the **`get`** verb, whereas SPDY requests (`POST`) need **`create`**. A role with only `get` on `pods/exec` therefore lets a WebSocket client exec into Pods on 1.31; this loophole is closed in 1.35 (`AuthorizePodWebsocketUpgradeCreatePermission`).
 
 Verified on a 1.31.0 apiserver with a ServiceAccount bound only to `get` on `pods` and `pods/exec` (`kubectl auth can-i create pods/exec` → `no`):
 
@@ -1435,7 +1435,7 @@ spec:
   automountServiceAccountToken: true  # Explicitly opt in at pod level
 ```
 
-**[NEW in 1.31 — beta, on]** Service-account tokens can be bound to a **Node** object (`kubectl create token SA --bound-object-kind Node --bound-object-name n1`); such a token becomes invalid when the Node is deleted (verified on 1.31; kubectl 1.30 rejects `--bound-object-kind Node`). Bound tokens also carry a `jti` and the node name/UID of the Pod (`ServiceAccountTokenJTI`, `ServiceAccountTokenPodNodeInfo`, beta since 1.30) for audit correlation.[^1]
+**[NEW in 1.31 — beta, on]** Service-account tokens can be bound to a **Node** object (`kubectl create token SA --bound-object-kind Node --bound-object-name n1`); such a token becomes invalid when the Node is deleted (verified on 1.31; kubectl 1.30 rejects `--bound-object-kind Node`). Bound tokens also carry a `jti` and the node name/UID of the Pod (`ServiceAccountTokenJTI`, `ServiceAccountTokenPodNodeInfo`, beta since 1.30) for audit correlation.
 
 ---
 
@@ -1564,7 +1564,7 @@ Review notes on this template:
 - `memory` requests = limits avoids OOM surprises for latency-critical services; `cpu` limits are a policy decision (throttling) — flag missing **memory** limits, not missing CPU limits.
 - `matchLabelKeys: [pod-template-hash]` spreads each ReplicaSet revision independently (beta-on since 1.27).
 - `maxUnavailable: 0` + `maxSurge: 1` with a PDB of `minAvailable: 2` and three replicas keeps two Pods serving during rollouts and node drains.
-- A Go ≥ 1.25 binary reads the cgroup CPU limit itself; for older Go binaries set `GOMAXPROCS` from `resourceFieldRef: {resource: limits.cpu}` (or use `automaxprocs`), otherwise the runtime uses the node's CPU count.[^13]
+- A Go ≥ 1.25 binary reads the cgroup CPU limit itself; for older Go binaries set `GOMAXPROCS` from `resourceFieldRef: {resource: limits.cpu}` (or use `automaxprocs`), otherwise the runtime uses the node's CPU count.
 - Pinning `enforce-version` to `v1.31` keeps the rules stable across control-plane upgrades. A 1.30 apiserver also accepted `enforce-version: v1.31` (it evaluates unknown future versions with its latest policy) — that does not mean the 1.31 policy is enforced there.
 
 ##### **[GA in 1.31]** AppArmor fields
@@ -1584,7 +1584,7 @@ spec:
 
 - **BAD**: new manifests that still use `container.apparmor.security.beta.kubernetes.io/<container>: runtime/default`. Verified on 1.31: `Warning: metadata.annotations[container.apparmor.security.beta.kubernetes.io/aa]: deprecated since v1.30; use the "appArmorProfile" field instead`; the apiserver copies the annotation into the container's `appArmorProfile` field on create.
 - When both an annotation and a pod-level field are present, the container-level value derived from the annotation wins for that container (verified: annotation `runtime/default` + pod `Unconfined` → container `RuntimeDefault`). An annotation that contradicts the **container-level** field is rejected (verified: `appArmorProfile.type: Forbidden: apparmor type in annotation and field must match`). Do not mix the two mechanisms.
-- `Localhost` profiles must exist on every node; since 1.31 the kubelet **rejects** Pods that request AppArmor on a node where AppArmor is disabled (previously ignored), so a DaemonSet with an AppArmor profile now fails on nodes without AppArmor (e.g. some SELinux-based distributions) instead of running unconfined.[^3]
+- `Localhost` profiles must exist on every node; since 1.31 the kubelet **rejects** Pods that request AppArmor on a node where AppArmor is disabled (previously ignored), so a DaemonSet with an AppArmor profile now fails on nodes without AppArmor (e.g. some SELinux-based distributions) instead of running unconfined.
 - AppArmor fields are Linux-only; the Pod Security baseline policy forbids `Unconfined`.
 
 ##### Native sidecars (beta, on since 1.29)
@@ -1601,9 +1601,9 @@ containers:
   image: registry.example.com/app:1.0
 ```
 
-- Sidecars start before regular containers, keep running, are restarted independently, and are stopped **after** the main containers; a sidecar's `startupProbe` gates the next init container. They no longer block Job completion (and since 1.31 their finish time counts towards the Job's completion time).[^3]
+- Sidecars start before regular containers, keep running, are restarted independently, and are stopped **after** the main containers; a sidecar's `startupProbe` gates the next init container. They no longer block Job completion (and since 1.31 their finish time counts towards the Job's completion time).
 - Do not model sidecars as extra regular containers in Jobs — the Job never completes.
-- Graceful-termination bug fixed in 1.31: sidecars of a Pod that had not finished initialising did not terminate gracefully.[^3]
+- Graceful-termination bug fixed in 1.31: sidecars of a Pod that had not finished initialising did not terminate gracefully.
 
 ##### Fields that a default 1.31 apiserver silently drops
 
@@ -1631,7 +1631,7 @@ volumeMounts:
   recursiveReadOnly: IfPossible    # or Enabled; requires readOnly: true
 ```
 
-`readOnly: true` alone does **not** make sub-mounts read-only. `Enabled` fails the Pod when the runtime cannot do it (requires Linux ≥ 5.12 and a CRI runtime that reports the feature, e.g. containerd 2.0); `IfPossible` falls back silently. Use `Enabled` only when the node fleet supports it. On 1.30 the field is dropped (alpha/off).[^14]
+`readOnly: true` alone does **not** make sub-mounts read-only. `Enabled` fails the Pod when the runtime cannot do it (requires Linux ≥ 5.12 and a CRI runtime that reports the feature, e.g. containerd 2.0); `IfPossible` falls back silently. Use `Enabled` only when the node fleet supports it. On 1.30 the field is dropped (alpha/off).
 
 ##### Other Pod rules
 
@@ -1677,7 +1677,7 @@ spec:
 ```
 
 - **[GA in 1.31]** `ordinals.start` lets a StatefulSet start at a non-zero ordinal (for slicing a StatefulSet across clusters or namespaces during migrations).
-- `persistentVolumeClaimRetentionPolicy.whenDeleted: Delete` only for disposable data; the default `Retain` keeps PVCs. 1.31 fixed the auto-delete logic to respect PVCs whose controlling owner is not the StatefulSet.[^3]
+- `persistentVolumeClaimRetentionPolicy.whenDeleted: Delete` only for disposable data; the default `Retain` keeps PVCs. 1.31 fixed the auto-delete logic to respect PVCs whose controlling owner is not the StatefulSet.
 - `rollingUpdate.maxUnavailable` is **dropped** by a default 1.31 apiserver (`MaxUnavailableStatefulSet` alpha/off; verified on v1.30.3, v1.31.0 and v1.32.0: the stored object only has `rollingUpdate: {partition: 0}`). Rolling updates replace one Pod at a time; a manifest or chart value that sets `maxUnavailable` silently does nothing and causes GitOps drift. It only works where the gate is enabled on both kube-apiserver and kube-controller-manager.
 - `serviceName` must reference an existing headless Service for stable DNS.
 
@@ -1715,9 +1715,9 @@ spec:
 Verified: 1.31 keeps every field; 1.30 silently drops `successPolicy`; a `managedBy` field is dropped on 1.31 and kept on 1.32.
 
 - **[GA in 1.31]** `podFailurePolicy` requires `restartPolicy: Never`. Combine `Ignore` on the `DisruptionTarget` condition (GA in 1.31) with `FailJob` on non-retriable exit codes so preemption and node drains do not consume `backoffLimit`.
-- **[NEW in 1.31 — beta, on]** `successPolicy` declares an Indexed Job successful when specific indexes (`succeededIndexes`) or a number of indexes (`succeededCount`) succeed; remaining Pods are terminated and the Job gets the `SuccessCriteriaMet` condition before `Complete`. With the gate on, Jobs that simply reach `completions` also get `SuccessCriteriaMet` (reason `CompletionsReached`). Controllers that wait for `Complete` keep working; controllers that treat *any* new condition as failure need fixing.[^3]
+- **[NEW in 1.31 — beta, on]** `successPolicy` declares an Indexed Job successful when specific indexes (`succeededIndexes`) or a number of indexes (`succeededCount`) succeed; remaining Pods are terminated and the Job gets the `SuccessCriteriaMet` condition before `Complete`. With the gate on, Jobs that simply reach `completions` also get `SuccessCriteriaMet` (reason `CompletionsReached`). Controllers that wait for `Complete` keep working; controllers that treat *any* new condition as failure need fixing.
 - **[GA in 1.31]** Elastic Indexed Jobs: `completions` may be updated together with `parallelism` (they must remain equal). Verified: patching both to 6 succeeds; patching only `completions` fails with `can only be modified in tandem with spec.parallelism`.
-- Terminal Job conditions (`Failed`, `Complete`) are only set once all Pods are terminal since 1.31 (`.status.terminating` tracked faster); tools that saw `Failed` while Pods were still running now observe it later.[^3]
+- Terminal Job conditions (`Failed`, `Complete`) are only set once all Pods are terminal since 1.31 (`.status.terminating` tracked faster); tools that saw `Failed` while Pods were still running now observe it later.
 - `backoffLimitPerIndex` requires `completionMode: Indexed`.
 - **Do not use `spec.managedBy`** on 1.31 — it is dropped and the built-in controller runs the Job (see "Do not use").
 - For CronJobs, always set `timeZone` (GA 1.27) and `concurrencyPolicy` explicitly; `startingDeadlineSeconds` avoids catch-up storms after controller downtime. `lastSuccessfulTime` is set reliably from 1.31.
@@ -1775,7 +1775,7 @@ spec:
 ##### kube-proxy and load balancers on 1.31
 
 - nftables mode is beta and selectable (`mode: nftables`); it listens for NodePorts only on the node's primary IPs by default. iptables remains the default; IPVS still works (deprecated only in 1.35).
-- New `nodePortAddresses: ["primary"]` value for iptables/ipvs restricts NodePorts to primary node IPs — recommended for hardened clusters.[^3]
+- New `nodePortAddresses: ["primary"]` value for iptables/ipvs restricts NodePorts to primary node IPs — recommended for hardened clusters.
 - `status.loadBalancer.ingress[].ipMode: Proxy` (beta-on since 1.30) tells kube-proxy not to short-circuit traffic to a proxy-mode load balancer; cloud controllers that implement PROXY protocol should set it.
 
 ##### NetworkPolicy
@@ -1804,13 +1804,13 @@ spec:
 
 ##### Ingress
 
-New HTTP routing should target Gateway API (`gateway.networking.k8s.io/v1`, installed as CRDs, not built into the apiserver). Since 1.31, SSA treats `Ingress.spec.defaultBackend` as an atomic struct: whoever applies it owns the whole struct (switching `port.number` ↔ `port.name` no longer leaves both set).[^3] Flag `nginx.ingress.kubernetes.io/*-snippet` annotations (raw NGINX configuration injection); the ingress-nginx project has since been retired.
+New HTTP routing should target Gateway API (`gateway.networking.k8s.io/v1`, installed as CRDs, not built into the apiserver). Since 1.31, SSA treats `Ingress.spec.defaultBackend` as an atomic struct: whoever applies it owns the whole struct (switching `port.number` ↔ `port.name` no longer leaves both set). Flag `nginx.ingress.kubernetes.io/*-snippet` annotations (raw NGINX configuration injection); the ingress-nginx project has since been retired.
 
 ---
 
 #### Storage
 
-- **[NEW in 1.31 — beta, on]** **Always honor the reclaim policy** (`HonorPVReclaimPolicy`, KEP-2644): a PV with `persistentVolumeReclaimPolicy: Delete` now has its backing volume deleted even when the PV object is deleted before its PVC. The PV controller and CSI external-provisioner add the finalizers `kubernetes.io/pv-controller` / `external-provisioner.volume.kubernetes.io/finalizer` to implement this. Consequences: `kubectl delete pv` on a `Delete` PV really destroys data; scripts that force-remove PV finalizers leak storage; set `Retain` on any PV whose data must outlive its claim.[^1]
+- **[NEW in 1.31 — beta, on]** **Always honor the reclaim policy** (`HonorPVReclaimPolicy`, KEP-2644): a PV with `persistentVolumeReclaimPolicy: Delete` now has its backing volume deleted even when the PV object is deleted before its PVC. The PV controller and CSI external-provisioner add the finalizers `kubernetes.io/pv-controller` / `external-provisioner.volume.kubernetes.io/finalizer` to implement this. Consequences: `kubectl delete pv` on a `Delete` PV really destroys data; scripts that force-remove PV finalizers leak storage; set `Retain` on any PV whose data must outlive its claim.
 - **[GA in 1.31]** `PersistentVolume.status.lastPhaseTransitionTime` records when the PV last changed phase (populated on the first transition after the upgrade). Use it for "Released for > N days" cleanup reports instead of annotations.
 - **Removed**: `cephfs` and `rbd` in-tree volume sources (use ceph-csi). In-tree `awsElasticBlockStore`, `azureDisk`, `azureFile`, `gcePersistentDisk`, `cinder`, `vsphereVolume` sources are served through CSI migration (their in-tree code is gone) — new manifests must use CSI `StorageClass`es.
 - **VolumeAttributesClass** (`storage.k8s.io/v1beta1`, `volumeAttributesClassName` on PVCs) is beta and **off**: the field is dropped and the API is not served on a default 1.31 cluster.
@@ -1858,7 +1858,7 @@ pod-security.kubernetes.io/audit: restricted
 - Never embed secrets in CRD `spec` fields; reference them (`secretRef: {name: ...}`).
 - Do not log secret values, and do not put them in Event messages or condition messages.
 - Use projected service-account tokens with an `audience` and short `expirationSeconds` instead of long-lived token Secrets (`kubernetes.io/service-account-token` Secrets are no longer auto-created since 1.24, and unused legacy ones are cleaned up by default since 1.29, GA in 1.30).
-- Encryption at rest: since 1.31 the `--encryption-provider-config` file is decoded strictly — a typo or duplicate field now **fails** apiserver startup (or, with automatic reload, the new file is rejected and the last valid one stays active).[^3]
+- Encryption at rest: since 1.31 the `--encryption-provider-config` file is decoded strictly — a typo or duplicate field now **fails** apiserver startup (or, with automatic reload, the new file is rejected and the last valid one stays active).
 - Consider External Secrets Operator or Vault Agent for rotation.
 
 ##### Image Security
@@ -1876,15 +1876,15 @@ pod-security.kubernetes.io/audit: restricted
 | CVE-2025-0426 (kubelet checkpoint API node DoS via read-only port) | v1.31.0–v1.31.5 | v1.31.6 | Disable the kubelet read-only port (`readOnlyPort: 0`) |
 | CVE-2025-5187 (node can delete itself via OwnerReference) | v1.31.0–v1.31.11 | v1.31.12 | NodeRestriction fix |
 
-Infrastructure code that pins `v1.31.x` below v1.31.12 (kind node images, kubeadm `kubernetesVersion`, managed-cluster version strings) is a finding; anything on 1.31 at all is end-of-life.[^3]
+Infrastructure code that pins `v1.31.x` below v1.31.12 (kind node images, kubeadm `kubernetesVersion`, managed-cluster version strings) is a finding; anything on 1.31 at all is end-of-life.
 
 ##### Node-level 1.31 changes reviewers will meet in infrastructure code
 
 - kubelet: `--keep-terminated-pod-volumes` removed; `--fail-cgroupv1` / `failCgroupV1` added (default `false`); cgroup v1 logs warnings; `KubeletCgroupDriverFromCRI` beta-on (the `cgroupDriver` setting is ignored when the runtime reports it — containerd ≥ 2.0 / CRI-O ≥ 1.28); `KubeletSeparateDiskGC` beta-on.
 - kube-apiserver/kube-controller-manager/kubelet: `--cloud-provider` must be `external` or empty; the in-tree providers are gone.
 - kube-proxy: `--proxy-port-range` removed; nftables mode available (kernel ≥ 5.13).
-- kubeadm: `v1beta4` configuration API introduced (v1beta3 still accepted); etcd must be ≥ 3.5.11 for kubeadm-managed probes.[^3]
-- `/sys/devices/virtual/powercap` is masked by default in containers (power side-channel), and v1.31.13 masks thermal-interrupt info in `/proc` and `/sys`.[^3]
+- kubeadm: `v1beta4` configuration API introduced (v1beta3 still accepted); etcd must be ≥ 3.5.11 for kubeadm-managed probes.
+- `/sys/devices/virtual/powercap` is masked by default in containers (power side-channel), and v1.31.13 masks thermal-interrupt info in `/proc` and `/sys`.
 
 ---
 
@@ -1909,9 +1909,9 @@ cs := fake.NewSimpleClientset(existingObjects...)
 
 - `cache.WaitForNamedCacheSync(name, stopCh, synced...)` is the API in v0.31 (`WaitForNamedCacheSyncWithContext` does not exist yet).
 - `WatchListClient` is beta but **off** in client-go v0.31 — informers use paginated LIST + WATCH unless `KUBE_FEATURE_WatchListClient=true` is set; the server-side `WatchList` gate is alpha/off on 1.31.
-- `ConsistentListFromCache` (beta-on) makes LIST without `resourceVersion` consistent *and* served from the watch cache — a stale-read concern is not a reason to add `resourceVersion=""` workarounds on 1.31. Requires etcd ≥ 3.5.13 (the apiserver warns on older etcd).[^3]
+- `ConsistentListFromCache` (beta-on) makes LIST without `resourceVersion` consistent *and* served from the watch cache — a stale-read concern is not a reason to add `resourceVersion=""` workarounds on 1.31. Requires etcd ≥ 3.5.13 (the apiserver warns on older etcd).
 - Prefer controller-runtime's cache options (`DefaultTransform: cache.TransformStripManagedFields()`, `ByObject` label/field selectors) to reduce memory instead of hand-rolled informers.
-- `k8s.io/apimachinery/pkg/util/runtime`: `HandleError`/`HandleCrash` gained context-aware variants (`HandleErrorWithContext`, `HandleCrashWithContext`) in v0.31; prefer them in code that already has a `ctx` (contextual logging).[^3]
+- `k8s.io/apimachinery/pkg/util/runtime`: `HandleError`/`HandleCrash` gained context-aware variants (`HandleErrorWithContext`, `HandleCrashWithContext`) in v0.31; prefer them in code that already has a `ctx` (contextual logging).
 
 ##### Clients and versions
 
@@ -1937,7 +1937,7 @@ logger.Error(err, "Failed to apply Deployment", "deployment", deploymentName)
 logger.Info(fmt.Sprintf("reconciling %s/%s", req.Namespace, req.Name))
 ```
 
-controller-runtime already adds `controller`, `namespace`, `name`, `reconcileID` to the context logger; do not repeat them. Since 1.31 component-base also configures the `log/slog` default logger together with klog, so `slog` output from libraries ends up in the same stream.[^3]
+controller-runtime already adds `controller`, `namespace`, `name`, `reconcileID` to the context logger; do not repeat them. Since 1.31 component-base also configures the `log/slog` default logger together with klog, so `slog` output from libraries ends up in the same stream.
 
 Log levels:
 - `V(0)` / `Info` — significant lifecycle events

@@ -20,19 +20,19 @@ Global truths about MySQL with InnoDB (all versions in scope):
 
 #### Release Lines and Support (as of October 2026)
 
-MySQL publishes two tracks since 8.1: **LTS** series (features are added and removed only in the first release of the series; later patches contain fixes; 5 years Premier plus 3 years Extended Support) and **Innovation** releases (new features, behaviour changes and removals in every release; each is supported only until the next one ships).[^1] **9.7 is the last line with sequential version numbers**; later releases use calendar versions `YY.M.P` (26.7 is the July 2026 release).[^1][^2]
+MySQL publishes two tracks since 8.1: **LTS** series (features are added and removed only in the first release of the series; later patches contain fixes; 5 years Premier plus 3 years Extended Support) and **Innovation** releases (new features, behaviour changes and removals in every release; each is supported only until the next one ships). **9.7 is the last line with sequential version numbers**; later releases use calendar versions `YY.M.P` (26.7 is the July 2026 release).
 
 | Line | Type | First GA | Latest release (date) | Status in October 2026 |
 |---|---|---|---|---|
-| 5.7 | GA series (pre-LTS model) | 5.7.9 (October 2015) | 5.7.44 (2023-10-25) | **End of life** since October 2023[^3] |
-| 8.0 | GA series, bug fixes only since 8.0.34 | 8.0.11 (2018-04-19) | 8.0.46 (2026-04-21) | **End of life** since April 2026 ("with version 8.0.46, MySQL 8.0 reaches End of Life")[^4] |
+| 5.7 | GA series (pre-LTS model) | 5.7.9 (October 2015) | 5.7.44 (2023-10-25) | **End of life** since October 2023 |
+| 8.0 | GA series, bug fixes only since 8.0.34 | 8.0.11 (2018-04-19) | 8.0.46 (2026-04-21) | **End of life** since April 2026 ("with version 8.0.46, MySQL 8.0 reaches End of Life") |
 | 8.1, 8.2, 8.3 | Innovation | 2023-07-18 / 2023-10-25 / 2024-01-16 | 8.1.0 / 8.2.0 / 8.3.0 | Unsupported (superseded) |
-| **8.4** | **LTS** | 8.4.0 (2024-04-30) | **8.4.13 (2026-10-20)** | Supported; Premier Support until April 2029, Extended until April 2032[^5][^6] |
+| **8.4** | **LTS** | 8.4.0 (2024-04-30) | **8.4.13 (2026-10-20)** | Supported; Premier Support until April 2029, Extended until April 2032 |
 | 9.0 – 9.6 | Innovation | 9.0.0 (2024-07-01) … 9.6.0 (2026-01-20) | — | Unsupported (superseded) |
-| **9.7** | **LTS** | 9.7.0 (2026-04-21) | **9.7.4 (2026-10-20)** | Supported; Premier Support until April 2031, Extended until April 2034[^6][^7] |
-| 26.7, 26.10 | Innovation (calendar versions) | 26.7.0 (2026-07-28) | **26.10.0 (2026-10-20)** is the newest MySQL release | 26.10 is the current Innovation release; 26.7 is superseded[^2] |
+| **9.7** | **LTS** | 9.7.0 (2026-04-21) | **9.7.4 (2026-10-20)** | Supported; Premier Support until April 2031, Extended until April 2034 |
+| 26.7, 26.10 | Innovation (calendar versions) | 26.7.0 (2026-07-28) | **26.10.0 (2026-10-20)** is the newest MySQL release | 26.10 is the current Innovation release; 26.7 is superseded |
 
-Upgrade paths:[^8]
+Upgrade paths:
 
 - **An LTS series cannot be skipped**: 5.7 → 8.0 → 8.4 LTS → 9.7 LTS. 8.0 → 9.7 directly is not supported.
 - Within an LTS series, in-place upgrade **and downgrade** between patch releases is supported. Innovation releases upgrade to newer Innovation releases; a jump across a major version goes through the LTS in between (8.3 → 8.4 → 9.x). Downgrading an Innovation release needs a logical dump and reload.
@@ -61,7 +61,7 @@ Look for it in, in this order: Docker image tags (`docker-compose.yml`, `Dockerf
 
 ##### Feature availability by version
 
-The release that introduced each feature a reviewer commonly needs. "8.0.x" items are missing from earlier 8.0 patches and from 5.7.[^9][^10][^11][^12]
+The release that introduced each feature a reviewer commonly needs. "8.0.x" items are missing from earlier 8.0 patches and from 5.7.
 
 | Feature | Introduced |
 |---|---|
@@ -133,7 +133,7 @@ Never suggest these for MySQL; when they appear in code, flag them as bugs (synt
 
 #### MariaDB Is Not MySQL
 
-MariaDB forked from MySQL in 2009 and has diverged since its 10.0 series (2014); its version numbers (10.x, 11.x, 12.x) are unrelated to MySQL's. Never assume feature parity in either direction, and never treat a MariaDB-only feature as valid MySQL (or vice versa):[^13]
+MariaDB forked from MySQL in 2009 and has diverged since its 10.0 series (2014); its version numbers (10.x, 11.x, 12.x) are unrelated to MySQL's. Never assume feature parity in either direction, and never treat a MariaDB-only feature as valid MySQL (or vice versa):
 
 - **MariaDB-only syntax** (syntax errors on MySQL): `INSERT ... RETURNING`, `DELETE ... RETURNING`, `CREATE OR REPLACE TABLE`, `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `CREATE SEQUENCE`, system-versioned tables (`WITH SYSTEM VERSIONING`).
 - **`JSON` differs**: in MariaDB `JSON` is an alias for `LONGTEXT` with a `JSON_VALID()` check, not MySQL's binary format; MySQL's multi-valued indexes and binary JSON storage do not carry over, and row-based replication of MySQL `JSON` columns to MariaDB is not supported.
@@ -189,7 +189,7 @@ CREATE TABLE nopk (a INT);
 SET SESSION sql_require_primary_key = DEFAULT;
 ```
 
-`sql_generate_invisible_primary_key=ON` **(8.0.30+)** adds an invisible `my_row_id BIGINT UNSIGNED AUTO_INCREMENT` primary key instead. Since 9.7.0, both variables accept a `UNIQUE NOT NULL` key as a primary-key substitute; earlier versions do not.[^14]
+`sql_generate_invisible_primary_key=ON` **(8.0.30+)** adds an invisible `my_row_id BIGINT UNSIGNED AUTO_INCREMENT` primary key instead. Since 9.7.0, both variables accept a `UNIQUE NOT NULL` key as a primary-key substitute; earlier versions do not.
 
 ##### Integers, DECIMAL, FLOAT
 
@@ -265,12 +265,12 @@ INSERT INTO gc VALUES (2, 1, 1, 5, 'b@x.org', 'x.org');
 ```
 
 - Generated columns (5.7.6+) are `VIRTUAL` (computed on read; can be indexed; added with `ALGORITHM=INSTANT` on 8.0+) or `STORED` (materialized; adding one rebuilds the table with `ALGORITHM=COPY`).
-- Expressions must be deterministic; a generated column whose expression calls a function that a later version removes (e.g. `MD5()`/`SHA1()` moved out of the server in 9.6) breaks the table after an upgrade. Prefer `SHA2()` in generated columns, defaults, `CHECK` constraints and functional indexes.[^15]
+- Expressions must be deterministic; a generated column whose expression calls a function that a later version removes (e.g. `MD5()`/`SHA1()` moved out of the server in 9.6) breaks the table after an upgrade. Prefer `SHA2()` in generated columns, defaults, `CHECK` constraints and functional indexes.
 - Invisible columns **(8.0.23+)** are skipped by `SELECT *` and by `INSERT` without a column list; they help add columns without breaking legacy code but are still returned when named explicitly.
 
 ##### VECTOR (9.0+)
 
-`VECTOR(n)` exists only on 9.0+ (first LTS: 9.7). It is a storage type in MySQL Server: no vector index, no distance function (`DISTANCE()` is HeatWave-only), no ordering other than by bytes; `n` is a maximum, not an exact dimension. On 8.4 and older `VECTOR` is a syntax error. Validate dimensions in the application, and do similarity search in the application or a dedicated vector store.[^16]
+`VECTOR(n)` exists only on 9.0+ (first LTS: 9.7). It is a storage type in MySQL Server: no vector index, no distance function (`DISTANCE()` is HeatWave-only), no ordering other than by bytes; `n` is a maximum, not an exact dimension. On 8.4 and older `VECTOR` is a syntax error. Validate dimensions in the application, and do similarity search in the application or a dedicated vector store.
 
 ***
 
@@ -278,7 +278,7 @@ INSERT INTO gc VALUES (2, 1, 1, 5, 'b@x.org', 'x.org');
 
 Declare `NOT NULL` on every column that must have a value; `NULL` makes `NOT IN`, `UNIQUE` and comparisons behave unexpectedly (a `UNIQUE` key accepts any number of `NULL`s).
 
-`CHECK` constraints are **enforced since 8.0.16**. On 5.7 and 8.0.0–8.0.15 they are parsed and **silently ignored**, so a schema from that era can contain `CHECK` clauses that never held; the first `ALTER TABLE` or reload on 8.0.16+ then fails on violating rows.[^9]
+`CHECK` constraints are **enforced since 8.0.16**. On 5.7 and 8.0.0–8.0.15 they are parsed and **silently ignored**, so a schema from that era can contain `CHECK` clauses that never held; the first `ALTER TABLE` or reload on 8.0.16+ then fails on violating rows.
 
 ```sql
 CREATE TABLE pr (
@@ -316,7 +316,7 @@ Review rules:
 
 InnoDB enforces foreign keys. Traps that depend on how and where the DDL runs:
 
-1. **Inline column `REFERENCES` is silently ignored before 9.0 and enforced from 9.0.** Only the table-level form `[CONSTRAINT name] FOREIGN KEY (col) REFERENCES parent (id)` creates a constraint on 5.7, 8.0 and 8.4. On 9.0+ the inline form creates a real constraint, so the same DDL produces different schemas, and code that inserted orphans "successfully" starts failing with `ERROR 1452` after an upgrade (tables created earlier do not gain the constraint during an in-place upgrade). Always write the explicit, named table-level form:[^17]
+1. **Inline column `REFERENCES` is silently ignored before 9.0 and enforced from 9.0.** Only the table-level form `[CONSTRAINT name] FOREIGN KEY (col) REFERENCES parent (id)` creates a constraint on 5.7, 8.0 and 8.4. On 9.0+ the inline form creates a real constraint, so the same DDL produces different schemas, and code that inserted orphans "successfully" starts failing with `ERROR 1452` after an upgrade (tables created earlier do not gain the constraint during an in-place upgrade). Always write the explicit, named table-level form:
 
 ```sql
 CREATE TABLE person (id INT PRIMARY KEY);
@@ -343,7 +343,7 @@ CREATE TABLE fkc (id INT PRIMARY KEY, pcode INT, FOREIGN KEY (pcode) REFERENCES 
 --   Missing unique key for constraint 'fkc_ibfk_1' in the referenced table 'fkp'
 ```
 
-3. **Cascaded changes do not fire triggers.** `ON DELETE CASCADE`, `ON UPDATE CASCADE` and `SET NULL` modify child rows without running the child table's triggers; audit triggers on child tables miss them. (9.7.0 adds an opt-in, already deprecated `enable_cascade_triggers`.)[^18]
+3. **Cascaded changes do not fire triggers.** `ON DELETE CASCADE`, `ON UPDATE CASCADE` and `SET NULL` modify child rows without running the child table's triggers; audit triggers on child tables miss them. (9.7.0 adds an opt-in, already deprecated `enable_cascade_triggers`.)
 
 ```sql
 CREATE TABLE audit (id INT AUTO_INCREMENT PRIMARY KEY, what VARCHAR(50));
@@ -387,7 +387,7 @@ INSERT INTO m3 VALUES ('😀');
 
 ##### Collation semantics
 
-`utf8mb4_0900_ai_ci` (8.0 default) is case-insensitive, accent-insensitive and **NO PAD** (trailing spaces are significant). Older collations (`utf8mb4_general_ci`, `utf8mb4_unicode_ci`, `utf8mb4_bin`, all 5.7 collations) are `PAD SPACE`.[^19]
+`utf8mb4_0900_ai_ci` (8.0 default) is case-insensitive, accent-insensitive and **NO PAD** (trailing spaces are significant). Older collations (`utf8mb4_general_ci`, `utf8mb4_unicode_ci`, `utf8mb4_bin`, all 5.7 collations) are `PAD SPACE`.
 
 ```sql
 SET NAMES utf8mb4;
@@ -424,7 +424,7 @@ SELECT * FROM ca JOIN cb ON ca.s = cb.s;
 
 #### SQL Mode and Strictness
 
-The default `sql_mode` is strict (5.7.5+):[^20]
+The default `sql_mode` is strict (5.7.5+):
 
 ```sql
 SELECT @@sql_mode;
@@ -526,7 +526,7 @@ Writing a value with more fractional digits than the column holds **rounds** (he
 
 ##### Time zones and date arithmetic
 
-- Named zones (`'Europe/Berlin'`) in `CONVERT_TZ()` and `SET time_zone` need the time-zone tables to be loaded (`mysql_tzinfo_to_sql`); otherwise `CONVERT_TZ()` returns `NULL` and `SET time_zone = 'Europe/Berlin'` fails with `ERROR 1298 Unknown or incorrect time zone`. Many installations and managed services do not load them by default. Prefer UTC offsets or conversion in the application; check `SELECT COUNT(*) FROM mysql.time_zone_name` when code relies on named zones.[^21]
+- Named zones (`'Europe/Berlin'`) in `CONVERT_TZ()` and `SET time_zone` need the time-zone tables to be loaded (`mysql_tzinfo_to_sql`); otherwise `CONVERT_TZ()` returns `NULL` and `SET time_zone = 'Europe/Berlin'` fails with `ERROR 1298 Unknown or incorrect time zone`. Many installations and managed services do not load them by default. Prefer UTC offsets or conversion in the application; check `SELECT COUNT(*) FROM mysql.time_zone_name` when code relies on named zones.
 - `NOW()` is constant within a statement; `SYSDATE()` is evaluated per call and unsafe for statement-based replication. Use `NOW()`/`UTC_TIMESTAMP()`.
 - Month arithmetic clamps: `'2024-01-31' + INTERVAL 1 MONTH` is `2024-02-29`.
 - Filtering with `DATE(col) = ?` or `YEAR(col) = ?` disables index use; use half-open ranges `col >= ? AND col < ?` (see Indexing). Avoid `BETWEEN '...' AND '... 23:59:59'`: it misses fractional seconds.
@@ -544,7 +544,7 @@ SELECT CONVERT_TZ('2024-01-01 12:00:00', '+00:00', '+05:30');   -- 2024-01-01 17
 
 ##### What InnoDB indexes can and cannot do
 
-InnoDB has B-tree indexes (`PRIMARY`, `UNIQUE`, secondary), `FULLTEXT` and `SPATIAL` (R-tree) indexes, plus functional **(8.0.13+)** and multi-valued **(8.0.17+)** B-tree indexes.[^22] It has no partial (`WHERE`) indexes, no `INCLUDE` columns, no hash indexes (`USING HASH` is accepted on InnoDB with a note and builds a B-tree), no `CREATE INDEX CONCURRENTLY`, no `CREATE INDEX IF NOT EXISTS`.
+InnoDB has B-tree indexes (`PRIMARY`, `UNIQUE`, secondary), `FULLTEXT` and `SPATIAL` (R-tree) indexes, plus functional **(8.0.13+)** and multi-valued **(8.0.17+)** B-tree indexes. It has no partial (`WHERE`) indexes, no `INCLUDE` columns, no hash indexes (`USING HASH` is accepted on InnoDB with a note and builds a B-tree), no `CREATE INDEX CONCURRENTLY`, no `CREATE INDEX IF NOT EXISTS`.
 
 | PostgreSQL idea | MySQL equivalent |
 |---|---|
@@ -636,7 +636,7 @@ A prefix index (`KEY (s(191))`) is acceptable for non-unique lookups only: a pre
 
 ##### Functional indexes and JSON (8.0.13+ / 8.0.17+)
 
-A functional index is used only when the query contains the **same expression with the same type and collation**. `->>` returns `utf8mb4_bin`, so an index on a plain `CAST(... AS CHAR)` (connection collation) is not used by `doc->>'$.name' = ?`:[^22]
+A functional index is used only when the query contains the **same expression with the same type and collation**. `->>` returns `utf8mb4_bin`, so an index on a plain `CAST(... AS CHAR)` (connection collation) is not used by `doc->>'$.name' = ?`:
 
 ```sql
 CREATE TABLE docs (id INT AUTO_INCREMENT PRIMARY KEY, doc JSON NOT NULL);
@@ -680,7 +680,7 @@ For non-indexed columns used in filters and joins, `ANALYZE TABLE t UPDATE HISTO
 
 #### Reading Plans: EXPLAIN and EXPLAIN ANALYZE
 
-- `EXPLAIN` (traditional table, default up to 9.4), `EXPLAIN FORMAT=TREE` **(8.0.16+)**, `EXPLAIN FORMAT=JSON`. **9.5+ prints the tree by default** (`explain_format=TREE`) and uses a different JSON layout (`explain_json_format_version=2`): tooling that parses `EXPLAIN` output must pin the format explicitly.[^23]
+- `EXPLAIN` (traditional table, default up to 9.4), `EXPLAIN FORMAT=TREE` **(8.0.16+)**, `EXPLAIN FORMAT=JSON`. **9.5+ prints the tree by default** (`explain_format=TREE`) and uses a different JSON layout (`explain_json_format_version=2`): tooling that parses `EXPLAIN` output must pin the format explicitly.
 - `EXPLAIN ANALYZE` **(8.0.18+)** **executes** the statement and reports actual rows, loops and time per iterator. Never run it on production data with expensive queries on the assumption that it is harmless.
 - Signals: `Table scan` or `Index scan` over many rows in a hot path; `Filter` above a scan with a large `rows` estimate; `Sort` on big inputs; `Materialize`/temporary tables; `Nested loop` whose inner side has no index; `Hash join` (8.0.18+) where an index is expected. Compare estimated and actual rows: large gaps point to missing statistics (`ANALYZE TABLE`, histograms).
 - `EXPLAIN FOR CONNECTION <id>` shows the plan of a running statement.
@@ -699,7 +699,7 @@ EXPLAIN ANALYZE SELECT id, total FROM orders WHERE status = 'paid' ORDER BY crea
 
 `LIMIT n OFFSET m` reads and discards `m` rows (5,020 rows read above to return 20). Use keyset (seek) pagination with a deterministic order that ends in a unique column.
 
-**MySQL does not use range access for row-constructor inequalities** like `(created_at, id) > (?, ?)` (verified on 8.0, 8.4 and 9.7). The predicate becomes a `Filter` over an index scan that starts at the beginning — as slow as `OFFSET` on later pages. Write the expanded `OR` form:[^24]
+**MySQL does not use range access for row-constructor inequalities** like `(created_at, id) > (?, ?)` (verified on 8.0, 8.4 and 9.7). The predicate becomes a `Filter` over an index scan that starts at the beginning — as slow as `OFFSET` on later pages. Write the expanded `OR` form:
 
 ```sql
 -- BAD on MySQL: filter over the index from its start
@@ -896,7 +896,7 @@ DELETE FROM orders WHERE status = 'cancelled' AND created_at < '2024-01-02' ORDE
 
 ##### Consistent reads vs current reads
 
-Under REPEATABLE READ the snapshot is taken at the **first read** in the transaction (`START TRANSACTION WITH CONSISTENT SNAPSHOT` takes it immediately). Plain `SELECT` reads the snapshot; `UPDATE`, `DELETE`, `INSERT ... SELECT` and locking reads see the latest committed data.[^25] Read-modify-write in application code therefore loses updates:
+Under REPEATABLE READ the snapshot is taken at the **first read** in the transaction (`START TRANSACTION WITH CONSISTENT SNAPSHOT` takes it immediately). Plain `SELECT` reads the snapshot; `UPDATE`, `DELETE`, `INSERT ... SELECT` and locking reads see the latest committed data. Read-modify-write in application code therefore loses updates:
 
 ```text
 -- Session A                                        -- Session B
@@ -919,7 +919,7 @@ MySQL's REPEATABLE READ does **not** detect write skew or raise serialization fa
 
 ##### Locks taken by locking reads and writes
 
-InnoDB locks **every index record it scans**, plus the gap before it (next-key locks) under REPEATABLE READ:[^26]
+InnoDB locks **every index record it scans**, plus the gap before it (next-key locks) under REPEATABLE READ:
 
 ```sql
 CREATE TABLE acct (id INT PRIMARY KEY, owner INT NOT NULL, bal INT NOT NULL, note VARCHAR(10), KEY ix_owner (owner));
@@ -1027,7 +1027,7 @@ ALTER TABLE orders
 
 ##### ALGORITHM and LOCK
 
-Specify `ALGORITHM` (and `LOCK` for `INPLACE`) on every `ALTER TABLE` against a large table. Without it MySQL silently picks the "best" algorithm, which may be a full table copy that blocks writes; with it, an unsupported combination fails immediately:[^27]
+Specify `ALGORITHM` (and `LOCK` for `INPLACE`) on every `ALTER TABLE` against a large table. Without it MySQL silently picks the "best" algorithm, which may be a full table copy that blocks writes; with it, an unsupported combination fails immediately:
 
 | Operation | INSTANT | INPLACE, LOCK=NONE | Notes |
 |---|---|---|---|
@@ -1068,7 +1068,7 @@ SELECT total_row_versions FROM information_schema.innodb_tables WHERE name = CON
 
 ##### Metadata locks: the most common migration outage
 
-Every DDL, even `ALGORITHM=INSTANT`, needs an exclusive metadata lock (MDL) for a moment. It waits for **every open transaction that has touched the table** — including an idle one that only ran a `SELECT` — and while it waits, **every new query on the table queues behind it**:[^28]
+Every DDL, even `ALGORITHM=INSTANT`, needs an exclusive metadata lock (MDL) for a moment. It waits for **every open transaction that has touched the table** — including an idle one that only ran a `SELECT` — and while it waits, **every new query on the table queues behind it**:
 
 ```text
 -- Session A (a pooled connection left in a transaction)
@@ -1097,7 +1097,7 @@ Find blockers with `sys.schema_table_lock_waits` and `performance_schema.metadat
 - Widen `INT` keys to `BIGINT` before they are exhausted; it is a full copy.
 - `RENAME TABLE a TO a_old, a_new TO a` is atomic and is the swap step of copy-based tools.
 - Backfills (`UPDATE ... SET new_col = ...`) run in primary-key batches, not as one statement.
-- `DELIMITER` is a `mysql` client command, not SQL: migration tools and drivers that send statements one at a time must not include it. Since 9.4 the `mysql` client also disables most client commands (`source`, `\G`, `system`, ...) unless started with `--commands`; init scripts that rely on `source` break there.[^29]
+- `DELIMITER` is a `mysql` client command, not SQL: migration tools and drivers that send statements one at a time must not include it. Since 9.4 the `mysql` client also disables most client commands (`source`, `\G`, `system`, ...) unless started with `--commands`; init scripts that rely on `source` break there.
 
 ##### Partitioning
 
@@ -1115,7 +1115,7 @@ CREATE TABLE pt (id INT, created DATE, PRIMARY KEY (id)) PARTITION BY RANGE (YEA
 
 ##### Stored functions and binary logging
 
-With binary logging enabled (default since 8.0; off on 5.7), creating a stored function requires a characteristic that declares it safe:[^30]
+With binary logging enabled (default since 8.0; off on 5.7), creating a stored function requires a characteristic that declares it safe:
 
 ```sql
 DELIMITER //
@@ -1249,7 +1249,7 @@ SHOW GRANTS FOR app@'%';
 
 - `activate_all_roles_on_login` is `OFF` by default: every role grant needs `SET DEFAULT ROLE` (or `SET ROLE` in the session), otherwise the account has no effective privileges. Since 9.5, roles in `mandatory_roles` are activated at login for every account (`activate_mandatory_roles=ON`); review that list.
 - Application accounts get DML on their schema only; migrations run under a separate account with DDL privileges. No `ALL PRIVILEGES ON *.*`, `SUPER`, `FILE`, `PROCESS`, `SYSTEM_USER`, `GRANT OPTION` or `CONNECTION_ADMIN` for applications.
-- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards (`GRANT ... ON db_1.*` also matches `dbx1`) unless `partial_revokes=ON` (default `OFF`), which makes them literal; escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour, and the server treating privileges granted to `user@'%'` as also granted to `user@'localhost'`, were deprecated in 8.0.35 and 8.2.0 (both released 2023-10-25); no warning is printed.[^32]
+- `_` and `%` in database names in `GRANT ... ON db_name.*` are wildcards (`GRANT ... ON db_1.*` also matches `dbx1`) unless `partial_revokes=ON` (default `OFF`), which makes them literal; escape them (`` `db\_1` ``) or avoid them in schema names. The wildcard behaviour, and the server treating privileges granted to `user@'%'` as also granted to `user@'localhost'`, were deprecated in 8.0.35 and 8.2.0 (both released 2023-10-25); no warning is printed.
 - Host part: prefer specific hosts or networks over `'%'`.
 - Credentials never in migrations, code or logs; the Go driver's `FormatDSN()` output contains the password.
 
@@ -1276,7 +1276,7 @@ SET SESSION block_encryption_mode = DEFAULT;
 
 #### Application Code, Drivers and Connection Pooling
 
-Concepts below are shown with Go's `database/sql` and `github.com/go-sql-driver/mysql`; every mature driver has equivalent settings.[^31]
+Concepts below are shown with Go's `database/sql` and `github.com/go-sql-driver/mysql`; every mature driver has equivalent settings.
 
 ```go
 cfg := mysql.NewConfig()
@@ -1369,7 +1369,7 @@ SELECT trx_id, trx_started, trx_mysql_thread_id FROM information_schema.innodb_t
 
 #### Removed and Changed Behaviour Across Versions
 
-When a project upgrades — or when code written for one version runs on another — these are the changes that break SQL or change results.[^9][^10][^11][^12]
+When a project upgrades — or when code written for one version runs on another — these are the changes that break SQL or change results.
 
 ##### 5.7 → 8.0
 

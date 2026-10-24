@@ -2,9 +2,9 @@
 
 #### Overview
 
-Python 3.10 was released on October 4, 2021. It reached **end-of-life on October 1, 2026**: per the release-schedule PEP 619, 3.10.22 (released 2026-10-01) is the final security release, the branch is frozen, and the bug tracker no longer accepts 3.10 issues. Bugfix releases with binary installers ended with 3.10.11 (April 2023); everything after that (3.10.12–3.10.22) was source-only security releases.[^1][^2] As of October 2026 a 3.10 codebase receives **no further fixes of any kind** — not even for the tarfile, email, HTTP and XML vulnerabilities that were still being patched into 3.10.21/3.10.22. Treat an upgrade plan as a production requirement, and in the meantime make sure you run **3.10.22**, not an older patch release.
+Python 3.10 was released on October 4, 2021. It reached **end-of-life on October 1, 2026**: per the release-schedule PEP 619, 3.10.22 (released 2026-10-01) is the final security release, the branch is frozen, and the bug tracker no longer accepts 3.10 issues. Bugfix releases with binary installers ended with 3.10.11 (April 2023); everything after that (3.10.12–3.10.22) was source-only security releases. As of October 2026 a 3.10 codebase receives **no further fixes of any kind** — not even for the tarfile, email, HTTP and XML vulnerabilities that were still being patched into 3.10.21/3.10.22. Treat an upgrade plan as a production requirement, and in the meantime make sure you run **3.10.22**, not an older patch release.
 
-Python 3.10 is a landmark language release: **structural pattern matching** (`match`/`case`, PEPs 634–636), the **`X | Y` union operator** for types (PEP 604), **parenthesized context managers**, **`zip(strict=True)`** (PEP 618), `typing.ParamSpec`/`Concatenate` (PEP 612), `typing.TypeAlias` (PEP 613), `typing.TypeGuard` (PEP 647), `dataclass(slots=True, kw_only=True)` and `KW_ONLY`, the `aiter()`/`anext()` built-ins, opt-in `EncodingWarning` (PEP 597), precise line numbers for tracing (PEP 626), and dramatically better syntax/name/attribute error messages. It also requires OpenSSL 1.1.1+ (PEP 644), deprecates `distutils` (PEP 632), and **removes** the `collections` ABC aliases and the `loop=` parameter of the high-level asyncio API — the two removals that break most 3.9 code.[^1]
+Python 3.10 is a landmark language release: **structural pattern matching** (`match`/`case`, PEPs 634–636), the **`X | Y` union operator** for types (PEP 604), **parenthesized context managers**, **`zip(strict=True)`** (PEP 618), `typing.ParamSpec`/`Concatenate` (PEP 612), `typing.TypeAlias` (PEP 613), `typing.TypeGuard` (PEP 647), `dataclass(slots=True, kw_only=True)` and `KW_ONLY`, the `aiter()`/`anext()` built-ins, opt-in `EncodingWarning` (PEP 597), precise line numbers for tracing (PEP 626), and dramatically better syntax/name/attribute error messages. It also requires OpenSSL 1.1.1+ (PEP 644), deprecates `distutils` (PEP 632), and **removes** the `collections` ABC aliases and the `loop=` parameter of the high-level asyncio API — the two removals that break most 3.9 code.
 
 This guide targets Python 3.10 specifically. Features introduced in earlier versions — 3.6 f-strings, 3.7 dataclasses and guaranteed dict ordering, 3.8 walrus operator and positional-only parameters, 3.9 built-in generics (`list[int]`), dict `|`/`|=`, `str.removeprefix()`, `zoneinfo`, `graphlib`, `functools.cache`, `asyncio.to_thread()` — are fully available and used freely here. Every section that covers a 3.10-specific change is marked **New in 3.10**.
 
@@ -25,10 +25,10 @@ Global truths about Python 3.10:
 - **Dynamic typing.** Variables carry no declared type; annotations are not enforced at runtime.
 - **Reference counting + cyclic GC.** CPython frees most objects immediately when their reference count drops to zero; a cyclic collector handles reference cycles.
 - **The GIL is always on.** There is no free-threaded build of 3.10; threads do not run Python bytecode in parallel.
-- **Dicts are ordered by insertion** (language guarantee since 3.7).[^3]
-- **`match` and `case` are *soft* keywords.** They are keywords only at the start of a `match` statement or `case` clause; `match = re.match(...)` and a variable named `case` remain valid.[^4]
-- **Annotations are still evaluated eagerly** unless the module uses `from __future__ import annotations`. PEP 563 was *not* made the default in 3.10 (it was postponed, and eventually superseded by PEP 649 in 3.14).[^5]
-- **The default text encoding is still locale-dependent.** `open()` without `encoding=` uses the locale encoding (often cp1252 on Windows). 3.10 only adds an *opt-in* warning (PEP 597); UTF-8 mode only becomes the default in Python 3.15.[^6]
+- **Dicts are ordered by insertion** (language guarantee since 3.7).
+- **`match` and `case` are *soft* keywords.** They are keywords only at the start of a `match` statement or `case` clause; `match = re.match(...)` and a variable named `case` remain valid.
+- **Annotations are still evaluated eagerly** unless the module uses `from __future__ import annotations`. PEP 563 was *not* made the default in 3.10 (it was postponed, and eventually superseded by PEP 649 in 3.14).
+- **The default text encoding is still locale-dependent.** `open()` without `encoding=` uses the locale encoding (often cp1252 on Windows). 3.10 only adds an *opt-in* warning (PEP 597); UTF-8 mode only becomes the default in Python 3.15.
 
 ***
 
@@ -144,7 +144,7 @@ Note the quoted `'Cache | None'`: the *whole* annotation is a string, so the for
 
 #### New in 3.10: Structural Pattern Matching (PEP 634, 635, 636)
 
-The `match` statement compares a *subject* value against a sequence of *patterns*, top to bottom, and runs the block of the first `case` that matches. Patterns can destructure sequences, mappings and objects, bind names, and be combined with `|` and guards. If no case matches, the statement does nothing — there is no implicit error and no fall-through.[^4][^7][^8]
+The `match` statement compares a *subject* value against a sequence of *patterns*, top to bottom, and runs the block of the first `case` that matches. Patterns can destructure sequences, mappings and objects, bind names, and be combined with `|` and guards. If no case matches, the statement does nothing — there is no implicit error and no fall-through.
 
 ```python
 def http_error(status: int) -> str:
@@ -223,7 +223,7 @@ print(route({'type': 'key', 'key': 'q'}))                    # key 'q'
 print(route({'type': 'resize', 'w': 80, 'h': 24}))           # resize with ['h', 'w']
 ```
 
-Rules worth knowing for review:[^7]
+Rules worth knowing for review:
 
 - **Mapping patterns ignore extra keys**; sequence patterns do **not** (`[a, b]` only matches length 2). Use `**rest` / `*rest` deliberately. `**_` is a `SyntaxError` (it would be redundant).
 - **Mapping patterns use `get()`-style lookup and never call `__missing__`**: matching a `defaultdict` does not insert keys.
@@ -469,7 +469,7 @@ Review guidance:
 
 #### New in 3.10: Union Types as `X | Y` (PEP 604)
 
-`X | Y` now builds a union type at runtime. It replaces `typing.Union[X, Y]` and `typing.Optional[X]` in annotations, and it is accepted by `isinstance()` and `issubclass()` (since 3.10 `isinstance()` also accepts `typing.Union[int, str]`; on 3.9 that raised `TypeError`).[^9]
+`X | Y` now builds a union type at runtime. It replaces `typing.Union[X, Y]` and `typing.Optional[X]` in annotations, and it is accepted by `isinstance()` and `issubclass()` (since 3.10 `isinstance()` also accepts `typing.Union[int, str]`; on 3.9 that raised `TypeError`).
 
 ```python
 # Python 3.9
@@ -548,7 +548,7 @@ print(isinstance(value, list | None))   # ✅ True — check the bare type, vali
 
 #### New in 3.10: Parenthesized Context Managers
 
-A `with` statement may now wrap several context managers in parentheses, one per line, with a trailing comma — no backslashes, no `ExitStack` needed for a fixed set of managers.[^1]
+A `with` statement may now wrap several context managers in parentheses, one per line, with a trailing comma — no backslashes, no `ExitStack` needed for a fixed set of managers.
 
 ```python
 import tempfile
@@ -577,7 +577,7 @@ print(repr((tmp / 'output.txt').read_text(encoding='utf-8')))   # 'A\nB\n'
 
 #### New in 3.10: Better Error Messages
 
-3.10 rewrote many parser and runtime messages. They do not change behavior, but they change *text* — tests that assert on exact `SyntaxError`/`NameError` messages may need updating.[^1]
+3.10 rewrote many parser and runtime messages. They do not change behavior, but they change *text* — tests that assert on exact `SyntaxError`/`NameError` messages may need updating.
 
 ```python
 cases = [
@@ -626,7 +626,7 @@ except AttributeError as e:
 
 #### New in 3.10: `zip(strict=True)` (PEP 618)
 
-`zip()` silently truncates to the shortest input — a classic source of lost data. `strict=True` raises `ValueError` when the iterables have different lengths.[^10]
+`zip()` silently truncates to the shortest input — a classic source of lost data. `strict=True` raises `ValueError` when the iterables have different lengths.
 
 ```python
 names = ['alice', 'bob', 'carol']
@@ -683,7 +683,7 @@ print(bin(0b1011).count('1'))  # 3 — the slower pre-3.10 idiom
 
 ##### Security Change in 3.10.7: Integer/String Conversion Limit
 
-Since **3.10.7**, converting between `int` and `str` in a non-power-of-two base (i.e. decimal) raises `ValueError` once the number has more than **4300 digits** — a mitigation for CVE-2020-10735 (quadratic-time conversion as a denial-of-service vector). `hex()`, `oct()`, `bin()` and `int(s, 16)` are not limited.[^11]
+Since **3.10.7**, converting between `int` and `str` in a non-power-of-two base (i.e. decimal) raises `ValueError` once the number has more than **4300 digits** — a mitigation for CVE-2020-10735 (quadratic-time conversion as a denial-of-service vector). `hex()`, `oct()`, `bin()` and `int(s, 16)` are not limited.
 
 ```python
 import sys
@@ -728,7 +728,7 @@ print(b in {a})             # False — NaN != NaN, and the hashes now differ
 
 ##### Deprecated in 3.10: Numeric Literals Glued to Keywords
 
-`0in x`, `1if c else 2`, `[0x1for x in y]` used to be accepted silently. 3.10 emits a `DeprecationWarning` when compiling them (a `SyntaxWarning` from 3.11, planned to become an error); under `-W error` the warning turns into a `SyntaxError`, so such a module fails to import in a strict test run:[^1][^31]
+`0in x`, `1if c else 2`, `[0x1for x in y]` used to be accepted silently. 3.10 emits a `DeprecationWarning` when compiling them (a `SyntaxWarning` from 3.11, planned to become an error); under `-W error` the warning turns into a `SyntaxError`, so such a module fails to import in a strict test run:
 
 ```python
 print(eval('[0x1for x in (1, 2)]'))   # [31] — parsed as [0x1f or x in (1, 2)]!
@@ -820,7 +820,7 @@ print(first([3, 4]), first([], default=0))   # 3 0
 
 ##### New in 3.10: `ParamSpec` and `Concatenate` (PEP 612)
 
-Before 3.10, a decorator that preserved its wrapped function's signature could only be typed as `Callable[..., R]`, erasing all parameter information. `ParamSpec` captures the full parameter list.[^12]
+Before 3.10, a decorator that preserved its wrapped function's signature could only be typed as `Callable[..., R]`, erasing all parameter information. `ParamSpec` captures the full parameter list.
 
 ```python
 import functools
@@ -880,7 +880,7 @@ Rules a type checker enforces (and reviewers should too):
 - `*args: P.args` and `**kwargs: P.kwargs` must appear **together**, and only in a function whose signature is tied to `P` (e.g. a wrapper inside a function that received `Callable[P, R]`).
 - `Concatenate[...]` must end with the `ParamSpec` and is only valid as the first argument of `Callable[...]`.
 - Generic classes can be parameterized by a `ParamSpec`: `class Task(Generic[P, R])`.
-- `ParamSpec` exists only for type checkers; at runtime it does no validation. Several runtime substitution bugs were fixed in **3.10.3** (bpo-44791, bpo-46581) — another reason to run the latest patch.[^13]
+- `ParamSpec` exists only for type checkers; at runtime it does no validation. Several runtime substitution bugs were fixed in **3.10.3** (bpo-44791, bpo-46581) — another reason to run the latest patch.
 - `TypeVarTuple`/`Unpack` (variadic generics) are **3.11**, and the `def f[**P]` syntax is **3.12** — not available here.
 
 ##### New in 3.10: Explicit Type Aliases — `TypeAlias` (PEP 613)
@@ -913,7 +913,7 @@ def join_all(values: list[object]) -> str:
 print(join_all(['a', 'b']), repr(join_all([1, 'b'])))   # a, b ''
 ```
 
-Semantics to keep in mind:[^14]
+Semantics to keep in mind:
 
 - A `TypeGuard` function narrows **only in the positive branch**. In the `else` branch the type is *not* narrowed (that two-way behavior is `typing.TypeIs`, **3.13+**).
 - The narrowed type need not be a subtype of the input (`list[object]` → `list[str]` is allowed), so a guard can lie — the checker trusts it. Make guards check everything they claim (here: *every* element).
@@ -921,7 +921,7 @@ Semantics to keep in mind:[^14]
 
 ##### Postponed Evaluation (`from __future__ import annotations`) in 3.10
 
-PEP 563 was scheduled to become the default in 3.10, but the Steering Council postponed it (and later superseded it by PEP 649/749, which landed in 3.14). In 3.10 the future import still changes behavior **per module**:[^5][^15]
+PEP 563 was scheduled to become the default in 3.10, but the Steering Council postponed it (and later superseded it by PEP 649/749, which landed in 3.14). In 3.10 the future import still changes behavior **per module**:
 
 - Without it, annotations are evaluated at definition time (so forward references need quotes).
 - With it, every annotation is stored as a string; `typing.get_type_hints()` or `inspect.get_annotations(obj, eval_str=True)` evaluates them on demand.
@@ -967,7 +967,7 @@ print(inspect.get_annotations(f))                  # {'x': 'int', 'return': 'str
 print(inspect.get_annotations(f, eval_str=True))   # {'x': <class 'int'>, 'return': <class 'str'>}
 ```
 
-`inspect.get_annotations()` is the 3.10 best practice for reading an object's own annotations; use `typing.get_type_hints()` when you need the merged class hierarchy (MRO) with forward references resolved. Never read `cls.__dict__['__annotations__']` or `cls.__annotations__` directly in framework code.[^16]
+`inspect.get_annotations()` is the 3.10 best practice for reading an object's own annotations; use `typing.get_type_hints()` when you need the merged class hierarchy (MRO) with forward references resolved. Never read `cls.__dict__['__annotations__']` or `cls.__annotations__` directly in framework code.
 
 ##### Other 3.10 Typing Changes
 
@@ -1072,7 +1072,7 @@ print(matrix)                   # [[99, 0, 0], [0, 0, 0], [0, 0, 0]]
 
 ##### New in 3.10: `bisect` with `key=`
 
-`bisect.bisect_left/bisect_right/insort_left/insort_right` accept a `key` function — no more parallel key lists.[^1]
+`bisect.bisect_left/bisect_right/insort_left/insort_right` accept a `key` function — no more parallel key lists.
 
 ```python
 import bisect
@@ -1163,7 +1163,7 @@ q.appendleft('urgent')
 print(q.popleft())               # urgent
 ```
 
-`Counter.total()` replaces `sum(c.values())` (new in 3.10).[^17] The ABCs (`Mapping`, `Sequence`, `Callable`…) are **no longer importable from `collections`** — see the migration section.
+`Counter.total()` replaces `sum(c.values())` (new in 3.10). The ABCs (`Mapping`, `Sequence`, `Callable`…) are **no longer importable from `collections`** — see the migration section.
 
 ***
 
@@ -1430,7 +1430,7 @@ Why it matters for review:
 
 - `kw_only` removes the "non-default argument follows default argument" constraint and prevents positional-argument mixups in wide records (`Request('GET', '/x')` cannot silently swap arguments when every field is keyword-only).
 - Keyword-only fields are **moved to the end** of `__init__`, after all positional fields, regardless of declaration order — keep this in mind with inheritance.
-- `slots=True` returns a **new class** (the decorator must recreate the class to add `__slots__`). Consequences on 3.10:[^18]
+- `slots=True` returns a **new class** (the decorator must recreate the class to add `__slots__`). Consequences on 3.10:
 
 ```python
 import functools
@@ -1562,7 +1562,7 @@ class Circle(Shape):
 print(Circle.unit().area, Circle(2.0, color='red'))   # 3.141592653589793 Circle(color='red')
 ```
 
-**3.10 change to `staticmethod`/`classmethod`:** they now copy `__name__`, `__qualname__`, `__doc__`, `__module__`, `__annotations__` from the wrapped function and expose `__wrapped__`; a `staticmethod` object is now directly callable (e.g. from a class-body dict of handlers).[^1]
+**3.10 change to `staticmethod`/`classmethod`:** they now copy `__name__`, `__qualname__`, `__doc__`, `__module__`, `__annotations__` from the wrapped function and expose `__wrapped__`; a `staticmethod` object is now directly callable (e.g. from a class-body dict of handlers).
 
 ```python
 def _double(x: int) -> int:
@@ -1643,7 +1643,7 @@ print(str(Env.PROD))               # 'Env.PROD' — str() and format() DISAGREE 
 print(f'{HttpStatus.OK}', str(HttpStatus.OK))   # '200' 'HttpStatus.OK' on 3.10
 ```
 
-**Pitfall (upgrade hazard):** for mixed-in enums, 3.10's `format()`/f-strings use the *value* while `str()` uses `Class.MEMBER`. 3.11 changed `format()` to match `str()` for `(str, Enum)` mixins (and changed `IntEnum.__str__` to the value).[^19] Code that builds URLs, SQL, file names or log fields with `f'{member}'` silently changes output on upgrade. Always write `member.value` explicitly.
+**Pitfall (upgrade hazard):** for mixed-in enums, 3.10's `format()`/f-strings use the *value* while `str()` uses `Class.MEMBER`. 3.11 changed `format()` to match `str()` for `(str, Enum)` mixins (and changed `IntEnum.__str__` to the value). Code that builds URLs, SQL, file names or log fields with `f'{member}'` silently changes output on upgrade. Always write `member.value` explicitly.
 
 ***
 
@@ -1787,7 +1787,7 @@ asyncio.run(main())
 
 ##### New in 3.10: `EncodingWarning` and `encoding="locale"` (PEP 597)
 
-`open()`, `Path.read_text()`, `Path.write_text()`, `io.TextIOWrapper` and friends default to the **locale** encoding when `encoding=` is omitted. On Linux/macOS that is usually UTF-8; on Windows it is usually a legacy code page such as cp1252 — so the same code corrupts data or raises `UnicodeDecodeError` depending on where it runs. 3.10 adds an **opt-in** `EncodingWarning` to find every such call.[^6][^20]
+`open()`, `Path.read_text()`, `Path.write_text()`, `io.TextIOWrapper` and friends default to the **locale** encoding when `encoding=` is omitted. On Linux/macOS that is usually UTF-8; on Windows it is usually a legacy code page such as cp1252 — so the same code corrupts data or raises `UnicodeDecodeError` depending on where it runs. 3.10 adds an **opt-in** `EncodingWarning` to find every such call.
 
 ```bash
 # Enable in CI / test runs:
@@ -1887,7 +1887,7 @@ except FileNotFoundError:
     print('missing')
 ```
 
-Since **3.10.18**, `os.path.realpath()` also accepts `strict=os.path.ALLOW_MISSING` (resolve symlinks, tolerate missing path components, but re-raise errors other than `FileNotFoundError`) — added as part of the tarfile CVE-2025-4517 fixes.[^21]
+Since **3.10.18**, `os.path.realpath()` also accepts `strict=os.path.ALLOW_MISSING` (resolve symlinks, tolerate missing path components, but re-raise errors other than `FileNotFoundError`) — added as part of the tarfile CVE-2025-4517 fixes.
 
 ##### Other 3.10 I/O Additions
 
@@ -1924,7 +1924,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ##### Removed in 3.10: the `loop=` Parameter
 
-The `loop` argument of the high-level API — `asyncio.sleep()`, `gather()`, `wait_for()`, `wait()`, `shield()`, `as_completed()`, `open_connection()`, `start_server()`, `Queue()`, `Lock()`, `Event()`, `Condition()`, `Semaphore()`, `BoundedSemaphore()` — is **removed**; passing it raises `TypeError`.[^1]
+The `loop` argument of the high-level API — `asyncio.sleep()`, `gather()`, `wait_for()`, `wait()`, `shield()`, `as_completed()`, `open_connection()`, `start_server()`, `Queue()`, `Lock()`, `Event()`, `Condition()`, `Semaphore()`, `BoundedSemaphore()` — is **removed**; passing it raises `TypeError`.
 
 ```python
 import asyncio
@@ -1950,7 +1950,7 @@ To run a coroutine on a loop in *another thread*, use `asyncio.run_coroutine_thr
 
 ##### `get_event_loop()` — the Patch-Level Story
 
-`asyncio.get_event_loop()` without a running loop was slated for deprecation in 3.10, and its behavior **changed across 3.10 patch releases**:[^22][^23]
+`asyncio.get_event_loop()` without a running loop was slated for deprecation in 3.10, and its behavior **changed across 3.10 patch releases**:
 
 | 3.10 patch | `get_event_loop()` with no running loop |
 |---|---|
@@ -2119,7 +2119,7 @@ t.daemon = True                              # ✅ not setDaemon(True)
 t.name = 'bg'                                # ✅ not setName()
 ```
 
-`currentThread()`, `activeCount()`, `Condition.notifyAll()`, `Event.isSet()`, `Thread.setName()/getName()`, `Thread.isDaemon()/setDaemon()` emit `DeprecationWarning` in 3.10.[^1] New: `threading.gettrace()`, `threading.getprofile()`, `threading.__excepthook__`.
+`currentThread()`, `activeCount()`, `Condition.notifyAll()`, `Event.isSet()`, `Thread.setName()/getName()`, `Thread.isDaemon()/setDaemon()` emit `DeprecationWarning` in 3.10. New: `threading.gettrace()`, `threading.getprofile()`, `threading.__excepthook__`.
 
 ##### `concurrent.futures`
 
@@ -2135,7 +2135,7 @@ with ThreadPoolExecutor(max_workers=4) as pool:
 print(dict(sorted(results.items())))   # {0: 0, 1: 2, 2: 4, 3: 6, 4: 8}
 ```
 
-`concurrent.futures.TimeoutError` is **not** the builtin `TimeoutError` on 3.10 (aliased in 3.11). `shutdown(cancel_futures=True)` (3.9+) still has the unfixed `as_completed()`/`wait()` hang on drained futures (bpo-43727) — filter `f.cancelled()` first.[^24]
+`concurrent.futures.TimeoutError` is **not** the builtin `TimeoutError` on 3.10 (aliased in 3.11). `shutdown(cancel_futures=True)` (3.9+) still has the unfixed `as_completed()`/`wait()` hang on drained futures (bpo-43727) — filter `f.cancelled()` first.
 
 ##### `multiprocessing`
 
@@ -2154,7 +2154,7 @@ if __name__ == '__main__':          # required with the spawn start method (Wind
 
 #### `collections.abc` — Aliases Removed in 3.10
 
-The ABC aliases in `collections` (`collections.Mapping`, `collections.Sequence`, `collections.Callable`, `collections.Iterable`, …), deprecated since 3.3, are **removed** in 3.10. This is the most common import-time failure when upgrading from 3.9:[^25]
+The ABC aliases in `collections` (`collections.Mapping`, `collections.Sequence`, `collections.Callable`, `collections.Iterable`, …), deprecated since 3.3, are **removed** in 3.10. This is the most common import-time failure when upgrading from 3.9:
 
 ```python
 import collections
@@ -2182,7 +2182,7 @@ grep -rnE "collections\.(Mapping|MutableMapping|Sequence|MutableSequence|Set|Mut
 
 #### New in 3.10: Precise Line Numbers (PEP 626)
 
-Tracing (`sys.settrace`), profilers, coverage tools and debuggers now get a line event for every executed line and only for executed lines; `frame.f_lineno` is always correct.[^26] Practical consequences:
+Tracing (`sys.settrace`), profilers, coverage tools and debuggers now get a line event for every executed line and only for executed lines; `frame.f_lineno` is always correct. Practical consequences:
 
 - **Coverage numbers can shift** when moving from 3.9 to 3.10 (e.g. `pass`, `else`, decorators and multi-line expressions are reported differently). Re-baseline coverage thresholds instead of chasing phantom misses.
 - `code.co_lnotab` is deprecated (silently in 3.10; it emits `DeprecationWarning` from 3.12); use `code.co_lines()`, which yields `(start, end, line)` ranges.
@@ -2231,9 +2231,9 @@ except ZeroDivisionError:
 
 ##### New in 3.10: OpenSSL 1.1.1+ Required and Stricter `ssl` Defaults (PEP 644)
 
-3.10 requires **OpenSSL 1.1.1 or newer**; building against 1.0.2 or LibreSSL is unsupported. Old enterprise Linux images that only ship OpenSSL 1.0.2 produce a 3.10 build without a working `ssl` module (pip then reports that the ssl module in Python is not available).[^27]
+3.10 requires **OpenSSL 1.1.1 or newer**; building against 1.0.2 or LibreSSL is unsupported. Old enterprise Linux images that only ship OpenSSL 1.0.2 produce a 3.10 build without a working `ssl` module (pip then reports that the ssl module in Python is not available).
 
-The `ssl` module also got secure-by-default settings:[^1][^28]
+The `ssl` module also got secure-by-default settings:
 
 ```python
 import ssl
@@ -2274,7 +2274,7 @@ with warnings.catch_warnings():
 | 3.10.18 | `tarfile` filter bypasses fixed (CVE-2025-4517, -4138, -4330, CVE-2024-12718); `os.path.ALLOW_MISSING` |
 | 3.10.19–3.10.22 | `html.parser` HTML5-conformant parsing and quadratic-time fixes, zip64 consistency checks, `http.client` memory/trailer-flood DoS fixes, `http.cookies`/`wsgiref` control-character rejection, further `tarfile` filter bypasses (incl. CVE-2026-82049 in 3.10.22), bundled libexpat updates |
 
-Source: What's New 3.10 and the 3.10 changelog.[^1][^23] Because 3.10 is now EOL, vulnerabilities found after October 2026 will **not** be fixed in 3.10.
+Source: What's New 3.10 and the 3.10 changelog. Because 3.10 is now EOL, vulnerabilities found after October 2026 will **not** be fixed in 3.10.
 
 ##### `tarfile` Extraction — Always Pass `filter=` (3.10.12+)
 
@@ -2299,7 +2299,7 @@ with tarfile.open(fileobj=buf) as tar:
         print(type(e).__name__)                 # OutsideDestinationError
 ```
 
-On 3.10 the default is still the unsafe legacy behavior (with no warning); 3.12 warns and 3.14 defaults to `'data'`. Never call `extractall()`/`extract()` on untrusted archives without `filter='data'`. Feature-detect with `hasattr(tarfile, 'data_filter')` if the code might run on a patch older than 3.10.12.[^29]
+On 3.10 the default is still the unsafe legacy behavior (with no warning); 3.12 warns and 3.14 defaults to `'data'`. Never call `extractall()`/`extract()` on untrusted archives without `filter='data'`. Feature-detect with `hasattr(tarfile, 'data_filter')` if the code might run on a patch older than 3.10.12.
 
 ##### Input Validation, Secrets, SQL, Subprocess, XML
 
@@ -2462,7 +2462,7 @@ print(len(cache))                         # 0
 
 #### Performance
 
-3.10 is **not** the "Faster CPython" release (that is 3.11, with the specializing adaptive interpreter). 3.10's gains are targeted:[^1]
+3.10 is **not** the "Faster CPython" release (that is 3.11, with the specializing adaptive interpreter). 3.10's gains are targeted:
 
 - `LOAD_ATTR` per-opcode cache: attribute reads ~36% faster, `__slots__` attributes ~44% faster.
 - `str()`, `bytes()`, `bytearray()` constructors ~30–40% faster for small objects; `map`, `filter`, `reversed`, `bool`, `float` use vectorcall.
@@ -2554,7 +2554,7 @@ uv venv --python 3.10               # uv can provision the (EOL) 3.10 interprete
 
 ##### Deprecated in 3.10: `distutils` (PEP 632)
 
-The whole `distutils` package emits `DeprecationWarning` on import in 3.10 and is **removed in 3.12**.[^30]
+The whole `distutils` package emits `DeprecationWarning` on import in 3.10 and is **removed in 3.12**.
 
 | `distutils` API | Replacement |
 |---|---|
@@ -2650,7 +2650,7 @@ mypy --python-version 3.10 --strict src/
 
 #### Removed and Changed in 3.10 — Migration Notes
 
-**Removed in 3.10 (code that worked on 3.9 breaks):**[^1]
+**Removed in 3.10 (code that worked on 3.9 breaks):**
 
 | Removed | Replacement |
 |---|---|
