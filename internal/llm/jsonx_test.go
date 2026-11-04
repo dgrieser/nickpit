@@ -76,6 +76,17 @@ func TestRepairJSON(t *testing.T) {
 		// inside the rewritten double-quoted string; it must become a bare '.
 		{"unescapes escaped single quote in single-quoted string", `{'text': 'it\'s fine'}`, `{"text": "it's fine"}`},
 		{"escaped single quotes do not terminate the string", `{'a': '\'quoted\' word'}`, `{"a": "'quoted' word"}`},
+		{"escapes unescaped double quotes in text", `{"title": "Use "strict" mode", "line": 3}`, `{"title": "Use \"strict\" mode", "line": 3}`},
+		{"quote before a comma inside text", `{"a": "a "quoted", word", "b": "ok"}`, `{"a": "a \"quoted\", word", "b": "ok"}`},
+		{"quote at the end of a value", `{"a": "say "hi""}`, `{"a": "say \"hi\""}`},
+		{"apostrophe in single-quoted string", `{'en': 'A dog's toy', 'n': 1}`, `{"en": "A dog's toy", "n": 1}`},
+		{"trailing comma before line comment", "{\"a\": 1, // note\n}", "{\"a\": 1 \n}"},
+		{"trailing comma before block comment", `[1, 2, /* more */ ]`, `[1, 2  ]`},
+		{"raw newline and tab in string", "{\"a\": \"line one\nline\ttwo\"}", `{"a": "line one\nline\ttwo"}`},
+		{"comment after a value", `{"a":"b" /* note */}`, `{"a":"b" }`},
+		{"comment after a key", "{\"a\" // the key\n: 1}", "{\"a\" \n: 1}"},
+		{"comment after a comma", "{\"a\": \"b\", // next\n \"c\": 1}", "{\"a\": \"b\", \n \"c\": 1}"},
+		{"keeps spacing after commas", `{"a": [1, 2], "b": "x"}`, `{"a": [1, 2], "b": "x"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

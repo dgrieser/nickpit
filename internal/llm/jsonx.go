@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -445,14 +446,32 @@ func scanBalanced(content string, start int, open, close byte) (string, int, boo
 }
 
 // RepairJSON applies best-effort fixes to common malformations produced by
-// language models: trailing commas before closing brackets, single-quoted
-// string literals, // and /* */ comments, and Python-style True/False/None
-// literals. The function preserves the contents of valid JSON strings.
+// language models: trailing commas before closing brackets (also with
+// comments in between), single-quoted string literals, // and /* */
+// comments, Python-style True/False/None literals, raw control characters
+// inside strings, and double quotes or apostrophes inside a string that the
+// model did not escape ("a "quoted" word", 'it's'). A quote ends a string
+// only when what follows it can continue the JSON: a colon, a closing
+// bracket, the end, or a comma followed by the start of a value, key or
+// comment; any other quote is kept as part of the text. The function
+// preserves the contents of valid JSON strings.
 func RepairJSON(data []byte) []byte {
-	out := make([]byte, 0, len(data))
+	out := make([]byte, 0, len(data)+16)
 	inString := false
 	stringQuote := byte(0)
 	escape := false
+	// A comma outside strings waits for the next token, with the whitespace
+	// after it: before a closing bracket it is dropped (trailing comma),
+	// also when comments come between.
+	pendingComma := false
+	var pendingSpace []byte
+	flushComma := func() {
+		if pendingComma {
+			out = append(out, ',')
+			out = append(out, pendingSpace...)
+			pendingComma, pendingSpace = false, pendingSpace[:0]
+		}
+	}
 	for i := 0; i < len(data); i++ {
 		c := data[i]
 		if escape {
@@ -461,7 +480,8 @@ func RepairJSON(data []byte) []byte {
 			continue
 		}
 		if inString {
-			if c == '\\' {
+			switch {
+			case c == '\\':
 				// Single-quoted strings escape their own quote as \'. That
 				// escape is invalid JSON inside the rewritten double-quoted
 				// string, so emit a bare apostrophe instead.
@@ -472,24 +492,22 @@ func RepairJSON(data []byte) []byte {
 				}
 				out = append(out, c)
 				escape = true
-				continue
-			}
-			if c == stringQuote {
+			case c == stringQuote && quoteEndsString(data, i+1):
 				inString = false
-				if stringQuote == '\'' {
-					out = append(out, '"')
-					continue
-				}
-				out = append(out, c)
-				continue
-			}
-			// Inside a single-quoted string, unescaped double quotes must be
-			// escaped to keep the rewritten JSON valid.
-			if stringQuote == '\'' && c == '"' {
+				out = append(out, '"')
+			case c == '"':
+				// An unescaped double quote inside the text (or inside a
+				// single-quoted string) must be escaped to stay valid.
 				out = append(out, '\\', '"')
-				continue
+			case c == '\n':
+				out = append(out, '\\', 'n')
+			case c == '\r':
+				out = append(out, '\\', 'r')
+			case c == '\t':
+				out = append(out, '\\', 't')
+			default:
+				out = append(out, c)
 			}
-			out = append(out, c)
 			continue
 		}
 
@@ -499,7 +517,11 @@ func RepairJSON(data []byte) []byte {
 				i++
 			}
 			if i < len(data) {
-				out = append(out, '\n')
+				if pendingComma {
+					pendingSpace = append(pendingSpace, '\n')
+				} else {
+					out = append(out, '\n')
+				}
 			}
 			continue
 		}
@@ -513,28 +535,34 @@ func RepairJSON(data []byte) []byte {
 			continue
 		}
 
-		if c == '"' {
-			inString = true
-			stringQuote = '"'
+		if isJSONSpace(c) {
+			if pendingComma {
+				pendingSpace = append(pendingSpace, c)
+			} else {
+				out = append(out, c)
+			}
+			continue
+		}
+		if c == ',' {
+			flushComma() // a second comma in a row: both stay
+			pendingComma = true
+			continue
+		}
+		if c == '}' || c == ']' {
+			if pendingComma { // trailing comma: dropped, its whitespace kept
+				out = append(out, pendingSpace...)
+				pendingComma, pendingSpace = false, pendingSpace[:0]
+			}
 			out = append(out, c)
 			continue
 		}
-		if c == '\'' {
+		flushComma()
+
+		if c == '"' || c == '\'' {
 			inString = true
-			stringQuote = '\''
+			stringQuote = c
 			out = append(out, '"')
 			continue
-		}
-
-		// Trailing comma: "," followed by whitespace, then } or ]
-		if c == ',' {
-			j := i + 1
-			for j < len(data) && isJSONSpace(data[j]) {
-				j++
-			}
-			if j < len(data) && (data[j] == '}' || data[j] == ']') {
-				continue
-			}
 		}
 
 		// Replace Python-style literals when they appear as standalone tokens.
@@ -547,22 +575,76 @@ func RepairJSON(data []byte) []byte {
 			switch word {
 			case "True":
 				out = append(out, []byte("true")...)
-				i = j - 1
-				continue
 			case "False":
 				out = append(out, []byte("false")...)
-				i = j - 1
-				continue
 			case "None":
 				out = append(out, []byte("null")...)
-				i = j - 1
-				continue
+			default:
+				out = append(out, word...)
 			}
+			i = j - 1
+			continue
 		}
 
 		out = append(out, c)
 	}
+	flushComma()
 	return out
+}
+
+// quoteEndsString reports whether a quote just before data[i] closes its
+// string: whitespace, then a colon, a closing bracket or the end; or a comma
+// followed by what starts a JSON value, key or comment. A comma followed by
+// a word belongs to the text ("a "b", c"). Comments count as whitespace.
+func quoteEndsString(data []byte, i int) bool {
+	i = skipJSONSpace(data, i)
+	if i >= len(data) {
+		return true
+	}
+	switch data[i] {
+	case ':', '}', ']':
+		return true
+	case ',':
+	default:
+		return false
+	}
+	j := skipJSONSpace(data, i+1)
+	if j >= len(data) {
+		return true
+	}
+	switch c := data[j]; {
+	case c == '"', c == '\'', c == '{', c == '[', c == '}', c == ']', c == '-', c == '/', c >= '0' && c <= '9':
+		return true
+	}
+	for _, w := range []string{"true", "false", "null", "True", "False", "None"} {
+		if bytes.HasPrefix(data[j:], []byte(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+// skipJSONSpace skips whitespace and // or /* */ comments from data[i].
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) {
+		switch {
+		case isJSONSpace(data[i]):
+			i++
+		case data[i] == '/' && i+1 < len(data) && data[i+1] == '/':
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case data[i] == '/' && i+1 < len(data) && data[i+1] == '*':
+			end := bytes.Index(data[i+2:], []byte("*/"))
+			if end < 0 {
+				return len(data)
+			}
+			i += end + 4
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 func isJSONSpace(c byte) bool {
