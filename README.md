@@ -699,8 +699,8 @@ Installed completions suggest commands and flags plus saved session/finding ids,
 
 Triggers:
 
-- **Auto**: MR opened, reopened, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs are skipped. New commits never re-review automatically; request one with the trigger emoji or the review command.
-- **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts. Revoking the trigger emoji aborts the MR's queued or running review.
+- **Auto**: MR opened, reopened, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs and MRs carrying a label listed in `exclude_labels` (case-insensitive, e.g. `nickpit::skip`) are skipped. New commits never re-review automatically; request one with the trigger emoji or the review command.
+- **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts and excluded-label MRs. Revoking the trigger emoji aborts the MR's queued or running review.
 - **Commands**: an MR comment starting with `/nickpit <command>` (keyword configurable via `command_keyword`):
   - `/nickpit review` — request a review (same semantics as the trigger emoji: any project, drafts too)
   - `/nickpit abort` — cancel the queued or running review for this MR

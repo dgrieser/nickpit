@@ -34,6 +34,7 @@ type fakeGitLab struct {
 	topics   []string
 	state    string
 	draft    bool
+	labels   []string
 	headSHA  string
 	baseSHA  string
 	awards   []recordedAward
@@ -286,6 +287,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state":     f.state,
 				"draft":     f.draft,
+				"labels":    f.labels,
 				"sha":       f.headSHA,
 				"diff_refs": map[string]any{"base_sha": f.baseSHA},
 			})

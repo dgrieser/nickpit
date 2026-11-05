@@ -107,8 +107,12 @@ type jobState struct {
 
 // WorkerConfig is the static per-review configuration shared by all workers.
 type WorkerConfig struct {
-	Topic        string
-	TriggerEmoji string
+	Topic string
+	// ExcludeLabels are label names (matched case-insensitively) that opt a
+	// merge request out of auto reviews. Manual requests still run, like on
+	// drafts: an explicit human request overrides the opt-out.
+	ExcludeLabels []string
+	TriggerEmoji  string
 	// StartEmoji marks the merge request while a review runs; AckEmoji is the
 	// same marker on the command note (awarded by the handler). Both are
 	// replaced when the review ends: DoneEmoji when it landed, FailEmoji when it

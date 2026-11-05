@@ -233,6 +233,10 @@ serve:
   #   --set serve.gitlabBaseURL=https://gitlab.example.com
   gitlabBaseURL: ""
   topic: "nickpit"
+  # MR labels (case-insensitive) that opt a merge request out of auto reviews,
+  # e.g. ["nickpit::skip"]. Manual requests (trigger emoji, review command)
+  # still run.
+  excludeLabels: []
   triggerEmoji: "nickpit"
   # "eyes" awarded at review start; "" disables. Must differ from triggerEmoji.
   startEmoji: "eyes"

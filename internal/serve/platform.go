@@ -67,6 +67,8 @@ type RequestStatus struct {
 	// BaseSHA is the diff base (merge base); with HeadSHA it identifies the
 	// request's current diff.
 	BaseSHA string
+	// Labels are the request's current label names.
+	Labels []string
 }
 
 // Remote is what the review path asks of a group's forge account.

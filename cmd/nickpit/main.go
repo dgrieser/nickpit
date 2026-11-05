@@ -1089,16 +1089,17 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				log.Info("review job journal enabled", "dir", cfg.StateDir)
 			}
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, journal, serve.WorkerConfig{
-				Topic:        cfg.Topic,
-				TriggerEmoji: cfg.TriggerEmoji,
-				StartEmoji:   cfg.StartEmojiName(),
-				AckEmoji:     cfg.AckEmojiName(),
-				DoneEmoji:    cfg.DoneEmojiName(),
-				FailEmoji:    cfg.FailEmojiName(),
-				BaseURL:      baseURL,
-				ConfigPath:   a.configPath,
-				ExtraArgs:    childArgs,
-				LogDir:       cfg.LogDir,
+				Topic:         cfg.Topic,
+				ExcludeLabels: append([]string(nil), cfg.ExcludeLabels...),
+				TriggerEmoji:  cfg.TriggerEmoji,
+				StartEmoji:    cfg.StartEmojiName(),
+				AckEmoji:      cfg.AckEmojiName(),
+				DoneEmoji:     cfg.DoneEmojiName(),
+				FailEmoji:     cfg.FailEmojiName(),
+				BaseURL:       baseURL,
+				ConfigPath:    a.configPath,
+				ExtraArgs:     childArgs,
+				LogDir:        cfg.LogDir,
 			}, log)
 			responseController := serve.NewResponseController(serve.ResponseConfig{
 				Enabled:        cfg.ChatEnabled(),

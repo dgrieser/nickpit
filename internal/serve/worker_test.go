@@ -140,6 +140,40 @@ func TestWorkerDraftRecheckSkipsAutoNotManual(t *testing.T) {
 	}
 }
 
+func TestWorkerExcludedLabelSkipsAutoNotManual(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", labels: []string{"backend", "NickPit::Skip"}, headSHA: "sha-1"}
+	cfg := workerCfg()
+	cfg.ExcludeLabels = []string{"nickpit::skip"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, cfg)
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 0 {
+		t.Fatal("MR with excluded label must not run on auto trigger")
+	}
+	if posted := fake.awardPosted(); len(posted) != 0 {
+		t.Fatalf("award posts = %v, want none for excluded auto review", posted)
+	}
+
+	manual := autoEvent(7, "sha-1", group)
+	manual.Kind = TriggerManual
+	dispatcher.process(context.Background(), manual)
+	if len(runner.ran()) != 1 {
+		t.Fatal("MR with excluded label must run on manual trigger")
+	}
+}
+
+func TestWorkerUnrelatedLabelRunsAuto(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", labels: []string{"backend"}, headSHA: "sha-1"}
+	cfg := workerCfg()
+	cfg.ExcludeLabels = []string{"nickpit::skip"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, cfg)
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 1 {
+		t.Fatal("MR without excluded label must run on auto trigger")
+	}
+}
+
 // The outcome emoji REPLACES the start emoji, so disabling the start emoji
 // leaves the MR undecorated end to end — no outcome reaction either.
 func TestWorkerStartEmojiDisabled(t *testing.T) {
