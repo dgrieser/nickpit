@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -119,6 +120,12 @@ func (d *Dispatcher) review(ctx context.Context, event *Event, placed *reactions
 	if status.Draft && event.Kind == TriggerAuto {
 		log.Info("skipping review", "reason", "draft")
 		return outcomeFailed
+	}
+	if event.Kind == TriggerAuto {
+		if label, ok := excludedLabel(status.Labels, d.cfg.ExcludeLabels); ok {
+			log.Info("skipping review", "reason", "excluded label", "label", label)
+			return outcomeFailed
+		}
 	}
 	if event.Kind == TriggerAuto && d.alreadyReviewed(event.ProjectID, event.IID, status.HeadSHA, status.BaseSHA) {
 		log.Info("skipping review", "reason", "diff already reviewed", "sha", status.HeadSHA, "base", status.BaseSHA)
@@ -441,4 +448,18 @@ func eventWithReactions(event Event, remaining reactions) Event {
 		event.AckCleanupUntil = time.Time{}
 	}
 	return event
+}
+
+// excludedLabel returns the first of the request's labels that matches an
+// excluded name. GitLab label names are unique case-insensitively within a
+// project, so the match ignores case.
+func excludedLabel(labels, excluded []string) (string, bool) {
+	for _, label := range labels {
+		for _, name := range excluded {
+			if strings.EqualFold(label, name) {
+				return label, true
+			}
+		}
+	}
+	return "", false
 }

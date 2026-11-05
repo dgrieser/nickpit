@@ -129,6 +129,12 @@ review_concurrency: {{ .Values.serve.reviewConcurrency }}
 shutdown_grace: {{ .Values.serve.shutdownGrace | quote }}
 gitlab_base_url: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
 topic: {{ .Values.serve.topic | quote }}
+{{- with .Values.serve.excludeLabels }}
+exclude_labels:
+{{- range . }}
+  - {{ . | quote }}
+{{- end }}
+{{- end }}
 trigger_emoji: {{ .Values.serve.triggerEmoji | quote }}
 start_emoji: {{ .Values.serve.startEmoji | quote }}
 command_keyword: {{ .Values.serve.commandKeyword | quote }}

@@ -28,6 +28,11 @@ gitlab_base_url: "https://gitlab.example.com"
 # Projects carrying this topic are auto-reviewed on MR activity.
 topic: "nickpit"
 
+# MRs carrying any of these labels (case-insensitive) are never auto-reviewed,
+# even in opted-in projects. The trigger emoji or review command still works.
+# exclude_labels: ["nickpit::skip"]
+exclude_labels: []
+
 # Awarding this emoji on an MR requests a review (any project, drafts too).
 trigger_emoji: "nickpit"
 

@@ -38,19 +38,23 @@ const (
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
 type ServeConfig struct {
-	Listen            string  `yaml:"listen"`
-	LogDir            string  `yaml:"log_dir"`
-	ReviewConcurrency int     `yaml:"review_concurrency"`
-	ShutdownGrace     string  `yaml:"shutdown_grace"`
-	GitLabBaseURL     string  `yaml:"gitlab_base_url"`
-	Topic             string  `yaml:"topic"`
-	TriggerEmoji      string  `yaml:"trigger_emoji"`
-	StartEmoji        *string `yaml:"start_emoji"`
-	CommandKeyword    string  `yaml:"command_keyword"`
-	AckEmoji          *string `yaml:"ack_emoji"`
-	AbortEmoji        *string `yaml:"abort_emoji"`
-	DoneEmoji         *string `yaml:"done_emoji"`
-	FailEmoji         *string `yaml:"fail_emoji"`
+	Listen            string `yaml:"listen"`
+	LogDir            string `yaml:"log_dir"`
+	ReviewConcurrency int    `yaml:"review_concurrency"`
+	ShutdownGrace     string `yaml:"shutdown_grace"`
+	GitLabBaseURL     string `yaml:"gitlab_base_url"`
+	Topic             string `yaml:"topic"`
+	// ExcludeLabels lists MR label names (case-insensitive) that opt a merge
+	// request out of auto reviews even in an opted-in project. Manual requests
+	// (trigger emoji, review command) still run.
+	ExcludeLabels  []string `yaml:"exclude_labels"`
+	TriggerEmoji   string   `yaml:"trigger_emoji"`
+	StartEmoji     *string  `yaml:"start_emoji"`
+	CommandKeyword string   `yaml:"command_keyword"`
+	AckEmoji       *string  `yaml:"ack_emoji"`
+	AbortEmoji     *string  `yaml:"abort_emoji"`
+	DoneEmoji      *string  `yaml:"done_emoji"`
+	FailEmoji      *string  `yaml:"fail_emoji"`
 	// StateDir, when set, makes the daemon journal accepted-but-unfinished
 	// review jobs as small JSON files there and resume them at the next start,
 	// so a restart (crash, upgrade) neither loses queued reviews nor strands
@@ -508,6 +512,11 @@ func (c *ServeConfig) Validate() error {
 	}
 	if c.Topic == "" {
 		errs = append(errs, errors.New("topic must not be empty"))
+	}
+	for i, label := range c.ExcludeLabels {
+		if strings.TrimSpace(label) == "" {
+			errs = append(errs, fmt.Errorf("exclude_labels[%d] must not be empty", i))
+		}
 	}
 	if c.TriggerEmoji == "" {
 		errs = append(errs, errors.New("trigger_emoji must not be empty"))

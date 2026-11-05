@@ -17,16 +17,19 @@ import (
 )
 
 type mrResponse struct {
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	WebURL          string `json:"web_url"`
-	SHA             string `json:"sha"`
-	State           string `json:"state"`
-	Draft           bool   `json:"draft"`
-	SourceBranch    string `json:"source_branch"`
-	TargetBranch    string `json:"target_branch"`
-	SourceProjectID int    `json:"source_project_id"`
-	TargetProjectID int    `json:"target_project_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	WebURL      string `json:"web_url"`
+	SHA         string `json:"sha"`
+	State       string `json:"state"`
+	Draft       bool   `json:"draft"`
+	// Labels are the MR's label names (the REST default, without
+	// with_labels_details).
+	Labels          []string `json:"labels"`
+	SourceBranch    string   `json:"source_branch"`
+	TargetBranch    string   `json:"target_branch"`
+	SourceProjectID int      `json:"source_project_id"`
+	TargetProjectID int      `json:"target_project_id"`
 	DiffRefs        struct {
 		BaseSHA  string `json:"base_sha"`
 		HeadSHA  string `json:"head_sha"`
@@ -268,6 +271,9 @@ type MRStatus struct {
 	Draft   bool
 	HeadSHA string
 	BaseSHA string
+	// Labels are the MR's current label names; the daemon skips auto reviews
+	// of MRs carrying an excluded label.
+	Labels []string
 }
 
 // FetchMRStatus fetches an MR's current state by numeric project ID.
@@ -287,7 +293,7 @@ func (c *Client) fetchMRStatus(ctx context.Context, escapedProject string, iid i
 	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escapedProject, iid), &mr); err != nil {
 		return nil, err
 	}
-	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA}, nil
+	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA, Labels: mr.Labels}, nil
 }
 
 // DiffRefs holds the three commit SHAs GitLab requires in a diff-note position.

@@ -268,6 +268,37 @@ groups:
 	}
 }
 
+func TestLoadServeExcludeLabels(t *testing.T) {
+	path := writeServeConfig(t, `
+exclude_labels: ["nickpit::skip", "dependencies"]
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ExcludeLabels) != 2 || cfg.ExcludeLabels[0] != "nickpit::skip" || cfg.ExcludeLabels[1] != "dependencies" {
+		t.Fatalf("exclude labels = %q", cfg.ExcludeLabels)
+	}
+}
+
+func TestLoadServeExcludeLabelsRejectsEmpty(t *testing.T) {
+	path := writeServeConfig(t, `
+exclude_labels: ["skip", " "]
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	_, err := LoadServe(path)
+	if err == nil || !strings.Contains(err.Error(), "exclude_labels[1] must not be empty") {
+		t.Fatalf("err = %v, want exclude_labels[1] rejection", err)
+	}
+}
+
 func TestLoadServeAckEmojiDisabled(t *testing.T) {
 	path := writeServeConfig(t, `
 ack_emoji: ""

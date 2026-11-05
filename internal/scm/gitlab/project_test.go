@@ -71,7 +71,7 @@ func TestFetchMRStatus(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_, _ = w.Write([]byte(`{"state":"opened","draft":true,"sha":"abc123"}`))
+		_, _ = w.Write([]byte(`{"state":"opened","draft":true,"sha":"abc123","labels":["backend","nickpit::skip"]}`))
 	}))
 	defer server.Close()
 
@@ -80,7 +80,8 @@ func TestFetchMRStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != "opened" || !status.Draft || status.HeadSHA != "abc123" {
+	if status.State != "opened" || !status.Draft || status.HeadSHA != "abc123" ||
+		len(status.Labels) != 2 || status.Labels[1] != "nickpit::skip" {
 		t.Fatalf("status = %+v", status)
 	}
 }

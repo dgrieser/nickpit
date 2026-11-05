@@ -90,6 +90,7 @@ func (r gitlabRemote) RequestStatus(ctx context.Context, req Request) (RequestSt
 		Draft:   status.Draft,
 		HeadSHA: status.HeadSHA,
 		BaseSHA: status.BaseSHA,
+		Labels:  status.Labels,
 	}, nil
 }
 
