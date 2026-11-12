@@ -34,6 +34,10 @@ type VerifyRequest struct {
 	// e.g. that it was published on an older revision and may be outdated.
 	// The prompt section is left out entirely when it is empty.
 	Note string
+	// FocusGuidance is verifier guidance specific to the reviewer that raised
+	// the finding (the security rules for review:security findings). The
+	// prompt section is left out entirely when it is empty.
+	FocusGuidance string
 }
 
 type VerifyOptions struct {
@@ -58,6 +62,9 @@ type VerifyOptions struct {
 	// provenance note (VerifyRequest.Note); empty entries and a short slice
 	// mean no note.
 	FindingNotes []string
+	// FocusGuidances, aligned with the findings of the call, is each finding's
+	// reviewer-specific verifier guidance (VerifyRequest.FocusGuidance).
+	FocusGuidances []string
 }
 
 type verifyResult struct {
@@ -124,6 +131,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		FindingNote                string
+		FocusGuidance              string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -133,6 +141,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		FindingNote:                req.Note,
+		FocusGuidance:              req.FocusGuidance,
 	})
 	if err != nil {
 		return nil, usage, agentToolCounts{}, fmt.Errorf("verify: rendering system prompt: %w", err)
@@ -196,7 +205,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{FindingNote: req.Note})
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{FindingNote: req.Note, FocusGuidance: req.FocusGuidance})
 			},
 		})
 		if err != nil {
@@ -296,6 +305,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
 				Note:                      findingNote(opts.FindingNotes, idx),
+				FocusGuidance:             findingNote(opts.FocusGuidances, idx),
 			}
 			result, usage, findingCounts, err := e.verifyFinding(ctx, req)
 			mu.Lock()

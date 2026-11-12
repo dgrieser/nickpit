@@ -34,6 +34,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/categorizer.go`: Private per-finding descriptive classification inside verification. The classifier is blind to routing outcomes, diff scope, tools, and verifier evidence; Go applies the configured drop policy and classification failures fail open.
 - `internal/review/diff_scope.go`: Canonical old/new diff windows (plus a line-1 window for metadata-only symlink changes, which have no hunk), deterministic overlap checks, and scope filtering used for location repair and retry guidance.
 - `internal/review/verifier.go`: Per-finding evidence verification, verifier options, fallback unverified results, and verifier telemetry.
+- `internal/review/security_guides.go`: Loads every `prompts/security/` guide (general first) for the security reviewer, and renders the security verifier rules once from each guide's validation section; only findings of a reviewer vector with `securityGuides` set get them.
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
@@ -215,8 +216,10 @@ This document maps the production Go code. Test files live beside the code they 
 ## Non-Go Assets
 
 - `prompts/`: Agent system prompts and shared prompt snippets.
+- `prompts/security/`: Security guides for the security reviewer and verifier, condensed from the vendored `third_party/security-audit-skill`. Each guide has a `### ` title, `#### Hunt for` and `#### Validate before reporting`; the verifier receives only the title and validation section.
 - `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts. Guides carry no footnote markers; each guide's sources live beside it in `<guide>.citations.md` with back-references to the section and block that cite them. Citation files are embedded but never sent to the model.
 - `workflows/`: Embedded workflow YAML definitions: `default.yaml` for reviews, internal-only `update.yaml` for chat corrections, and `import_sources.yaml` with the per-source defaults of `import-findings`.
 - `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, styleguide detectors, version-keyed styleguide selection with per-language version-source priority, and `toolchain_companions` (dialect guides such as PostgreSQL/MySQL that replace the generic SQL guide when the project pins that server). All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
+- `third_party/security-audit-skill/`: Read-only, unembedded copy of cloudflare/security-audit-skill (MIT) at the commit pinned in `PROVENANCE.yaml` with per-file sha256. `make check-security-upstream` (`tools/check_security_upstream.sh`) verifies the hashes and lists upstream changes since the pin; never bump without reviewing that diff and re-condensing `prompts/security/`.
 - `assets/`: Static assets used by output or packaging.
 - `testdata/`: Fixtures and golden data used by tests.

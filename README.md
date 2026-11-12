@@ -106,6 +106,10 @@ The guides are **constantly updated**, so you get the latest best practices.
 
 Bring your own guides (local files or URLs), or turn built-ins off per language.  
 
+The security reviewer gets its own **security guides**, condensed from Cloudflare's [security-audit-skill](https://github.com/cloudflare/security-audit-skill) (MIT, vendored at a pinned commit in `third_party/security-audit-skill`).  
+It always gets all of them: a general guide plus domain guides for web and auth, data isolation, AI/LLM, cloud and deployment, supply chain, protocols and messaging, memory safety, client side, local IPC and resource exhaustion.  
+Each finding must name the lower-trust actor, the failed control and the concrete result, and its priority follows the demonstrated impact; the verifier checks security findings against the validation rules of every guide.  
+
 
 ### 👀 The "look again" machine
 

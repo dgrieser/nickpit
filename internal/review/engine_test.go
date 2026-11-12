@@ -4323,7 +4323,7 @@ func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
 	}
 	checks := map[string]string{
 		"Code Quality": "- Does it work correctly?",
-		"Security":     "- Are there security concerns?",
+		"Security":     "- Do errors, defaults, and missing configuration fail closed?",
 		"Testing":      "- Are changed behaviors covered by focused tests?",
 	}
 	for name, want := range checks {
@@ -4562,7 +4562,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "review", nil, false, nil)
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, nil, model.ReviewRequest{}, false, "review", nil, false, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -1,10 +1,7 @@
-- Are there security concerns?
-- Are trust boundaries violated?
-- Are there injection vulnerabilities when parsing untrusted inputs?
-- Are secrets and other sensitive data properly stored, tightly access-controlled and protected in transit?
-- Is error handling hardened to prevent leakage of sensitive information?
-- Is authentication using secure credentials, strong session management and brute force protection?
-- Is authorization enforced at every endpoint and object, making sure users can only access explicitly granted resources and actions?
-- Are swallowed or mismatched errors prevented from granting access or hiding security failures?
-- Are security-related edge cases handled?
- Are security controls implemented without harming code readability or maintainability or introducing unnecessary complexity?
+- Which inputs, callers, or stored data does changed code trust, and which can lower-trust actor control?
+- Does untrusted input reach dangerous sink (query, shell, template, path, URL fetch, deserializer, HTML, log), directly
+  or after storage and read-back elsewhere?
+- Does every changed endpoint, job, and bulk or export path check right permission on right object, not only
+  authentication? Can request field, header, or identifier override it?
+- Do errors, defaults, and missing configuration fail closed?
+- Can workflow steps be skipped, replayed, or raced into state business rules forbid?
