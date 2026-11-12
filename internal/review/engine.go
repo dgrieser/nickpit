@@ -628,10 +628,13 @@ type contextAgentResult struct {
 type reviewVector struct {
 	// id is the stable, portable identifier used in workflow specs
 	// (e.g. "security" for the "review:security" step). name is the display name.
-	id               string
-	name             string
-	focusFile        string
-	questionsFile    string
+	id            string
+	name          string
+	focusFile     string
+	questionsFile string
+	// securityGuides sends the prompts/security/ guides selected for the change
+	// to the reviewer and the security rules to its verifier.
+	securityGuides   bool
 	constraints      llm.ResponseConstraints
 	validateResponse func([]model.Finding, *llm.ReviewResponse) *llm.InvalidResponseError
 	enforceResponse  func(string, []model.Finding, *llm.ReviewResponse) string
@@ -645,10 +648,11 @@ var reviewVectors = []reviewVector{
 		questionsFile: "agent_review_codequality_questions.tmpl",
 	},
 	{
-		id:            "security",
-		name:          "Security",
-		focusFile:     "agent_review_security_system_prompt.tmpl",
-		questionsFile: "agent_review_security_questions.tmpl",
+		id:             "security",
+		name:           "Security",
+		focusFile:      "agent_review_security_system_prompt.tmpl",
+		questionsFile:  "agent_review_security_questions.tmpl",
+		securityGuides: true,
 	},
 	{
 		id:            "architecture",
@@ -927,6 +931,10 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts.ReviewerName = reviewerName
 	for _, ref := range refs {
 		opts.FindingNotes = append(opts.FindingNotes, groupAt(groups, ref.vectorIdx).note)
+	}
+	opts.FocusGuidances, err = verifyFocusGuidances(groups, refs)
+	if err != nil {
+		return telemetry, warnings, err
 	}
 	verifyCtx, verifyCancel := budgets.verify.startOrCanceled()
 	defer verifyCancel()
@@ -2452,8 +2460,8 @@ func reasoningFindingsJSON(findings []model.Finding) (string, error) {
 	})
 }
 
-func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
-	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet)
+func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, securityGuides []securityGuide, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool, projectContext *model.ProjectContext) (string, error) {
+	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet, securityGuides)
 	if err != nil {
 		return "", err
 	}
@@ -2475,15 +2483,17 @@ func (e *Engine) renderReviewerQuestionsSnippet(questionsName string) (string, e
 	return "", nil
 }
 
-func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) (string, error) {
+func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string, securityGuides []securityGuide) (string, error) {
 	focusTemplate, err := e.loadPrompt(focusName)
 	if err != nil {
 		return "", err
 	}
 	rendered, err := llm.RenderPrompt(focusTemplate, struct {
 		QuestionsSnippet string
+		SecurityGuides   []securityGuide
 	}{
 		QuestionsSnippet: strings.TrimSpace(questionsSnippet),
+		SecurityGuides:   securityGuides,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering reviewer focus prompt %s: %w", focusName, err)
@@ -2821,6 +2831,7 @@ type noToolsPromptOptions struct {
 	DiffScopeEnabled      bool
 	UnusedIdentifierKinds string
 	FindingNote           string
+	FocusGuidance         string
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool, options ...noToolsPromptOptions) ([]llm.Message, error) {
@@ -2844,6 +2855,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		DiffScopeEnabled           bool
 		UnusedIdentifierKinds      string
 		FindingNote                string
+		FocusGuidance              string
 	}{
 		OutputSchemaSnippet:        snippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -2854,6 +2866,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		DiffScopeEnabled:           promptOptions.DiffScopeEnabled,
 		UnusedIdentifierKinds:      promptOptions.UnusedIdentifierKinds,
 		FindingNote:                promptOptions.FindingNote,
+		FocusGuidance:              promptOptions.FocusGuidance,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)

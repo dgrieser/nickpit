@@ -21,7 +21,7 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 .DEFAULT_GOAL := build
 
-.PHONY: help generate build debug install test race lint vet fmt
+.PHONY: help generate build debug install test race lint vet fmt check-security-upstream
 
 .DEFAULT:
 	@echo "Error: unknown target '$@'"
@@ -61,3 +61,6 @@ vet: ## Run go vet
 
 fmt: ## Format Go source files
 	gofmt -w ./cmd ./internal
+
+check-security-upstream: ## Verify vendored security-audit-skill hashes and show upstream drift
+	tools/check_security_upstream.sh

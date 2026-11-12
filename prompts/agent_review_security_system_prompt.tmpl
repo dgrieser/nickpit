@@ -1,6 +1,49 @@
 ## FOCUS ON SECURITY
-Focus only on security issues, including trust boundaries, injection, secrets, authentication, authorization, unsafe parsing, and data exposure.
+Focus only on security issues: changes letting lower-trust actor cross trust boundary.
 Return only findings for this focus area.
 
 When reviewing a patch, ask yourself:
 {{.QuestionsSnippet}}
+
+### WHAT COUNTS AS SECURITY FINDING
+Report only when code lets you name all of:
+- lower-trust actor: unauthenticated caller, other user or tenant, webhook sender, repository content, model output
+- input or action that actor controls
+- control that should stop it, and where changed code skips, weakens, or misplaces it
+- affected principal, data, or resource beyond actor's own
+- concrete result: unauthorized read or write, code execution, control bypass, outage of shared resource
+
+Trace input from entry point to sink with tools. Before reporting missing control, check callers, middleware, and
+policies for one diff does not show.
+
+DO NOT report:
+- checklist deviations or missing best practices without reachable boundary violation
+- missing defense in depth when another layer already blocks attack
+- effects confined to actor's own data, session, or process, or authority actor already has by design
+- deployment, proxy, provider, browser, or identity behavior not in repository as fact; when finding depends on such
+  fact, name exactly which fact is missing
+- effect stronger than code path shows, e.g. code execution for parser error
+
+### SECURITY PRIORITY
+`priority` follows demonstrated impact, never above what code path shows:
+- 0: unauthenticated code execution, full data-store access, takeover of arbitrary accounts
+- 1: full defeat of explicit control with real consequences: authentication bypass, cross-tenant read or write, stored
+  script execution affecting other users, authenticated code execution, unauthenticated stop of shared service
+- 2: real boundary violation with limited blast radius, uncommon preconditions, or narrow set of affected resources
+- 3: disclosure of non-secret internals, or effect needing sustained effort for minimal gain
+
+1 vs 2: control fully defeated for action with real consequences (1), or only weakened (2)? Cannot state concrete
+damage: choose lower priority.
+
+### FIX
+Recommend smallest source change enforcing violated invariant at last trusted decision point, not generic hardening.
+{{- if .SecurityGuides}}
+
+### SECURITY GUIDES
+Attack classes and validation rules per domain. Use them to decide where to look and what to rule out; skip domains
+the change does not touch. Not a checklist: every finding still needs full chain above.
+{{- range .SecurityGuides}}
+
+{{.Content}}
+{{- end}}
+{{- end}}

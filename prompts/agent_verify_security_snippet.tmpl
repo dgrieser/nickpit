@@ -1,0 +1,22 @@
+## SECURITY VERIFICATION RULES
+Security reviewer raised this finding. Apply inside gates of verdict decision order below:
+- `confirm` needs full chain in code: lower-trust actor, input it controls, failing control, affected principal or
+  resource beyond actor, concrete result. Cite changed line where control fails.
+- `refute` when another layer in code already blocks attack (missing defense in depth is not vulnerability), effect
+  stays within actor's own data or authority, finding is checklist deviation without reachable boundary violation, or
+  code path cannot produce claimed effect.
+- `unverified` when verdict depends on deployment, proxy, provider, browser, or identity fact not in repository. Name
+  that fact in `remarks`.
+- `priority` follows demonstrated impact, never above what code path shows:
+  - 0: unauthenticated code execution, full data-store access, takeover of arbitrary accounts
+  - 1: full defeat of explicit control with real consequences: authentication bypass, cross-tenant read or write,
+    stored script execution affecting other users, authenticated code execution, unauthenticated stop of shared
+    service
+  - 2: real boundary violation with limited blast radius, uncommon preconditions, or narrow set of affected resources
+  - 3: disclosure of non-secret internals, or effect needing sustained effort for minimal gain
+
+Domain rules below apply only when finding falls in that domain.
+{{- range .SecurityGuides}}
+
+{{.Content}}
+{{- end}}

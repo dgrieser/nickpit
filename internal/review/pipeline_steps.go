@@ -125,11 +125,18 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	if err != nil {
 		return agentSpec{}, err
 	}
-	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "review", st.styleGuides, st.hasToolchain, st.projectContext)
+	var guides []securityGuide
+	if vector.securityGuides {
+		guides, err = securityGuides()
+		if err != nil {
+			return agentSpec{}, err
+		}
+	}
+	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, guides, req, true, "review", st.styleGuides, st.hasToolchain, st.projectContext)
 	if err != nil {
 		return agentSpec{}, err
 	}
-	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "review", st.styleGuides, st.hasToolchain, st.projectContext)
+	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, guides, req, false, "review", st.styleGuides, st.hasToolchain, st.projectContext)
 	if err != nil {
 		return agentSpec{}, err
 	}
