@@ -10,10 +10,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 )
 
-func boolPtr(v bool) *bool {
-	return &v
-}
-
 func TestCapabilityCacheRoundTripAndNormalizeBaseURL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "model-capabilities.json")
 	capability := config.ModelCapabilities{
@@ -21,7 +17,7 @@ func TestCapabilityCacheRoundTripAndNormalizeBaseURL(t *testing.T) {
 		Compatible:   true,
 		Response:     true,
 		Tools:        true,
-		JSONResponse: boolPtr(true),
+		JSONResponse: new(true),
 		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
 	}
 
@@ -161,8 +157,8 @@ func TestResultFromCapabilityCarriesOptionalErrors(t *testing.T) {
 		wantError string
 	}{
 		{name: "never probed", value: nil, wantError: ""},
-		{name: "supported", value: boolPtr(true), wantError: ""},
-		{name: "unsupported", value: boolPtr(false), wantError: "reported unsupported by provider profile/cache"},
+		{name: "supported", value: new(true), wantError: ""},
+		{name: "unsupported", value: new(false), wantError: "reported unsupported by provider profile/cache"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,8 +185,8 @@ func TestCapabilityRoundTripsToolsJSONSchema(t *testing.T) {
 		Model:           "m",
 		Response:        true,
 		Tools:           true,
-		JSONSchema:      ptrBool(true),
-		JSONResponse:    ptrBool(true),
+		JSONSchema:      new(true),
+		JSONResponse:    new(true),
 		ToolsJSONSchema: &suppressed,
 		Reasoning:       config.ReasoningCapabilities{Efforts: []string{"high"}},
 	}
@@ -215,12 +211,12 @@ func TestCapabilityRoundTripsToolsJSONSchema(t *testing.T) {
 }
 
 func TestCapabilityNeedsReprobe(t *testing.T) {
-	legacy := config.ModelCapabilities{Tools: true, JSONSchema: ptrBool(true)}
+	legacy := config.ModelCapabilities{Tools: true, JSONSchema: new(true)}
 	if !CapabilityNeedsReprobe(legacy) {
 		t.Fatal("legacy tools+json_schema capability must re-probe")
 	}
 	probed := legacy
-	probed.ToolsJSONSchema = ptrBool(true)
+	probed.ToolsJSONSchema = new(true)
 	if CapabilityNeedsReprobe(probed) {
 		t.Fatal("probed capability must not re-probe")
 	}
@@ -228,10 +224,8 @@ func TestCapabilityNeedsReprobe(t *testing.T) {
 	if CapabilityNeedsReprobe(noSchema) {
 		t.Fatal("capability without json_schema must not re-probe")
 	}
-	noTools := config.ModelCapabilities{JSONSchema: ptrBool(true)}
+	noTools := config.ModelCapabilities{JSONSchema: new(true)}
 	if CapabilityNeedsReprobe(noTools) {
 		t.Fatal("capability without tools must not re-probe")
 	}
 }
-
-func ptrBool(v bool) *bool { return &v }

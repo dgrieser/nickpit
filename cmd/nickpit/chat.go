@@ -26,7 +26,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/styleguide"
-	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
 
@@ -398,7 +398,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		msg.Tokens = &completion.Tokens
 		sess.Append(msg)
 		saveSession()
-		fmt.Fprintln(os.Stdout, "\n"+textsan.StripControl(message)) //nolint:errcheck // stdout write; correction has already completed
+		fmt.Fprintln(os.Stdout, "\n"+term.Plain(message)) //nolint:errcheck // stdout write; correction has already completed
 		lastUpdateErr = applyErr
 		return applyErr
 	}
@@ -487,7 +487,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		saveSession()
 		// LLM output is untrusted for terminal purposes: strip control characters
 		// so a reply cannot smuggle escape sequences into the user's terminal.
-		fmt.Fprintln(os.Stdout, textsan.StripControl(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
+		fmt.Fprintln(os.Stdout, term.Plain(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
 		updates.start(ctx)
 		drainUpdate()
 		return nil
@@ -500,7 +500,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		}
 		return finishUpdate()
 	}
-	if !isTerminal(os.Stdin) {
+	if !term.IsTerminal(os.Stdin) {
 		return fmt.Errorf("chat: no question given and stdin is not a terminal; pass a question argument for one-shot use")
 	}
 	err = a.chatREPL(ctx, sess, turn, updates.completed, func(completion cliUpdateCompletion) { _ = applyUpdate(completion) })
@@ -515,14 +515,14 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 // value echoed here can originate outside this process (markers, saved JSON,
 // model output), so it is control-stripped before touching the terminal.
 func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error, completed <-chan cliUpdateCompletion, apply func(cliUpdateCompletion)) error {
-	fmt.Fprintf(os.Stderr, "Discussing review %s", textsan.StripControl(sess.ReviewID))
+	fmt.Fprintf(os.Stderr, "Discussing review %s", term.PlainLine(sess.ReviewID))
 	if sess.Source.Repo != "" {
-		fmt.Fprintf(os.Stderr, " on %s", textsan.StripControl(sess.Source.Repo))
+		fmt.Fprintf(os.Stderr, " on %s", term.PlainLine(sess.Source.Repo))
 		if sess.Source.Identifier > 0 {
 			fmt.Fprintf(os.Stderr, "!%d", sess.Source.Identifier)
 		}
 	}
-	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", textsan.StripControl(sess.ID))
+	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", term.PlainLine(sess.ID))
 	if a.chatReviewReadOnly {
 		// Said once, up front: the reason a correction is not on offer is not
 		// something to discover by asking for one.
@@ -531,7 +531,7 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 	}
 	if sess.PinnedFindingID != "" {
 		if opener := review.DiscussOpener(sess.Result, sess.PinnedFindingID); opener != "" {
-			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
+			fmt.Fprintf(os.Stderr, "\n%s\n", term.Plain(opener))
 		}
 	}
 	// Stdin is read in a goroutine so the idle prompt can select on ctx too:
@@ -582,7 +582,7 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 			}
 			// ...while ordinary turn errors are shown and the loop continues.
 			// Errors can embed upstream response text; strip control characters.
-			fmt.Fprintf(os.Stderr, "error: %v\n", textsan.StripControl(err.Error()))
+			fmt.Fprintf(os.Stderr, "error: %v\n", term.Plain(err.Error()))
 		}
 	}
 }

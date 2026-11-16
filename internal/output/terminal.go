@@ -12,7 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/textsan"
-	"golang.org/x/term"
+	"github.com/mittwald/cli-kit/term"
 )
 
 type Formatter interface {
@@ -46,14 +46,9 @@ func NewMarkdownFormatter(w io.Writer) Formatter {
 }
 
 func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
-	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
-		useANSI = false
-	}
 	width := terminalDefaultWidth
-	if f, ok := w.(*os.File); ok && f != nil && term.IsTerminal(int(f.Fd())) {
-		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
-			width = ClampWidth(w)
-		}
+	if cols, _ := term.Size(w); cols > 0 {
+		width = ClampWidth(cols)
 	}
 	return &TerminalFormatter{w: w, useANSI: useANSI, width: width}
 }
@@ -72,8 +67,8 @@ func RuleWidth(f *os.File) int {
 	if f == nil {
 		return terminalDefaultWidth
 	}
-	if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
-		return ClampWidth(w)
+	if cols, _ := term.Size(f); cols > 0 {
+		return ClampWidth(cols)
 	}
 	return terminalDefaultWidth
 }
@@ -127,7 +122,7 @@ func (f *TerminalFormatter) FormatWarnings(result *model.ReviewResult) error {
 	b.WriteString(f.yellow(warningSummary(result.Warnings)))
 	b.WriteString("\n\n")
 	for _, warning := range result.Warnings {
-		text := textsan.StripControl(strings.TrimSpace(warning))
+		text := term.Plain(strings.TrimSpace(warning))
 		if text == "" {
 			continue
 		}
@@ -152,7 +147,7 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 		b.WriteString(correctnessBadge(correctness, f.useANSI))
 	}
 	b.WriteString("\n")
-	if explanation := textsan.StripControl(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
+	if explanation := term.Plain(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
 		b.WriteString("\n")
 		b.WriteString(f.renderMarkdown(explanation))
 		b.WriteString("\n")
@@ -182,7 +177,7 @@ func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Findi
 		b.WriteString("\n\n")
 		b.WriteString(f.bold(findingLocation(finding)))
 		b.WriteString("\n\n")
-		b.WriteString(f.renderMarkdown(textsan.StripControl(finding.Resolution.Reason)))
+		b.WriteString(f.renderMarkdown(term.Plain(finding.Resolution.Reason)))
 		b.WriteString("\n")
 		f.writeReplies(b, finding.Replies)
 		return
@@ -293,7 +288,7 @@ func (f *TerminalFormatter) writeRule(b *strings.Builder) {
 // terminal equivalent of the platform inline anchor (and identical in shape to
 // the publisher's general-comment location prefix).
 func findingLocation(finding model.Finding) string {
-	path := textsan.StripControl(finding.CodeLocation.FilePath)
+	path := term.PlainLine(finding.CodeLocation.FilePath)
 	start := finding.CodeLocation.LineRange.Start
 	end := finding.CodeLocation.LineRange.End
 	if end > start {
@@ -317,7 +312,7 @@ func repliesMarkdown(replies []model.Reply) string {
 		if body == "" {
 			continue
 		}
-		author := textsan.StripControl(strings.TrimSpace(reply.Author))
+		author := term.PlainLine(strings.TrimSpace(reply.Author))
 		if author == "" {
 			author = "unknown"
 		}
@@ -338,7 +333,7 @@ func findingMarkdown(finding model.Finding) string {
 	var b strings.Builder
 	if title = strings.TrimSpace(title); title != "" {
 		b.WriteString("### ")
-		b.WriteString(textsan.StripControl(title))
+		b.WriteString(term.PlainLine(title))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(textsan.StripControl(strings.TrimSpace(body)))

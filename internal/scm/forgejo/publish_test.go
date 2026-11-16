@@ -144,8 +144,6 @@ func (ps *publishServer) adapter() *Adapter {
 	return NewAdapter(NewClient(ps.server.URL, "token"), "")
 }
 
-func intPtr(v int) *int { return &v }
-
 // fpMarker builds the hidden carrier marker a posted finding comment carries, so
 // tests can assert on (or seed) it the same way the renderer emits it.
 func fpMarker(id, file, title string) string {
@@ -165,14 +163,14 @@ func sampleResult() *model.ReviewResult {
 				ID:           "finding-a",
 				Title:        "Inline issue",
 				Body:         "On a changed line.",
-				Priority:     intPtr(1),
+				Priority:     new(1),
 				CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 			},
 			{
 				ID:           "finding-b",
 				Title:        "Out-of-diff issue",
 				Body:         "On a file not in the diff.",
-				Priority:     intPtr(2),
+				Priority:     new(2),
 				CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 5, End: 5}},
 			},
 		},

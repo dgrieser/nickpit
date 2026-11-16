@@ -818,16 +818,13 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 }
 
 func sameEffortRetryable(err error) bool {
-	var loopErr *llm.ReasoningLoopDetectedError
-	if errors.As(err, &loopErr) {
+	if _, ok := errors.AsType[*llm.ReasoningLoopDetectedError](err); ok {
 		return true
 	}
-	var outputLoopErr *llm.OutputLoopDetectedError
-	if errors.As(err, &outputLoopErr) {
+	if _, ok := errors.AsType[*llm.OutputLoopDetectedError](err); ok {
 		return true
 	}
-	var budgetErr *llm.ReasoningBudgetExhaustedError
-	if errors.As(err, &budgetErr) {
+	if _, ok := errors.AsType[*llm.ReasoningBudgetExhaustedError](err); ok {
 		return true
 	}
 	var emptyErr *llm.ReasoningOnlyEmptyResponseError

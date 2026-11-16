@@ -12,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mittwald/cli-kit/pick"
+	"github.com/mittwald/cli-kit/term"
+	"github.com/mittwald/cli-kit/theme"
+	"github.com/spf13/cobra"
+
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/session"
-	"github.com/spf13/cobra"
 )
 
 func TestSessionLatestAsRawMarkdown(t *testing.T) {
@@ -729,19 +732,19 @@ func TestSessionOutcome(t *testing.T) {
 	// The verdict alone decides the colour, and the verdicts differ: the green
 	// and red of the review output badges, a caveat for a verdict that is
 	// neither, grey for a review that recorded none.
-	styles := map[string]string{
-		"patch is correct":              pick.StyleFresh,
-		"patch is correct, 12 findings": pick.StyleFresh,
-		"patch is incorrect":            pick.StyleError,
-		"error: the reviewer gave up":   pick.StyleCaveat,
-		"":                              pick.StyleAge,
+	styles := map[string]theme.Style{
+		"patch is correct":              styleFresh,
+		"patch is correct, 12 findings": styleFresh,
+		"patch is incorrect":            styleError,
+		"error: the reviewer gave up":   styleCaveat,
+		"":                              styleAge,
 	}
 	for verdict, want := range styles {
 		if got := verdictStyle(session.Info{HasResult: true, Verdict: verdict}); got != want {
 			t.Fatalf("verdictStyle(%q) = %q, want %q", verdict, got, want)
 		}
 	}
-	if got := verdictStyle(session.Info{}); got != pick.StyleAge {
+	if got := verdictStyle(session.Info{}); got != styleAge {
 		t.Fatalf("verdict style without a review = %q, want grey", got)
 	}
 	// The finding count never enters the choice.
@@ -772,7 +775,7 @@ func TestSessionKindDecidesTheSourceColour(t *testing.T) {
 		{"legacy branch", session.Info{Source: session.Source{Mode: "local", Branch: "feat/x"}}, kindBranchReview},
 		{"nothing recorded", session.Info{Source: session.Source{Mode: "local", RepoRoot: "/src/x"}}, kindUnknownReview},
 	}
-	seen := map[string]sessionKind{}
+	seen := map[theme.Style]sessionKind{}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := sessionKindOf(c.info); got != c.want {
@@ -882,7 +885,7 @@ func TestSessionPromptAbortAndEmptyStore(t *testing.T) {
 	}
 	saveSessionReview(t, store, "one")
 	a := &app{sessionDir: dir, outputFormat: "raw"}
-	a.selectViewFn = func(pick.Options) (int, int, error) { return -1, -1, pick.ErrAborted }
+	a.selectViewFn = func(pick.Options) (int, int, error) { return -1, -1, pick.ErrBack }
 	a.selectFn = func(pick.Options) (int, error) {
 		t.Fatal("an abandoned list must not ask for an action")
 		return 0, nil
@@ -991,7 +994,7 @@ func TestFitSourceLabelShortensByItsParts(t *testing.T) {
 			}
 			// The cap covers the whole cell, qualifier included: a column wider
 			// than its widest cell strands the next one behind the padding.
-			if width := pick.DisplayWidth(got); width > maxSourceWidth {
+			if width := term.VisibleWidth(got); width > maxSourceWidth {
 				t.Fatalf("width = %d, want at most %d", width, maxSourceWidth)
 			}
 			if note := " (uncommitted)"; strings.HasSuffix(c.label, note) && !strings.HasSuffix(got, note) {
@@ -1043,7 +1046,7 @@ func TestFitRepoLabelFoldsThePathBeforeTheName(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("fitRepoLabel(%q) = %q, want %q", c.label, got, c.want)
 			}
-			if width := pick.DisplayWidth(got); width > maxRepoWidth {
+			if width := term.VisibleWidth(got); width > maxRepoWidth {
 				t.Fatalf("width = %d, want at most %d", width, maxRepoWidth)
 			}
 		})
@@ -1094,12 +1097,12 @@ func TestSessionRowsAreTypedAtByWhatTheyShow(t *testing.T) {
 }
 
 // itemMatches applies one filter term the way the picker does.
-func itemMatches(item pick.Item, term string) bool {
+func itemMatches(item pick.Item, query string) bool {
 	for _, field := range item.MatchFields {
-		if field.MinTerm > 0 && len([]rune(term)) < field.MinTerm {
+		if field.MinTerm > 0 && len([]rune(query)) < field.MinTerm {
 			continue
 		}
-		if strings.Contains(strings.ToLower(field.Text), strings.ToLower(term)) {
+		if strings.Contains(strings.ToLower(field.Text), strings.ToLower(query)) {
 			return true
 		}
 	}
@@ -1142,7 +1145,7 @@ func TestSessionActionPromptGoesBackAndCopies(t *testing.T) {
 	a.selectFn = func(pick.Options) (int, error) {
 		prompts++
 		if prompts == 1 {
-			return -1, pick.ErrAborted
+			return -1, pick.ErrBack
 		}
 		return int(sessionActionCopy), nil
 	}
@@ -1185,10 +1188,10 @@ func TestPickSessionActionOffersChat(t *testing.T) {
 		seen.Items[0].Details[0].Text != info.ID {
 		t.Fatalf("prompt header = %+v", seen.Items)
 	}
-	// Esc travels up as an abort, which the caller reads as "back".
-	b := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrAborted }}
-	if _, err := b.pickSessionAction(sessionPlace{}, sessionChoice{info: info}); !errors.Is(err, pick.ErrAborted) {
-		t.Fatalf("err = %v, want pick.ErrAborted", err)
+	// Esc travels up as pick.ErrBack, which the caller reads as "back".
+	b := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrBack }}
+	if _, err := b.pickSessionAction(sessionPlace{}, sessionChoice{info: info}); !isPickBack(err) {
+		t.Fatalf("err = %v, want pick.ErrBack", err)
 	}
 }
 
@@ -1230,7 +1233,7 @@ func TestPickerOpensWithOnlyPublishedReviews(t *testing.T) {
 	a := &app{sessionDir: dir, outputFormat: "raw"}
 	a.selectViewFn = func(opts pick.Options) (int, int, error) {
 		offered = len(opts.Views)
-		return -1, -1, pick.ErrAborted
+		return -1, -1, pick.ErrBack
 	}
 	err = a.runSessionTo(context.Background(), sessionOptions{}, nil, &bytes.Buffer{})
 	// No project to ask either, so there is still no list — but the message

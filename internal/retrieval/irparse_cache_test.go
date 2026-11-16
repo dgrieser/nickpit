@@ -273,8 +273,7 @@ func TestFindCallersOnSizeSkippedFileExplainsTheSkip(t *testing.T) {
 	if !errors.As(err, &skipped) {
 		t.Fatalf("error %q is not a StructuralAnalysisSkippedError", err)
 	}
-	var notFound *SymbolNotFoundError
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*SymbolNotFoundError](err); ok {
 		t.Fatalf("a skipped parse must not claim the symbol is absent: %v", err)
 	}
 	if !strings.Contains(skipped.Reason, "unparsed") {

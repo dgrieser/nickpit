@@ -295,8 +295,7 @@ func TestSavedRepliesGraphQLErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("error = %v, want the graphql message", err)
 	}
-	var graphQLErr *GraphQLError
-	if !errors.As(err, &graphQLErr) {
+	if _, ok := errors.AsType[*GraphQLError](err); !ok {
 		t.Fatalf("error = %v, want a GraphQLError", err)
 	}
 }

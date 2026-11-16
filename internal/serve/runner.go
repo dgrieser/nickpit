@@ -297,8 +297,7 @@ func (r *ExecRunner) runLoggedChild(cmd *exec.Cmd, logFile *os.File, stream io.W
 	if err == nil {
 		return 0, logPath, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode(), logPath, nil
 	}
 	return -1, logPath, err

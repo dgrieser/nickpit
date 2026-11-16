@@ -22,7 +22,7 @@ func TestRepairResponseCodeLocationsFixesWrongLineFromContent(t *testing.T) {
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
@@ -53,7 +53,7 @@ func TestRepairResponseCodeLocationsRepairsSuggestionsAndLineRangeMirror(t *test
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 3, End: 5, Count: 3},
@@ -91,7 +91,7 @@ func TestRepairResponseCodeLocationsUsesFirstAndLastContentLines(t *testing.T) {
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath: "pkg/demo.go",
 			Content:  "func Run() {\n\twrong := 1\n}",
@@ -120,7 +120,7 @@ func TestRepairResponseCodeLocationsUsesCorroboratedLineOffset(t *testing.T) {
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath: "pkg/demo.go",
 			Content:  "not first\n\tactual := 1\n\treturn actual\nnot last",
@@ -149,7 +149,7 @@ func TestRepairResponseCodeLocationsDoesNotInferRangeFromOneMatchedLine(t *testi
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath: "pkg/demo.go",
 			Content:  "not first\n\treturn actual\nnot last",
@@ -174,7 +174,7 @@ func TestRepairResponseCodeLocationsRetriesAmbiguousContentWithoutLineHint(t *te
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath: "pkg/demo.go",
 			Content:  "return err",
@@ -199,7 +199,7 @@ func TestRepairResponseCodeLocationsDoesNotEndpointPairSingleLineSnippet(t *test
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 1, End: 4, Count: 4},
@@ -228,7 +228,7 @@ func TestRepairResponseCodeLocationsFillsContentFromLineRange(t *testing.T) {
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 2, End: 99, Count: 98},
@@ -257,7 +257,7 @@ func TestRepairResponseCodeLocationsDefaultsMissingEndToStart(t *testing.T) {
 		Title:           "Fix run output",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 2},
@@ -287,14 +287,14 @@ func TestRepairResponseCodeLocationsRequestsRetryForMissingAnchors(t *testing.T)
 			Title:           "Missing path",
 			Body:            "body",
 			ConfidenceScore: 0.85,
-			Priority:        intPtr(1),
+			Priority:        new(1),
 			CodeLocation:    model.CodeLocation{Content: "line 1"},
 		},
 		{
 			Title:           "Missing anchor",
 			Body:            "body",
 			ConfidenceScore: 0.85,
-			Priority:        intPtr(1),
+			Priority:        new(1),
 			CodeLocation:    model.CodeLocation{FilePath: "pkg/demo.go"},
 		},
 	}}
@@ -325,7 +325,7 @@ func TestRepairResponseCodeLocationsRelocatesUniqueInDiffMatch(t *testing.T) {
 		Title:           "Causal issue",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
@@ -445,7 +445,7 @@ func TestOutOfDiffRetryGuidanceUsesExactCodeLocationJSON(t *testing.T) {
 		Title:           "Outside issue",
 		Body:            "body",
 		ConfidenceScore: 0.85,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation: model.CodeLocation{
 			FilePath:  "pkg/demo.go",
 			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},

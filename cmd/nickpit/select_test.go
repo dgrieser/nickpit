@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mittwald/cli-kit/pick"
+	"github.com/mittwald/cli-kit/theme"
 	"github.com/spf13/cobra"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
 
@@ -259,15 +260,15 @@ func TestPickOpenRequestBuildsRowsAndReturnsChoice(t *testing.T) {
 		t.Fatalf("draft column = %q / %q", captured.Items[0].Cells[2], captured.Items[1].Cells[2])
 	}
 	// The colours follow the columns, draft column included.
-	want := []string{pick.StyleMark, pick.StyleIdentifier, pick.StyleCaveat, pick.StyleText,
-		pick.StyleAuthor, pick.StyleAge}
+	want := []theme.Style{styleMark, styleIdentifier, styleCaveat, styleText,
+		styleAuthor, styleAge}
 	if !slices.Equal(captured.CellStyles, want) {
 		t.Fatalf("cell styles = %q, want %q", captured.CellStyles, want)
 	}
 	// The title is a commit-style message; the draft column shifts it right.
-	wantKinds := []pick.ColumnKind{pick.KindPlain, pick.KindPlain, pick.KindPlain, pick.KindMessage}
-	if !slices.Equal(captured.ColumnKinds, wantKinds) {
-		t.Fatalf("column kinds = %v, want %v", captured.ColumnKinds, wantKinds)
+	wantKinds := []cellKind{cellPlain, cellPlain, cellPlain, cellMessage, cellPlain, cellPlain}
+	if got := paintedKinds(captured, len(wantKinds)); !slices.Equal(got, wantKinds) {
+		t.Fatalf("column kinds = %v, want %v", got, wantKinds)
 	}
 }
 
@@ -286,13 +287,13 @@ func TestPickOpenRequestOmitsDraftColumnWhenUnused(t *testing.T) {
 	if got := captured.Items[0].Cells[2]; got != "feat(review): cluster merge" {
 		t.Fatalf("third cell = %q, want the title with no draft column in between", got)
 	}
-	want := []string{pick.StyleMark, pick.StyleIdentifier, pick.StyleText, pick.StyleAuthor, pick.StyleAge}
+	want := []theme.Style{styleMark, styleIdentifier, styleText, styleAuthor, styleAge}
 	if !slices.Equal(captured.CellStyles, want) {
 		t.Fatalf("cell styles = %q, want %q", captured.CellStyles, want)
 	}
-	wantKinds := []pick.ColumnKind{pick.KindPlain, pick.KindPlain, pick.KindMessage}
-	if !slices.Equal(captured.ColumnKinds, wantKinds) {
-		t.Fatalf("column kinds = %v, want %v", captured.ColumnKinds, wantKinds)
+	wantKinds := []cellKind{cellPlain, cellPlain, cellMessage, cellPlain, cellPlain}
+	if got := paintedKinds(captured, len(wantKinds)); !slices.Equal(got, wantKinds) {
+		t.Fatalf("column kinds = %v, want %v", got, wantKinds)
 	}
 }
 
@@ -379,7 +380,7 @@ func TestPickOpenRequestReportsListFailure(t *testing.T) {
 // A dismissed picker is a user abort: it must travel out unchanged so main can
 // exit quietly instead of printing a failure.
 func TestPickOpenRequestPropagatesAbort(t *testing.T) {
-	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrAborted }}
+	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrBack }}
 	_, err := a.pickOpenRequest(context.Background(), "grp/proj", openRequestList{
 		noun:   "merge request",
 		marker: "!",
@@ -462,18 +463,18 @@ func TestPickLocalRefsBranchModePreselectsTheDefaults(t *testing.T) {
 	if starred != 1 {
 		t.Fatalf("starred rows = %d, want exactly the checked-out branch", starred)
 	}
-	if got := prompts[0].CellStyles[0]; got != pick.StyleMark {
+	if got := prompts[0].CellStyles[0]; got != styleMark {
 		t.Fatalf("marker column style = %q, want the mark colour", got)
 	}
-	if got := prompts[0].CellStyles[1]; got != "" {
+	if got := prompts[0].CellStyles[1]; got != styleTerminalFg {
 		t.Fatalf("name column style = %q, want it plain except for the default branch", got)
 	}
 	for _, item := range prompts[0].Items {
-		style := ""
+		var style theme.Style
 		if len(item.CellStyles) > 1 {
 			style = item.CellStyles[1]
 		}
-		if isDefault := item.Cells[1] == current; isDefault != (style == pick.StyleDefaultRef) {
+		if isDefault := item.Cells[1] == current; isDefault != (style == styleDefaultRef) {
 			t.Fatalf("row %q: name style %q, want green only on the default branch", item.Cells[1], style)
 		}
 	}
@@ -529,7 +530,7 @@ func TestGroupBranches(t *testing.T) {
 func TestPickBranchResolvesTheRequestedSide(t *testing.T) {
 	dir := newTestRepoWithOrigin(t)
 	base, err := interactiveApp(0, nil).pickBranch(context.Background(), dir, branchPrompt{
-		title: "base", label: "Base branch ", preferred: "origin/main", remote: true, style: pick.StyleBaseRef,
+		title: "base", label: "Base branch ", preferred: "origin/main", remote: true, style: styleBaseRef,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -538,7 +539,7 @@ func TestPickBranchResolvesTheRequestedSide(t *testing.T) {
 		t.Fatalf("base = %q, want the remote-tracking ref", base)
 	}
 	head, err := interactiveApp(0, nil).pickBranch(context.Background(), dir, branchPrompt{
-		title: "head", label: "Head branch ", style: pick.StyleHeadRef,
+		title: "head", label: "Head branch ", style: styleHeadRef,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -557,11 +558,11 @@ func TestPickBranchDetailNamesTheResolvedRef(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		preferRemote bool
-		style        string
+		style        theme.Style
 		want         string
 	}{
-		{"base", true, pick.StyleBaseRef, "origin/main"},
-		{"head", false, pick.StyleHeadRef, current},
+		{"base", true, styleBaseRef, "origin/main"},
+		{"head", false, styleHeadRef, current},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured pick.Options
@@ -580,7 +581,7 @@ func TestPickBranchDetailNamesTheResolvedRef(t *testing.T) {
 			}
 		})
 	}
-	if pick.StyleBaseRef == pick.StyleHeadRef {
+	if styleBaseRef == styleHeadRef {
 		t.Fatal("the base and head sides must not share a colour")
 	}
 }
@@ -601,7 +602,7 @@ func TestPickLocalRefsBranchPromptsDifferBySide(t *testing.T) {
 	if prompts[0].Title != "Base to review against:" || prompts[1].Title != "Branch to review:" {
 		t.Fatalf("titles = %q / %q", prompts[0].Title, prompts[1].Title)
 	}
-	if prompts[0].DetailStyle != pick.StyleBaseRef || prompts[1].DetailStyle != pick.StyleHeadRef {
+	if prompts[0].DetailStyle != styleBaseRef || prompts[1].DetailStyle != styleHeadRef {
 		t.Fatalf("detail styles = %q / %q, want the base and head colours",
 			prompts[0].DetailStyle, prompts[1].DetailStyle)
 	}
@@ -615,19 +616,19 @@ func TestPickLocalRefsBranchPromptsDifferBySide(t *testing.T) {
 // chosen value in the colour the picker gave it.
 func TestWriteSelection(t *testing.T) {
 	var styled strings.Builder
-	writeSelection(&styled, true, "Base branch ", "origin/main", pick.StyleDetail, "")
+	writeSelection(&styled, true, "Base branch ", "origin/main", styleDetail, "")
 	// The ref keeps the faded separators it had in the list.
 	want := "\x1b[" + selectionStyle + "mBase branch \x1b[0m" +
-		"\x1b[" + pick.StyleDetail + "morigin\x1b[0m" +
-		"\x1b[" + pick.StyleSeparator + "m/\x1b[0m" +
-		"\x1b[" + pick.StyleDetail + "mmain\x1b[0m" +
+		"\x1b[" + string(styleDetail) + "morigin\x1b[0m" +
+		"\x1b[" + string(styleSeparator) + "m/\x1b[0m" +
+		"\x1b[" + string(styleDetail) + "mmain\x1b[0m" +
 		"\x1b[" + selectionStyle + "m\x1b[0m\n"
 	if got := styled.String(); got != want {
 		t.Fatalf("styled = %q, want %q", got, want)
 	}
 	// Without colour (no terminal, or NO_COLOR) the same words are printed bare.
 	var plain strings.Builder
-	writeSelection(&plain, false, "Selected merge request ", "!142", pick.StyleIdentifier, " feat: x")
+	writeSelection(&plain, false, "Selected merge request ", "!142", styleIdentifier, " feat: x")
 	if got := plain.String(); got != "Selected merge request !142 feat: x\n" {
 		t.Fatalf("plain = %q", got)
 	}
@@ -685,18 +686,18 @@ func TestPickBranchDeclaresColumnKinds(t *testing.T) {
 	dir := newTestRepoWithOrigin(t)
 	var captured pick.Options
 	if _, err := interactiveApp(0, &captured).pickBranch(context.Background(), dir, branchPrompt{
-		title: "t", style: pick.StyleHeadRef,
+		title: "t", style: styleHeadRef,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := []pick.ColumnKind{pick.KindPlain, pick.KindRef, pick.KindMessage}
-	if !slices.Equal(captured.ColumnKinds, want) {
-		t.Fatalf("column kinds = %v, want %v", captured.ColumnKinds, want)
+	want := []cellKind{cellPlain, cellRef, cellMessage, cellPlain, cellPlain}
+	if got := paintedKinds(captured, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("column kinds = %v, want %v", got, want)
 	}
 }
 
 func TestAgeStyle(t *testing.T) {
-	if got := ageStyle(time.Now().Add(-30 * time.Minute)); got != pick.StyleFresh {
+	if got := ageStyle(time.Now().Add(-30 * time.Minute)); got != styleFresh {
 		t.Fatalf("ageStyle inside the hour = %q, want the fresh colour", got)
 	}
 	if got := ageStyle(time.Now().Add(-3 * time.Hour)); got != "" {
@@ -708,15 +709,15 @@ func TestAgeStyle(t *testing.T) {
 }
 
 func TestRowStyles(t *testing.T) {
-	if got := rowStyles(4, map[int]string{1: pick.StyleFresh}); !slices.Equal(got, []string{"", pick.StyleFresh, "", ""}) {
+	if got := rowStyles(4, map[int]theme.Style{1: styleFresh}); !slices.Equal(got, []theme.Style{"", styleFresh, "", ""}) {
 		t.Fatalf("rowStyles = %q", got)
 	}
 	// Nothing deviating means no per-row slice at all.
-	if got := rowStyles(4, map[int]string{2: ""}); got != nil {
+	if got := rowStyles(4, map[int]theme.Style{2: ""}); got != nil {
 		t.Fatalf("rowStyles = %q, want nil", got)
 	}
 	// An out-of-range column is dropped rather than growing the row.
-	if got := rowStyles(2, map[int]string{5: pick.StyleFresh}); got != nil {
+	if got := rowStyles(2, map[int]theme.Style{5: styleFresh}); got != nil {
 		t.Fatalf("rowStyles = %q, want nil", got)
 	}
 }
@@ -970,9 +971,9 @@ func TestRunPickedLocalModeRunsTheChosenMode(t *testing.T) {
 		index int
 		err   error
 	}{
-		{1, nil},              // menu: "second"
-		{-1, pick.ErrAborted}, // second's own prompt: Esc
-		{0, nil},              // menu again: "first"
+		{1, nil},           // menu: "second"
+		{-1, pick.ErrBack}, // second's own prompt: Esc
+		{0, nil},           // menu again: "first"
 	}
 	a := &app{selectFn: func(opts pick.Options) (int, error) {
 		prompts = append(prompts, opts)
@@ -1044,7 +1045,7 @@ func TestRunPickedLocalModeInterruptQuits(t *testing.T) {
 }
 
 func TestRunPickedLocalModeAbortsFromTheMenu(t *testing.T) {
-	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrAborted }}
+	a := &app{selectFn: func(pick.Options) (int, error) { return -1, pick.ErrBack }}
 	parent := &cobra.Command{Use: "git"}
 	err := a.runPickedLocalMode(parent, []*cobra.Command{{Use: "first", RunE: func(*cobra.Command, []string) error {
 		t.Fatal("a mode ran although the menu was dismissed")

@@ -273,8 +273,7 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 			if goErr == nil {
 				return resolved, nil
 			}
-			var goAmbiguous *AmbiguousSymbolError
-			if errors.As(goErr, &goAmbiguous) {
+			if _, ok := errors.AsType[*AmbiguousSymbolError](goErr); ok {
 				return nil, goErr
 			}
 		}

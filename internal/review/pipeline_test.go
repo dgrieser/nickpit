@@ -88,8 +88,8 @@ func TestWorkflowMergeSingleFileInjectionPassthrough(t *testing.T) {
 	engine := pipelineTestEngine(client)
 	path := writeFindingsFile(t, "findings.json", model.ReviewResult{
 		Findings: []model.Finding{
-			{ID: "11111111-1111-1111-1111-111111111111", Title: "a", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-			{ID: "22222222-2222-2222-2222-222222222222", Title: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+			{ID: "11111111-1111-1111-1111-111111111111", Title: "a", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{ID: "22222222-2222-2222-2222-222222222222", Title: "b", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
 		OverallCorrectness: "patch is incorrect",
 	})
@@ -202,11 +202,11 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 	// file, 12-line gap, shared body, similar titles), so the cluster merge
 	// actually invokes a micro-merge agent instead of passing both through.
 	a := writeFindingsFile(t, "a.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
+		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	b := writeFindingsFile(t, "b.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
+		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepMerge, []string{a, b}))
@@ -230,18 +230,18 @@ func TestWorkflowMergeSourcelessIncludesAdditionalStyleGuides(t *testing.T) {
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
 	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
-		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
+		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
 	})
 
 	// Same clustering setup as TestWorkflowMergeTwoFilesInvokesMergeAgent so
 	// the merge LLM actually runs: ensurePrompts never fires in a source-less
 	// merge, and the additional guides must still reach the merge prompt.
 	a := writeFindingsFile(t, "a.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
+		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	b := writeFindingsFile(t, "b.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
+		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepMerge, []string{a, b}))
@@ -728,7 +728,7 @@ func verifiedPipelineFinding(id, title, file string, line int, priority int) mod
 		Title:           title,
 		Body:            "body " + title,
 		ConfidenceScore: 0.7,
-		Priority:        intPtr(priority),
+		Priority:        new(priority),
 		CodeLocation:    model.CodeLocation{FilePath: file, LineRange: model.LineRange{Start: line, End: line}},
 		Verification:    &model.FindingVerification{ID: id, Verdict: model.VerdictConfirmed, Priority: priority, ConfidenceScore: 0.9, Remarks: "verified"},
 	}
@@ -751,8 +751,8 @@ func TestWorkflowFinalizeInjectionRespectsPriorityThreshold(t *testing.T) {
 	engine := pipelineTestEngine(client)
 	path := writeFindingsFile(t, "f.json", model.ReviewResult{
 		Findings: []model.Finding{
-			{ID: "11111111-1111-1111-1111-111111111111", Title: "p2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-			{ID: "22222222-2222-2222-2222-222222222222", Title: "p3", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+			{ID: "11111111-1111-1111-1111-111111111111", Title: "p2", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{ID: "22222222-2222-2222-2222-222222222222", Title: "p3", Priority: new(3), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
 		OverallCorrectness: "patch is incorrect",
 	})

@@ -249,8 +249,7 @@ func (e *Engine) finalizeReviewerRound(ctx context.Context, req agentLoopRequest
 		resp, callErr := e.loggedReview(logging.WithProgressInfo(ctx, req.Progress), call, req.Section)
 		result.tokensUsed = addTokenUsage(result.tokensUsed, reviewCallTokens(resp, callErr))
 		var invalid *llm.InvalidResponseError
-		var interrupted *llm.InterruptedResponseError
-		if errors.As(callErr, &interrupted) {
+		if interrupted, ok := errors.AsType[*llm.InterruptedResponseError](callErr); ok {
 			resp = interrupted.PartialResponse
 		} else if errors.As(callErr, &invalid) {
 			resp = invalid.PartialResponse

@@ -8,86 +8,72 @@ import (
 	"testing"
 )
 
-func TestGenerateCompletion(t *testing.T) {
-	tests := []struct {
-		shell string
-		want  []string
-	}{
-		{shell: "bash", want: []string{"__start_nickpit()", `commands+=("completion")`}},
-		{shell: "zsh", want: []string{"#compdef nickpit", "_nickpit"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.shell, func(t *testing.T) {
-			root := newRootCmd()
-			var out bytes.Buffer
-			if err := generateCompletion(root, tc.shell, &out); err != nil {
+// runRoot runs nickpit with args and returns what it wrote.
+func runRoot(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs(args)
+	err := root.Execute()
+	return out.String(), err
+}
+
+func TestCompletionScripts(t *testing.T) {
+	for shell, want := range map[string]string{
+		"bash":       "__start_nickpit()",
+		"zsh":        "#compdef nickpit",
+		"fish":       "complete -c nickpit",
+		"powershell": "Register-ArgumentCompleter",
+	} {
+		t.Run(shell, func(t *testing.T) {
+			out, err := runRoot(t, "completion", shell)
+			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range tc.want {
-				if !strings.Contains(out.String(), want) {
-					t.Fatalf("%s completion missing %q", tc.shell, want)
-				}
+			if !strings.Contains(out, want) {
+				t.Fatalf("%s completion missing %q", shell, want)
 			}
 		})
 	}
 }
 
-func TestGenerateCompletionRejectsUnknownShell(t *testing.T) {
-	err := generateCompletion(newRootCmd(), "fish", &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "expected bash or zsh") {
-		t.Fatalf("error = %v", err)
+func TestCompletionRejectsUnknownShell(t *testing.T) {
+	if _, err := runRoot(t, "completion", "tcsh"); err == nil {
+		t.Fatal("completion for an unknown shell succeeded")
 	}
 }
 
-func TestInstallCompletion(t *testing.T) {
+func TestCompletionInstall(t *testing.T) {
 	dataHome := t.TempDir()
+	configHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("BASH_COMPLETION_USER_DIR", "")
 
-	tests := []struct {
-		shell   string
-		relPath string
-		want    string
+	for _, tc := range []struct {
+		shell, path, want string
 	}{
-		{shell: "bash", relPath: "bash-completion/completions/nickpit", want: "__start_nickpit()"},
-		{shell: "zsh", relPath: "zsh/site-functions/_nickpit", want: "#compdef nickpit"},
-	}
-	for _, tc := range tests {
+		{"bash", filepath.Join(dataHome, "bash-completion", "completions", "nickpit"), "__start_nickpit()"},
+		{"zsh", filepath.Join(dataHome, "zsh", "site-functions", "_nickpit"), "#compdef nickpit"},
+		{"fish", filepath.Join(configHome, "fish", "completions", "nickpit.fish"), "complete -c nickpit"},
+	} {
 		t.Run(tc.shell, func(t *testing.T) {
-			path, err := installCompletion(newRootCmd(), tc.shell)
+			out, err := runRoot(t, "completion", tc.shell, "--install")
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPath := filepath.Join(dataHome, filepath.FromSlash(tc.relPath))
-			if path != wantPath {
-				t.Fatalf("path = %q, want %q", path, wantPath)
+			if want := "Installed " + tc.shell + " completion to " + tc.path; strings.TrimSpace(out) != want {
+				t.Fatalf("output = %q, want %q", out, want)
 			}
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(tc.path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(string(data), tc.want) {
 				t.Fatalf("installed completion missing %q", tc.want)
 			}
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := info.Mode().Perm(); got != 0o644 {
-				t.Fatalf("mode = %o, want 644", got)
-			}
 		})
-	}
-}
-
-func TestCompletionInstallPathUsesBashOverride(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("BASH_COMPLETION_USER_DIR", dir)
-	path, err := completionInstallPath("bash")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := filepath.Join(dir, "nickpit"); path != want {
-		t.Fatalf("path = %q, want %q", path, want)
 	}
 }

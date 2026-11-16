@@ -179,9 +179,8 @@ func (r cliUpdateRunner) run(ctx context.Context, reason string) cliUpdateComple
 			return cliUpdateCompletion{Reason: reason, Err: err}
 		}
 		lastErr = err
-		var conflict *glscm.UpdateConflict
 		counter := 0
-		if errors.As(err, &conflict) {
+		if _, ok := errors.AsType[*glscm.UpdateConflict](err); ok {
 			conflicts++
 			counter = conflicts
 			plan = nil // Conflict checks precede staging.
@@ -366,11 +365,10 @@ func (a *app) runCLIReviewUpdate(ctx context.Context, profile config.Profile, in
 		fingerprint := cliEvidenceFingerprint(input.Messages, sourceCtx)
 		attempt := &cliUpdateAttempt{close: co.release, fingerprint: fingerprint}
 		attempt.request = review.UpdateWorkflowRequest{
-			UpdateFindingsRequest: review.UpdateFindingsRequest{DiscussRequest: review.DiscussRequest{
-				Result: before, ReviewCtx: clean, Messages: input.Messages, RepoRoot: root, Tools: chatToolset(root), DiffFormat: req.DiffFormat,
-				DisableSuggestions: profile.DisableSuggestions, DisableParallelToolCalls: a.disableParallelToolCalls,
-				MaxToolCalls: profile.MaxToolCalls, MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls, MaxOutputRetries: profile.MaxOutputRetries, MaxReasoningSeconds: profile.MaxReasoningSeconds,
-			}, Signal: input.Signal},
+
+			Result: before, ReviewCtx: clean, Messages: input.Messages, RepoRoot: root, Tools: chatToolset(root), DiffFormat: req.DiffFormat,
+			DisableSuggestions: profile.DisableSuggestions, DisableParallelToolCalls: a.disableParallelToolCalls,
+			MaxToolCalls: profile.MaxToolCalls, MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls, MaxOutputRetries: profile.MaxOutputRetries, MaxReasoningSeconds: profile.MaxReasoningSeconds, Signal: input.Signal,
 			InitiatingMessage: input.Question, PriorityThreshold: a.priorityThreshold, ConfidenceThreshold: a.confidenceThreshold, DisablePatchSummary: profile.DisablePatchSummary,
 		}
 		attempt.validate = func(ctx context.Context) error {

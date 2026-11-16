@@ -12,7 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/serve"
-	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/term"
 )
 
 // templateTarget is one comment-template scope plus the client and command
@@ -205,7 +205,7 @@ func syncCommandTemplates(ctx context.Context, w io.Writer, targets []templateTa
 
 func printTemplateNames(w io.Writer, marker string, names []string) {
 	for _, name := range names {
-		fmt.Fprintf(w, "  %s %s\n", marker, textsan.StripControl(name)) //nolint:errcheck // stdout write; nothing actionable on failure
+		fmt.Fprintf(w, "  %s %s\n", marker, term.PlainLine(name)) //nolint:errcheck // stdout write; nothing actionable on failure
 	}
 }
 
@@ -227,7 +227,7 @@ func listCommandTemplates(ctx context.Context, w io.Writer, targets []templateTa
 				owned = "*"
 			}
 			fmt.Fprintf(w, "  %s %s: %s\n", owned, //nolint:errcheck // stdout write; nothing actionable on failure
-				textsan.StripControl(reply.Name), textsan.StripControl(singleLine(reply.Content)))
+				term.PlainLine(reply.Name), term.PlainLine(singleLine(reply.Content)))
 		}
 	}
 	return nil

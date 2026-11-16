@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -454,7 +455,9 @@ func TestLiveRendererRedrawOwnsOnlyPreviousRows(t *testing.T) {
 	r.writeFrameLocked([]string{"final", "counts"})
 	r.mu.Unlock()
 	out := buf.String()
-	if strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x1b[0J") {
+	// Erasing from the frame's first row down ("\x1b[J") is the redraw; the
+	// whole screen ("\x1b[2J") or the scrollback ("\x1b[3J") never is.
+	if strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x1b[3J") {
 		t.Fatalf("renderer cleared terminal scrollback: %q", out)
 	}
 	if !strings.Contains(out, "\x1b[3A") {
@@ -466,7 +469,7 @@ func TestWriteOutsidePreservesTextBelowClearedDashboard(t *testing.T) {
 	now := time.Now()
 	r := testLiveRenderer(now)
 	buf := r.w.(*bytes.Buffer)
-	// Draw a 3-row frame so lastRows is non-zero and the cursor is parked below it.
+	// Draw a 3-row frame so the cursor is parked below it.
 	r.mu.Lock()
 	r.writeFrameLocked([]string{"one", "two", "three"})
 	r.mu.Unlock()
@@ -480,17 +483,16 @@ func TestWriteOutsidePreservesTextBelowClearedDashboard(t *testing.T) {
 		t.Fatalf("WriteOutside did not clear the prior 3-row frame: %q", out)
 	}
 	// Critically, the redraw after the text must NOT move the cursor back up —
-	// that would overwrite the just-written external line. The first byte after
-	// "external\n" is the frame's carriage return, not a cursor-up escape.
+	// that would overwrite the just-written external line.
 	_, rest, found := strings.Cut(out, "external\n")
 	if !found {
 		t.Fatalf("WriteOutside dropped the external text: %q", out)
 	}
-	if strings.HasPrefix(rest, "\x1b[") {
+	if regexp.MustCompile(`\x1b\[\d*A`).MatchString(rest) {
 		t.Fatalf("dashboard redraw moved the cursor over the external text: %q", rest)
 	}
-	if r.lastRows == 0 {
-		t.Fatal("dashboard was not redrawn after the external text")
+	if !strings.Contains(rest, "\n") {
+		t.Fatalf("dashboard was not redrawn after the external text: %q", rest)
 	}
 }
 
@@ -499,7 +501,7 @@ func TestWriteOutsideAfterFinishJustWritesText(t *testing.T) {
 	r := testLiveRenderer(now)
 	buf := r.w.(*bytes.Buffer)
 	r.mu.Lock()
-	r.lastRows = 3
+	r.writeFrameLocked([]string{"one", "two", "three"})
 	r.closed = true
 	r.mu.Unlock()
 	buf.Reset()
@@ -508,9 +510,6 @@ func TestWriteOutsideAfterFinishJustWritesText(t *testing.T) {
 
 	if out := buf.String(); out != "boom\n" {
 		t.Fatalf("closed WriteOutside = %q, want plain %q with no cursor codes", out, "boom\n")
-	}
-	if r.lastRows != 3 {
-		t.Fatalf("closed WriteOutside changed lastRows to %d, want 3 (frozen)", r.lastRows)
 	}
 }
 

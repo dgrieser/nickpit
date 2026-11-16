@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ---- Go build ------------------------------------------------------------
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
@@ -15,7 +15,7 @@ ARG COMMIT=""
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /nickpit ./cmd/nickpit
+      -ldflags="-s -w -X github.com/mittwald/cli-kit/buildinfo.Version=${VERSION} -X github.com/mittwald/cli-kit/buildinfo.Commit=${COMMIT}" -o /nickpit ./cmd/nickpit
 
 # ---- Stage git + its shared libs (bookworm, matches base-debian12) -------
 FROM debian:12-slim AS gitpkg

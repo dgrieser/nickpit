@@ -167,11 +167,11 @@ func TestStyleGuidesForLowerTierCannotResurrectVersionedGuide(t *testing.T) {
 func TestStyleGuidesForGatesAdditionalGuides(t *testing.T) {
 	e := &Engine{}
 	e.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
-		{StyleGuide: model.StyleGuide{Content: "UNGATED-GUIDE"}},
-		{StyleGuide: model.StyleGuide{Content: "GO-ANY-GUIDE"}, GateLanguage: "go"},
-		{StyleGuide: model.StyleGuide{Content: "GO-119-GUIDE"}, GateLanguage: "go", GateVersion: "1.19"},
-		{StyleGuide: model.StyleGuide{Content: "GO-122-GUIDE"}, GateLanguage: "go", GateVersion: ">=1.22"},
-		{StyleGuide: model.StyleGuide{Content: "PY-GUIDE"}, GateLanguage: "python"},
+		{Content: "UNGATED-GUIDE"},
+		{Content: "GO-ANY-GUIDE", GateLanguage: "go"},
+		{Content: "GO-119-GUIDE", GateLanguage: "go", GateVersion: "1.19"},
+		{Content: "GO-122-GUIDE", GateLanguage: "go", GateVersion: ">=1.22"},
+		{Content: "PY-GUIDE", GateLanguage: "python"},
 	})
 
 	// go 1.19: ungated + language-gated go + version-gated 1.19 apply; the

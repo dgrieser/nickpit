@@ -49,7 +49,7 @@ func reviewerBudgetTestContext(t *testing.T, limit time.Duration, threshold int,
 }
 
 func budgetFinding(title string) model.Finding {
-	return model.Finding{Title: title, Body: title, Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}}
+	return model.Finding{Title: title, Body: title, Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}}
 }
 
 func budgetAgent() agentSpec {
@@ -212,12 +212,12 @@ func TestReviewerBudgetFinalMiningHonorsPhaseAllocation(t *testing.T) {
 		maxSeconds *int
 		wantMining bool
 	}{
-		{name: "small weight", mineWeight: intPtr(1), wantMining: true},
-		{name: "optional weight zero", mineWeight: intPtr(0)},
-		{name: "optional with absolute cap", mineWeight: intPtr(0), maxSeconds: intPtr(1)},
-		{name: "no remaining allocation", mainWeight: intPtr(100)},
-		{name: "absolute cap tighter", mineWeight: intPtr(100), maxSeconds: intPtr(1), wantMining: true},
-		{name: "final response reserve tighter", mineWeight: intPtr(100), wantMining: true},
+		{name: "small weight", mineWeight: new(1), wantMining: true},
+		{name: "optional weight zero", mineWeight: new(0)},
+		{name: "optional with absolute cap", mineWeight: new(0), maxSeconds: new(1)},
+		{name: "no remaining allocation", mainWeight: new(100)},
+		{name: "absolute cap tighter", mineWeight: new(100), maxSeconds: new(1), wantMining: true},
+		{name: "final response reserve tighter", mineWeight: new(100), wantMining: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := reviewerBudgetTestContext(t, 8*time.Second, 80, true)
@@ -500,7 +500,7 @@ func TestReviewerBudgetWorkflowKeepsClosedSessionOutcome(t *testing.T) {
 			}}
 			e := pipelineTestEngine(client)
 			spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
-				{Type: "review:security", Config: &workflow.StepOverride{NudgeCount: intPtr(3), TimeBudget: &workflow.TimeBudget{MaxSeconds: intPtr(1)}}},
+				{Type: "review:security", Config: &workflow.StepOverride{NudgeCount: new(3), TimeBudget: &workflow.TimeBudget{MaxSeconds: new(1)}}},
 				{Type: "reasoning-extract:security"}, {Type: "nudge:security"},
 			}}
 			pipeline, err := e.BuildPipeline(spec)

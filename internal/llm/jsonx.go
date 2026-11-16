@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/secret"
 )
 
 // LenientUnmarshal tries to decode arbitrary model-generated text into v.
@@ -121,7 +122,7 @@ func sanitizeJSONRecoveryError(err error) string {
 	if err == nil {
 		return "<nil>"
 	}
-	return textsan.RedactSecrets(textsan.StripControl(err.Error()))
+	return secret.RedactPatterns(textsan.StripControl(err.Error()))
 }
 
 func (e *jsonRecoveryError) Unwrap() []error {

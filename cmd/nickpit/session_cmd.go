@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgrieser/nickpit/internal/clipboard"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/session"
-	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/clipboard"
+	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
 
@@ -220,7 +220,7 @@ func (a *app) printSession(ctx context.Context, store *session.Store, sessionID 
 			return a.formatReviewHistory(w, sess.ReviewHistory, clip)
 		}
 	}
-	origin := "session " + textsan.StripControl(sess.ID)
+	origin := "session " + term.PlainLine(sess.ID)
 	if err := a.emitReview(ctx, w, clip, subject, origin, func(out io.Writer) error {
 		return render(out, sess.Result)
 	}); err != nil {
@@ -273,16 +273,14 @@ func noteText(text string, color bool) string {
 	return "\x1b[" + selectionStyle + "m" + text + "\x1b[0m"
 }
 
-// useColor reports whether a writer is a terminal a person is watching, with
-// colour not switched off — the same test the pick confirmation applies before
-// styling its line.
+// useColor reports whether output to w is painted: --color, NO_COLOR, a
+// dumb TERM and whether w is a terminal decide — the same test the pick
+// confirmation applies before styling its line.
 func useColor(w io.Writer) bool {
-	file, ok := w.(*os.File)
-	if !ok || !isInteractiveTerminal(file) {
-		return false
-	}
-	_, noColor := os.LookupEnv("NO_COLOR")
-	return !noColor
+	// Only a real output stream: text rendered into a buffer, such as a copy
+	// for the clipboard, stays plain even under --color=always.
+	_, isFile := w.(*os.File)
+	return isFile && term.Colored(w)
 }
 
 func (a *app) formatReviewHistory(w io.Writer, history []session.ReviewRevision, clip bool) error {
@@ -302,7 +300,7 @@ func (a *app) formatReviewHistory(w io.Writer, history []session.ReviewRevision,
 		if revision.Result == nil {
 			return fmt.Errorf("session: history contains an empty review")
 		}
-		if _, err := fmt.Fprintf(w, "## Review revision %d\n\nReplaced: %s\n\nReason: %s\n\n", revision.Result.Revision, revision.ReplacedAt.Format(time.RFC3339), textsan.StripControl(revision.Reason)); err != nil {
+		if _, err := fmt.Fprintf(w, "## Review revision %d\n\nReplaced: %s\n\nReason: %s\n\n", revision.Result.Revision, revision.ReplacedAt.Format(time.RFC3339), term.Plain(revision.Reason)); err != nil {
 			return err
 		}
 		format := a.formatReview

@@ -309,8 +309,8 @@ func parseDiffGitPath(line string) string {
 	// everything after the last " b/", which is the post-change path unless a
 	// path literally contains " b/" (rare enough to fall back on).
 	rest := line[len(prefix):]
-	if idx := strings.LastIndex(rest, " b/"); idx >= 0 {
-		return normalizeReviewPath(rest[idx+len(" b/"):])
+	if _, path, ok := strings.CutLast(rest, " b/"); ok {
+		return normalizeReviewPath(path)
 	}
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {

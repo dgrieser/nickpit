@@ -270,8 +270,7 @@ func TestFindReferencesDirectoryWithoutSupportedDeclarationRequestsFallback(t *t
 
 	for _, path := range []string{"", "legacy"} {
 		_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE", Path: path})
-		var unsupported *UnsupportedLanguageError
-		if !errors.As(err, &unsupported) {
+		if _, ok := errors.AsType[*UnsupportedLanguageError](err); !ok {
 			t.Fatalf("path %q error = %v, want *UnsupportedLanguageError", path, err)
 		}
 	}
@@ -548,8 +547,7 @@ func TestFindGoReferencesPinsAmbiguousDeclarationByLine(t *testing.T) {
 
 	engine := NewLocalEngine()
 	_, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "String", Path: "types.go"})
-	var ambiguous *AmbiguousSymbolError
-	if !errors.As(err, &ambiguous) {
+	if _, ok := errors.AsType[*AmbiguousSymbolError](err); !ok {
 		t.Fatalf("error = %v, want ambiguous", err)
 	}
 	if !strings.Contains(err.Error(), "line") {
@@ -717,8 +715,7 @@ func TestResolveReferenceTargetsMatchesFullAnalysis(t *testing.T) {
 		t.Fatalf("got %d results for %d symbols", len(targets), len(symbols))
 	}
 
-	var notFound *SymbolNotFoundError
-	if !errors.As(targets[3].Err, &notFound) {
+	if _, ok := errors.AsType[*SymbolNotFoundError](targets[3].Err); !ok {
 		t.Fatalf("absent symbol error = %v", targets[3].Err)
 	}
 	for i, symbol := range symbols[:3] {
@@ -743,8 +740,7 @@ func TestResolveReferenceTargetsReportsAmbiguity(t *testing.T) {
 	writeRetrievalFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
 
 	targets := NewLocalEngine().ResolveReferenceTargets(context.Background(), repoRoot, []SymbolRef{{Name: "run", Path: "handlers.ts"}})
-	var ambiguous *AmbiguousSymbolError
-	if !errors.As(targets[0].Err, &ambiguous) {
+	if _, ok := errors.AsType[*AmbiguousSymbolError](targets[0].Err); !ok {
 		t.Fatalf("error = %v, want ambiguous", targets[0].Err)
 	}
 }

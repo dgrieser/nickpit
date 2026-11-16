@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mittwald/cli-kit/pick"
+
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
@@ -104,16 +105,16 @@ func TestSessionViewsCarryRemoteReviews(t *testing.T) {
 	}
 	// The published reviews are their own scope, and nothing is fetched until
 	// it is drawn.
-	if views[scopeRemote].Label != "remote" || len(views[scopeRemote].Items) != 0 {
+	if views[scopeRemote].Name != "remote" || len(views[scopeRemote].Items) != 0 {
 		t.Fatalf("remote scope = %+v", views[scopeRemote])
 	}
 	// The scopes of saved sessions never show them, before or after the fetch.
 	for _, scope := range []int{scopeBranch, scopeRepo, scopeAll} {
 		if views[scope].Load != nil {
-			t.Fatalf("scope %q fetches published reviews", views[scope].Label)
+			t.Fatalf("scope %q fetches published reviews", views[scope].Name)
 		}
 		if len(views[scope].Items) != 1 || views[scope].Items[0].Key != "local-1" {
-			t.Fatalf("scope %q = %+v, want the saved session alone", views[scope].Label, views[scope].Items)
+			t.Fatalf("scope %q = %+v, want the saved session alone", views[scope].Name, views[scope].Items)
 		}
 	}
 	items, err := views[scopeRemote].Load()
@@ -129,13 +130,28 @@ func TestSessionViewsCarryRemoteReviews(t *testing.T) {
 		t.Fatalf("remote scope = %v", keys)
 	}
 	// A row is resolved back to the review it stands for, not to a session.
-	choice := sessionOfRow(pick.View{Items: items}, local, remote, 0)
+	choice := sessionOfRow(items, local, remote, 0)
 	if choice.saved() || choice.remote == nil || choice.remote.id != 42 {
 		t.Fatalf("choice = %+v", choice)
 	}
-	saved := sessionOfRow(views[scopeRepo], local, remote, 0)
+	saved := sessionOfRow(views[scopeRepo].Items, local, remote, 0)
 	if !saved.saved() || saved.info.ID != "local-1" {
 		t.Fatalf("choice = %+v, want the saved session", saved)
+	}
+	// Through the picker: the row it returns for the remote scope indexes the
+	// rows Load produced, which the list keeps to itself.
+	a := &app{selectViewFn: func(opts pick.Options) (int, int, error) {
+		if _, err := opts.Views[scopeRemote].Load(); err != nil {
+			return 0, 0, err
+		}
+		return scopeRemote, 0, nil
+	}}
+	picked, state, err := a.pickSession(place, local, "Session", remote, newSessionPickState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.saved() || picked.remote == nil || picked.remote.id != 42 || state.view != scopeRemote {
+		t.Fatalf("picked = %+v in scope %d, want the published review of the checked-out branch", picked, state.view)
 	}
 }
 
@@ -170,7 +186,7 @@ func TestRemoteListingFailureLeavesTheRestAlone(t *testing.T) {
 	}
 	for _, scope := range []int{scopeBranch, scopeRepo, scopeAll} {
 		if views[scope].Load != nil {
-			t.Fatalf("scope %q was dragged into the failure", views[scope].Label)
+			t.Fatalf("scope %q was dragged into the failure", views[scope].Name)
 		}
 	}
 }

@@ -208,8 +208,7 @@ func (e *Engine) runAgentLoopCore(ctx context.Context, req agentLoopRequest) (re
 		}
 		repairedFromPartial := false
 		if err != nil {
-			var interrupted *llm.InterruptedResponseError
-			if errors.As(err, &interrupted) {
+			if interrupted, ok := errors.AsType[*llm.InterruptedResponseError](err); ok {
 				recordTokens(interrupted.TokensUsed)
 				result.interruptedOutput = interrupted.RawContent
 				result.resp = interrupted.PartialResponse
@@ -609,12 +608,10 @@ func outputRetriesExhaustedLine(retries int, reason string) string {
 // it succeeded, returned a partial/invalid response, or failed outright.
 func reviewCallTokens(resp *llm.ReviewResponse, err error) model.TokenUsage {
 	if err != nil {
-		var interrupted *llm.InterruptedResponseError
-		if errors.As(err, &interrupted) {
+		if interrupted, ok := errors.AsType[*llm.InterruptedResponseError](err); ok {
 			return interrupted.TokensUsed
 		}
-		var invalidResp *llm.InvalidResponseError
-		if errors.As(err, &invalidResp) {
+		if invalidResp, ok := errors.AsType[*llm.InvalidResponseError](err); ok {
 			return invalidResponseTokens(invalidResp)
 		}
 		return model.TokenUsage{}

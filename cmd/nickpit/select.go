@@ -10,12 +10,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mittwald/cli-kit/format"
+	"github.com/mittwald/cli-kit/pick"
+	"github.com/mittwald/cli-kit/term"
+	"github.com/mittwald/cli-kit/theme"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
@@ -53,13 +55,7 @@ func (a *app) interactiveSelect() bool {
 	if a.selectFn != nil || a.selectRangeFn != nil || a.selectViewFn != nil {
 		return true
 	}
-	return isInteractiveTerminal(os.Stdin) && isInteractiveTerminal(os.Stderr)
-}
-
-// isInteractiveTerminal reports whether f is a terminal a person could be
-// watching, the same test pick.Select gates on.
-func isInteractiveTerminal(f *os.File) bool {
-	return f != nil && term.IsTerminal(int(f.Fd()))
+	return term.Interactive(os.Stdin, os.Stderr)
 }
 
 // selectOne draws opts and returns the chosen index. The picker reads keys from
@@ -73,6 +69,7 @@ func (a *app) selectOne(opts pick.Options) (int, error) {
 // selectRange draws opts and returns the ends of the chosen range, which are
 // the same row unless opts.Range is set.
 func (a *app) selectRange(opts pick.Options) (int, int, error) {
+	opts = withPickerLook(opts)
 	opts.Nested = opts.Nested || a.pickNested
 	if a.selectRangeFn != nil {
 		return a.selectRangeFn(opts)
@@ -92,6 +89,7 @@ func (a *app) selectRange(opts pick.Options) (int, int, error) {
 // selectView draws a multi-scope list and returns the scope the user ended in
 // together with the chosen row inside that scope's items.
 func (a *app) selectView(opts pick.Options) (int, int, error) {
+	opts = withPickerLook(opts)
 	opts.Nested = opts.Nested || a.pickNested
 	if a.selectViewFn != nil {
 		return a.selectViewFn(opts)
@@ -249,7 +247,7 @@ func (a *app) pickLocalRefs(ctx context.Context, submode, repoRoot string, expli
 				label:     "Base branch ",
 				preferred: preferred,
 				remote:    true,
-				style:     pick.StyleBaseRef,
+				style:     styleBaseRef,
 			})
 			if err != nil {
 				return err
@@ -268,7 +266,7 @@ func (a *app) pickLocalRefs(ctx context.Context, submode, repoRoot string, expli
 				title:     "Branch to review:",
 				label:     "Head branch ",
 				preferred: preferred,
-				style:     pick.StyleHeadRef,
+				style:     styleHeadRef,
 			})
 			if err != nil {
 				return err
@@ -319,7 +317,7 @@ func (a *app) runPickedLocalMode(cmd *cobra.Command, modes []*cobra.Command) err
 			Title:      "Local changes to review:",
 			Items:      items,
 			Initial:    initial,
-			CellStyles: []string{pick.StyleIdentifier, pick.StyleText},
+			CellStyles: []theme.Style{styleIdentifier, styleText},
 			Hint:       "↑/↓ move · type to filter · Enter select · Esc abort",
 		})
 		if err != nil {
@@ -330,7 +328,7 @@ func (a *app) runPickedLocalMode(cmd *cobra.Command, modes []*cobra.Command) err
 		}
 		initial = index
 		mode := modes[index]
-		a.printSelection("Reviewing ", mode.Name(), pick.StyleIdentifier, "")
+		a.printSelection("Reviewing ", mode.Name(), styleIdentifier, "")
 		mode.SetContext(cmd.Context())
 		a.pickNested = true
 		err = mode.RunE(mode, nil)
@@ -344,11 +342,12 @@ func (a *app) runPickedLocalMode(cmd *cobra.Command, modes []*cobra.Command) err
 	}
 }
 
-// isPickBack reports whether a nested prompt was left with Esc, which means
-// "back to the list that opened it". Ctrl-C and Ctrl-D also abort the prompt,
-// but as pick.ErrInterrupted: they end the run, as in any other picker.
+// isPickBack reports whether a nested prompt was left with Esc (or Backspace
+// where the prompt allows it), which means "back to the list that opened it":
+// pick.ErrBack. Ctrl-C and Ctrl-D also abort the prompt, but as
+// pick.ErrInterrupted: they end the run, as in any other picker.
 func isPickBack(err error) bool {
-	return errors.Is(err, pick.ErrAborted) && !errors.Is(err, pick.ErrInterrupted)
+	return errors.Is(err, pick.ErrBack)
 }
 
 // openRequestList is the platform's half of picking a request: how to list the
@@ -408,41 +407,40 @@ func (a *app) pickOpenRequest(ctx context.Context, repo string, source openReque
 			}
 			cells = append(cells, draft)
 		}
-		cells = append(cells,
-			textsan.StripControl(request.Title),
-			textsan.StripControl(request.Author),
-			relativeAge(request.UpdatedAt))
+		// The list draws every cell as plain text, so the title and the author
+		// go in as the server holds them.
+		cells = append(cells, request.Title, request.Author, relativeAge(request.UpdatedAt))
 		items[i] = pick.Item{
 			Cells: cells,
 			// The branches are not shown (they rarely fit next to the title) but
 			// they are worth filtering on: typing a branch name finds its request.
 			Match: fmt.Sprintf("%s%d %s %s %s %s", source.marker, request.Identifier, request.Title,
 				request.Author, request.SourceBranch, request.TargetBranch),
-			CellStyles: rowStyles(len(cells), map[int]string{
-				len(cells) - 2: pick.AuthorStyle(request.Author),
+			CellStyles: rowStyles(len(cells), map[int]theme.Style{
+				len(cells) - 2: theme.Hashed(request.Author, nil),
 				len(cells) - 1: ageStyle(request.UpdatedAt),
 			}),
 		}
 	}
-	styles := []string{pick.StyleMark, pick.StyleIdentifier, pick.StyleText, pick.StyleAuthor, pick.StyleAge}
-	kinds := []pick.ColumnKind{pick.KindPlain, pick.KindPlain, pick.KindMessage}
+	styles := []theme.Style{styleMark, styleIdentifier, styleText, styleAuthor, styleAge}
+	kinds := []cellKind{cellPlain, cellPlain, cellMessage}
 	if drafts {
-		styles = slices.Insert(styles, 2, pick.StyleCaveat)
-		kinds = slices.Insert(kinds, 2, pick.KindPlain)
+		styles = slices.Insert(styles, 2, styleCaveat)
+		kinds = slices.Insert(kinds, 2, cellPlain)
 	}
 	index, err := a.selectOne(pick.Options{
-		Title:       fmt.Sprintf("Open %ss in %s", source.noun, textsan.StripControl(repo)),
-		Items:       items,
-		Initial:     max(initial, 0),
-		CellStyles:  styles,
-		ColumnKinds: kinds,
+		Title:        fmt.Sprintf("Open %ss in %s", source.noun, repo),
+		Items:        items,
+		Initial:      max(initial, 0),
+		CellStyles:   styles,
+		PaintRowCell: paintCells(kinds...),
 	})
 	if err != nil {
 		return 0, err
 	}
 	chosen := requests[index]
 	a.printSelection("Selected "+source.noun+" ",
-		source.marker+strconv.Itoa(chosen.Identifier), pick.StyleIdentifier,
+		source.marker+strconv.Itoa(chosen.Identifier), styleIdentifier,
 		" "+textsan.StripControl(chosen.Title))
 	return chosen.Identifier, nil
 }
@@ -563,7 +561,7 @@ type branchPrompt struct {
 	// remote resolves a folded row to its remote-tracking side, which is what a
 	// base is; a head keeps the local branch.
 	remote bool
-	style  string
+	style  theme.Style
 }
 
 // pickBranch offers the repository's branches — one row per branch, whichever
@@ -585,9 +583,9 @@ func (a *app) pickBranch(ctx context.Context, repoRoot string, prompt branchProm
 		if choice.current {
 			mark = checkedOutMark
 		}
-		name := ""
+		var name theme.Style
 		if choice.isDefault {
-			name = pick.StyleDefaultRef
+			name = styleDefaultRef
 		}
 		items[i] = pick.Item{
 			// The name column is narrow enough to lose the tail of a long
@@ -597,15 +595,15 @@ func (a *app) pickBranch(ctx context.Context, repoRoot string, prompt branchProm
 			Cells: []string{
 				mark,
 				choice.name,
-				textsan.StripControl(choice.subject),
-				textsan.StripControl(choice.author),
+				choice.subject,
+				choice.author,
 				relativeAge(choice.date),
 			},
 			// Both refs of a folded row stay findable by typing.
 			Match: choice.name + " " + choice.local + " " + choice.remote + " " + choice.subject + " " + choice.author,
-			CellStyles: rowStyles(5, map[int]string{
+			CellStyles: rowStyles(5, map[int]theme.Style{
 				1: name,
-				3: pick.AuthorStyle(choice.author),
+				3: theme.Hashed(choice.author, nil),
 				4: ageStyle(choice.date),
 			}),
 		}
@@ -615,14 +613,16 @@ func (a *app) pickBranch(ctx context.Context, repoRoot string, prompt branchProm
 		}
 	}
 	index, err := a.selectOne(pick.Options{
-		Title:      prompt.title,
-		Items:      items,
-		Initial:    initial,
-		CellStyles: []string{pick.StyleMark, "", pick.StyleText, pick.StyleAuthor, pick.StyleAge},
+		Title:   prompt.title,
+		Items:   items,
+		Initial: initial,
+		// The name keeps the terminal's own tone unless it is the default
+		// branch.
+		CellStyles: []theme.Style{styleMark, styleTerminalFg, styleText, styleAuthor, styleAge},
 		// The name is a ref, so its separators fade like a progress line's; the
 		// tip message is a commit subject, so its prefix is taken apart.
-		ColumnKinds: []pick.ColumnKind{pick.KindPlain, pick.KindRef, pick.KindMessage},
-		DetailStyle: prompt.style,
+		PaintRowCell: paintCells(cellPlain, cellRef, cellMessage),
+		DetailStyle:  prompt.style,
 		// The name column gives up its width first — down to a stub if need be:
 		// the title line spells the selected branch out in full, while the tip
 		// message is only ever visible in its own column.
@@ -658,13 +658,13 @@ func commitList(ctx context.Context, repoRoot, rev string) ([]git.CommitRef, []p
 			Detail: commit.ShortSHA,
 			Cells: []string{
 				commit.ShortSHA,
-				textsan.StripControl(commit.Subject),
-				textsan.StripControl(commit.Author),
+				commit.Subject,
+				commit.Author,
 				relativeAge(commit.Date),
 			},
 			Match: commit.SHA + " " + commit.Subject + " " + commit.Author,
-			CellStyles: rowStyles(4, map[int]string{
-				2: pick.AuthorStyle(commit.Author),
+			CellStyles: rowStyles(4, map[int]theme.Style{
+				2: theme.Hashed(commit.Author, nil),
 				3: ageStyle(commit.Date),
 			}),
 		}
@@ -675,10 +675,10 @@ func commitList(ctx context.Context, repoRoot, rev string) ([]git.CommitRef, []p
 // commitOptions are the picker settings both commit prompts share.
 func commitOptions(title string, items []pick.Item) pick.Options {
 	return pick.Options{
-		Title:       title,
-		Items:       items,
-		CellStyles:  []string{pick.StyleHash, pick.StyleText, pick.StyleAuthor, pick.StyleAge},
-		ColumnKinds: []pick.ColumnKind{pick.KindPlain, pick.KindMessage},
+		Title:        title,
+		Items:        items,
+		CellStyles:   []theme.Style{styleHash, styleText, styleAuthor, styleAge},
+		PaintRowCell: paintCells(cellPlain, cellMessage),
 	}
 }
 
@@ -717,10 +717,10 @@ func (a *app) pickCommitRange(ctx context.Context, repoRoot string) (string, str
 		return "", "", err
 	}
 	if newest == oldest {
-		a.printSelection("Commit to review ", head.ShortSHA, pick.StyleHash,
+		a.printSelection("Commit to review ", head.ShortSHA, styleHash,
 			" "+textsan.StripControl(head.Subject))
 	} else {
-		a.printSelection("Commits to review ", first.ShortSHA+".."+head.ShortSHA, pick.StyleHash,
+		a.printSelection("Commits to review ", first.ShortSHA+".."+head.ShortSHA, styleHash,
 			fmt.Sprintf(" · %d commits", oldest-newest+1))
 	}
 	return base, head.SHA, nil
@@ -742,7 +742,7 @@ func (a *app) pickCommitStart(ctx context.Context, repoRoot, rev string) (string
 	if err != nil {
 		return "", err
 	}
-	a.printSelection("First commit ", first.ShortSHA, pick.StyleHash,
+	a.printSelection("First commit ", first.ShortSHA, styleHash,
 		" "+textsan.StripControl(first.Subject))
 	return base, nil
 }
@@ -753,18 +753,18 @@ const freshAge = time.Hour
 
 // ageStyle colours an age column: grey normally, green while the change is
 // still fresh. "" leaves the column's own colour in place.
-func ageStyle(t time.Time) string {
+func ageStyle(t time.Time) theme.Style {
 	if t.IsZero() || time.Since(t) > freshAge {
 		return ""
 	}
-	return pick.StyleFresh
+	return styleFresh
 }
 
 // rowStyles builds a row's per-column style slice from the columns that deviate
 // from their column default; empty values are dropped, so a row that deviates
 // nowhere carries no styles at all.
-func rowStyles(columns int, overrides map[int]string) []string {
-	styles := make([]string, columns)
+func rowStyles(columns int, overrides map[int]theme.Style) []theme.Style {
+	styles := make([]theme.Style, columns)
 	any := false
 	for column, style := range overrides {
 		if style == "" || column < 0 || column >= columns {
@@ -784,17 +784,16 @@ func rowStyles(columns int, overrides map[int]string) []string {
 // sentence is light grey italic with the chosen value in the colour the
 // picker's own header gave it, so the line reads as an aside to the run that
 // follows.
-func (a *app) printSelection(prefix, highlight, highlightStyle, suffix string) {
+func (a *app) printSelection(prefix, highlight string, highlightStyle theme.Style, suffix string) {
 	if a.selectFn != nil || a.selectViewFn != nil {
 		// A test seam replaces the terminal; there is nothing to confirm to.
 		return
 	}
-	_, noColor := os.LookupEnv("NO_COLOR")
-	writeSelection(os.Stderr, isInteractiveTerminal(os.Stderr) && !noColor, prefix, highlight, highlightStyle, suffix)
+	writeSelection(os.Stderr, term.Colored(os.Stderr), prefix, highlight, highlightStyle, suffix)
 }
 
 // writeSelection renders the confirmation, styled or plain.
-func writeSelection(w io.Writer, color bool, prefix, highlight, highlightStyle, suffix string) {
+func writeSelection(w io.Writer, color bool, prefix, highlight string, highlightStyle theme.Style, suffix string) {
 	if !color {
 		// A confirmation that could not be written changes nothing about the
 		// selection that was made, so the error is dropped rather than surfaced.
@@ -805,7 +804,7 @@ func writeSelection(w io.Writer, color bool, prefix, highlight, highlightStyle, 
 	// it had in the list. An identifier or a SHA carries none and comes out
 	// exactly as before.
 	_, _ = fmt.Fprintf(w, "\x1b[%sm%s\x1b[0m%s\x1b[%sm%s\x1b[0m\n",
-		selectionStyle, prefix, pick.PaintRef(highlight, highlightStyle), selectionStyle, suffix)
+		selectionStyle, prefix, paintRef(highlight, highlightStyle), selectionStyle, suffix)
 }
 
 // selectionStyle is the aside the confirmation is set in: italic light grey
@@ -829,25 +828,8 @@ func currentBranchName(ctx context.Context) string {
 }
 
 // relativeAge renders a timestamp as the compact age a listing row shows
-// ("3h", "2d", "5mo"). A zero or future timestamp yields "now" rather than a
-// negative age.
+// ("3h", "2d", "5mo"). A zero timestamp yields "" and a future one "now"
+// rather than a negative age.
 func relativeAge(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "now"
-	case d < time.Hour:
-		return strconv.Itoa(int(d.Minutes())) + "m"
-	case d < 24*time.Hour:
-		return strconv.Itoa(int(d.Hours())) + "h"
-	case d < 30*24*time.Hour:
-		return strconv.Itoa(int(d.Hours()/24)) + "d"
-	case d < 365*24*time.Hour:
-		return strconv.Itoa(int(d.Hours()/(24*30))) + "mo"
-	default:
-		return strconv.Itoa(int(d.Hours()/(24*365))) + "y"
-	}
+	return format.Age(t, time.Now())
 }

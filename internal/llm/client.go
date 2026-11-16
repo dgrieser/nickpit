@@ -1018,8 +1018,7 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 		return resp
 	}
 	finishError := func(err error) error {
-		var invalidResp *InvalidResponseError
-		if errors.As(err, &invalidResp) {
+		if invalidResp, ok := errors.AsType[*InvalidResponseError](err); ok {
 			invalidResp.TokensUsed = totalUsage
 			if invalidResp.PartialResponse != nil {
 				invalidResp.PartialResponse.TokensUsed = totalUsage
@@ -1053,8 +1052,7 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 		// decode/serving fault. Recovery order: one byte-identical retry at
 		// the SAME effort (the only recovery at none/off), then the regular
 		// lower-effort ladder if the repeat persists.
-		var outputLoopErr *OutputLoopDetectedError
-		if errors.As(err, &outputLoopErr) {
+		if outputLoopErr, ok := errors.AsType[*OutputLoopDetectedError](err); ok {
 			lastOutputLoopErr = outputLoopErr
 			if !outputLoopRetried {
 				outputLoopRetried = true
@@ -1070,8 +1068,7 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			}
 			break
 		}
-		var budgetErr *ReasoningBudgetExhaustedError
-		if errors.As(err, &budgetErr) {
+		if budgetErr, ok := errors.AsType[*ReasoningBudgetExhaustedError](err); ok {
 			lastBudgetErr = budgetErr
 			lastBudgetReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
@@ -1082,8 +1079,7 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			}
 			break
 		}
-		var emptyErr *ReasoningOnlyEmptyResponseError
-		if errors.As(err, &emptyErr) {
+		if emptyErr, ok := errors.AsType[*ReasoningOnlyEmptyResponseError](err); ok {
 			lastEmptyErr = emptyErr
 			lastEmptyReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
@@ -1094,8 +1090,7 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			}
 			break
 		}
-		var loopErr *ReasoningLoopDetectedError
-		if errors.As(err, &loopErr) {
+		if loopErr, ok := errors.AsType[*ReasoningLoopDetectedError](err); ok {
 			lastLoopErr = loopErr
 			lastLoopReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
@@ -1136,12 +1131,10 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			noToolsResp.ToolsOmitted = true
 			return finishResponse(noToolsResp), nil
 		}
-		var budgetErr *ReasoningBudgetExhaustedError
-		if errors.As(noToolsErr, &budgetErr) {
+		if budgetErr, ok := errors.AsType[*ReasoningBudgetExhaustedError](noToolsErr); ok {
 			lastBudgetErr = budgetErr
 		} else {
-			var invalidResp *InvalidResponseError
-			if errors.As(noToolsErr, &invalidResp) {
+			if invalidResp, ok := errors.AsType[*InvalidResponseError](noToolsErr); ok {
 				invalidResp.ToolsOmitted = true
 			}
 			return nil, finishError(noToolsErr)
@@ -1162,12 +1155,10 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			noToolsResp.ToolsOmitted = true
 			return finishResponse(noToolsResp), nil
 		}
-		var emptyErr *ReasoningOnlyEmptyResponseError
-		if errors.As(noToolsErr, &emptyErr) {
+		if emptyErr, ok := errors.AsType[*ReasoningOnlyEmptyResponseError](noToolsErr); ok {
 			lastEmptyErr = emptyErr
 		} else {
-			var invalidResp *InvalidResponseError
-			if errors.As(noToolsErr, &invalidResp) {
+			if invalidResp, ok := errors.AsType[*InvalidResponseError](noToolsErr); ok {
 				invalidResp.ToolsOmitted = true
 			}
 			return nil, finishError(noToolsErr)
@@ -1188,12 +1179,10 @@ func (c *OpenAIClient) reviewLadder(ctx context.Context, req *ReviewRequest, pro
 			noToolsResp.ToolsOmitted = true
 			return finishResponse(noToolsResp), nil
 		}
-		var loopErr *ReasoningLoopDetectedError
-		if errors.As(noToolsErr, &loopErr) {
+		if loopErr, ok := errors.AsType[*ReasoningLoopDetectedError](noToolsErr); ok {
 			lastLoopErr = loopErr
 		} else {
-			var invalidResp *InvalidResponseError
-			if errors.As(noToolsErr, &invalidResp) {
+			if invalidResp, ok := errors.AsType[*InvalidResponseError](noToolsErr); ok {
 				invalidResp.ToolsOmitted = true
 			}
 			return nil, finishError(noToolsErr)
@@ -1650,8 +1639,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest, progr
 		var overwrittenIDs int
 		resp, overwrittenIDs, err = parseReviewResponseWithIDBackfill(content, req.SchemaKind, req.Constraints)
 		if err != nil {
-			var invalidResp *InvalidResponseError
-			if errors.As(err, &invalidResp) {
+			if invalidResp, ok := errors.AsType[*InvalidResponseError](err); ok {
 				invalidResp.ReasoningEffort = payload.ReasoningEffort
 				if resp != nil {
 					resp.RawResponse = content
@@ -2021,8 +2009,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			if closeErr != nil {
 				c.logf(ctx, "LLM stream close failed after error: %v", closeErr)
 			}
-			var loopErr *ReasoningLoopDetectedError
-			if errors.As(streamErr, &loopErr) {
+			if loopErr, ok := errors.AsType[*ReasoningLoopDetectedError](streamErr); ok {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
 				c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
 				if c.logger != nil {
@@ -2034,8 +2021,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				progress.recordFailure("reasoning loop detected")
 				return nil, loopErr
 			}
-			var outputLoopErr *OutputLoopDetectedError
-			if errors.As(streamErr, &outputLoopErr) {
+			if outputLoopErr, ok := errors.AsType[*OutputLoopDetectedError](streamErr); ok {
 				outputLoopErr.ReasoningEffort = payload.ReasoningEffort
 				c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
 				if c.logger != nil {
@@ -2052,8 +2038,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				progress.recordFailure("reasoning time limit exceeded")
 				return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 			}
-			var readErr *streamReadError
-			if errors.As(streamErr, &readErr) {
+			if readErr, ok := errors.AsType[*streamReadError](streamErr); ok {
 				if isReasoningOnlyPeerInternalStreamError(readErr) {
 					progress.recordFailure("reasoning budget exhausted")
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
@@ -2230,8 +2215,7 @@ func (c *OpenAIClient) logRetryOutcome(ctx context.Context, progress *retryProgr
 		// those loops exist to absorb as a failure, and the loop logs its own
 		// retry line either way; when it runs out of retries, that loop logs
 		// the give-up line, because only it knows its own budget is gone.
-		var invalidResp *InvalidResponseError
-		if errors.As(err, &invalidResp) {
+		if _, ok := errors.AsType[*InvalidResponseError](err); ok {
 			return
 		}
 	}
@@ -2540,22 +2524,19 @@ func responseFromCapture(c *capture) *http.Response {
 }
 
 func statusCodeFromError(err error, c *capture) int {
-	var statusErr *llmHTTPStatusError
-	if errors.As(err, &statusErr) {
+	if statusErr, ok := errors.AsType[*llmHTTPStatusError](err); ok {
 		if statusErr.statusCode > 0 {
 			return statusErr.statusCode
 		}
 	}
 
-	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*openai.APIError](err); ok {
 		if apiErr.HTTPStatusCode > 0 {
 			return apiErr.HTTPStatusCode
 		}
 	}
 
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
+	if reqErr, ok := errors.AsType[*openai.RequestError](err); ok {
 		if reqErr.HTTPStatusCode > 0 {
 			return reqErr.HTTPStatusCode
 		}
@@ -2576,8 +2557,7 @@ func newLLMHTTPStatusError(err error, c *capture) *llmHTTPStatusError {
 	}
 	message := ""
 
-	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*openai.APIError](err); ok {
 		if apiErr.HTTPStatus != "" {
 			status = apiErr.HTTPStatus
 		}
@@ -2587,8 +2567,7 @@ func newLLMHTTPStatusError(err error, c *capture) *llmHTTPStatusError {
 		message = apiErr.Message
 	}
 
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
+	if reqErr, ok := errors.AsType[*openai.RequestError](err); ok {
 		if reqErr.HTTPStatus != "" {
 			status = reqErr.HTTPStatus
 		}
@@ -2696,13 +2675,11 @@ func isRetryableNetworkError(err error) bool {
 		return true
 	}
 
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return isRetryableNetworkError(urlErr.Err)
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return true
 	}
 

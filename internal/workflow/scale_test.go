@@ -9,18 +9,16 @@ import (
 	"testing"
 )
 
-func intPtr(v int) *int { return &v }
-
 func budget(maxSeconds, weight, threshold int) *TimeBudget {
 	tb := &TimeBudget{}
 	if maxSeconds > 0 {
-		tb.MaxSeconds = intPtr(maxSeconds)
+		tb.MaxSeconds = new(maxSeconds)
 	}
 	if weight > 0 {
-		tb.Weight = intPtr(weight)
+		tb.Weight = new(weight)
 	}
 	if threshold > 0 {
-		tb.SpeedupThreshold = intPtr(threshold)
+		tb.SpeedupThreshold = new(threshold)
 	}
 	return tb
 }
@@ -35,16 +33,16 @@ func scaleTestSpec() Spec {
 					{
 						Lane: []StepEntry{
 							{Type: "review:security", Config: &StepOverride{
-								MaxReasoningSeconds: intPtr(300),
+								MaxReasoningSeconds: new(300),
 								MineReasoning:       &AgentOverride{TimeBudget: budget(90, 0, 0)},
 								CompileFindings:     &AgentOverride{TimeBudget: budget(60, 0, 0)},
-								Nudge:               &AgentOverride{TimeBudget: budget(30, 0, 0), MaxReasoningSeconds: intPtr(20)},
+								Nudge:               &AgentOverride{TimeBudget: budget(30, 0, 0), MaxReasoningSeconds: new(20)},
 							}},
 							{Type: "verify:security", Config: &StepOverride{
 								TimeBudget: budget(0, 55, 90),
 								// categorize accepts no time_budget of its own, but it
 								// does accept max_reasoning_seconds.
-								Categorize: &AgentOverride{MaxReasoningSeconds: intPtr(40)},
+								Categorize: &AgentOverride{MaxReasoningSeconds: new(40)},
 							}},
 						},
 						Config: &StepOverride{TimeBudget: budget(1500, 0, 0)},
@@ -237,8 +235,7 @@ func absoluteCapFields(typ reflect.Type) []string {
 	timeBudget := reflect.TypeFor[*TimeBudget]()
 	agent := reflect.TypeFor[*AgentOverride]()
 	var fields []string
-	for i := range typ.NumField() {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		if field.Type == timeBudget || field.Type == agent || strings.HasSuffix(field.Name, "Seconds") {
 			fields = append(fields, field.Name)
 		}

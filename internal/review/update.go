@@ -128,7 +128,7 @@ type findingUpdateDecision struct {
 // UpdateFindings checks the selected batch. No SCM writes or revision/history
 // decisions occur here; unchanged findings retain their exact original data.
 func (e *Engine) UpdateFindings(ctx context.Context, req UpdateFindingsRequest) (*model.ReviewResult, FindingUpdateReport, error) {
-	run := FindingUpdateReport{AgentRun: model.AgentRun{Name: "Update Findings", Role: "update"}}
+	run := FindingUpdateReport{Name: "Update Findings", Role: "update"}
 	if req.Result == nil || req.ReviewCtx == nil {
 		return nil, run, fmt.Errorf("update: missing review or context")
 	}

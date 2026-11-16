@@ -17,7 +17,7 @@ GRAMMAR_TAGS = grammar_subset,grammar_subset_python,grammar_subset_rust
 # included.
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)$(shell git status --porcelain 2>/dev/null | grep -q . && echo -dirty)
-LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
+LDFLAGS := -X github.com/mittwald/cli-kit/buildinfo.Version=$(VERSION) -X github.com/mittwald/cli-kit/buildinfo.Commit=$(COMMIT)
 
 .DEFAULT_GOAL := build
 
