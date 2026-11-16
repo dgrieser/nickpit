@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/output"
-	"golang.org/x/term"
+	"github.com/mittwald/cli-kit/live"
+	"github.com/mittwald/cli-kit/term"
 )
 
 // LivePlan describes the bounded terminal area available to a review run.
@@ -120,17 +119,19 @@ type liveAgent struct {
 
 // LiveRenderer owns a fixed dashboard below existing terminal scrollback.
 type LiveRenderer struct {
-	mu        sync.Mutex
-	w         io.Writer
-	fd        int
-	useANSI   bool
-	plan      LivePlan
-	started   time.Time
-	agents    map[string]*liveAgent
-	steps     map[string]WorkflowScope
-	findings  liveFindingStats
-	warnings  int
-	lastRows  int
+	mu       sync.Mutex
+	w        io.Writer
+	useANSI  bool
+	plan     LivePlan
+	started  time.Time
+	agents   map[string]*liveAgent
+	steps    map[string]WorkflowScope
+	findings liveFindingStats
+	warnings int
+	// screen redraws the frame in place; cursor hides the terminal cursor
+	// for the dashboard's life and serializes frames with its show sequence.
+	screen    *live.Live
+	cursor    *live.Cursor
 	final     []string
 	closed    bool
 	wake      chan struct{}
@@ -143,34 +144,27 @@ type LiveRenderer struct {
 }
 
 func newLiveRenderer(w io.Writer, useANSI bool, plan LivePlan) *LiveRenderer {
-	fd := -1
-	if f, ok := w.(*os.File); ok && f != nil {
-		fd = int(f.Fd())
-	}
 	r := &LiveRenderer{
-		w: w, fd: fd, useANSI: useANSI, plan: plan, started: time.Now(),
+		w: w, useANSI: useANSI, plan: plan, started: time.Now(),
 		agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		now: time.Now,
 	}
 	// Hide the cursor for the life of the dashboard so it does not flicker across
-	// the frame on every redraw; Finish/Close restore it.
+	// the frame on every redraw; Finish/Close restore it. cli-kit's registry
+	// also lets live.RestoreAll show it again from a signal path.
 	if useANSI {
-		_, _ = io.WriteString(w, cursorHide)
+		r.cursor = live.NewCursor(w)
+		r.cursor.Hide()
 	}
 	go r.run()
 	return r
 }
 
-const (
-	cursorHide = "\x1b[?25l"
-	cursorShow = "\x1b[?25h"
-)
-
-// showCursorLocked restores the terminal cursor hidden for the dashboard's life.
+// showCursor restores the terminal cursor hidden for the dashboard's life.
 func (r *LiveRenderer) showCursor() {
-	if r.useANSI {
-		_, _ = io.WriteString(r.w, cursorShow)
+	if r.cursor != nil {
+		r.cursor.Show()
 	}
 }
 
@@ -1126,15 +1120,10 @@ func firstNonEmptyLive(values ...string) string {
 	return "agent"
 }
 
+// padOrTrim fits text to exactly width cells: cut short with an ellipsis, or
+// padded with spaces.
 func padOrTrim(text string, width int) string {
-	runes := []rune(text)
-	if len(runes) > width {
-		if width <= 1 {
-			return string(runes[:width])
-		}
-		return string(runes[:width-1]) + "…"
-	}
-	return text + strings.Repeat(" ", width-len(runes))
+	return term.PadRight(term.Truncate(text, width), width)
 }
 
 func shortDuration(d time.Duration) string {
@@ -1154,42 +1143,9 @@ func fitLines(lines []string, width int) []string {
 	}
 	out := make([]string, len(lines))
 	for i, line := range lines {
-		out[i] = truncateANSI(line, width)
+		out[i] = term.Truncate(line, width)
 	}
 	return out
-}
-
-func truncateANSI(text string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	visible := 0
-	var b strings.Builder
-	for i := 0; i < len(text); {
-		if text[i] == '\x1b' && i+1 < len(text) && text[i+1] == '[' {
-			start := i
-			i += 2
-			for i < len(text) && !isANSIFinalByte(text[i]) {
-				i++
-			}
-			if i < len(text) {
-				i++
-			}
-			b.WriteString(text[start:i])
-			continue
-		}
-		if visible >= width {
-			break
-		}
-		r, size := utf8.DecodeRuneInString(text[i:])
-		b.WriteRune(r)
-		i += size
-		visible++
-	}
-	if strings.Contains(text, "\x1b[") {
-		b.WriteString(progressColorReset)
-	}
-	return b.String()
 }
 
 func styleLiveLines(useANSI bool, lines []string, final bool) []string {
@@ -1223,32 +1179,27 @@ func (r *LiveRenderer) termSize() (int, int) {
 	if r.width > 0 && r.height > 0 {
 		return r.width, r.height
 	}
-	if r.fd >= 0 {
-		if width, height, err := term.GetSize(r.fd); err == nil && width > 0 && height > 0 {
-			return width, height
-		}
+	if width, height := term.Size(r.w); width > 0 && height > 0 {
+		return width, height
 	}
 	return 80, 24
 }
 
+// writeFrameLocked replaces the frame on screen with lines.
 func (r *LiveRenderer) writeFrameLocked(lines []string) {
-	maxRows := max(r.lastRows, len(lines))
-	var b strings.Builder
-	if r.lastRows > 0 {
-		fmt.Fprintf(&b, "\x1b[%dA", r.lastRows)
+	if r.cursor != nil {
+		r.cursor.Lock()
+		defer r.cursor.Unlock()
 	}
-	for i := range maxRows {
-		b.WriteByte('\r')
-		if i < len(lines) {
-			b.WriteString(lines[i])
-		}
-		b.WriteString("\x1b[0K\n")
+	_ = r.liveScreen().Draw(lines)
+}
+
+// liveScreen returns the in-place drawing of the frame, made on first use.
+func (r *LiveRenderer) liveScreen() *live.Live {
+	if r.screen == nil {
+		r.screen = live.New(r.w)
 	}
-	if maxRows > len(lines) {
-		fmt.Fprintf(&b, "\x1b[%dA", maxRows-len(lines))
-	}
-	_, _ = io.WriteString(r.w, b.String())
-	r.lastRows = len(lines)
+	return r.screen
 }
 
 // WriteOutside preserves scrollback while warning/error output arrives.
@@ -1265,19 +1216,18 @@ func (r *LiveRenderer) WriteOutside(text string) {
 		_, _ = io.WriteString(r.w, text)
 		return
 	}
-	var b strings.Builder
-	if r.lastRows > 0 {
-		fmt.Fprintf(&b, "\x1b[%dA", r.lastRows)
-		for i := 0; i < r.lastRows; i++ {
-			b.WriteString("\r\x1b[0K\n")
-		}
-		fmt.Fprintf(&b, "\x1b[%dA", r.lastRows)
-	}
-	b.WriteString(text)
 	if !strings.HasSuffix(text, "\n") {
-		b.WriteByte('\n')
+		text += "\n"
 	}
-	_, _ = io.WriteString(r.w, b.String())
-	r.lastRows = 0
+	// Take the frame off, write the text where it was, and draw the frame
+	// again below it.
+	if r.cursor != nil {
+		r.cursor.Lock()
+	}
+	_ = r.liveScreen().Clear()
+	_, _ = io.WriteString(r.w, text)
+	if r.cursor != nil {
+		r.cursor.Unlock()
+	}
 	r.writeFrameLocked(r.buildLinesLocked())
 }

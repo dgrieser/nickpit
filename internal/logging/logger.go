@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/term"
 )
 
 type Logger struct {
@@ -113,10 +113,9 @@ func (s *ReasoningSection) End() {
 	}
 }
 
+// New returns a logger writing to w. useANSI is the caller's colour decision,
+// usually term.Colored(w), which already honours NO_COLOR and --color.
 func New(w io.Writer, enabled bool, useANSI bool) *Logger {
-	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
-		useANSI = false
-	}
 	return &Logger{
 		w:       w,
 		useANSI: useANSI,
@@ -227,7 +226,7 @@ func (l *Logger) PrintError(err error) {
 	}
 	// Errors can embed upstream/LLM response text; strip control characters so
 	// they cannot smuggle escape sequences into the terminal.
-	msg := textsan.StripControl(err.Error())
+	msg := term.Plain(err.Error())
 	if l.useANSI {
 		l.writeRaw(progressStyle(progressColorErrorRed, "ERROR") + progressGrey(":") + " " + progressLight(msg) + "\n")
 		return
@@ -242,7 +241,7 @@ func (l *Logger) PrintWarning(msg string) {
 	if l == nil || msg == "" {
 		return
 	}
-	msg = textsan.StripControl(msg)
+	msg = term.Plain(msg)
 	if l.useANSI {
 		l.writeRaw(progressStyle(progressColorWarnYellow, "WARNING") + progressGrey(":") + " " + progressLight(msg) + "\n")
 		return

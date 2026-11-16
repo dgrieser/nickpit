@@ -155,7 +155,7 @@ func TestTimeBudgetStartLogsScopeLimitAndThreshold(t *testing.T) {
 	rec := &budgetLogRecorder{}
 	ctx, cancel, skipped := withConfiguredTimeBudget(
 		context.Background(),
-		&workflow.TimeBudget{MaxSeconds: intPtr(2), SpeedupThreshold: intPtr(75)},
+		&workflow.TimeBudget{MaxSeconds: new(2), SpeedupThreshold: new(75)},
 		childTimePlan{},
 		"unit:start",
 		rec.logf,
@@ -205,7 +205,7 @@ func TestWeightedChildBudgetStartsWhenActivated(t *testing.T) {
 		deadline:         now.Add(2 * time.Second),
 		speedupThreshold: 80,
 	})
-	budget := &workflow.TimeBudget{Weight: intPtr(10)}
+	budget := &workflow.TimeBudget{Weight: new(10)}
 	plans := childTimePlans(parent, []*workflow.TimeBudget{budget})
 	if plans[0].allocated == nil || *plans[0].allocated < 190*time.Millisecond || *plans[0].allocated > 210*time.Millisecond {
 		t.Fatalf("allocated = %v, want about 200ms", plans[0].allocated)
@@ -238,10 +238,10 @@ func TestPipelinePhaseBudgetStartsWhenPhaseStarts(t *testing.T) {
 		speedupThreshold: 80,
 	})
 	fused := postMergeFusedSpec{
-		merge:        workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(35)}}},
-		finalize:     workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(35)}}},
-		verdict:      workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(20)}}},
-		summarize:    workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(10)}}},
+		merge:        workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: new(35)}}},
+		finalize:     workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: new(35)}}},
+		verdict:      workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: new(20)}}},
+		summarize:    workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: new(10)}}},
 		hasSummarize: true,
 	}
 	_, _, _, summarizeBudget := pipelinePhaseBudgets(parent, fused, false, nil)
@@ -273,8 +273,8 @@ func TestReviewSubphaseBudgetStartsWhenSubphaseStarts(t *testing.T) {
 		speedupThreshold: 80,
 	})
 	override := &workflow.StepOverride{
-		TimeBudget: &workflow.TimeBudget{Weight: intPtr(70)},
-		Nudge:      &workflow.AgentOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(10)}},
+		TimeBudget: &workflow.TimeBudget{Weight: new(70)},
+		Nudge:      &workflow.AgentOverride{TimeBudget: &workflow.TimeBudget{Weight: new(10)}},
 	}
 	_, _, _, nudgeBudget := reviewPhaseBudgetStarters(parent, "testing", override, modelReviewRequestWithNudges(), false, nil)
 

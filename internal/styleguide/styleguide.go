@@ -60,10 +60,8 @@ func Resolve(ctx context.Context, specs []model.StyleGuideSpec, baseDir string) 
 			return nil, fmt.Errorf("styleguide %q is not text", source)
 		}
 		guides = append(guides, model.AdditionalStyleGuide{
-			StyleGuide: model.StyleGuide{
-				Language: source,
-				Content:  decorate(source, content),
-			},
+			Language:     source,
+			Content:      decorate(source, content),
 			GateLanguage: spec.Language,
 			GateVersion:  spec.Version,
 		})

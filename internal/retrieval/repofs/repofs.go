@@ -557,8 +557,8 @@ func pathBase(value string) string {
 }
 
 func pathDir(value string) string {
-	if idx := strings.LastIndex(value, "/"); idx >= 0 {
-		return value[:idx]
+	if dir, _, ok := strings.CutLast(value, "/"); ok {
+		return dir
 	}
 	return "."
 }

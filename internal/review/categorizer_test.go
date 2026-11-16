@@ -64,7 +64,7 @@ func sampleFinding(title, path string, start int) model.Finding {
 	return model.Finding{
 		Title:        title,
 		Body:         "body",
-		Priority:     intPtr(2),
+		Priority:     new(2),
 		CodeLocation: model.CodeLocation{FilePath: path, LineRange: model.LineRange{Start: start, End: start}},
 	}
 }

@@ -105,8 +105,8 @@ type stubLLM struct{}
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{
-			{Title: "info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-			{Title: "error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+			{Title: "info", Body: "low", ConfidenceScore: 0.5, Priority: new(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{Title: "error", Body: "high", ConfidenceScore: 0.9, Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "summary",
@@ -669,7 +669,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				Title:           title,
 				Body:            "body",
 				ConfidenceScore: 0.9,
-				Priority:        intPtr(2),
+				Priority:        new(2),
 				CodeLocation:    testLineCodeLocation("main.go", line),
 			})
 		}
@@ -794,7 +794,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			Title:           "Fix merged issue",
 			Body:            "body",
 			ConfidenceScore: 0.95,
-			Priority:        intPtr(1),
+			Priority:        new(1),
 			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 			Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"},
 		}},
@@ -1322,10 +1322,10 @@ func TestRunAgent_InvalidJSONFailurePreservesFinalResponse(t *testing.T) {
 	if result.run.InvalidResponse == nil {
 		t.Fatal("invalid response diagnostic is nil")
 	}
-	if got, want := result.run.InvalidResponse.Reason, `final candidate repair failure password="[redacted]"`; got != want {
+	if got, want := result.run.InvalidResponse.Reason, `final candidate repair failure password=[REDACTED]`; got != want {
 		t.Fatalf("reason = %q, want %q", got, want)
 	}
-	if got, want := result.run.InvalidResponse.RawContent, `å final malformed response api_key="[redacted]" [redacted]`; got != want {
+	if got, want := result.run.InvalidResponse.RawContent, `å final malformed response api_key="[REDACTED]" [REDACTED]`; got != want {
 		t.Fatalf("raw content = %q, want %q", got, want)
 	}
 }
@@ -2092,7 +2092,7 @@ func nudgeFinding(title string, line int) model.Finding {
 		Title:           title,
 		Body:            "body",
 		ConfidenceScore: 0.9,
-		Priority:        intPtr(2),
+		Priority:        new(2),
 		CodeLocation:    testLineCodeLocation("main.go", line),
 	}
 }
@@ -3141,7 +3141,7 @@ func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 		Title:           "Ghost",
 		Body:            "new",
 		ConfidenceScore: 0.8,
-		Priority:        intPtr(2),
+		Priority:        new(2),
 		CodeLocation:    model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 99, End: 99}},
 	}
 	llmClient := &multiAgentLLM{
@@ -4294,7 +4294,7 @@ func mergeTestFinding(title string, line int) model.Finding {
 		Title:           title,
 		Body:            "body",
 		ConfidenceScore: 0.9,
-		Priority:        intPtr(2),
+		Priority:        new(2),
 		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
 		Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "confirmed"},
 	}

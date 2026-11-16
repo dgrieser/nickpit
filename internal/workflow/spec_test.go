@@ -426,13 +426,13 @@ func TestValidateRejections(t *testing.T) {
 		"categorize weight 100": {Version: 1, Steps: []StepEntry{
 			{Type: StepReviewPrefix + "security"},
 			{Type: StepVerifyPrefix + "security", Config: &StepOverride{
-				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: intPtr(100)}},
+				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: new(100)}},
 			}},
 		}},
 		"categorize weight over 100": {Version: 1, Steps: []StepEntry{
 			{Type: StepReviewPrefix + "security"},
 			{Type: StepVerify, Config: &StepOverride{
-				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: intPtr(120)}},
+				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: new(120)}},
 			}},
 		}},
 		// Weight 0 makes the phase optional and unallocated, so the classifier
@@ -440,7 +440,7 @@ func TestValidateRejections(t *testing.T) {
 		"categorize weight 0": {Version: 1, Steps: []StepEntry{
 			{Type: StepReviewPrefix + "security"},
 			{Type: StepVerifyPrefix + "security", Config: &StepOverride{
-				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: intPtr(0)}},
+				Categorize: &AgentOverride{TimeBudget: &TimeBudget{Weight: new(0)}},
 			}},
 		}},
 	}

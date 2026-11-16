@@ -12,7 +12,7 @@ import (
 
 func maxFindingsTestFinding(title string, priority int, confidence float64) model.Finding {
 	finding := nudgeFindingInFile(title, title+".go", 1)
-	finding.Priority = intPtr(priority)
+	finding.Priority = new(priority)
 	finding.ConfidenceScore = confidence
 	return finding
 }

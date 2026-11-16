@@ -218,8 +218,7 @@ func TestLenientUnmarshalReportsRecoveryFailure(t *testing.T) {
 			t.Fatalf("error = %q, want substring %q", err, want)
 		}
 	}
-	var syntaxErr *json.SyntaxError
-	if !errors.As(err, &syntaxErr) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Fatalf("error chain lacks json.SyntaxError: %v", err)
 	}
 }
@@ -311,7 +310,7 @@ func TestLenientUnmarshalSanitizesRecoveryErrorText(t *testing.T) {
 	if strings.Contains(err.Error(), "hunter123") || strings.ContainsRune(err.Error(), '\x1b') {
 		t.Fatalf("error leaks secret or control character: %q", err)
 	}
-	if !strings.Contains(err.Error(), `password="[redacted]"`) {
+	if !strings.Contains(err.Error(), `password=[REDACTED]`) {
 		t.Fatalf("error = %q, want redacted custom decoder failure", err)
 	}
 }

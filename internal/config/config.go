@@ -213,8 +213,6 @@ type defaultProfile struct {
 	profile Profile
 }
 
-func ptrTo[T any](v T) *T { return &v }
-
 var defaultProfiles = []defaultProfile{
 	{
 		name: DefaultProfileName,
@@ -242,9 +240,9 @@ var defaultProfiles = []defaultProfile{
 						Efforts: []string{"xhigh", "medium", "low"},
 					},
 					Tools:           true,
-					JSONSchema:      ptrTo(true),
-					JSONResponse:    ptrTo(true),
-					ToolsJSONSchema: ptrTo(false),
+					JSONSchema:      new(true),
+					JSONResponse:    new(true),
+					ToolsJSONSchema: new(false),
 				},
 				{
 					Model:      "Qwen3.6-35B-A3B-FP8",
@@ -255,24 +253,24 @@ var defaultProfiles = []defaultProfile{
 						Efforts: []string{"none"},
 					},
 					Tools:           true,
-					JSONSchema:      ptrTo(true),
-					JSONResponse:    ptrTo(true),
-					ToolsJSONSchema: ptrTo(false),
+					JSONSchema:      new(true),
+					JSONResponse:    new(true),
+					ToolsJSONSchema: new(false),
 				},
 			},
-			Temperature:       ptrTo(1.0),
-			TopP:              ptrTo(0.95),
-			TopK:              ptrTo(20),
-			MinP:              ptrTo(0.0),
-			PresencePenalty:   ptrTo(0.0),
-			RepetitionPenalty: ptrTo(1.0),
+			Temperature:       new(1.0),
+			TopP:              new(0.95),
+			TopK:              new(20),
+			MinP:              new(0.0),
+			PresencePenalty:   new(0.0),
+			RepetitionPenalty: new(1.0),
 			Small: SmallModelConfig{
 				Model:           "Qwen3.6-35B-A3B-FP8",
 				ReasoningEffort: "none",
-				Temperature:     ptrTo(0.7),
-				TopP:            ptrTo(1.0),
-				TopK:            ptrTo(40),
-				PresencePenalty: ptrTo(2.0),
+				Temperature:     new(0.7),
+				TopP:            new(1.0),
+				TopK:            new(40),
+				PresencePenalty: new(2.0),
 				ExtraBody: map[string]any{
 					"chat_template_kwargs": map[string]any{
 						"enable_thinking": false,
@@ -312,7 +310,7 @@ var defaultProfiles = []defaultProfile{
 			BaseURL:   "https://integrate.api.nvidia.com/v1",
 			Model:     "",
 			APIKey:    "$NVIDIA_API_KEY",
-			MaxTokens: ptrTo(16384),
+			MaxTokens: new(16384),
 		},
 	},
 }

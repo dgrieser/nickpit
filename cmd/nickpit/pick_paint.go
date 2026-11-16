@@ -1,9 +1,86 @@
-package pick
+package main
 
 import (
 	"regexp"
 	"strings"
+
+	"github.com/mittwald/cli-kit/theme"
 )
+
+// What NickPit paints inside a picker cell: a conventional-commit prefix taken
+// apart, the separators of a ref faded, and a trailing note receding — the
+// rules the git-color helper applies to a git log, in NickPit's palette.
+// cli-kit's list hands each cell to paintCells (Options.PaintRowCell) and a
+// header value to paintRef (Options.PaintDetail, Field.Paint).
+
+// cellKind says what a column holds, so its cells can be painted inside and
+// not only around.
+type cellKind int
+
+const (
+	// cellPlain is a cell painted in one colour, by the list itself.
+	cellPlain cellKind = iota
+	// cellMessage is a commit-style message: a conventional-commit prefix in
+	// it is taken apart.
+	cellMessage
+	// cellRef is a branch, ref or path: its "/" and ":" separators fade back,
+	// exactly as a progress line renders "repo @ head → base".
+	cellRef
+	// cellRefNote is a ref carrying a trailing parenthetical — "feat/x
+	// (uncommitted)": the ref is painted as one and the note recedes, so the
+	// qualifier does not read as part of the name.
+	cellRefNote
+)
+
+// paintCells is the Options.PaintRowCell of a list whose columns hold what
+// kinds says, indexed like Item.Cells; unlisted columns are cellPlain and
+// left to the list. base is the style the list would draw the whole cell in —
+// the row's own colour where it has one, such as an author's — so the parts a
+// rule does not single out keep it.
+func paintCells(kinds ...cellKind) func(row, column int, text string, base theme.Style, selected bool) (string, bool) {
+	return func(_, column int, text string, base theme.Style, _ bool) (string, bool) {
+		if column >= len(kinds) {
+			return "", false
+		}
+		switch kinds[column] {
+		case cellMessage:
+			return paintSegments(messageSegments(text, base)), true
+		case cellRef:
+			return paintSegments(refSegments(text, base)), true
+		case cellRefNote:
+			return paintSegments(refNoteSegments(text, base)), true
+		}
+		return "", false
+	}
+}
+
+// paintRef renders a ref with its separators faded: the parts in base, the
+// "/" and ":" in styleSeparator. It is the painter of every header value and
+// of the confirmation after a pick, so one rule covers the screen.
+func paintRef(text string, base theme.Style) string {
+	return paintSegments(refSegments(text, base))
+}
+
+// segment is one styled piece of a cell.
+type segment struct {
+	text  string
+	style theme.Style
+}
+
+// paintSegments joins the pieces, each in its own colour. Blank text and the
+// terminal's own foreground carry no code: the list pads and highlights
+// around what is painted here.
+func paintSegments(segments []segment) string {
+	var b strings.Builder
+	for _, part := range segments {
+		if part.style == styleTerminalFg || strings.TrimSpace(part.text) == "" {
+			b.WriteString(part.text)
+			continue
+		}
+		b.WriteString(part.style.Paint(part.text))
+	}
+	return b.String()
+}
 
 // conventionalTypes are the commit types a message prefix may carry — the same
 // set the git-color helper recognizes, so a subject reads the same in a picker
@@ -27,90 +104,28 @@ var reConventional = regexp.MustCompile(
 // step out of the message without a second font.
 const (
 	// styleMsgType is the commit type (progressColorStringGreen).
-	styleMsgType = "38;5;120"
+	styleMsgType theme.Style = "38;5;120"
 	// styleMsgScope is what the commit touched (progressColorKeyTurquoise, the
 	// colour a progress line gives the key of a key=value).
-	styleMsgScope = "38;5;116"
+	styleMsgScope theme.Style = "38;5;116"
 	// styleMsgPunct fades the parentheses and the colon back.
-	styleMsgPunct = StyleSeparator
+	styleMsgPunct = styleSeparator
 	// styleMsgBreaking marks the "!" of a breaking change: git-color paints it
 	// like the type, NickPit gives it the error red, because a picker row is
 	// the last place to overlook one (progressColorErrorRed).
-	styleMsgBreaking = "38;5;203"
+	styleMsgBreaking theme.Style = "38;5;203"
 )
-
-// StyleSeparator fades the punctuation that holds a value together back: the
-// parentheses and colon of a commit prefix, and the "/" and ":" inside a ref
-// (progressColorGrey, the punctuation grey of a progress line). Exported
-// because the same ref is painted outside a list too — the confirmation line
-// after a pick.
-const StyleSeparator = "38;5;244"
-
-// PaintRef renders a ref with its separators faded, the way a picker row and a
-// title line show one: the parts in base, the "/" and ":" in StyleSeparator.
-// Callers use it wherever a ref appears outside the list, so one rule covers
-// the screen.
-func PaintRef(text, base string) string {
-	var b strings.Builder
-	for _, part := range refSegments(text, base) {
-		if part.style == "" {
-			b.WriteString(part.text)
-			continue
-		}
-		b.WriteString("\x1b[" + part.style + "m" + part.text + attrReset)
-	}
-	return b.String()
-}
-
-// ColumnKind says what a column holds, so the picker can paint inside a cell
-// and not only around it. Callers declare it per column in
-// Options.ColumnKinds; the zero value is a plain cell.
-type ColumnKind int
-
-const (
-	// KindPlain is a cell painted in one colour.
-	KindPlain ColumnKind = iota
-	// KindMessage is a commit-style message: a conventional-commit prefix in it
-	// is taken apart.
-	KindMessage
-	// KindRef is a branch, ref or path: its "/" and ":" separators fade back,
-	// exactly as a progress line renders "repo @ head → base".
-	KindRef
-	// KindRefNote is a ref carrying a trailing parenthetical — "feat/x
-	// (uncommitted)": the ref is painted as one and the note recedes, so the
-	// qualifier does not read as part of the name.
-	KindRefNote
-)
-
-// StyleNote is the light grey a trailing parenthetical recedes into
-// (progressColorLightGrey), the tone the pick confirmation line is set in.
-const StyleNote = "38;5;252"
 
 // reTrailingNote matches the " (…)" a ref may end on. It is anchored at the
 // end, so a parenthesis inside the value itself is left alone — and it allows
-// the padding a column adds after the note, without which only the widest row
-// of a column would have its note painted at all.
+// trailing padding, so a cell padded to its column still has its note found.
 var reTrailingNote = regexp.MustCompile(`\s+\([^()]*\)\s*$`)
-
-// cellSegments paints one cell according to what the column holds.
-func cellSegments(kind ColumnKind, text, base string) []segment {
-	switch kind {
-	case KindMessage:
-		return messageSegments(text, base)
-	case KindRef:
-		return refSegments(text, base)
-	case KindRefNote:
-		return refNoteSegments(text, base)
-	default:
-		return []segment{{text, base}}
-	}
-}
 
 // refSegments fades the separators of a ref or path back, so the parts of
 // "origin/feat/tree-sitter" read as parts. Same rule as
 // logging.styleSeparatedText, which paints "head → base" in the progress lines
 // this list sits next to.
-func refSegments(text, base string) []segment {
+func refSegments(text string, base theme.Style) []segment {
 	var segments []segment
 	part := 0
 	for i, r := range text {
@@ -137,19 +152,19 @@ func refSegments(text, base string) []segment {
 // rule, the note in light grey. A cell the column had to cut short loses its
 // closing parenthesis and is then painted as a plain ref, which is what a
 // half-visible note should look like.
-func refNoteSegments(text, base string) []segment {
+func refNoteSegments(text string, base theme.Style) []segment {
 	loc := reTrailingNote.FindStringIndex(text)
 	if loc == nil {
 		return refSegments(text, base)
 	}
-	return append(refSegments(text[:loc[0]], base), segment{text[loc[0]:], StyleNote})
+	return append(refSegments(text[:loc[0]], base), segment{text[loc[0]:], styleNote})
 }
 
 // messageSegments splits a message into its conventional-commit prefix and the
 // text after it, so the type and the scope carry their own colour while the
 // rest keeps base. A message without a known prefix — a plain title, or one cut
 // short by a narrow column before its colon — stays a single segment.
-func messageSegments(text, base string) []segment {
+func messageSegments(text string, base theme.Style) []segment {
 	match := reConventional.FindStringSubmatchIndex(text)
 	if match == nil {
 		return []segment{{text, base}}
@@ -161,7 +176,7 @@ func messageSegments(text, base string) []segment {
 		return text[match[2*i]:match[2*i+1]]
 	}
 	segments := make([]segment, 0, 8)
-	add := func(part, style string) {
+	add := func(part string, style theme.Style) {
 		if part != "" {
 			segments = append(segments, segment{part, style})
 		}

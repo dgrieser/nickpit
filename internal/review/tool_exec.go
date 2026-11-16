@@ -234,8 +234,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 				"result_count": matches.ResultCount, "results": matches.Results,
 			}, matches.TruncatedFiles))
 		}
-		var ambiguous *retrieval.AmbiguousSymbolError
-		if errors.As(err, &ambiguous) {
+		if _, ok := errors.AsType[*retrieval.AmbiguousSymbolError](err); ok {
 			// Recorded like a success: repeating the identical call is
 			// deterministic and would otherwise never trip the duplicate limit.
 			// A retry pinned to one declaration carries a different key.
@@ -689,8 +688,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	goSkipped := false
 	recordResolution := func(target *retrieval.ReferenceTarget, references *retrieval.ReferenceResult, err error) {
 		if err != nil {
-			var skipped *retrieval.GoAnalysisSkippedError
-			if errors.As(err, &skipped) {
+			if _, ok := errors.AsType[*retrieval.GoAnalysisSkippedError](err); ok {
 				goSkipped = true
 			}
 			return
@@ -1202,8 +1200,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		// symbol so the model gets the definition and its call sites for any file type.
 		// The scope is widened to repo-wide for a single file (mirroring the structural
 		// backends) so callers/uses in other files are still surfaced.
-		var unsupported *retrieval.UnsupportedLanguageError
-		if errors.As(err, &unsupported) {
+		if _, ok := errors.AsType[*retrieval.UnsupportedLanguageError](err); ok {
 			return e.callHierarchySearchFallback(ctx, repoRoot, toolCall.ID, normalizedPath, args.Symbol, callers, key, state,
 				"structural call hierarchy is unavailable for this file type; showing literal search matches for the symbol instead")
 		}
@@ -1213,8 +1210,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		// probably there. Answering with literal matches in this turn saves the
 		// round trip that telling the model to search itself would cost, and
 		// keeps a deliberate skip from being reported as retrieval_failed.
-		var skipped *retrieval.StructuralAnalysisSkippedError
-		if errors.As(err, &skipped) {
+		if skipped, ok := errors.AsType[*retrieval.StructuralAnalysisSkippedError](err); ok {
 			return e.callHierarchySearchFallback(ctx, repoRoot, toolCall.ID, normalizedPath, args.Symbol, callers, key, state,
 				"structural call hierarchy is unavailable here: "+skipped.Reason+"; showing literal search matches for the symbol instead")
 		}
@@ -1222,8 +1218,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		// Low confidence indicates the analysis ran but has uncertain results due to
 		// dynamic call patterns (closures, function pointers). The LLM should treat
 		// this as partial information rather than complete failure.
-		var lowConf *retrieval.LowConfidenceError
-		if errors.As(err, &lowConf) {
+		if _, ok := errors.AsType[*retrieval.LowConfidenceError](err); ok {
 			return toolError(normalizedPath, "low_confidence", err.Error())
 		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())

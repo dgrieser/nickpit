@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +28,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/output"
-	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/projectcontext"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
@@ -38,36 +36,45 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
-	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
+	"github.com/mittwald/cli-kit/buildinfo"
+	"github.com/mittwald/cli-kit/cobrax"
+	"github.com/mittwald/cli-kit/pick"
+	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
 
-// version and commit are overridden at build time via -ldflags
-// "-X main.version=... -X main.commit=..." (the Makefile, goreleaser and the
-// Dockerfile all do). An unstamped commit falls back to the build info Go
-// embeds, so a plain `go install` from a normal clone still names its revision
-// — but only from a normal clone: Go's VCS detection wants ".git" to be a
-// directory, and a linked git worktree has it as a file, so a worktree build
-// gets nothing. That is why the Makefile stamps explicitly rather than relying
-// on the fallback.
-var (
-	version = "dev"
-	commit  = ""
-)
+// The build is stamped at link time into cli-kit's buildinfo:
+// -ldflags "-X github.com/mittwald/cli-kit/buildinfo.Version=... -X ...Commit=..."
+// (the Makefile, goreleaser and the Dockerfile all do). An unstamped commit
+// falls back to the build info Go embeds, so a plain `go install` from a normal
+// clone still names its revision — but only from a normal clone: Go's VCS
+// detection wants ".git" to be a directory, and a linked git worktree has it
+// as a file, so a worktree build gets nothing. That is why the Makefile stamps
+// explicitly rather than relying on the fallback.
+//
+// buildInfo is resolved once: every progress line, footer and marker asks for
+// the version. Tests replace it.
+var buildInfo = sync.OnceValue(buildinfo.Get)
 
-// displayVersion renders the build version for every output surface: goreleaser
-// passes the tag without its leading "v" (0.0.14), so add it back for anything
-// that looks like a version number. Untagged builds ("dev") get the short commit
-// appended — "dev+995c910", or "dev+995c910-dirty" when the tree had uncommitted
-// changes — because "dev" alone identifies nothing in a bug report. A release tag
-// already pins its commit, so it stays clean.
+// displayVersion renders the build version for every output surface:
+// goreleaser passes the tag without its leading "v" (0.0.14), so add it back
+// for anything that looks like a version number. Untagged builds ("dev") get
+// the short commit appended — "dev+995c910", or "dev+995c910-dirty" when the
+// tree had uncommitted changes — because "dev" alone identifies nothing in a
+// bug report. A release tag already pins its commit, so it stays clean. The
+// form is persisted (nickpit_version in review JSON, the npver marker), so it
+// stays nickpit's own rather than buildinfo.Info.String's.
 func displayVersion() string {
-	v := strings.TrimSpace(version)
+	return formatVersion(buildInfo())
+}
+
+func formatVersion(info buildinfo.Info) string {
+	v := strings.TrimSpace(info.Version)
 	if v == "" {
-		v = "dev"
+		v = buildinfo.DevVersion
 	}
 	switch {
 	case isDigit(v[0]):
@@ -76,7 +83,7 @@ func displayVersion() string {
 		// Already tagged ("v0.0.14"); a tag pins its own commit.
 		return v
 	}
-	if rev := buildRevision(); rev != "" {
+	if rev := buildRevision(info); rev != "" {
 		return v + "+" + rev
 	}
 	return v
@@ -84,31 +91,12 @@ func displayVersion() string {
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
-// buildRevision is the short commit plus a "-dirty" suffix for a modified tree,
-// or "" when neither ldflags nor the embedded build info knows one. Resolved once:
-// every progress line, footer and marker asks for it.
-var buildRevision = sync.OnceValue(resolveBuildRevision)
-
-func resolveBuildRevision() string {
-	if c := shortCommit(strings.TrimSpace(commit)); c != "" {
-		return c
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	var revision string
-	var dirty bool
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = setting.Value
-		case "vcs.modified":
-			dirty = setting.Value == "true"
-		}
-	}
-	revision = shortCommit(revision)
-	if revision != "" && dirty {
+// buildRevision is the short commit plus a "-dirty" suffix for a modified
+// tree, or "" when neither ldflags nor the embedded build info knows one. The
+// Makefile stamps the suffix itself; the toolchain reports it as Modified.
+func buildRevision(info buildinfo.Info) string {
+	revision := shortCommit(info.Commit)
+	if revision != "" && info.Modified && !strings.HasSuffix(revision, "-dirty") {
 		revision += "-dirty"
 	}
 	return revision
@@ -120,7 +108,7 @@ func resolveBuildRevision() string {
 // stamped commit, and truncating "995c910-dirty" to seven characters would
 // silently report a modified tree as clean.
 func shortCommit(hash string) string {
-	hash, dirty := strings.CutSuffix(hash, "-dirty")
+	hash, dirty := strings.CutSuffix(strings.TrimSpace(hash), "-dirty")
 	if len(hash) > 7 {
 		hash = hash[:7]
 	}
@@ -133,7 +121,7 @@ func shortCommit(hash string) string {
 // newLogger builds the stderr logger every command logs through, with the flags
 // and build version already applied so no caller can forget one.
 func (a *app) newLogger() *logging.Logger {
-	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
+	logger := logging.New(os.Stderr, a.verbose, term.Colored(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	logger.SetVersion(displayVersion())
@@ -296,7 +284,7 @@ func main() {
 		if code, quiet := quietExitCode(ctx, err); quiet {
 			os.Exit(code)
 		}
-		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
+		logging.New(os.Stderr, false, term.Colored(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
 }
@@ -421,6 +409,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().StringVarP(&cli.outputFormat, "output", "o", "markdown", "Output format: markdown, json, or raw")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output (compatibility alias for --output json)")
+	// Colour for the review output, logs, pickers and the live dashboard:
+	// auto paints terminals only, honouring NO_COLOR and TERM=dumb; a bare
+	// --color means auto.
+	cobrax.AddColorFlagWith(root, "When to use colour: auto, always or never", cobrax.BareColor(term.ColorAuto), cobrax.StrictColor())
 	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
@@ -479,7 +471,9 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newInspectCmd())
 	root.AddCommand(cli.newChatCmd())
 	root.AddCommand(cli.newSessionCmd())
-	root.AddCommand(newCompletionCmd(root))
+	// cobra's completion command for bash, zsh, fish and PowerShell, with
+	// --install for bash, zsh and fish. Added last: it needs the subcommands.
+	cobrax.AddCompletionInstall(cobrax.HardenCompletion(root))
 	return root
 }
 
@@ -1568,7 +1562,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if err != nil {
 		return err
 	}
-	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning, a.disableLiveProgress) {
+	if liveProgressEnabled(term.CanAnimate(os.Stderr), a.verbose, a.showProgress, a.showReasoning, a.disableLiveProgress) {
 		// Target is set later by the engine once the repo/branch is resolved
 		// (reviewTargetSummary), matching the --show-progress context line. The
 		// workflow identity mirrors the --show-progress Agent bracket.
@@ -1838,8 +1832,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// still emits a fallback overall explanation, so saving would displace the
 	// previous VALID review as the latest session with a no-finding shell.
 	if !reviewProducedNothing(result) {
-		_, noColor := os.LookupEnv("NO_COLOR")
-		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr), !noColor, output.RuleWidth(os.Stderr)); hint != "" {
+		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), term.IsTerminal(os.Stderr), term.Colored(os.Stderr), output.RuleWidth(os.Stderr)); hint != "" {
 			fmt.Fprintln(os.Stderr, hint)
 		}
 	}
@@ -1882,10 +1875,10 @@ func (a *app) reviewFormatter(w io.Writer, withoutFooter bool) output.Formatter 
 	if a.jsonOutput || a.outputFormat == "json" {
 		return output.NewJSONFormatter(w)
 	}
-	useANSI := false
-	if f, ok := w.(*os.File); ok && a.outputFormat != "raw" {
-		useANSI = isTerminal(f)
-	}
+	// Only a real output stream is painted: a review rendered into a buffer
+	// for the clipboard stays plain, even under --color=always.
+	_, isFile := w.(*os.File)
+	useANSI := isFile && a.outputFormat != "raw" && term.Colored(w)
 	formatter := output.NewTerminalFormatter(w, useANSI)
 	if withoutFooter {
 		formatter.OmitFooter()
@@ -1893,8 +1886,11 @@ func (a *app) reviewFormatter(w io.Writer, withoutFooter bool) output.Formatter 
 	return formatter
 }
 
-func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
-	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning && !disableLiveProgress
+// liveProgressEnabled reports whether the live dashboard replaces the log
+// lines: canAnimate is term.CanAnimate(os.Stderr), which also rules out a
+// dumb terminal, NO_COLOR and --color=never.
+func liveProgressEnabled(canAnimate, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
+	return canAnimate && !verbose && !showProgress && !showReasoning && !disableLiveProgress
 }
 
 func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) string {
@@ -2594,14 +2590,9 @@ func writeJSON(value any) error {
 	return enc.Encode(value)
 }
 
-func isTerminal(f *os.File) bool {
-	stat, err := f.Stat()
-	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
-}
-
 func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) error {
 	s := result.Summary()
-	useANSI := isTerminal(os.Stdout)
+	useANSI := term.Colored(os.Stdout)
 
 	mark := func(v bool) string {
 		if useANSI {
@@ -3086,8 +3077,8 @@ func (a *app) logf(ctx context.Context, format string, args ...any) {
 func (a *app) warnf(format string, args ...any) {
 	if a.logger == nil {
 		// Same nil tolerance as logf/logProgress, but a warning must still reach
-		// the user; PrintWarning strips control characters, mirror that here.
-		fmt.Fprintf(os.Stderr, "WARNING: %s\n", textsan.StripControl(fmt.Sprintf(format, args...)))
+		// the user; PrintWarning strips control characters, mirror that here (term.Plain, as PrintWarning).
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", term.Plain(fmt.Sprintf(format, args...)))
 		return
 	}
 	a.logger.PrintWarning(fmt.Sprintf(format, args...))
@@ -3234,8 +3225,8 @@ func formatExtraBody(m map[string]any) []string {
 
 // extraBodyLeafName returns the final dotted segment of a flattened key.
 func extraBodyLeafName(path string) string {
-	if i := strings.LastIndex(path, "."); i >= 0 {
-		return path[i+1:]
+	if _, leaf, ok := strings.CutLast(path, "."); ok {
+		return leaf
 	}
 	return path
 }

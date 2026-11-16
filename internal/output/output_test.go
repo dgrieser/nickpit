@@ -54,7 +54,7 @@ func TestTerminalFormatter(t *testing.T) {
 		Findings: []model.Finding{
 			{
 				ID: "11111111-1111-4111-8111-111111111111", Title: "Problem", Body: "Description with `code`.\n\nSecond paragraph.",
-				ConfidenceScore: 0.82, Priority: intPtr(2),
+				ConfidenceScore: 0.82, Priority: new(2),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}},
 				Suggestions: []model.Suggestion{
 					{Body: "use a mutex", LineRange: model.LineRange{Start: 10, End: 12}},
@@ -63,7 +63,7 @@ func TestTerminalFormatter(t *testing.T) {
 			},
 			{
 				ID: "22222222-2222-4222-8222-222222222222", Title: "Single line", Body: "Short.",
-				ConfidenceScore: 0.6, Priority: intPtr(1),
+				ConfidenceScore: 0.6, Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 7, End: 7}},
 			},
 		},
@@ -140,7 +140,7 @@ func TestTerminalFormatterStripsControlCharsFromUntrustedText(t *testing.T) {
 		Findings: []model.Finding{
 			{
 				Title: "Title\x1b[31mINJECT", Body: "Body\x1b[?1049hsteal",
-				ConfidenceScore: 0.8, Priority: intPtr(1),
+				ConfidenceScore: 0.8, Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "a\x1b[2J.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Suggestions:  []model.Suggestion{{Body: "sugg\x1b[31mestion"}},
 			},
@@ -214,16 +214,16 @@ func TestTerminalFormatterSortsFindings(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "Refuted high", Body: "B", ConfidenceScore: 0.9, Priority: intPtr(1),
+				Title: "Refuted high", Body: "B", ConfidenceScore: 0.9, Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "refuted.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 1, ConfidenceScore: 0.99},
 			},
 			{
-				Title: "Low prio", Body: "B", ConfidenceScore: 0.9, Priority: intPtr(3),
+				Title: "Low prio", Body: "B", ConfidenceScore: 0.9, Priority: new(3),
 				CodeLocation: model.CodeLocation{FilePath: "low.go", LineRange: model.LineRange{Start: 1, End: 1}},
 			},
 			{
-				Title: "Confirmed high", Body: "B", ConfidenceScore: 0.9, Priority: intPtr(1),
+				Title: "Confirmed high", Body: "B", ConfidenceScore: 0.9, Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "confirmed.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8},
 			},
@@ -248,7 +248,7 @@ func TestTerminalFormatterFinalizedPriorityDrivesBadge(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: intPtr(1),
+				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Finalization: &model.FindingFinalization{Title: "Bug", Body: "B", Priority: 2, ConfidenceScore: 0.7},
 			},
@@ -273,7 +273,7 @@ func TestTerminalFormatterPrefersSummarizationBody(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "Bug", Body: "original", ConfidenceScore: 0.8, Priority: intPtr(1),
+				Title: "Bug", Body: "original", ConfidenceScore: 0.8, Priority: new(1),
 				CodeLocation:  model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Finalization:  &model.FindingFinalization{Title: "Bug", Body: "long finalized body", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
 				Summarization: &model.FindingSummarization{Title: "Bug", Body: "short summary", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
@@ -334,7 +334,7 @@ func TestTerminalFormatterANSI(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "Race in stream retry", Body: "Body text.", ConfidenceScore: 0.81, Priority: intPtr(2),
+				Title: "Race in stream retry", Body: "Body text.", ConfidenceScore: 0.81, Priority: new(2),
 				CodeLocation: model.CodeLocation{FilePath: "internal/llm/client.go", LineRange: model.LineRange{Start: 120, End: 124}},
 			},
 		},
@@ -434,10 +434,6 @@ func withoutNoColor(t *testing.T) {
 		}
 		_ = os.Unsetenv("NO_COLOR")
 	})
-}
-
-func intPtr(v int) *int {
-	return &v
 }
 
 func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
@@ -589,7 +585,7 @@ func TestJSONFormatterIncludesVerification(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "x", Body: "y", Priority: intPtr(1),
+				Title: "x", Body: "y", Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.5, Remarks: "ok"},
 			},
@@ -624,7 +620,7 @@ func TestJSONFormatterIncludesFindingID(t *testing.T) {
 	formatter := NewJSONFormatter(&buf)
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
-			{ID: "11111111-1111-4111-8111-111111111111", Title: "x", Body: "y", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{ID: "11111111-1111-4111-8111-111111111111", Title: "x", Body: "y", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		},
 	})
 	if err != nil {
@@ -646,7 +642,7 @@ func TestJSONFormatterIncludesFinalization(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
 			{
-				Title: "x", Body: "y", Priority: intPtr(1),
+				Title: "x", Body: "y", Priority: new(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Finalization: &model.FindingFinalization{Title: "final x", Body: "final y", Priority: 1, ConfidenceScore: 0.75, Remarks: "kept after verifier feedback"},
 			},
@@ -680,7 +676,7 @@ func TestJSONFormatterOmitsVerificationWhenNil(t *testing.T) {
 	formatter := NewJSONFormatter(&buf)
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "x", Body: "y", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{Title: "x", Body: "y", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		},
 	})
 	if err != nil {
@@ -700,7 +696,7 @@ func TestTerminalFormatterFormatWarnings(t *testing.T) {
 	withoutNoColor(t)
 	result := &model.ReviewResult{
 		Findings: []model.Finding{{
-			Title: "Race in stream retry", Priority: intPtr(2),
+			Title: "Race in stream retry", Priority: new(2),
 			CodeLocation: model.CodeLocation{FilePath: "internal/llm/client.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		}},
 		Warnings: []string{

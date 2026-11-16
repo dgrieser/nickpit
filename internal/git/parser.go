@@ -409,8 +409,8 @@ func parseDiffGitPath(line string) string {
 	if path, ok := parseQuotedDiffGitPath(rest); ok {
 		return path
 	}
-	if idx := strings.LastIndex(rest, " b/"); idx >= 0 {
-		return rest[idx+len(" b/"):]
+	if _, path, ok := strings.CutLast(rest, " b/"); ok {
+		return path
 	}
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {

@@ -33,8 +33,8 @@ func TestReviewDisputeRequiresIndependentAssessment(t *testing.T) {
 			resolved.Resolution = &model.FindingResolution{Reason: "The guard fixes it."}
 			original := &model.ReviewResult{OverallCorrectness: "patch is incorrect", OverallExplanation: "Original verdict explanation", Findings: []model.Finding{updateTestFinding(), resolved}}
 			out, report, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{
-				DiscussRequest: DiscussRequest{Result: original, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, Messages: []llm.Message{{Role: "user", Content: "The verdict contradicts the guard."}}},
-				Signal:         ReviewUpdateSignal{Reason: "Check overall assessment against current guard."},
+				Result: original, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, Messages: []llm.Message{{Role: "user", Content: "The verdict contradicts the guard."}},
+				Signal: ReviewUpdateSignal{Reason: "Check overall assessment against current guard."},
 			})
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error=%v wantError=%v", err, tc.wantError)

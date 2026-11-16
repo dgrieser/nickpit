@@ -9,10 +9,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/mittwald/cli-kit/pick"
+	"github.com/mittwald/cli-kit/term"
+	"github.com/mittwald/cli-kit/theme"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/pick"
 	"github.com/dgrieser/nickpit/internal/scm/forges"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/textsan"
@@ -149,12 +153,18 @@ func repoAnchors(here git.Location) []string {
 }
 
 // newLocationCache resolves directories to their checkout, once per directory.
+// It is safe for concurrent use: the picker builds the rows of its remote scope
+// on a goroutine of its own, which can outlive the picker while the next one
+// builds its scopes.
 func newLocationCache(ctx context.Context) func(string) git.Location {
+	var mu sync.Mutex
 	cache := map[string]git.Location{}
 	return func(dir string) git.Location {
 		if dir == "" {
 			return git.Location{}
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		if known, seen := cache[dir]; seen {
 			return known
 		}
@@ -313,6 +323,7 @@ func (a *app) pickSession(place sessionPlace, infos []session.Info, title string
 		return sessionChoice{}, resume, fmt.Errorf("no saved sessions")
 	}
 	views, index := sessionViews(infos, place, remote)
+	rowsOf := keepLoadedRows(views)
 	if resume.view >= 0 && resume.view < len(views) {
 		// Coming back from the action prompt lands where the list was left.
 		index = resume.view
@@ -323,9 +334,9 @@ func (a *app) pickSession(place sessionPlace, infos []session.Info, title string
 		View:       index,
 		Initial:    indexOfSession(views[index], resume.id),
 		CellStyles: sessionCellStyles,
-		ColumnKinds: []pick.ColumnKind{
-			pick.KindPlain, pick.KindPlain, pick.KindRef, pick.KindRefNote,
-		},
+		// The project and what was reviewed are painted as refs, the latter
+		// with its "(uncommitted)" note receding.
+		PaintRowCell: paintCells(cellPlain, cellPlain, cellRef, cellRefNote),
 		// What was reviewed and how it ended level down together; the
 		// repository gives way first — it is the same value on every row of the
 		// branch and repo scopes.
@@ -337,14 +348,53 @@ func (a *app) pickSession(place sessionPlace, infos []session.Info, title string
 	if err != nil {
 		return sessionChoice{}, resume, err
 	}
-	if view < 0 || view >= len(views) || row < 0 || row >= len(views[view].Items) {
+	if view < 0 || view >= len(views) {
 		return sessionChoice{}, resume, fmt.Errorf("no session selected")
 	}
-	chosen := sessionOfRow(views[view], infos, remote, row)
+	rows := rowsOf(view)
+	if row < 0 || row >= len(rows) {
+		return sessionChoice{}, resume, fmt.Errorf("no session selected")
+	}
+	chosen := sessionOfRow(rows, infos, remote, row)
 	if chosen.info.ID == "" {
 		return sessionChoice{}, resume, fmt.Errorf("no session selected")
 	}
 	return chosen, sessionPickState{view: view, id: chosen.info.ID}, nil
+}
+
+// keepLoadedRows wraps the Load of every view that has one so the rows it
+// produces are kept, and returns what a view's rows turned out to be: the row
+// SelectView returns for such a view indexes the rows Load produced, which the
+// list keeps to itself. It follows the list's rule: a failed Load that
+// produced nothing leaves the view's own rows in place. Load runs on the
+// list's goroutine, and possibly still after the list returned (a scope left
+// before its rows arrived), so what it keeps is guarded.
+func keepLoadedRows(views []pick.View) func(view int) []pick.Item {
+	var mu sync.Mutex
+	loaded := map[int][]pick.Item{}
+	for i := range views {
+		load := views[i].Load
+		if load == nil {
+			continue
+		}
+		views[i].Load = func() ([]pick.Item, error) {
+			items, err := load()
+			if err == nil || len(items) > 0 {
+				mu.Lock()
+				loaded[i] = items
+				mu.Unlock()
+			}
+			return items, err
+		}
+	}
+	return func(view int) []pick.Item {
+		mu.Lock()
+		defer mu.Unlock()
+		if items, ok := loaded[view]; ok {
+			return items
+		}
+		return views[view].Items
+	}
 }
 
 // sessionChoice is what a row turned out to be: a session saved on this
@@ -406,8 +456,8 @@ var sessionActions = []struct {
 }
 
 // pickSessionAction asks what to do with the session that was chosen. Esc and
-// backspace return pick.ErrAborted, which the caller reads as "back to the
-// list" rather than as a failure.
+// backspace return pick.ErrBack, which the caller reads as "back to the list"
+// rather than as a failure.
 func (a *app) pickSessionAction(place sessionPlace, choice sessionChoice) (sessionAction, error) {
 	info := choice.info
 	details := sessionDetail(info)
@@ -421,7 +471,7 @@ func (a *app) pickSessionAction(place sessionPlace, choice sessionChoice) (sessi
 	index, err := a.selectOne(pick.Options{
 		Title:              "Session",
 		Items:              items,
-		CellStyles:         []string{pick.StyleIdentifier, pick.StyleAge},
+		CellStyles:         []theme.Style{styleIdentifier, styleAge},
 		Hint:               "↑/↓ move · Enter select · Esc/Backspace back",
 		DismissOnBackspace: true,
 	})
@@ -434,42 +484,43 @@ func (a *app) pickSessionAction(place sessionPlace, choice sessionChoice) (sessi
 	chosen := sessionActions[index]
 	// The whole id, not the shortened one the column shows: this line is what a
 	// later `--session` is copied from, and it names the action it stands for.
-	a.printSelection("Session ", info.ID, pick.StyleHash,
+	a.printSelection("Session ", info.ID, styleHash,
 		sessionSuffix(place, info)+" · "+strings.ToLower(chosen.label))
 	return chosen.action, nil
 }
 
 // sessionCellStyles colours the picker's columns: the marker, the session id,
-// the repository and what was reviewed (both painted as refs, like a branch
-// name in the branch picker), how the review ended, and its age. The last three
-// carry a colour per row — the kind of review, the verdict, the freshness —
-// which is what these column defaults give way to.
-var sessionCellStyles = []string{
-	pick.StyleMark, pick.StyleHash, "", pick.StyleIdentifier, pick.StyleText, pick.StyleAge,
+// the repository (in the terminal's own tone) and what was reviewed (both
+// painted as refs, like a branch name in the branch picker), how the review
+// ended, and its age. The last three carry a colour per row — the kind of
+// review, the verdict, the freshness — which is what these column defaults
+// give way to.
+var sessionCellStyles = []theme.Style{
+	styleMark, styleHash, styleTerminalFg, styleIdentifier, styleText, styleAge,
 }
 
 // verdictStyle colours the outcome by the verdict alone — how many findings a
 // review holds says nothing about whether it passed. The two verdicts wear the
 // green and red the review output badges them in; a verdict that is neither is
 // a caveat, and a review that recorded none recedes into grey.
-func verdictStyle(info session.Info) string {
+func verdictStyle(info session.Info) theme.Style {
 	if !info.HasResult {
-		return pick.StyleAge
+		return styleAge
 	}
 	switch sessionVerdict(info.Verdict) {
 	case "Correct":
-		return pick.StyleFresh
+		return styleFresh
 	case "Incorrect":
-		return pick.StyleError
+		return styleError
 	case "No verdict":
-		return pick.StyleAge
+		return styleAge
 	}
-	return pick.StyleCaveat
+	return styleCaveat
 }
 
 // sourceStyle colours what was reviewed by the kind of review it was, so an MR,
 // a branch and a working-tree review are told apart before the value is read.
-func sourceStyle(info session.Info) string {
+func sourceStyle(info session.Info) theme.Style {
 	kind := sessionKindOf(info)
 	if kind == kindRemoteRequest {
 		return forgeKindStyles[model.ReviewMode(info.Source.Mode)]
@@ -480,8 +531,8 @@ func sourceStyle(info session.Info) string {
 // sessionOfRow resolves a chosen row back to what it stands for: the item keys
 // are session and review ids, so a row found in one scope is the same thing in
 // every other, whether it came from the store or from an open request.
-func sessionOfRow(view pick.View, infos []session.Info, remote *remoteFinder, row int) sessionChoice {
-	id := view.Items[row].Key
+func sessionOfRow(rows []pick.Item, infos []session.Info, remote *remoteFinder, row int) sessionChoice {
+	id := rows[row].Key
 	for _, info := range infos {
 		if info.ID == id {
 			return sessionChoice{info: info}
@@ -499,7 +550,7 @@ func sessionOfRow(view pick.View, infos []session.Info, remote *remoteFinder, ro
 // opens on an empty scope while sessions exist elsewhere.
 func sessionViews(infos []session.Info, place sessionPlace, remote *remoteFinder) ([]pick.View, int) {
 	all := pick.View{
-		Label: "all",
+		Name:  "all",
 		Items: sessionItems(infos, place),
 		Empty: "no saved sessions",
 	}
@@ -518,15 +569,15 @@ func sessionViews(infos []session.Info, place sessionPlace, remote *remoteFinder
 	}
 	views := []pick.View{
 		{
-			Label: "branch",
+			Name:  "branch",
 			Items: sessionItems(branch, place),
-			Empty: "no sessions for " + textsan.StripControl(firstNonEmpty(place.branch, "this branch")) +
+			Empty: "no sessions for " + firstNonEmpty(place.branch, "this branch") +
 				" (older sessions recorded no branch and list under the repository)",
 		},
 		{
-			Label: "repository",
+			Name:  "repository",
 			Items: sessionItems(repo, place),
-			Empty: "no sessions for " + textsan.StripControl(place.name()),
+			Empty: "no sessions for " + place.name(),
 		},
 		remoteView(place, remote),
 		all,
@@ -546,10 +597,9 @@ func sessionViews(infos []session.Info, place sessionPlace, remote *remoteFinder
 // first.
 func remoteView(place sessionPlace, remote *remoteFinder) pick.View {
 	view := pick.View{
-		Label:   "remote",
+		Name:    "remote",
 		Loading: "reading published reviews…",
-		Empty: "no reviews published on " + remote.scopeNoun() + " " +
-			textsan.StripControl(place.name()),
+		Empty:   "no reviews published on " + remote.scopeNoun() + " " + place.name(),
 	}
 	if !remote.available() {
 		view.Empty = "no project to ask: this scope lists the reviews published on " + remote.scopeNoun()
@@ -601,9 +651,12 @@ func sessionItems(infos []session.Info, place sessionPlace) []pick.Item {
 			mark = checkedOutMark
 		}
 		origin := place.origin(info)
-		repo := textsan.StripControl(sessionRepoLabel(place, info, origin))
+		// Both labels are measured before the list sees them, so they are made
+		// plain single-line text first: a line break or an escape sequence
+		// would throw the measurement off.
+		repo := term.PlainLine(sessionRepoLabel(place, info, origin))
 		shownRepo := fitRepoLabel(repo)
-		source := textsan.StripControl(sessionSourceLabel(place, info, origin))
+		source := term.PlainLine(sessionSourceLabel(place, info, origin))
 		shown := fitSourceLabel(source)
 		items = append(items, pick.Item{
 			// The id is what every scope knows this row by, so the cursor stays
@@ -636,7 +689,7 @@ func sessionItems(infos []session.Info, place sessionPlace) []pick.Item {
 				}, " ")},
 				{Text: info.ID, MinTerm: minSessionIDTerm},
 			},
-			CellStyles: rowStyles(6, map[int]string{
+			CellStyles: rowStyles(6, map[int]theme.Style{
 				3: sourceStyle(info),
 				4: verdictStyle(info),
 				5: ageStyle(info.UpdatedAt),
@@ -716,18 +769,18 @@ const (
 // gives the default ref, a commit range in the green a SHA wears, the working
 // tree in turquoise, and a review that can only be placed by its directory in
 // the grey of a path.
-var sessionKindStyles = map[sessionKind]string{
-	kindBranchReview:  pick.StyleDefaultRef, // aqua green
-	kindCommitReview:  pick.StyleHash,       // hash green
-	kindWorkingTree:   "38;5;116",           // turquoise
-	kindUnknownReview: pick.StyleAge,        // grey
+var sessionKindStyles = map[sessionKind]theme.Style{
+	kindBranchReview:  styleDefaultRef,  // aqua green
+	kindCommitReview:  styleHash,        // hash green
+	kindWorkingTree:   theme.Fg256(116), // turquoise
+	kindUnknownReview: styleAge,         // grey
 }
 
 // forgeKindStyles colour a request row per platform, each in a hue of its own.
-var forgeKindStyles = map[model.ReviewMode]string{
-	model.ModeGitLab:  "38;5;216", // apricot
-	model.ModeGitHub:  "38;5;105", // purple-blue
-	model.ModeForgejo: "38;5;79",  // aquamarine
+var forgeKindStyles = map[model.ReviewMode]theme.Style{
+	model.ModeGitLab:  theme.Fg256(216), // apricot
+	model.ModeGitHub:  theme.Fg256(105), // purple-blue
+	model.ModeForgejo: theme.Fg256(79),  // aquamarine
 }
 
 // sessionKindOf classifies a session. The submode says what a review was of
@@ -835,8 +888,8 @@ func fitSourceLabel(label string) string {
 	if value, ok := strings.CutSuffix(label, uncommittedNote); ok {
 		label, note = value, uncommittedNote
 	}
-	budget := maxSourceWidth - pick.DisplayWidth(note)
-	if pick.DisplayWidth(label) <= budget {
+	budget := maxSourceWidth - term.VisibleWidth(note)
+	if term.VisibleWidth(label) <= budget {
 		return label + note
 	}
 	if budget < minSourceWidth {
@@ -846,10 +899,13 @@ func fitSourceLabel(label string) string {
 	}
 	base, head, isRange := strings.Cut(label, "..")
 	if !isRange {
-		return pick.Truncate(label, budget) + note
+		return term.Truncate(label, budget) + note
 	}
-	baseWidth, headWidth := shareWidth(pick.DisplayWidth(base), pick.DisplayWidth(head), budget-len(".."))
-	return pick.Truncate(base, baseWidth) + ".." + pick.Truncate(head, headWidth) + note
+	// Each end gets its own width or at least half of a budget of ten cells
+	// or more, so term.Truncate is never asked for the width of 0 or 1 at which
+	// it would leave an end whole or cut it without an ellipsis.
+	baseWidth, headWidth := shareWidth(term.VisibleWidth(base), term.VisibleWidth(head), budget-len(".."))
+	return term.Truncate(base, baseWidth) + ".." + term.Truncate(head, headWidth) + note
 }
 
 // minSourceWidth is how much of the value itself survives whatever else the
@@ -867,23 +923,23 @@ const maxRepoWidth = 24
 // which is cut in its middle ("…/arc…ter") because a project's name is told
 // apart by both of its ends.
 func fitRepoLabel(label string) string {
-	if pick.DisplayWidth(label) <= maxRepoWidth {
+	if term.VisibleWidth(label) <= maxRepoWidth {
 		return label
 	}
 	parts := strings.Split(label, "/")
 	name := parts[len(parts)-1]
 	if len(parts) > 2 {
-		if folded := parts[0] + "/…/" + name; pick.DisplayWidth(folded) <= maxRepoWidth {
+		if folded := parts[0] + "/…/" + name; term.VisibleWidth(folded) <= maxRepoWidth {
 			return folded
 		}
 	}
 	if len(parts) > 1 {
-		if tail := "…/" + name; pick.DisplayWidth(tail) <= maxRepoWidth {
+		if tail := "…/" + name; term.VisibleWidth(tail) <= maxRepoWidth {
 			return tail
 		}
-		return "…/" + pick.TruncateMiddle(name, maxRepoWidth-pick.DisplayWidth("…/"))
+		return "…/" + term.TruncateMiddle(name, maxRepoWidth-term.VisibleWidth("…/"))
 	}
-	return pick.TruncateMiddle(name, maxRepoWidth)
+	return term.TruncateMiddle(name, maxRepoWidth)
 }
 
 // shareWidth splits a budget between the two ends of a range: an end that fits
@@ -1030,8 +1086,8 @@ func sessionCountLabel(findings int) string {
 // project column's plain tone with its separators faded.
 func sessionDetail(info session.Info) []pick.Field {
 	return []pick.Field{
-		{Text: info.ID, Style: pick.StyleHash},
-		{Text: textsan.StripControl(info.Source.RepoRoot), Kind: pick.KindRef},
+		{Text: info.ID, Style: styleHash},
+		{Text: info.Source.RepoRoot, Paint: paintRef},
 	}
 }
 

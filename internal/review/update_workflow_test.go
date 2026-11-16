@@ -23,10 +23,9 @@ func TestUpdateWorkflowRunsFixedStages(t *testing.T) {
 		{Findings: []model.Finding{{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Short verdict."}}}},
 	}}
 	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "small"}})
-	result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{UpdateFindingsRequest: UpdateFindingsRequest{
-		DiscussRequest: DiscussRequest{Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}},
-		Signal:         ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Correct the evidence."},
-	}})
+	result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
+		Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Correct the evidence."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +53,9 @@ func TestUpdateWorkflowNoopSkipsVerdictSummaryAndPublication(t *testing.T) {
 	f := updateTestFinding()
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"No supporting evidence."}]}`}}}
 	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
-	result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{UpdateFindingsRequest: UpdateFindingsRequest{
-		DiscussRequest: DiscussRequest{Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}},
-		Signal:         ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Check this."},
-	}})
+	result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
+		Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Check this."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,10 +85,9 @@ func TestUpdateWorkflowReviewOnlyCorrectionDoesNotRepublishPinnedVerdict(t *test
 				{Findings: []model.Finding{{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Short verdict."}}}},
 			}}
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
-			result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{DisablePatchSummary: true, UpdateFindingsRequest: UpdateFindingsRequest{
-				DiscussRequest: DiscussRequest{Result: &model.ReviewResult{OverallCorrectness: "patch is incorrect", Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}},
-				Signal:         ReviewUpdateSignal{Reason: "Why is the patch still incorrect?"},
-			}})
+			result, err := e.RunUpdateWorkflow(context.Background(), UpdateWorkflowRequest{DisablePatchSummary: true,
+				Result: &model.ReviewResult{OverallCorrectness: "patch is incorrect", Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
+				Signal: ReviewUpdateSignal{Reason: "Why is the patch still incorrect?"}})
 			if err != nil {
 				t.Fatal(err)
 			}

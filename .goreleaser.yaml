@@ -9,7 +9,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
+      - -X github.com/mittwald/cli-kit/buildinfo.Version={{.Version}}
       # Go would embed the revision itself here (-trimpath does not suppress
       # that), but only as whatever the release runner's checkout looks like:
       # a shallow or detached CI clone can end up flagged vcs.modified, which
@@ -17,7 +17,8 @@ builds:
       # it is releasing, so stamp it explicitly and never consult the fallback.
       # Only untagged builds render it — a tagged build prints the tag alone,
       # since the tag already pins its commit.
-      - -X main.commit={{.FullCommit}}
+      - -X github.com/mittwald/cli-kit/buildinfo.Commit={{.FullCommit}}
+      - -X github.com/mittwald/cli-kit/buildinfo.Date={{.CommitDate}}
     goos:
       - linux
       - darwin

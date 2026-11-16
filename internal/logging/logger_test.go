@@ -92,7 +92,8 @@ func TestPrintWarningPlainNotVerboseGated(t *testing.T) {
 
 	logger.PrintWarning("disk full\x1b[2Jnow")
 
-	if got := buf.String(); got != "WARNING: disk full[2Jnow\n" {
+	// The whole escape sequence goes, not only its ESC byte.
+	if got := buf.String(); got != "WARNING: disk fullnow\n" {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }

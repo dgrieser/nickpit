@@ -96,7 +96,7 @@ func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 		reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
 		_, _, err := testVerify(engine, context.Background(), VerifyRequest{
 			ReviewCtx:                 reviewCtx,
-			Finding:                   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			Finding:                   model.Finding{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 			DisableJSONResponseFormat: disableJSONResponseFormat,
 		})
 		if err != nil {
@@ -132,7 +132,7 @@ func TestVerifyPromptDropsEligibilityGates(t *testing.T) {
 		}
 		_, _, err := testVerify(engine, context.Background(), VerifyRequest{
 			ReviewCtx: reviewCtx,
-			Finding:   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}},
+			Finding:   model.Finding{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -221,8 +221,8 @@ func TestVerifyAllRecordsStepAgentRun(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{Title: "first", Body: "b1", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{Title: "second", Body: "b2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "first", Body: "b1", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "second", Body: "b2", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 	}
 	_, run, _, err := engine.verifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1), MaxToolCalls: 7})
 	if err != nil {
@@ -281,7 +281,7 @@ func TestVerifyAllRecordsDuplicateToolCalls(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
 	_, run, _, err := engine.verifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{
 		Limiter:               NewLimiter(1),
@@ -323,8 +323,8 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{Title: "first", Body: "b1", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{Title: "second", Body: "b2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "first", Body: "b1", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "second", Body: "b2", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 	}
 	verifications, usage, warnings, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
 	verifications, _, warnings, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
@@ -375,9 +375,9 @@ func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{Title: "a", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{Title: "b", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
-		{Title: "c", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+		{Title: "a", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "b", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "c", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -404,7 +404,7 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	findings := []model.Finding{
-		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
 	_, _, _, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
@@ -433,9 +433,9 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 	// verifications.
 	dupID := uuid.NewString()
 	reviewerFindings := []model.Finding{
-		{ID: "not-a-uuid", Title: "invalid id", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{ID: dupID, Title: "dup one", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
-		{ID: dupID, Title: "dup two", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+		{ID: "not-a-uuid", Title: "invalid id", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{ID: dupID, Title: "dup one", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{ID: dupID, Title: "dup two", Body: "b", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
 	}
 
 	llmClient := &scriptedVerifyLLM{} // default verdict is confirmed, so nothing is dropped.
@@ -475,9 +475,9 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 
 func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 	reviewerFindings := []model.Finding{
-		{Title: "low refuted", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{Title: "high refuted", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
-		{Title: "unverified", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+		{Title: "low refuted", Body: "b", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "high refuted", Body: "b", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "unverified", Body: "b", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
 	}
 	llmClient := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
 		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.69, Remarks: "contradicted"}},
@@ -508,7 +508,7 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 
 func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
 	reviewerFindings := []model.Finding{
-		{Title: "timeout", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "timeout", Body: "b", Priority: new(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
 	llmClient := &scriptedVerifyLLM{err: errors.New("context deadline exceeded")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -560,7 +560,7 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	finding := model.Finding{
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 
@@ -624,7 +624,7 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 	finding := model.Finding{
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 
@@ -674,7 +674,7 @@ func TestVerifyOuterRetryReusesToolDedupState(t *testing.T) {
 
 	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{
 		ReviewCtx:        sampleReviewCtx(),
-		Finding:          model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		Finding:          model.Finding{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		MaxToolCalls:     4,
 		MaxOutputRetries: 2,
 		RepoRoot:         "/repo",
@@ -717,7 +717,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	finding := model.Finding{
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
@@ -763,7 +763,7 @@ func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
 	finding := model.Finding{
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "k8s/deployment.yaml", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
@@ -793,7 +793,7 @@ func TestVerifyIncludesToolchainReminder(t *testing.T) {
 	finding := model.Finding{
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
@@ -821,7 +821,7 @@ func TestVerifyFallsBackVerificationIDToFindingID(t *testing.T) {
 		ID:           findingID,
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
@@ -846,7 +846,7 @@ func TestVerifyPreservesValidVerificationIDFromLLM(t *testing.T) {
 		ID:           findingID,
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
@@ -866,7 +866,7 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 		ID:           "11111111-1111-4111-8111-111111111111",
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Suggestions: []model.Suggestion{
 			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
@@ -903,7 +903,7 @@ func TestVerifyDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		ID:           "11111111-1111-4111-8111-111111111111",
 		Title:        "x",
 		Body:         "x",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Suggestions: []model.Suggestion{
 			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
@@ -950,7 +950,7 @@ func TestVerifyFailedLoopStillReportsTokenUsage(t *testing.T) {
 
 	_, usage, err := testVerify(engine, context.Background(), VerifyRequest{
 		ReviewCtx:        sampleReviewCtx(),
-		Finding:          model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		Finding:          model.Finding{Title: "x", Body: "x", Priority: new(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		MaxOutputRetries: 1,
 	})
 	if err == nil {

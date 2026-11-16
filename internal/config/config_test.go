@@ -18,10 +18,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func intPtr(v int) *int {
-	return &v
-}
-
 // sgSources joins the Source of each styleguide spec for concise assertions.
 func sgSources(specs []model.StyleGuideSpec) string {
 	sources := make([]string, len(specs))
@@ -701,7 +697,7 @@ profiles:
 	cfg, profile, err := Load(path, Overrides{
 		Profile:          "work",
 		BaseURL:          "https://override.invalid/v1",
-		MaxContextTokens: intPtr(777),
+		MaxContextTokens: new(777),
 		Workdir:          "/override/repo",
 	})
 	if err != nil {
@@ -1485,7 +1481,7 @@ profiles:
 		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
 
-	_, profile, err = Load(path, Overrides{ToolCalls: intPtr(4)})
+	_, profile, err = Load(path, Overrides{ToolCalls: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1515,7 +1511,7 @@ profiles:
 		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
 	}
 
-	_, profile, err = Load(path, Overrides{DuplicateToolCalls: intPtr(4)})
+	_, profile, err = Load(path, Overrides{DuplicateToolCalls: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1545,7 +1541,7 @@ profiles:
 		t.Fatalf("default max output retries = %d", profile.MaxOutputRetries)
 	}
 
-	_, profile, err = Load(path, Overrides{OutputRetries: intPtr(4)})
+	_, profile, err = Load(path, Overrides{OutputRetries: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1575,7 +1571,7 @@ profiles:
 		t.Fatalf("default max reasoning seconds = %d", profile.MaxReasoningSeconds)
 	}
 
-	_, profile, err = Load(path, Overrides{ReasoningSeconds: intPtr(4)})
+	_, profile, err = Load(path, Overrides{ReasoningSeconds: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1605,7 +1601,7 @@ profiles:
 		t.Fatalf("nudge count = %d", profile.NudgeCount)
 	}
 
-	_, profile, err = Load(path, Overrides{NudgeCount: intPtr(4)})
+	_, profile, err = Load(path, Overrides{NudgeCount: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1729,7 +1725,7 @@ profiles:
 		t.Fatal("expected max_findings to be marked as configured")
 	}
 
-	_, profile, err = Load(path, Overrides{MaxFindings: intPtr(4)})
+	_, profile, err = Load(path, Overrides{MaxFindings: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1738,7 +1734,7 @@ profiles:
 	}
 
 	// Explicit zero from the CLI must win over the config file (unlimited).
-	_, profile, err = Load(path, Overrides{MaxFindings: intPtr(0)})
+	_, profile, err = Load(path, Overrides{MaxFindings: new(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1818,7 +1814,7 @@ profiles:
 	}
 
 	// Explicit zero from the CLI must win over the config file (keep everything).
-	_, profile, err = Load(path, Overrides{MaxSessions: intPtr(0)})
+	_, profile, err = Load(path, Overrides{MaxSessions: new(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1891,11 +1887,11 @@ profiles:
 	}
 
 	_, profile, err := Load(path, Overrides{
-		ToolCalls:          intPtr(0),
-		DuplicateToolCalls: intPtr(0),
-		OutputRetries:      intPtr(0),
-		ReasoningSeconds:   intPtr(0),
-		NudgeCount:         intPtr(0),
+		ToolCalls:          new(0),
+		DuplicateToolCalls: new(0),
+		OutputRetries:      new(0),
+		ReasoningSeconds:   new(0),
+		NudgeCount:         new(0),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1931,7 +1927,7 @@ profiles:
 	}
 
 	_, profile, err := Load(path, Overrides{
-		MaxContextTokens: intPtr(0),
+		MaxContextTokens: new(0),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2021,8 +2017,8 @@ func TestLoadConfigOverridesBeatBudgetEnv(t *testing.T) {
 	t.Setenv("NICKPIT_DIFF_FORMAT", "git-json")
 
 	_, profile, err := Load("", Overrides{
-		NudgeCount:       ptrTo(9),
-		MaxContextTokens: ptrTo(2000),
+		NudgeCount:       new(9),
+		MaxContextTokens: new(2000),
 		DiffFormat:       model.DiffFormatGit,
 	})
 	if err != nil {

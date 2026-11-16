@@ -7,8 +7,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-func intPtr(v int) *int { return &v }
-
 func TestMergeFindingsBaseSelectionAndNoisyOr(t *testing.T) {
 	a := finding("Weaker", "short", "a.sh", 10, 12)
 	a.ID = "id-a"
@@ -85,9 +83,9 @@ func TestMergeFindingsKeepsOtherFindLinesLocationWhenBaseIsLegacy(t *testing.T) 
 func TestMergeFindingsMostCriticalPriority(t *testing.T) {
 	a := finding("A", "body", "a.sh", 1, 1)
 	a.ConfidenceScore = 0.9
-	a.Priority = intPtr(3)
+	a.Priority = new(3)
 	b := finding("B", "body", "a.sh", 1, 1)
-	b.Priority = intPtr(1)
+	b.Priority = new(1)
 
 	if got := MergeFindings(a, b).Priority; got == nil || *got != 1 {
 		t.Fatalf("priority = %v, want most critical 1", got)

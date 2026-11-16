@@ -53,8 +53,8 @@ var catalogDefinition = []catalogEntry{
 		ListingDescription: "with a repo-relative `path` to retrieve the contents of a file",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file path", Example: `"<repo-relative path>"`, Required: true},
-			{Name: "line_start", Type: "integer", Description: "Optional starting line number for partial file retrieval", Example: "int", Minimum: intPtr(1)},
-			{Name: "line_end", Type: "integer", Description: "Optional ending line number for partial file retrieval", Example: "int", Minimum: intPtr(1)},
+			{Name: "line_start", Type: "integer", Description: "Optional starting line number for partial file retrieval", Example: "int", Minimum: new(1)},
+			{Name: "line_end", Type: "integer", Description: "Optional ending line number for partial file retrieval", Example: "int", Minimum: new(1)},
 		},
 	},
 	{
@@ -63,7 +63,7 @@ var catalogDefinition = []catalogEntry{
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative folder path; omit or pass an empty string to list the repo root", Example: `"<repo-relative folder>"`},
-			{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for nested folders; defaults to %d", toollimits.DefaultListFilesDepth), Example: "int", Minimum: intPtr(1)},
+			{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for nested folders; defaults to %d", toollimits.DefaultListFilesDepth), Example: "int", Minimum: new(1)},
 		},
 	},
 	{
@@ -74,8 +74,8 @@ var catalogDefinition = []catalogEntry{
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Text or code to find: a single line matches as a substring; a multi-line block of code matches exactly, ignoring indentation and surrounding whitespace", Example: `"<text, or line(s) of code>"`, Required: true},
-			{Name: "context_lines", Type: "integer", Description: fmt.Sprintf("Optional number of surrounding lines to include before and after each match; defaults to %d for a single-line query and 0 for a multi-line block", toollimits.DefaultSearchContextLines), Example: "int", Minimum: intPtr(0)},
-			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: intPtr(0)},
+			{Name: "context_lines", Type: "integer", Description: fmt.Sprintf("Optional number of surrounding lines to include before and after each match; defaults to %d for a single-line query and 0 for a multi-line block", toollimits.DefaultSearchContextLines), Example: "int", Minimum: new(0)},
+			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: new(0)},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive match mode; defaults to false", Example: "bool"},
 		},
 	},
@@ -101,7 +101,7 @@ var catalogDefinition = []catalogEntry{
 		Parameters: []CatalogParameter{
 			{Name: "symbol", Type: "string", Description: "Symbol name to inspect", Example: `"<symbol name>"`, Required: true},
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; does not limit where references are collected", Example: `"<repo-relative path>"`},
-			{Name: "line", Type: "integer", Description: "Optional declaration line, used together with `path` to pick one of several same-named declarations after an ambiguous_symbol error reports them as `file:line`", Example: "int", Minimum: intPtr(1)},
+			{Name: "line", Type: "integer", Description: "Optional declaration line, used together with `path` to pick one of several same-named declarations after an ambiguous_symbol error reports them as `file:line`", Example: "int", Minimum: new(1)},
 		},
 	},
 	{
@@ -118,7 +118,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "message", Type: "string", Description: "Optional text the commit message must contain", Example: `"<message text>"`},
 			{Name: "message_regex", Type: "boolean", Description: "Optional flag to treat message and author as extended regular expressions instead of literal text; defaults to false", Example: "bool"},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive matching for message and author; defaults to false", Example: "bool"},
-			{Name: "limit", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits to list; defaults to %d", toollimits.DefaultGitLogLimit), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxGitLogLimit)},
+			{Name: "limit", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits to list; defaults to %d", toollimits.DefaultGitLogLimit), Example: "int", Minimum: new(1), Maximum: new(toollimits.MaxGitLogLimit)},
 		},
 	},
 	{
@@ -130,7 +130,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "commit", Type: "string", Description: "Revision to show (SHA of any length, ref) or a range like \"a..b\"", Example: `"<sha|ref|a..b>"`, Required: true},
 			{Name: "to", Type: "string", Description: "Optional end revision; forms a range together with commit", Example: `"<sha|ref>"`},
 			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them, and a commit that changed none of them is still returned with an empty diff and a note", Example: `"<repo-relative paths>"`},
-			{Name: "max_commits", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits of a range to return; defaults to %d", toollimits.DefaultGitShowCommits), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxGitShowCommits)},
+			{Name: "max_commits", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits of a range to return; defaults to %d", toollimits.DefaultGitShowCommits), Example: "int", Minimum: new(1), Maximum: new(toollimits.MaxGitShowCommits)},
 		},
 	},
 	{
@@ -155,15 +155,11 @@ var errorDefinitions = map[string]errorDefinition{
 	"encoding_failed":        {Code: "encoding_failed", Message: "failed to encode tool result"},
 }
 
-func intPtr(value int) *int {
-	return &value
-}
-
 func callHierarchyParameters() []CatalogParameter {
 	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
 		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the function declaration; does not limit where calls are collected", Example: `"<repo-relative path>"`},
-		{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for the call hierarchy; defaults to %d", toollimits.DefaultCallHierarchyDepth), Example: "int", Minimum: intPtr(1), Maximum: intPtr(toollimits.MaxCallHierarchyDepth)},
+		{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for the call hierarchy; defaults to %d", toollimits.DefaultCallHierarchyDepth), Example: "int", Minimum: new(1), Maximum: new(toollimits.MaxCallHierarchyDepth)},
 	}
 }
 

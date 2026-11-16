@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +28,8 @@ import (
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
+	"github.com/mittwald/cli-kit/buildinfo"
+	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
 
@@ -1840,23 +1842,23 @@ func captureStderr(t *testing.T, fn func()) string {
 }
 
 func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
+	// canAnimate is term.CanAnimate(os.Stderr): false for a pipe, a dumb
+	// terminal, NO_COLOR and --color=never.
 	tests := []struct {
 		name                                                string
-		tty                                                 bool
-		term                                                string
+		canAnimate                                          bool
 		verbose, progress, reasoning, disableLive, expected bool
 	}{
-		{name: "plain tty", tty: true, term: "xterm-256color", expected: true},
-		{name: "pipe", tty: false, term: "xterm-256color"},
-		{name: "dumb terminal", tty: true, term: "dumb"},
-		{name: "verbose", tty: true, term: "xterm", verbose: true},
-		{name: "explicit progress", tty: true, term: "xterm", progress: true},
-		{name: "reasoning", tty: true, term: "xterm", reasoning: true},
-		{name: "disable-live-progress flag", tty: true, term: "xterm-256color", disableLive: true},
+		{name: "plain tty", canAnimate: true, expected: true},
+		{name: "pipe or dumb terminal", canAnimate: false},
+		{name: "verbose", canAnimate: true, verbose: true},
+		{name: "explicit progress", canAnimate: true, progress: true},
+		{name: "reasoning", canAnimate: true, reasoning: true},
+		{name: "disable-live-progress flag", canAnimate: true, disableLive: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := liveProgressEnabled(tt.tty, tt.term, tt.verbose, tt.progress, tt.reasoning, tt.disableLive); got != tt.expected {
+			if got := liveProgressEnabled(tt.canAnimate, tt.verbose, tt.progress, tt.reasoning, tt.disableLive); got != tt.expected {
 				t.Fatalf("liveProgressEnabled() = %v, want %v", got, tt.expected)
 			}
 		})
@@ -1867,12 +1869,6 @@ func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 // (its tag already pins the commit). An untagged build carries the short commit,
 // because "dev" alone identifies nothing in a bug report.
 func TestDisplayVersion(t *testing.T) {
-	originalVersion, originalCommit := version, commit
-	t.Cleanup(func() { version, commit = originalVersion, originalCommit })
-	commit = "995c9107a8bd4cf0"
-	buildRevision = func() string { return shortCommit(commit) }
-	t.Cleanup(func() { buildRevision = sync.OnceValue(resolveBuildRevision) })
-
 	for _, tt := range []struct{ build, want string }{
 		{"0.0.14", "v0.0.14"},
 		{"1.2.3-rc1", "v1.2.3-rc1"},
@@ -1881,60 +1877,48 @@ func TestDisplayVersion(t *testing.T) {
 		{"", "dev+995c910"},
 		{"feature-branch", "feature-branch+995c910"},
 	} {
-		version = tt.build
-		if got := displayVersion(); got != tt.want {
-			t.Fatalf("displayVersion(%q) = %q, want %q", tt.build, got, tt.want)
+		if got := formatVersion(buildinfo.Info{Version: tt.build, Commit: "995c9107a8bd4cf0"}); got != tt.want {
+			t.Fatalf("formatVersion(%q) = %q, want %q", tt.build, got, tt.want)
 		}
 	}
 
 	// No revision anywhere (no ldflags, no embedded build info): the bare name.
-	buildRevision = func() string { return "" }
-	version = "dev"
-	if got := displayVersion(); got != "dev" {
+	if got := formatVersion(buildinfo.Info{Version: "dev"}); got != "dev" {
 		t.Fatalf("revisionless dev build = %q", got)
+	}
+
+	// displayVersion renders the running binary's build info.
+	original := buildInfo
+	t.Cleanup(func() { buildInfo = original })
+	buildInfo = func() buildinfo.Info { return buildinfo.Info{Version: "0.0.14"} }
+	if got := displayVersion(); got != "v0.0.14" {
+		t.Fatalf("displayVersion() = %q", got)
 	}
 }
 
-// The revision falls back from -X main.commit to Go's embedded VCS stamp, keeps
-// seven characters, and flags a modified tree.
-func TestResolveBuildRevision(t *testing.T) {
-	originalCommit := commit
-	t.Cleanup(func() { commit = originalCommit })
-
-	commit = "995c9107a8bd4cf0deadbeef"
-	if got := resolveBuildRevision(); got != "995c910" {
-		t.Fatalf("ldflags commit = %q, want the short form", got)
-	}
-	commit = "995c910"
-	if got := resolveBuildRevision(); got != "995c910" {
-		t.Fatalf("an already-short ldflags commit must pass through: %q", got)
-	}
-
-	// The Makefile appends "-dirty" to the stamped commit, so truncation must
-	// step around the suffix instead of eating it — reporting a modified tree as
-	// clean is worse than not reporting it at all.
-	commit = "995c9107a8bd4cf0deadbeef-dirty"
-	if got := resolveBuildRevision(); got != "995c910-dirty" {
-		t.Fatalf("dirty ldflags commit = %q, want the short form with the suffix", got)
-	}
-	commit = "995c910-dirty"
-	if got := resolveBuildRevision(); got != "995c910-dirty" {
-		t.Fatalf("an already-short dirty commit must pass through: %q", got)
-	}
-	// A bare suffix names no revision at all.
-	commit = "-dirty"
-	if got := resolveBuildRevision(); got == "-dirty" {
-		t.Fatalf("a commitless -dirty must not render as a revision: %q", got)
-	}
-
-	// Unstamped: whatever the test binary's own build info says. `go test` embeds
-	// VCS info in a git checkout, so assert the shape rather than a fixed hash.
-	commit = ""
-	rev := resolveBuildRevision()
-	if rev != "" {
-		bare := strings.TrimSuffix(rev, "-dirty")
-		if len(bare) != 7 {
-			t.Fatalf("embedded revision %q should be a 7-char hash (plus optional -dirty)", rev)
+// The revision keeps seven characters and flags a modified tree, whether the
+// Makefile stamped "-dirty" or the toolchain recorded it.
+func TestBuildRevision(t *testing.T) {
+	for _, tt := range []struct {
+		commit   string
+		modified bool
+		want     string
+	}{
+		{"995c9107a8bd4cf0deadbeef", false, "995c910"},
+		{"995c910", false, "995c910"},
+		// The Makefile appends "-dirty" to the stamped commit, so truncation
+		// must step around the suffix instead of eating it — reporting a
+		// modified tree as clean is worse than not reporting it at all.
+		{"995c9107a8bd4cf0deadbeef-dirty", false, "995c910-dirty"},
+		{"995c910-dirty", false, "995c910-dirty"},
+		{"995c9107a8bd4cf0deadbeef", true, "995c910-dirty"},
+		{"995c910-dirty", true, "995c910-dirty"},
+		// A bare suffix names no revision at all.
+		{"-dirty", false, ""},
+		{"", true, ""},
+	} {
+		if got := buildRevision(buildinfo.Info{Commit: tt.commit, Modified: tt.modified}); got != tt.want {
+			t.Fatalf("buildRevision(%q, modified %v) = %q, want %q", tt.commit, tt.modified, got, tt.want)
 		}
 	}
 }
@@ -1943,9 +1927,9 @@ func TestResolveBuildRevision(t *testing.T) {
 // there puts it in the JSON on stdout and in the saved session at once (and, for
 // a published review, in the hidden SCM envelope rendered from the same result).
 func TestEmitResultStampsVersionForOutputAndSession(t *testing.T) {
-	original := version
-	t.Cleanup(func() { version = original })
-	version = "3.2.1"
+	original := buildInfo
+	t.Cleanup(func() { buildInfo = original })
+	buildInfo = func() buildinfo.Info { return buildinfo.Info{Version: "3.2.1"} }
 
 	dir := t.TempDir()
 	a := &app{sessionDir: dir, jsonOutput: true, logger: logging.New(io.Discard, false, false)}
@@ -2035,9 +2019,9 @@ func TestEmitResultRequirePublishControlsDeliveryFailure(t *testing.T) {
 // The logger every command logs through carries the flags AND the version, so a
 // new command cannot forget to name its build.
 func TestNewLoggerCarriesFlagsAndVersion(t *testing.T) {
-	original := version
-	t.Cleanup(func() { version = original })
-	version = "9.9.9"
+	original := buildInfo
+	t.Cleanup(func() { buildInfo = original })
+	buildInfo = func() buildinfo.Info { return buildinfo.Info{Version: "9.9.9"} }
 	a := &app{verbose: true, showProgress: true}
 	logger := a.newLogger()
 	if got := logger.Version(); got != "v9.9.9" {
@@ -2441,7 +2425,7 @@ func TestSmallModelDistinctTargetCoversEndpointAndModel(t *testing.T) {
 		want  bool
 	}{
 		{name: "inherits everything"},
-		{name: "sampling only", small: config.SmallModelConfig{Temperature: ptrToTest(0.1)}},
+		{name: "sampling only", small: config.SmallModelConfig{Temperature: new(0.1)}},
 		{name: "other model", small: config.SmallModelConfig{Model: "small-model"}, want: true},
 		{
 			name:  "other endpoint, same model",
@@ -2467,8 +2451,6 @@ func TestSmallModelDistinctTargetCoversEndpointAndModel(t *testing.T) {
 		})
 	}
 }
-
-func ptrToTest[T any](v T) *T { return &v }
 
 // A profile-declared capability describes the primary serving stack and is matched
 // by model name only, so it must not answer for a foreign small endpoint: the small
@@ -2578,5 +2560,26 @@ func TestEmitResultSkipsBlockedPublish(t *testing.T) {
 		if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[len(result.Warnings)-1], "Publish skipped") {
 			t.Fatalf("warnings = %v", result.Warnings)
 		}
+	}
+}
+
+// A review rendered into a buffer, as for the clipboard, stays plain even
+// under --color=always: only a real output stream is painted.
+func TestReviewCopyStaysPlainUnderColorAlways(t *testing.T) {
+	previous := term.CurrentColorMode()
+	term.SetColorMode(term.ColorAlways)
+	t.Cleanup(func() { term.SetColorMode(previous) })
+
+	a := &app{outputFormat: "markdown"}
+	result := &model.ReviewResult{ReviewID: "rev-copy", OverallCorrectness: "patch is correct", OverallExplanation: "Looks fine."}
+	var buf bytes.Buffer
+	if err := a.formatReviewCopy(&buf, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "\x1b[") {
+		t.Fatalf("clipboard copy carries escape sequences: %q", buf.String())
+	}
+	if useColor(&buf) {
+		t.Fatal("useColor painted a buffer under --color=always")
 	}
 }

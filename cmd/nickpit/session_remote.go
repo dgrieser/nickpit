@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/mittwald/cli-kit/term"
 )
 
 // The session picker lists the reviews NickPit published on the project's open
@@ -70,9 +72,15 @@ type remoteSource struct {
 
 // remoteFinder gathers the published reviews of the project the current
 // checkout points at, once per invocation however many scopes ask for them.
+//
+// The picker loads its remote scope on a goroutine of its own, which may still
+// be running when the picker has returned and the caller looks a row up (a
+// scope left before its rows arrived), so what the fetch stores is guarded.
 type remoteFinder struct {
-	once    sync.Once
-	source  *remoteSource
+	once   sync.Once
+	source *remoteSource
+
+	mu      sync.Mutex
 	reviews []remoteReview
 	err     error
 }
@@ -94,6 +102,8 @@ func (f *remoteFinder) byID(id string) *remoteReview {
 	if !f.available() || id == "" {
 		return nil
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.reviews {
 		if f.reviews[i].info.ID == id {
 			return &f.reviews[i]
@@ -104,7 +114,8 @@ func (f *remoteFinder) byID(id string) *remoteReview {
 
 // find returns the published reviews, fetching them on the first call. A
 // failure is returned to the caller and remembered, so one unreachable server
-// is reported once and not retried on every scope switch.
+// is reported once and not retried on every scope switch. The rows are the
+// caller's own copy, free to be sorted.
 func (f *remoteFinder) find(ctx context.Context) ([]remoteReview, error) {
 	if !f.available() {
 		return nil, nil
@@ -112,9 +123,14 @@ func (f *remoteFinder) find(ctx context.Context) ([]remoteReview, error) {
 	f.once.Do(func() {
 		bounded, cancel := context.WithTimeout(ctx, remoteFetchTimeout)
 		defer cancel()
-		f.reviews, f.err = f.source.collect(bounded)
+		reviews, err := f.source.collect(bounded)
+		f.mu.Lock()
+		f.reviews, f.err = reviews, err
+		f.mu.Unlock()
 	})
-	return f.reviews, f.err
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reviews), f.err
 }
 
 // remoteSourceFor builds the platform half for the project the checkout points
@@ -362,7 +378,7 @@ func (a *app) chatAboutRemoteReview(ctx context.Context, row remoteReview) error
 // remoteOriginLabel names where a copied review came from in its clipboard
 // confirmation.
 func remoteOriginLabel(row remoteReview) string {
-	return fmt.Sprintf("%s %s%s%d", forgeRequestLabel(row.mode), textsan.StripControl(row.repo), requestSigil(row.mode), row.id)
+	return fmt.Sprintf("%s %s%s%d", forgeRequestLabel(row.mode), term.PlainLine(row.repo), requestSigil(row.mode), row.id)
 }
 
 // writeRemoteReview writes a published review with the replies its own threads
@@ -442,12 +458,12 @@ func gitlabReviewThreads(discussions []glscm.MRDiscussion) []reviewThread {
 // opened the thread is NickPit answering in its own thread, so it says so.
 func replyAuthor(note, root glscm.DiscussionNote) string {
 	if name := strings.TrimSpace(note.AuthorDisplay); name != "" && strings.Trim(name, "*") != "" {
-		return textsan.StripControl(name)
+		return term.PlainLine(name)
 	}
 	if note.AuthorID != 0 && note.AuthorID == root.AuthorID {
 		return "NickPit"
 	}
-	return textsan.StripControl(note.AuthorName)
+	return term.PlainLine(note.AuthorName)
 }
 
 // reviewWithReplies is the review as it is printed and copied: the published

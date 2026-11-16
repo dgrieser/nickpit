@@ -176,8 +176,7 @@ func TestCandidateBackendsReturnsUnsupportedLanguageError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = candidateBackends(scope)
-	var unsupported *UnsupportedLanguageError
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*UnsupportedLanguageError](err); !ok {
 		t.Fatalf("candidateBackends error = %v, want *UnsupportedLanguageError", err)
 	}
 }

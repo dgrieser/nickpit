@@ -71,11 +71,11 @@ func TestVerdictConfidenceThresholdFiltersPromptAndResult(t *testing.T) {
 		return model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}}
 	}
 	low := model.Finding{
-		ID: "11111111-1111-4111-8111-111111111111", Title: "Low confidence", Body: "low", ConfidenceScore: 0.99, Priority: intPtr(1), CodeLocation: loc(1),
+		ID: "11111111-1111-4111-8111-111111111111", Title: "Low confidence", Body: "low", ConfidenceScore: 0.99, Priority: new(1), CodeLocation: loc(1),
 		Finalization: &model.FindingFinalization{Title: "Low final", Body: "low final", Priority: 1, ConfidenceScore: 0.69},
 	}
 	kept := model.Finding{
-		ID: "22222222-2222-4222-8222-222222222222", Title: "Kept confidence", Body: "kept", ConfidenceScore: 0.1, Priority: intPtr(1), CodeLocation: loc(2),
+		ID: "22222222-2222-4222-8222-222222222222", Title: "Kept confidence", Body: "kept", ConfidenceScore: 0.1, Priority: new(1), CodeLocation: loc(2),
 		Finalization: &model.FindingFinalization{Title: "Kept final", Body: "kept final", Priority: 1, ConfidenceScore: 0.70},
 	}
 	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{{
@@ -111,7 +111,7 @@ func TestVerdictDisableSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
 		ID:           "11111111-1111-4111-8111-111111111111",
 		Title:        "Finding",
 		Body:         "body",
-		Priority:     intPtr(1),
+		Priority:     new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Verification: &model.FindingVerification{ID: "11111111-1111-4111-8111-111111111111", Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 		Finalization: &model.FindingFinalization{
@@ -162,7 +162,7 @@ func TestVerdictPriorityThresholdUsesFinalizedPriority(t *testing.T) {
 		Title:           "Downgraded by finalizer",
 		Body:            "body",
 		ConfidenceScore: 0.9,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Finalization:    &model.FindingFinalization{Title: "Downgraded by finalizer", Body: "body", Priority: 2, ConfidenceScore: 0.8},
 	}
@@ -193,7 +193,7 @@ func TestVerdictPriorityThresholdUsesFinalizedPriority(t *testing.T) {
 
 func TestVerdictConfidenceThresholdZeroKeepsZeroConfidence(t *testing.T) {
 	finding := model.Finding{
-		ID: "11111111-1111-4111-8111-111111111111", Title: "Zero", Body: "zero", Priority: intPtr(1),
+		ID: "11111111-1111-4111-8111-111111111111", Title: "Zero", Body: "zero", Priority: new(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Finalization: &model.FindingFinalization{Title: "Zero", Body: "zero", Priority: 1, ConfidenceScore: 0},
 	}
@@ -215,7 +215,7 @@ func TestVerdictConfidenceThresholdReportsDroppedFindings(t *testing.T) {
 		Title:           "Low confidence",
 		Body:            "low",
 		ConfidenceScore: 0.99,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation:    loc(1),
 		Finalization:    &model.FindingFinalization{Title: "Low final", Body: "low final", Priority: 1, ConfidenceScore: 0.69},
 	}
@@ -224,7 +224,7 @@ func TestVerdictConfidenceThresholdReportsDroppedFindings(t *testing.T) {
 		Title:           "Kept confidence",
 		Body:            "kept",
 		ConfidenceScore: 0.1,
-		Priority:        intPtr(1),
+		Priority:        new(1),
 		CodeLocation:    loc(2),
 		Finalization:    &model.FindingFinalization{Title: "Kept final", Body: "kept final", Priority: 1, ConfidenceScore: 0.70},
 	}
@@ -299,7 +299,7 @@ func TestOverallConfidenceFor(t *testing.T) {
 	// both driven by the given values (priority == verification priority).
 	finalized := func(priority int, conf float64) model.Finding {
 		return model.Finding{
-			Priority:     intPtr(priority),
+			Priority:     new(priority),
 			Verification: &model.FindingVerification{Priority: priority, ConfidenceScore: conf},
 			Finalization: &model.FindingFinalization{Priority: priority, ConfidenceScore: conf},
 		}
@@ -359,7 +359,7 @@ func TestOverallConfidenceFor(t *testing.T) {
 func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
 	p1 := func(conf float64) model.Finding {
 		return model.Finding{
-			Priority:     intPtr(1),
+			Priority:     new(1),
 			Verification: &model.FindingVerification{Priority: 1, ConfidenceScore: conf},
 			Finalization: &model.FindingFinalization{Priority: 1, ConfidenceScore: conf},
 		}
@@ -390,7 +390,7 @@ func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
 func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
 	fin := func(priority int, conf float64) model.Finding {
 		return model.Finding{
-			Priority:     intPtr(priority),
+			Priority:     new(priority),
 			Verification: &model.FindingVerification{Priority: priority, ConfidenceScore: conf},
 			Finalization: &model.FindingFinalization{Priority: priority, ConfidenceScore: conf},
 		}
@@ -441,14 +441,14 @@ func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
 func TestOverallConfidenceForConfidenceSourceFallback(t *testing.T) {
 	// No finalization → verifier confidence.
 	verifyOnly := model.Finding{
-		Priority:     intPtr(0),
+		Priority:     new(0),
 		Verification: &model.FindingVerification{Priority: 0, ConfidenceScore: 0.66},
 	}
 	if got := overallConfidenceFor("patch is incorrect", []model.Finding{verifyOnly}, 3); got != 0.66 {
 		t.Fatalf("verification-fallback confidence = %.2f, want 0.66", got)
 	}
 	// No finalization, no verification → reviewer confidence.
-	reviewOnly := model.Finding{Priority: intPtr(0), ConfidenceScore: 0.42}
+	reviewOnly := model.Finding{Priority: new(0), ConfidenceScore: 0.42}
 	if got := overallConfidenceFor("patch is incorrect", []model.Finding{reviewOnly}, 3); got != 0.42 {
 		t.Fatalf("review-fallback confidence = %.2f, want 0.42", got)
 	}
@@ -460,7 +460,7 @@ func TestOverallConfidenceForConfidenceSourceFallback(t *testing.T) {
 func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
 	// A refuted non-finding (the "no issue" sentinel) the reviewer mislabeled P0
 	// is demoted to the threshold floor, so it cannot force a blocking verdict.
-	nonFinding := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"}}
+	nonFinding := model.Finding{Priority: new(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"}}
 	got := verdictConstraintsFor([]model.Finding{nonFinding}, 3).AllowedCorrectness
 	if len(got) != 1 || got[0] != "patch is correct" {
 		t.Fatalf("non-finding constraints = %v, want [patch is correct]", got)
@@ -468,13 +468,13 @@ func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
 
 	// A genuine refutation kept for review (cites code, no sentinel) keeps its P0
 	// floor and still forces "patch is incorrect" — the P1 review concern.
-	genuineRefuted := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}}
+	genuineRefuted := model.Finding{Priority: new(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}}
 	got = verdictConstraintsFor([]model.Finding{genuineRefuted}, 3).AllowedCorrectness
 	if len(got) != 1 || got[0] != "patch is incorrect" {
 		t.Fatalf("genuine-refuted-P0 constraints = %v, want [patch is incorrect]", got)
 	}
 
-	real := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
+	real := model.Finding{Priority: new(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
 	got = verdictConstraintsFor([]model.Finding{real}, 3).AllowedCorrectness
 	if len(got) != 1 || got[0] != "patch is incorrect" {
 		t.Fatalf("confirmed-P0 constraints = %v, want [patch is incorrect]", got)
@@ -488,7 +488,7 @@ func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
 // floor that would hard-constrain the verdict schema to "patch is incorrect".
 func TestVerdictConstraintsForNonFindingNeverBlocksAtStrictThresholds(t *testing.T) {
 	nonFinding := model.Finding{
-		Priority:     intPtr(0),
+		Priority:     new(0),
 		Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"},
 	}
 	for _, threshold := range []string{"p0", "p1"} {
@@ -512,7 +512,7 @@ func TestVerdictConstraintsForNonFindingNeverBlocksAtStrictThresholds(t *testing
 			}
 
 			// A genuine confirmed P0 still blocks at the same thresholds.
-			confirmed := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
+			confirmed := model.Finding{Priority: new(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
 			got = verdictConstraintsFor([]model.Finding{confirmed}, rank).AllowedCorrectness
 			if len(got) != 1 || got[0] != "patch is incorrect" {
 				t.Fatalf("threshold %s: confirmed-P0 constraints = %v, want [patch is incorrect]", threshold, got)

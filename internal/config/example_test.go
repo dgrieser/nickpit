@@ -99,8 +99,7 @@ func mappingKeys(t *testing.T, node *yaml.Node) map[string]bool {
 func yamlTagNames(t *testing.T, typ reflect.Type) []string {
 	t.Helper()
 	names := make([]string, 0, typ.NumField())
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
 		if name == "" {
 			t.Fatalf("%s.%s has no yaml tag", typ.Name(), field.Name)
@@ -130,9 +129,9 @@ func TestExampleProfileNodeCoversAllProfileKeys(t *testing.T) {
 // conditional keys are rendered.
 func TestSupportedModelsNodeCoversAllCapabilityKeys(t *testing.T) {
 	capability := ModelCapabilities{
-		JSONSchema:      ptrTo(true),
-		JSONResponse:    ptrTo(true),
-		ToolsJSONSchema: ptrTo(true),
+		JSONSchema:      new(true),
+		JSONResponse:    new(true),
+		ToolsJSONSchema: new(true),
 	}
 	seq := supportedModelsNode([]ModelCapabilities{capability})
 	if seq.Kind != yaml.SequenceNode || len(seq.Content) != 1 {

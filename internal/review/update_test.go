@@ -53,9 +53,8 @@ func TestUpdateFindingsBatchPreservesIdentityAndRemovesStaleEvidence(t *testing.
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: string(raw)}}}
 	e := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	original := &model.ReviewResult{ReviewID: "review", Findings: []model.Finding{f, other}}
-	out, run, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
-		Result: original, ReviewCtx: &model.ReviewContext{Diff: "patch"}, Tools: []llm.ToolDefinition{}, Messages: []llm.Message{{Role: "user", Content: "The guard fixes this."}},
-	}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID, other.ID}, Reason: "Check the guard."}})
+	out, run, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{
+		Result: original, ReviewCtx: &model.ReviewContext{Diff: "patch"}, Tools: []llm.ToolDefinition{}, Messages: []llm.Message{{Role: "user", Content: "The guard fixes this."}}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID, other.ID}, Reason: "Check the guard."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +74,7 @@ func TestUpdateFindingsUnchangedIsExactNoop(t *testing.T) {
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"The proposed fix is not in current code."}]}`}}}
 	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
 	original := &model.ReviewResult{Findings: []model.Finding{f}}
-	out, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{Result: original, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Proposed fix"}})
+	out, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{Result: original, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Proposed fix"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,9 +269,8 @@ func TestUpdateResolvedKeepsEvidenceSeparateFromResolution(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"updates": []findingUpdateDecision{{ID: f.ID, Action: "resolved", Basis: "fixed", Reason: evidence, Resolution: "Commit abc123 moves the grant to the core API group."}}})
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: string(raw)}}}
 	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
-	out, run, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
-		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
-	}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed with abc123"}})
+	out, run, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed with abc123"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,9 +319,8 @@ func TestUpdateAcceptedOnlyResolvesNonBlockingFindings(t *testing.T) {
 				{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"The blocking defect is still present."}]}`},
 			}}
 			e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
-			out, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
-				Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, MaxOutputRetries: 1,
-			}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Accepted as appropriate"}})
+			out, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{
+				Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, MaxOutputRetries: 1, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Accepted as appropriate"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -347,9 +344,8 @@ func TestUpdatePromptTreatsVerifiedFixAsResolved(t *testing.T) {
 	client := &updateTestLLM{responses: []*llm.ReviewResponse{{RawResponse: `{"updates":[{"id":"finding","action":"unchanged","reason":"Still present."}]}`}}}
 	e := NewEngine(stubSource{}, client, nil, config.Profile{Model: "test"})
 	f := updateTestFinding()
-	if _, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{DiscussRequest: DiscussRequest{
-		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{},
-	}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed"}}); err != nil {
+	if _, _, err := e.UpdateFindings(context.Background(), UpdateFindingsRequest{
+		Result: &model.ReviewResult{Findings: []model.Finding{f}}, ReviewCtx: &model.ReviewContext{}, Tools: []llm.ToolDefinition{}, Signal: ReviewUpdateSignal{FindingIDs: []string{f.ID}, Reason: "Fixed"}}); err != nil {
 		t.Fatal(err)
 	}
 	system := client.requests[0].Messages[0].Content

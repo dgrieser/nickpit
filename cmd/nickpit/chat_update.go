@@ -82,8 +82,8 @@ func (u *gitLabUpdateExecution) run(ctx context.Context, signal review.ReviewUpd
 	clean.Comments = nil
 	req.ReviewCtx = &clean
 	result, err := u.engine.RunUpdateWorkflow(ctx, review.UpdateWorkflowRequest{
-		UpdateFindingsRequest: review.UpdateFindingsRequest{DiscussRequest: req, Signal: signal},
-		PriorityThreshold:     u.app.priorityThreshold, ConfidenceThreshold: u.app.confidenceThreshold,
+		DiscussRequest: req, Signal: signal,
+		PriorityThreshold: u.app.priorityThreshold, ConfidenceThreshold: u.app.confidenceThreshold,
 		DisablePatchSummary: u.profile.DisablePatchSummary,
 		InitiatingMessage:   u.snapshot.Question,
 	})

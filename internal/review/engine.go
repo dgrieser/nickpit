@@ -34,6 +34,7 @@ import (
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
+	"github.com/mittwald/cli-kit/secret"
 )
 
 type Engine struct {
@@ -672,7 +673,7 @@ var reviewVectors = []reviewVector{
 		focusFile:     "agent_review_testing_system_prompt.tmpl",
 		questionsFile: "agent_review_testing_questions.tmpl",
 		constraints: llm.ResponseConstraints{
-			MinPriority:        intPtr(2),
+			MinPriority:        new(2),
 			AllowedCorrectness: []string{"patch is correct"},
 		},
 		validateResponse: validateTestingDuplicateFileResponse,
@@ -695,8 +696,6 @@ func reviewVectorByID(id string) (reviewVector, bool) {
 	}
 	return reviewVector{}, false
 }
-
-func intPtr(v int) *int { return &v }
 
 // withConfig returns a shallow copy of the engine whose profile is replaced.
 // All reference fields (retrieval, logger, source, trimmer, the endpoint→client
@@ -2291,8 +2290,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	var invalidResp *llm.InvalidResponseError
 	if errors.As(err, &invalidResp) && (invalidResp.Reason != "" || invalidResp.RawContent != "") {
 		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
-			Reason:     textsan.RedactSecrets(textsan.StripControl(invalidResp.Reason)),
-			RawContent: textsan.RedactSecrets(textsan.StripControl(invalidResp.RawContent)),
+			Reason:     secret.RedactPatterns(textsan.StripControl(invalidResp.Reason)),
+			RawContent: secret.RedactPatterns(textsan.StripControl(invalidResp.RawContent)),
 		}
 	}
 	if req.DisableSuggestions && result.resp != nil {
@@ -3439,7 +3438,7 @@ func mergeConstraintsForRequest(req model.ReviewRequest) llm.ResponseConstraints
 	if maxPriority >= 3 {
 		return llm.ResponseConstraints{}
 	}
-	return llm.ResponseConstraints{MaxPriority: intPtr(maxPriority)}
+	return llm.ResponseConstraints{MaxPriority: new(maxPriority)}
 }
 
 func hasResponseConstraints(c llm.ResponseConstraints) bool {

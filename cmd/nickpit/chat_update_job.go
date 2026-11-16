@@ -234,9 +234,8 @@ func (a *app) attemptUpdateJob(ctx context.Context, profile config.Profile, opts
 }
 
 func recordUpdateRetry(job *serve.UpdateJob, err error, now time.Time) {
-	var conflict *glscm.UpdateConflict
 	counter := job.Attempts
-	if errors.As(err, &conflict) {
+	if _, ok := errors.AsType[*glscm.UpdateConflict](err); ok {
 		job.Attempts--
 		job.ConflictRetries++
 		counter = job.ConflictRetries

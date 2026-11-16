@@ -670,8 +670,7 @@ func TestClientReviewDoesNotWarnWhenResponseIsInvalidJSON(t *testing.T) {
 		SystemPrompt: "system",
 		UserContent:  "user",
 	})
-	var invalidResp *InvalidResponseError
-	if !errors.As(err, &invalidResp) {
+	if _, ok := errors.AsType[*InvalidResponseError](err); !ok {
 		t.Fatalf("error = %v, want an invalid-response error", err)
 	}
 	got := logs.String()
@@ -3233,12 +3232,10 @@ func TestClientReviewReasoningOnlyContentFilterStaysTerminal(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected terminal error for content_filter response")
 	}
-	var emptyErr *ReasoningOnlyEmptyResponseError
-	if errors.As(err, &emptyErr) {
+	if _, ok := errors.AsType[*ReasoningOnlyEmptyResponseError](err); ok {
 		t.Fatalf("content_filter must not be treated as reasoning-only empty: %v", err)
 	}
-	var invalidResp *InvalidResponseError
-	if !errors.As(err, &invalidResp) {
+	if _, ok := errors.AsType[*InvalidResponseError](err); !ok {
 		t.Fatalf("err = %v, want *InvalidResponseError", err)
 	}
 	if attempts != 1 {
@@ -3259,12 +3256,10 @@ func TestClientReviewReasoningLengthStillBudgetExhausted(t *testing.T) {
 		ReasoningEffort:                "high",
 		DisableReasoningEffortFallback: true,
 	})
-	var budgetErr *ReasoningBudgetExhaustedError
-	if !errors.As(err, &budgetErr) {
+	if _, ok := errors.AsType[*ReasoningBudgetExhaustedError](err); !ok {
 		t.Fatalf("err = %v, want *ReasoningBudgetExhaustedError", err)
 	}
-	var emptyErr *ReasoningOnlyEmptyResponseError
-	if errors.As(err, &emptyErr) {
+	if _, ok := errors.AsType[*ReasoningOnlyEmptyResponseError](err); ok {
 		t.Fatal("length-finish reasoning-only response must not be a ReasoningOnlyEmptyResponseError")
 	}
 }
@@ -3872,8 +3867,7 @@ func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reasoning budget error")
 	}
-	var budgetErr *ReasoningBudgetExhaustedError
-	if !errors.As(err, &budgetErr) {
+	if _, ok := errors.AsType[*ReasoningBudgetExhaustedError](err); !ok {
 		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
 	}
 	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
@@ -5016,8 +5010,7 @@ func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 func TestParseReviewResponseDoesNotBackfillIDOnInvalidResponse(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
-	var invalid *InvalidResponseError
-	if !errors.As(err, &invalid) {
+	if _, ok := errors.AsType[*InvalidResponseError](err); !ok {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
 	if resp == nil || len(resp.Findings) != 1 {
@@ -5056,8 +5049,7 @@ func TestParseJSONResponseAcceptsArbitraryJSON(t *testing.T) {
 
 func TestParseJSONResponseRejectsUnparseableOutput(t *testing.T) {
 	_, err := parseReviewResponse("not json", SchemaKindJSON, ResponseConstraints{})
-	var invalid *InvalidResponseError
-	if !errors.As(err, &invalid) {
+	if _, ok := errors.AsType[*InvalidResponseError](err); !ok {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
 }

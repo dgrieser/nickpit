@@ -3,12 +3,11 @@ package logging
 import (
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 	"sync"
 
-	"golang.org/x/term"
+	"github.com/mittwald/cli-kit/term"
 )
 
 // ReasoningRenderer owns all reasoning output when --show-reasoning is enabled.
@@ -17,7 +16,6 @@ import (
 type ReasoningRenderer struct {
 	mu           sync.Mutex
 	w            io.Writer
-	fd           int
 	useANSI      bool
 	isTTY        bool
 	sections     []*reasoningSection
@@ -37,19 +35,10 @@ type reasoningSection struct {
 type SectionID int
 
 func newReasoningRenderer(w io.Writer, useANSI bool) *ReasoningRenderer {
-	isTTY := false
-	fd := -1
-	if f, ok := w.(*os.File); ok {
-		if stat, err := f.Stat(); err == nil && (stat.Mode()&os.ModeCharDevice) != 0 {
-			isTTY = true
-			fd = int(f.Fd())
-		}
-	}
 	return &ReasoningRenderer{
 		w:       w,
-		fd:      fd,
 		useANSI: useANSI,
-		isTTY:   isTTY,
+		isTTY:   term.IsTerminal(w),
 	}
 }
 
@@ -323,15 +312,13 @@ func tailRunes(s string, max int) string {
 	return string(runes[len(runes)-max:])
 }
 
+// wrappedRows is how many terminal rows line takes on a terminal width cells
+// wide, counting wide characters and tab stops as the terminal does.
 func wrappedRows(line string, width int) int {
 	if width <= 0 {
 		width = 80
 	}
-	n := len([]rune(line))
-	if n == 0 {
-		return 1
-	}
-	return (n + width - 1) / width
+	return term.ScreenRows([]string{line}, width)
 }
 
 func visibleLineCount(s string, width int) int {
@@ -350,55 +337,24 @@ func visibleLineCount(s string, width int) int {
 	return total
 }
 
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
-			i += 2
-			for i < len(s) && !isANSIFinalByte(s[i]) {
-				i++
-			}
-			if i < len(s) {
-				i++
-			}
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
-}
-
-func isANSIFinalByte(b byte) bool {
-	return b >= 0x40 && b <= 0x7E
-}
+// stripANSI removes escape sequences, leaving the text a terminal shows.
+func stripANSI(s string) string { return term.StripANSI(s) }
 
 func (r *ReasoningRenderer) termWidth() int {
 	if r.width > 0 {
 		return r.width
 	}
-	if r.fd < 0 {
-		return 80
-	}
-	w, _, err := term.GetSize(r.fd)
-	if err != nil || w <= 0 {
-		return 80
-	}
-	return w
+	return term.Columns(r.w, 80)
 }
 
 func (r *ReasoningRenderer) termHeight() int {
 	if r.height > 0 {
 		return r.height
 	}
-	if r.fd < 0 {
-		return 24
+	if _, h := term.Size(r.w); h > 0 {
+		return h
 	}
-	_, h, err := term.GetSize(r.fd)
-	if err != nil || h <= 0 {
-		return 24
-	}
-	return h
+	return 24
 }
 
 // WriteProgress writes a pre-formatted progress line outside the live preview.
