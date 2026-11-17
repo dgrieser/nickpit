@@ -115,21 +115,28 @@ func TestCompleteChatFindingIDs(t *testing.T) {
 	sess.Result = &model.ReviewResult{Findings: []model.Finding{
 		{ID: "finding-one", Title: "First finding", Priority: &priority},
 		{ID: "finding-two", Title: "Second\nfinding", Priority: &priority},
+		// An escape sequence in a model-written title is taken out rather than
+		// costing the finding its completion candidate.
+		{ID: "finding-three", Title: "\x1b[31mThird\x1b[0m\tfinding", Priority: &priority},
 	}}
 	if err := store.Save(sess); err != nil {
 		t.Fatal(err)
 	}
 
 	a := &app{sessionDir: dir}
-	got, directive := a.completeChatFindingIDs(chatOptions{sessionID: sess.ID}, "finding-t")
+	got, directive := a.completeChatFindingIDs(chatOptions{sessionID: sess.ID}, "finding-tw")
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("directive = %v", directive)
 	}
 	if len(got) != 1 || got[0] != "finding-two\tSecond finding" {
 		t.Fatalf("finding completions = %v", got)
 	}
+	got, _ = a.completeChatFindingIDs(chatOptions{sessionID: sess.ID}, "finding-th")
+	if len(got) != 1 || got[0] != "finding-three\tThird finding" {
+		t.Fatalf("finding completions = %q", got)
+	}
 	got, _ = a.completeChatFindingIDs(chatOptions{}, "")
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("latest-session findings = %v", got)
 	}
 }

@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/google/uuid v1.6.0
 	github.com/ije/esbuild-internal v0.28.1
-	github.com/mittwald/cli-kit v0.8.0
+	github.com/mittwald/cli-kit v0.10.0
 	github.com/odvcencio/gotreesitter v0.52.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/spf13/cobra v1.10.2

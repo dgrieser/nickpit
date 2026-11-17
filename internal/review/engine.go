@@ -34,7 +34,7 @@ import (
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
-	"github.com/mittwald/cli-kit/secret"
+	"github.com/mittwald/cli-kit/redact"
 )
 
 type Engine struct {
@@ -2290,8 +2290,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	var invalidResp *llm.InvalidResponseError
 	if errors.As(err, &invalidResp) && (invalidResp.Reason != "" || invalidResp.RawContent != "") {
 		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
-			Reason:     secret.RedactPatterns(textsan.StripControl(invalidResp.Reason)),
-			RawContent: secret.RedactPatterns(textsan.StripControl(invalidResp.RawContent)),
+			Reason:     redact.Patterns(textsan.StripControl(invalidResp.Reason)),
+			RawContent: redact.Patterns(textsan.StripControl(invalidResp.RawContent)),
 		}
 	}
 	if req.DisableSuggestions && result.resp != nil {

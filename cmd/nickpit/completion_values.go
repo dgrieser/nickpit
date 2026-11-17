@@ -13,6 +13,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
+	"github.com/mittwald/cli-kit/cobrax"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -29,7 +30,7 @@ func registerRootCompletions(root *cobra.Command, a *app) {
 	registerEnumCompletion(root, "disable-styleguide", append([]string{"all"}, mappings.StyleGuideOrder()...))
 	registerEnumCompletion(root, "step", workflowStepCompletions())
 	_ = root.RegisterFlagCompletionFunc("profile", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
-		return filterCompletions(a.profileCompletions(), prefix), cobra.ShellCompDirectiveNoFileComp
+		return cobrax.CompletePrefix(a.profileCompletions(), prefix)
 	})
 
 	_ = root.MarkPersistentFlagDirname("workdir")
@@ -42,22 +43,8 @@ func registerRootCompletions(root *cobra.Command, a *app) {
 
 func registerEnumCompletion(cmd *cobra.Command, flag string, values []string) {
 	_ = cmd.RegisterFlagCompletionFunc(flag, func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
-		return filterCompletions(values, prefix), cobra.ShellCompDirectiveNoFileComp
+		return cobrax.CompletePrefix(values, prefix)
 	})
-}
-
-func filterCompletions(values []string, prefix string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		candidate := value
-		if head, _, ok := strings.Cut(value, "\t"); ok {
-			candidate = head
-		}
-		if strings.HasPrefix(candidate, prefix) {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 // workflowStepCompletions lists only the steps that are valid as a standalone
@@ -112,7 +99,7 @@ func (a *app) profileCompletions() []string {
 
 func registerGitRefCompletion(cmd *cobra.Command, flag string, a *app, includeCommits bool) {
 	_ = cmd.RegisterFlagCompletionFunc(flag, func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
-		return filterCompletions(a.gitRefCompletions(includeCommits), prefix), cobra.ShellCompDirectiveNoFileComp
+		return cobrax.CompletePrefix(a.gitRefCompletions(includeCommits), prefix)
 	})
 }
 
