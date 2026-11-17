@@ -71,8 +71,8 @@ github.com/mattn/go-runewidth v0.0.31 h1:1oCV4ReTlosDBc6rYRw5cL8S/4y8iv5oRl4SJ5I
 github.com/mattn/go-runewidth v0.0.31/go.mod h1:3qAiGCV4Koz/yuveO58qUefmUTRm8r0IGEXZ9jeHp/8=
 github.com/microcosm-cc/bluemonday v1.0.27 h1:MpEUotklkwCSLeH+Qdx1VJgNqLlpY2KXwXFM08ygZfk=
 github.com/microcosm-cc/bluemonday v1.0.27/go.mod h1:jFi9vgW+H7c3V0lb6nR74Ib/DIB5OBs92Dimizgw2cA=
-github.com/mittwald/cli-kit v0.8.0 h1:JEnRdr7sxAJYZYY81i+KKAIw9yxJ364JyRJijfq00yU=
-github.com/mittwald/cli-kit v0.8.0/go.mod h1:/Omytk/65EBcYdQaLNZ/X/V9D7EZ+7gOTjmT1k3Dasc=
+github.com/mittwald/cli-kit v0.10.0 h1:NQuryVnMmskGCwQkSe8DjKLwRl1EGawfliUr40TxExY=
+github.com/mittwald/cli-kit v0.10.0/go.mod h1:8Q1H6mdlJODjeKv84p9CLZarQ5CWof/4X/hsXHSsEAE=
 github.com/muesli/reflow v0.3.0 h1:IFsN6K9NfGtjeggFP+68I4chLZV2yIKsXJFNZ+eWh6s=
 github.com/muesli/reflow v0.3.0/go.mod h1:pbwTDkVPibjO2kyvBQRBxTWEEGDGq0FlB1BIKtnHY/8=
 github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=

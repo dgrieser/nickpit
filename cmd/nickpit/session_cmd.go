@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/mittwald/cli-kit/clipboard"
+	"github.com/mittwald/cli-kit/cobrax"
 	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
@@ -80,11 +80,9 @@ func (a *app) completeSessionIDs(prefix string) ([]string, cobra.ShellCompDirect
 	}
 	candidates := make([]string, 0, len(infos))
 	for _, info := range infos {
-		if strings.HasPrefix(info.ID, prefix) {
-			candidates = append(candidates, info.ID)
-		}
+		candidates = append(candidates, info.ID)
 	}
-	return candidates, cobra.ShellCompDirectiveNoFileComp
+	return cobrax.CompletePrefix(candidates, prefix)
 }
 
 // reviewedSessions lists the sessions this command can act on, newest first:

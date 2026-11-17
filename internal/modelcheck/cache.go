@@ -11,6 +11,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/mittwald/cli-kit/fsx"
 )
 
 type CachedCapabilities struct {
@@ -188,23 +189,10 @@ func writeCacheFile(path string, file capabilityCacheFile) error {
 		return fmt.Errorf("modelcheck cache: encoding: %w", err)
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".model-capabilities-*.tmp")
-	if err != nil {
-		return fmt.Errorf("modelcheck cache: creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("modelcheck cache: writing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("modelcheck cache: closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("modelcheck cache: replacing %s: %w", path, err)
+	// fsx.WriteFile keeps the 0600 mode the cache has always had and syncs the
+	// data before renaming it into place.
+	if err := fsx.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("modelcheck cache: %w", err)
 	}
 	return nil
 }

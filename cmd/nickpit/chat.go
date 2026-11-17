@@ -26,6 +26,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/styleguide"
+	"github.com/mittwald/cli-kit/cobrax"
 	"github.com/mittwald/cli-kit/term"
 	"github.com/spf13/cobra"
 )
@@ -163,18 +164,17 @@ func (a *app) completeChatFindingIDs(opts chatOptions, prefix string) ([]string,
 	}
 	candidates := make([]string, 0, len(result.Findings))
 	for _, finding := range result.Findings {
-		if finding.ID == "" || !strings.HasPrefix(finding.ID, prefix) {
-			continue
-		}
+		// The title is model output: PlainLine keeps it to one line without
+		// escape sequences, so it cannot cost the finding its candidate in
+		// CompletePrefix's safety filter.
 		title, _, _, _ := reviewmd.FindingDisplay(finding)
-		title = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(title)
-		if title == "" {
+		if title = term.PlainLine(title); title == "" {
 			candidates = append(candidates, finding.ID)
 		} else {
 			candidates = append(candidates, finding.ID+"\t"+title)
 		}
 	}
-	return candidates, cobra.ShellCompDirectiveNoFileComp
+	return cobrax.CompletePrefix(candidates, prefix)
 }
 
 func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) error {
